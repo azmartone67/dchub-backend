@@ -2884,3 +2884,447 @@ class TestTheMintBlockIsAllEnvelope:
                                      "upgrade_url": "x", "auto_trial_key": "k"}}
         assert sorted(_data_keys(env)) == ["citation", "facilities"]
         assert sorted(_envelope_keys(env)) == ["auto_trial_key", "upgrade_url"]
+
+# ── a proposal outcome carries its OWN provenance ─────────────────────────
+#
+# Live 2026-09-18: "🔧 No PR — refused 11.9d ago" rendered directly beneath
+# "🧠 Analysed 4.1h ago" on a finding that had been red 3.5 days. The ack and
+# the investigation both get an evidence_sha staleness check; the proposal got
+# none, so a refusal about long-gone evidence read as the card's current
+# disposition. The row's single evidence_sha belongs to the INVESTIGATION and is
+# overwritten on every re-analysis, so it cannot answer for the proposal.
+class TestProposalStaleness:
+
+    COLS = ("finding_key evidence_sha recommendation confidence survived "
+            "issue_number commented created_at proposal_state proposal_detail "
+            "pr_url pr_number proposal_at parked_escalated_at "
+            "proposal_evidence_sha").split()
+
+    class _Cur:
+        def __init__(self, rows):
+            self.rows, self.sql = rows, []
+
+        def execute(self, q, *a):
+            self.sql.append(q)
+
+        def fetchall(self):
+            return self.rows
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Conn:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def cursor(self):
+            return self._cur
+
+        def close(self):
+            pass
+
+    def _attach(self, monkeypatch, *, inv_evidence, prop_sha,
+                now_evidence, p_state="refused", parked_at=None):
+        from routes import qa_superuser_dashboard as mod
+        row = {
+            "finding_key": "k1",
+            "evidence_sha": mod.evidence_sha(inv_evidence),
+            "recommendation": "do the thing", "confidence": 0.9,
+            "survived": True, "issue_number": 7, "commented": True,
+            "created_at": None, "proposal_state": p_state,
+            "proposal_detail": "ambiguous find string", "pr_url": None,
+            "pr_number": None, "proposal_at": None,
+            "parked_escalated_at": (
+                __import__("datetime").datetime.fromisoformat(parked_at)
+                if parked_at else None),
+            "proposal_evidence_sha": prop_sha,
+        }
+        cur = self._Cur([tuple(row[c] for c in self.COLS)])
+        monkeypatch.setattr(mod, "_conn", lambda: self._Conn(cur))
+        latest = {"findings": [{"key": "k1", "evidence": now_evidence}]}
+        mod._attach_investigations(latest)
+        return latest["findings"][0], cur, mod
+
+    def test_the_select_actually_asks_for_the_new_column(self, monkeypatch):
+        # Ties the fixture to the real query: a fake cursor that happily returns
+        # a column the SQL never requested would make every case below vacuous.
+        _f, cur, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha="x", now_evidence="e")
+        sel = [q for q in cur.sql if "FROM qa_superuser_investigations" in q]
+        assert sel, cur.sql
+        assert "proposal_evidence_sha" in sel[0]
+
+    def test_the_fixture_row_matches_the_real_column_list(self, monkeypatch):
+        """★ Caught when a sibling PR added parked_escalated_at: COLS went one
+        short, the tuple unpack blew up, and six tests failed at once with a
+        shape error rather than anything about staleness. Assert the fixture
+        against the SELECT instead of hand-syncing it.
+        """
+        import re
+        _f, cur, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha="x", now_evidence="e")
+        sel = [q for q in cur.sql if "FROM qa_superuser_investigations" in q][0]
+        cols = re.search(r"SELECT (.+?) FROM qa_superuser_investigations",
+                         " ".join(sel.split()))
+        names = [c.strip() for c in cols.group(1).split(",")]
+        assert names == self.COLS, (names, self.COLS)
+
+    def test_every_column_the_select_reads_is_one_the_ddl_creates(
+            self, monkeypatch):
+        """★★★ The trap `_ensure_investigations` documents, made testable.
+
+        CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so any
+        column added after first deploy needs its own ADD COLUMN or the code
+        ships green and every read fails on a missing column in production.
+        Nothing enforced that: dropping a column from the ADD COLUMN list left
+        the whole suite passing. Assert the SELECT against the DDL.
+        """
+        import re
+        _f, cur, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha="x", now_evidence="e")
+        joined = [" ".join(q.split()) for q in cur.sql]
+        created = set()
+        for q in joined:
+            m = re.search(r"CREATE TABLE IF NOT EXISTS \S+ \((.+)\)$", q)
+            if m:
+                for line in m.group(1).split(","):
+                    tok = line.strip().split()
+                    if tok:
+                        created.add(tok[0])
+            m2 = re.search(r"ADD COLUMN IF NOT EXISTS (\w+)", q)
+            if m2:
+                created.add(m2.group(1))
+        assert created, "no DDL was executed — this guard would be vacuous"
+        sel = [q for q in joined if "FROM qa_superuser_investigations" in q][0]
+        cols = re.search(r"SELECT (.+?) FROM", sel).group(1)
+        read = {c.strip() for c in cols.split(",")}
+        missing = read - created
+        assert not missing, (
+            f"read but never declared anywhere: {sorted(missing)}")
+
+        # ★★★ AND THE PART THAT ACTUALLY BITES. Appearing in CREATE TABLE is
+        #   NOT enough: that statement is IF NOT EXISTS, so on the live table —
+        #   which has existed since the first deploy — it is a no-op. A column
+        #   that lives only there is never added, and every read 500s in
+        #   production while the whole suite stays green. Measured: dropping
+        #   proposal_evidence_sha from the ALTER list left 270 tests passing.
+        #
+        #   So every column added AFTER the table first shipped must carry its
+        #   own ADD COLUMN. This list is deliberately explicit — adding to it is
+        #   the moment to check you also added the ALTER.
+        alter = {re.search(r"ADD COLUMN IF NOT EXISTS (\w+)", q).group(1)
+                 for q in joined if "ADD COLUMN IF NOT EXISTS" in q}
+        post_deploy = {"proposal_state", "proposal_detail", "pr_url",
+                       "pr_number", "proposal_at", "parked_escalated_at",
+                       "proposal_evidence_sha"}
+        assert post_deploy <= alter, (
+            f"no ADD COLUMN for {sorted(post_deploy - alter)} — CREATE TABLE IF "
+            "NOT EXISTS will not add it to the live table, so every read of it "
+            "fails in production while this suite passes")
+        assert post_deploy <= read, (
+            "this guard's list has drifted from what the SELECT reads; "
+            f"{sorted(post_deploy - read)} is pinned here but never read")
+
+    def test_the_parked_stamp_reaches_the_page(self, monkeypatch):
+        # The escalation is only useful if the card can say it already went
+        # out. Blanking this read left every test green.
+        from routes import qa_superuser_dashboard as mod
+        f, _c, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha=mod.evidence_sha("e"),
+            now_evidence="e", parked_at="2026-09-18T00:00:00+00:00")
+        assert f["parked_escalated_at"] == "2026-09-18T00:00:00+00:00"
+
+    def test_a_proposal_made_against_current_evidence_is_current(self, monkeypatch):
+        from routes import qa_superuser_dashboard as mod
+        f, _c, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha=mod.evidence_sha("e"),
+            now_evidence="e")
+        assert f["proposal"]["evidence_state"] == "current"
+
+    def test_a_proposal_about_older_evidence_is_stale(self, monkeypatch):
+        from routes import qa_superuser_dashboard as mod
+        f, _c, _m = self._attach(
+            monkeypatch, inv_evidence="NEW", prop_sha=mod.evidence_sha("OLD"),
+            now_evidence="NEW")
+        assert f["proposal"]["evidence_state"] == "stale"
+
+    def test_a_fresh_investigation_does_not_refresh_an_old_proposal(self, monkeypatch):
+        # THE LIVE BUG. Re-analysis rewrites evidence_sha on the same row, so the
+        # investigation reads current while the proposal beneath it is 11.9 days
+        # old and about different evidence. Both verdicts must be independent.
+        from routes import qa_superuser_dashboard as mod
+        f, _c, _m = self._attach(
+            monkeypatch, inv_evidence="NEW", prop_sha=mod.evidence_sha("OLD"),
+            now_evidence="NEW")
+        assert f["investigation"]["state"] == "current"
+        assert f["proposal"]["evidence_state"] == "stale", (
+            "a re-analysis must not launder the outcome of a proposal that was "
+            "made against evidence which has since moved")
+
+    def test_missing_provenance_is_unknown_never_current(self, monkeypatch):
+        # Rows written before the column existed. "I do not know" is not "it
+        # changed" and it is certainly not "it is current".
+        f, _c, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha=None, now_evidence="e")
+        assert f["proposal"]["evidence_state"] == "unknown"
+
+    def test_freshness_does_not_overwrite_the_outcome(self, monkeypatch):
+        # Two questions, two fields. Folding freshness into `state` would make
+        # "refused" mean two things and the card could not report both.
+        from routes import qa_superuser_dashboard as mod
+        f, _c, _m = self._attach(
+            monkeypatch, inv_evidence="NEW", prop_sha=mod.evidence_sha("OLD"),
+            now_evidence="NEW", p_state="opened")
+        assert f["proposal"]["state"] == "opened"
+        assert f["proposal"]["evidence_state"] == "stale"
+
+
+class TestProposalProvenanceIsStampedByOneWriter:
+    # ★ AST, not substring: `"evidence=" in src` is satisfied by any keyword
+    #   argument anywhere in a 1700-line module, and by this comment.
+    def test_the_raw_writer_is_called_exactly_once_and_only_inside_mark(self):
+        """Every exit path goes through `_mark`; `_mark` goes to the writer.
+
+        ★★★ THE EARLIER VERSION OF THIS GUARD ASSERTED `not raw` — zero raw
+        calls anywhere in _run_proposal. That is satisfied by the CORRECT code
+        and equally by a `_mark` that calls ITSELF, which is what a blanket
+        rename produced: infinite recursion on every proposal outcome, with a
+        green suite, because nothing here drove _run_proposal end to end. A
+        guard whose passing condition includes "the function is broken" is not
+        a guard. Assert the shape instead: exactly one raw call, inside _mark.
+        """
+        import ast, inspect
+        from routes import qa_superuser_dashboard as mod
+        fn = next(n for n in ast.walk(ast.parse(inspect.getsource(mod)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_run_proposal")
+        mark = next((n for n in ast.walk(fn)
+                     if isinstance(n, ast.FunctionDef) and n.name == "_mark"), None)
+        assert mark is not None, "_run_proposal must define the _mark writer"
+
+        def raw_calls(node):
+            return [c.lineno for c in ast.walk(node) if isinstance(c, ast.Call)
+                    and (getattr(c.func, "id", None)
+                         or getattr(c.func, "attr", None)) == "_mark_proposal"]
+
+        inside = raw_calls(mark)
+        outside = [ln for ln in raw_calls(fn) if ln not in inside]
+        assert len(inside) == 1, (
+            f"_mark must call _mark_proposal exactly once; found {len(inside)} "
+            "— zero means it recurses into itself and every proposal outcome "
+            "raises RecursionError")
+        assert not outside, (
+            f"_run_proposal calls _mark_proposal directly at line(s) {outside} "
+            "— every exit path must go through _mark so the evidence this "
+            "proposal was made against is stamped")
+
+    def test_mark_does_not_call_itself(self):
+        # Stated separately and bluntly, because the recursion shipped once.
+        import ast, inspect
+        from routes import qa_superuser_dashboard as mod
+        fn = next(n for n in ast.walk(ast.parse(inspect.getsource(mod)))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_run_proposal")
+        mark = next(n for n in ast.walk(fn)
+                    if isinstance(n, ast.FunctionDef) and n.name == "_mark")
+        assert not [c for c in ast.walk(mark) if isinstance(c, ast.Call)
+                    and getattr(c.func, "id", None) == "_mark"], (
+            "_mark calls itself — infinite recursion on every proposal outcome")
+        wrapped = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                   and getattr(n.func, "id", None) == "_mark"]
+        assert len(wrapped) >= 5, (
+            f"only {len(wrapped)} _mark call(s) — the exit paths this guard "
+            "protects have moved; re-check before loosening it")
+
+    def test_the_dispatcher_stamps_the_evidence_it_showed_the_operator(self):
+        import ast, inspect
+        from routes import qa_superuser_dashboard as mod
+        src = inspect.getsource(mod)
+        tree = ast.parse(src)
+        bare = []
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call)
+                    and (getattr(n.func, "id", None)
+                         or getattr(n.func, "attr", None)) == "_mark_proposal"
+                    and not any(k.arg == "evidence" for k in n.keywords)):
+                bare.append(n.lineno)
+        assert not bare, (
+            f"_mark_proposal called without evidence= at line(s) {bare}")
+
+
+class TestProposalStalenessReachesThePage:
+    """Run the card's REAL script in node and read what it renders.
+
+    ★★★ THESE REPLACE SUBSTRING ASSERTIONS THAT DID NOT WORK. The first draft
+    checked `"pp.evidence_state" in page` and `"ppRunStuck" in page`. Both
+    SURVIVED the mutations that matter — `const ppStale = false;` and
+    `&& false;` leave every one of those strings on the page while the banner
+    never renders again. A test for a render has to render.
+    """
+
+    def _card(self, monkeypatch, tmp_path, proposal):
+        import json, os, re, shutil, subprocess
+        import flask, pytest
+        node = shutil.which("node")
+        if node is None:
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                pytest.fail("node is not on PATH in CI, so the card script "
+                            "cannot run; a skip here would report a stale-"
+                            "refusal guard as passing without rendering it")
+            pytest.skip("node is not on PATH")
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        page = app.test_client().get(
+            "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
+        script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+        src = tmp_path / "card.js"
+        src.write_text(script, encoding="utf-8")
+        finding = {"key": "k", "title": "t", "surface": "mcp", "seat": "paid",
+                   "verdict": "RED", "severity": "critical", "evidence": "e",
+                   "basis": "b", "red_when": "r", "remedy": "m",
+                   "proposal": proposal}
+        harness = tmp_path / "run.js"
+        harness.write_text(
+            "const fs=require('fs'),vm=require('vm');\n"
+            "const ctx={console,URLSearchParams,setTimeout,"
+            "fetch:()=>new Promise(()=>{}),setInterval:()=>0,"
+            "location:{search:'?admin_key=x'},"
+            "document:{getElementById:()=>null,querySelectorAll:()=>[],"
+            "addEventListener:()=>{}}};\n"
+            "ctx.window=ctx;vm.createContext(ctx);\n"
+            # Top-level bootstrap touches browser APIs and throws; function
+            # declarations are hoisted into the context regardless, which is
+            # the whole point — we want the real `card`, not a copy of it.
+            "try{vm.runInContext(fs.readFileSync(%r,'utf8'),ctx);}catch(e){}\n"
+            "if(typeof ctx.card!=='function'){console.error('NO_CARD');"
+            "process.exit(3);}\n"
+            "process.stdout.write(ctx.card(%s,'red'));\n"
+            % (str(src), json.dumps(finding)), encoding="utf-8")
+        r = subprocess.run([node, str(harness)], capture_output=True, text=True,
+                           timeout=60)
+        assert r.returncode == 0, (r.returncode, r.stderr[-400:])
+        assert r.stdout.strip(), "card() rendered nothing"
+        return r.stdout
+
+    OLD = "2026-09-06T00:00:00+00:00"
+
+    def test_a_stale_refusal_says_so(self, monkeypatch, tmp_path):
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "refused", "evidence_state": "stale",
+            "at": self.OLD, "detail": "ambiguous find string"})
+        assert "OLDER evidence" in html, html[-600:]
+        # The refusal itself must survive — the banner explains it, not hides it.
+        assert "ambiguous find string" in html
+
+    def test_a_current_refusal_carries_no_banner(self, monkeypatch, tmp_path):
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "refused", "evidence_state": "current",
+            "at": self.OLD, "detail": "d"})
+        assert "OLDER evidence" not in html, html[-600:]
+        assert "Recorded before proposal provenance" not in html
+
+    def test_unknown_provenance_never_claims_the_evidence_changed(
+            self, monkeypatch, tmp_path):
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "refused", "evidence_state": "unknown",
+            "at": self.OLD, "detail": "d"})
+        assert "Recorded before proposal provenance" in html
+        assert "OLDER evidence" not in html, (
+            "an unrecorded provenance cannot support the claim that the "
+            "evidence CHANGED — that comparison never ran")
+
+    def test_a_dispatch_that_never_finished_stops_saying_reload(
+            self, monkeypatch, tmp_path):
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "running", "evidence_state": "current", "at": self.OLD})
+        assert "never" in html and "finished" in html, html[-600:]
+        assert "reload in a minute" not in html
+
+    @pytest.mark.parametrize("stamp", [None, "", "not-a-date", "2026-13-45"])
+    def test_an_unreadable_timestamp_is_not_treated_as_fresh(
+            self, monkeypatch, tmp_path, stamp):
+        # hoursSince returns null when it cannot read the stamp, and null is
+        # NOT zero. Returning 0 would make every unreadable dispatch look like
+        # it started this second and leave "reload in a minute" on screen
+        # forever — the same forever-spinner this change exists to remove.
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "running", "evidence_state": "current", "at": stamp})
+        assert "reload in a minute" not in html, (stamp, html[-500:])
+        assert "never" in html and "finished" in html, (stamp, html[-500:])
+
+    def test_a_fresh_dispatch_still_says_reload(self, monkeypatch, tmp_path):
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "running", "evidence_state": "current", "at": now})
+        assert "reload in a minute" in html, html[-600:]
+
+
+class TestTheWriterActuallyStoresTheProvenance:
+    # ★ The AST guards prove the CALLS pass evidence=. They do not prove the
+    #   WRITER uses it — blanking the sha in the SQL params left all 207 tests
+    #   green. Same shape as the surviving mutation in be#4773: a covered helper
+    #   wired to nothing.
+    def test_the_sha_of_the_evidence_reaches_the_sql_params(self, monkeypatch):
+        from routes import qa_superuser_dashboard as mod
+        seen = {}
+
+        class _Cur:
+            def execute(self, q, params=None):
+                if "proposal_state" in q and params:
+                    seen["q"], seen["p"] = q, params
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _Conn:
+            def cursor(self):
+                return _Cur()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(mod, "_conn", lambda: _Conn())
+        mod._mark_proposal("k1", "refused", "why", evidence="THE EVIDENCE")
+        assert "proposal_evidence_sha" in seen.get("q", ""), seen
+        assert mod.evidence_sha("THE EVIDENCE") in seen.get("p", ()), seen["p"]
+
+    def test_no_evidence_leaves_the_stored_provenance_alone(self, monkeypatch):
+        # COALESCE(NULL, existing): a later transition of the SAME proposal run
+        # must not blank the sha stamped at dispatch.
+        from routes import qa_superuser_dashboard as mod
+        seen = {}
+
+        class _Cur:
+            def execute(self, q, params=None):
+                if "proposal_state" in q and params:
+                    seen["q"], seen["p"] = q, params
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _Conn:
+            def cursor(self):
+                return _Cur()
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(mod, "_conn", lambda: _Conn())
+        mod._mark_proposal("k1", "refused", "why")
+        assert None in seen["p"]
+        # ★ Anchored to THIS column. A bare `"COALESCE" in q` passes on the
+        #   pr_url and pr_number COALESCEs that were always there, so dropping
+        #   the one that matters left the assertion green — caught by mutation.
+        import re as _re
+        assert _re.search(r"COALESCE\(\s*%s\s*,\s*proposal_evidence_sha\s*\)",
+                          seen["q"]), seen["q"]

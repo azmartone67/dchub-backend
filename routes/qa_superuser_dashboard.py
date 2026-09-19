@@ -186,7 +186,8 @@ def _ensure_investigations(cur) -> None:
             proposal_detail TEXT,
             pr_url          TEXT,
             pr_number       INTEGER,
-            proposal_at     TIMESTAMPTZ
+            proposal_at     TIMESTAMPTZ,
+            proposal_evidence_sha TEXT
         )"""
     )
     # ★ The live table is not necessarily the table in this file. A CREATE TABLE
@@ -199,7 +200,15 @@ def _ensure_investigations(cur) -> None:
                      # When we told a human this finding is stuck. Stamped once
                      # so the escalation never repeats — a channel that re-pages
                      # every 4h gets muted, and then it is not a channel.
-                     ("parked_escalated_at", "TIMESTAMPTZ")):
+                     ("parked_escalated_at", "TIMESTAMPTZ"),
+                     # ★★★ THE PROPOSAL NEEDS ITS OWN PROVENANCE. The row's single
+                     # `evidence_sha` belongs to the INVESTIGATION and is
+                     # overwritten every time the finding is re-analysed, so it
+                     # cannot say what evidence a proposal was made against.
+                     # Live 2026-09-18: a refusal written 11.9 days earlier
+                     # rendered beside a 4.1h-old analysis with no indication it
+                     # described different evidence.
+                     ("proposal_evidence_sha", "TEXT")):
         cur.execute("ALTER TABLE qa_superuser_investigations "
                     f"ADD COLUMN IF NOT EXISTS {col} {ddl}")
 
@@ -1096,7 +1105,13 @@ def qa_superuser_auto_propose():
     dispatched = []
     for f in todo:
         key = f.get("key")
-        _mark_proposal(key, "running", "writing a patch and validating it")
+        # ★ Stamped with the evidence THIS run selected on, exactly as the
+        #   human-clicked dispatcher does. Without it an autonomous proposal
+        #   has no provenance, and its outcome would read as current forever
+        #   however far the finding later moved — the defect #4775 fixed, which
+        #   this lane would have quietly reintroduced on its own path.
+        _mark_proposal(key, "running", "writing a patch and validating it",
+                       evidence=f.get("evidence") or "")
         meta = {"key": key, "title": f.get("title"),
                 "surface": f.get("surface"), "seat": f.get("seat"),
                 "evidence": f.get("evidence"),
@@ -1114,7 +1129,8 @@ def qa_superuser_auto_propose():
                              daemon=True).start()
             dispatched.append(key)
         except Exception as e:  # noqa: BLE001
-            _mark_proposal(key, "error", f"could not dispatch: {e}")
+            _mark_proposal(key, "error", f"could not dispatch: {e}",
+                           evidence=f.get("evidence") or "")
 
     return jsonify({
         "ok": True,
@@ -1263,7 +1279,8 @@ def qa_superuser_auto_investigate():
 
 
 def _mark_proposal(key: str, state: str, detail: str,
-                   pr_url: str | None = None, pr_number=None) -> None:
+                   pr_url: str | None = None, pr_number=None,
+                   evidence: str | None = None) -> None:
     """Record where a proposal got to. Best-effort; never raises.
 
     ★ This row IS the delivery channel for the refusal reason. Going async moved
@@ -1283,9 +1300,13 @@ def _mark_proposal(key: str, state: str, detail: str,
                       SET proposal_state=%s, proposal_detail=%s,
                           pr_url=COALESCE(%s, pr_url),
                           pr_number=COALESCE(%s, pr_number),
-                          proposal_at=NOW()
+                          proposal_at=NOW(),
+                          proposal_evidence_sha=
+                              COALESCE(%s, proposal_evidence_sha)
                     WHERE finding_key=%s""",
-                (state, (detail or "")[:2000], pr_url, pr_number, key))
+                (state, (detail or "")[:2000], pr_url, pr_number,
+                 evidence_sha(evidence) if evidence is not None else None,
+                 key))
     except Exception as e:  # noqa: BLE001
         logger.warning("[qa-superuser] proposal state write failed: %s", e)
     finally:
@@ -1303,6 +1324,21 @@ def _run_proposal(meta: dict) -> None:
     a silent return here is indistinguishable from work still in progress.
     """
     key = meta["key"]
+
+    # ★★★ ONE WRITER, SO NO EXIT PATH CAN FORGET THE PROVENANCE. Every
+    # `_mark_proposal` below goes through this, which means the evidence this
+    # proposal was made against is stamped on the row by construction rather
+    # than by each of six call sites remembering to pass it. A refusal whose
+    # provenance is missing is exactly the row that later reads as current.
+    def _mark(state: str, detail: str, pr_url=None, pr_number=None) -> None:
+        # ★ Calls the MODULE-LEVEL writer. An earlier revision of this closure
+        #   called `_mark` here — itself — and recursed until RecursionError on
+        #   every single proposal outcome. It survived its own test suite
+        #   because nothing there drove _run_proposal end to end; the draft
+        #   tests, which do, caught it on the first run.
+        _mark_proposal(key, state, detail, pr_url, pr_number,
+                       evidence=meta.get("evidence") or "")
+
     try:
         from tools.qa_superuser import propose as P
         from routes.brain_investigator import _call_model
@@ -1314,13 +1350,13 @@ def _run_proposal(meta: dict) -> None:
             P.build_fix_prompt(meta, meta.get("investigation") or {}),
             tier="reasoning", max_tokens=2000, schema=P.FIX_SCHEMA)
         if err or not text:
-            _mark_proposal(key, "error", f"model call failed: {err}")
+            _mark("error", f"model call failed: {err}")
             return
 
         fix = _parse_proposal(text)
         if not fix:
-            _mark_proposal(key, "error",
-                           "the model's reply could not be parsed as a proposal")
+            _mark("error",
+              "the model's reply could not be parsed as a proposal")
             return
 
         # ★ Resolve the path through the SAME helper the validator uses, so the
@@ -1335,7 +1371,7 @@ def _run_proposal(meta: dict) -> None:
                 logger.warning("[qa-superuser] could not read %s: %s", path, e)
         ok, why = P.validate_fix(fix, content)
         if not ok:
-            _mark_proposal(key, "refused", why)
+            _mark("refused", why)
             return
 
         base = ((os.environ.get("DCHUB_INTERNAL_API") or "").strip()
@@ -1374,7 +1410,7 @@ def _run_proposal(meta: dict) -> None:
             #   part — and they call for opposite responses.
             detail = (out.get("reason") or out.get("error")
                       or f"HTTP {r.status_code}: {r.text[:200]}")
-            _mark_proposal(key, "refused", f"the PR lane declined: {detail}")
+            _mark("refused", f"the PR lane declined: {detail}")
             return
 
         pr_url = out.get("pr_url")
@@ -1388,19 +1424,17 @@ def _run_proposal(meta: dict) -> None:
         #   for. An older backend that ignores the field lands here too, which
         #   is the point: the check reads the RESULT, not the request.
         if meta.get("auto") and not out.get("draft"):
-            _mark_proposal(
-                key, "error",
-                f"OPENED BUT NOT A DRAFT — {pr_url}. This lane requested a "
-                f"draft; GitHub reports draft={out.get('draft')!r}. "
-                f"auto-enable-automerge arms native auto-merge on non-draft "
-                f"PRs, so this may merge and deploy without review. Convert it "
-                f"to a draft or close it.", pr_url, out.get("pr_number"))
+            _mark("error",
+                  f"OPENED BUT NOT A DRAFT — {pr_url}. This lane requested a "
+                  f"draft; GitHub reports draft={out.get('draft')!r}. "
+                  f"auto-enable-automerge arms native auto-merge on non-draft "
+                  f"PRs, so this may merge and deploy without review. Convert "
+                  f"it to a draft or close it.", pr_url, out.get("pr_number"))
             logger.error("[qa-superuser] auto proposal opened NON-DRAFT: %s",
                          pr_url)
             return
 
-        _mark_proposal(key, "opened", f"validated: {why}", pr_url,
-                       out.get("pr_number"))
+        _mark("opened", f"validated: {why}", pr_url, out.get("pr_number"))
         if meta.get("issue_number") and pr_url:
             _post_issue_comment(
                 int(meta["issue_number"]),
@@ -1410,7 +1444,7 @@ def _run_proposal(meta: dict) -> None:
                 f"the file ({why}). **Not merged** — review the diff._")
     except Exception as e:  # noqa: BLE001
         logger.exception("[qa-superuser] proposal failed for %s", key)
-        _mark_proposal(key, "error", f"{type(e).__name__}: {str(e)[:300]}")
+        _mark("error", f"{type(e).__name__}: {str(e)[:300]}")
 
 
 def _parse_proposal(text: str) -> dict:
@@ -1516,7 +1550,11 @@ def qa_superuser_propose_fix():
     # ★ The refusal REASON is not lost by going async — that was the original
     # argument for staying synchronous. It is stored on the row and rendered on
     # the card, which outlives the request either way.
-    _mark_proposal(key, "running", "writing a patch and validating it")
+    # Stamped at DISPATCH, against the evidence the operator was looking at when
+    # they clicked — not at completion, which can be a minute later and after a
+    # fresh probe run has moved the finding underneath it.
+    _mark_proposal(key, "running", "writing a patch and validating it",
+                   evidence=finding.get("evidence") or "")
     meta = {"key": key, "title": finding.get("title"),
             "surface": finding.get("surface"), "seat": finding.get("seat"),
             "evidence": finding.get("evidence"),
@@ -1527,7 +1565,8 @@ def qa_superuser_propose_fix():
         import threading
         threading.Thread(target=_run_proposal, args=(meta,), daemon=True).start()
     except Exception as e:  # noqa: BLE001
-        _mark_proposal(key, "error", f"could not dispatch: {e}")
+        _mark_proposal(key, "error", f"could not dispatch: {e}",
+                       evidence=finding.get("evidence") or "")
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
     return jsonify({
@@ -1650,7 +1689,8 @@ def _attach_investigations(latest: dict) -> None:
             cur.execute("SELECT finding_key, evidence_sha, recommendation, "
                         "confidence, survived, issue_number, commented, "
                         "created_at, proposal_state, proposal_detail, pr_url, "
-                        "pr_number, proposal_at, parked_escalated_at "
+                        "pr_number, proposal_at, parked_escalated_at, "
+                        "proposal_evidence_sha "
                         "FROM qa_superuser_investigations")
             for row in cur.fetchall() or []:
                 rows[row[0]] = row[1:]
@@ -1673,11 +1713,11 @@ def _attach_investigations(latest: dict) -> None:
         if not rec:
             continue
         (sha, rec_text, conf, survived, issue_no, commented, at,
-         p_state, p_detail, pr_url, pr_number, p_at, parked_at) = rec
+         p_state, p_detail, pr_url, pr_number, p_at, parked_at, p_sha) = rec
         f["parked_escalated_at"] = parked_at.isoformat() if parked_at else None
+        cur_sha = evidence_sha(f.get("evidence") or "")
         f["investigation"] = {
-            "state": "current"
-            if sha == evidence_sha(f.get("evidence") or "") else "stale",
+            "state": "current" if sha == cur_sha else "stale",
             "recommendation": rec_text,
             "confidence": float(conf) if conf is not None else None,
             "survived": survived,
@@ -1699,8 +1739,24 @@ def _attach_investigations(latest: dict) -> None:
             pass
 
         if p_state:
+            # ★★★ A SECOND FIELD, NOT AN OVERLOADED `state`. `state` answers
+            #   "what happened" (opened / running / refused / error);
+            #   `evidence_state` answers "is that still about what is on
+            #   screen". Folding freshness into `state` would make
+            #   "refused" mean two things and the card could not say both.
+            #
+            # ★★ THREE VALUES, because "I do not know" is not "it changed".
+            #   Rows written before this column existed have no provenance. The
+            #   honest report is that it was not recorded — asserting the
+            #   evidence CHANGED would be inventing a comparison that never
+            #   ran, which is the collapse this board refuses everywhere else.
+            #   It still renders with the stale treatment: an outcome that
+            #   cannot be tied to the current evidence must not read as live.
             f["proposal"] = {
                 "state": p_state,
+                "evidence_state": ("unknown" if not p_sha
+                                   else "current" if p_sha == cur_sha
+                                   else "stale"),
                 "detail": p_detail,
                 "pr_url": pr_url,
                 "pr_number": pr_number,
@@ -1863,6 +1919,13 @@ function span(iso){
 // moment it started rather than how long it has been broken — and how long a
 // red has been live is the single most useful number on this board.
 function ago(iso){ return iso ? span(iso) + ' ago' : 'never'; }
+// Hours since an ISO stamp, or null when it cannot be read — null is NOT
+// zero, and a caller must be able to tell "fresh" from "unreadable".
+function hoursSince(iso){
+  if(!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? (Date.now() - t) / 3600000 : null;
+}
 
 function card(f, cls){
   const sev = f.severity && f.severity !== 'info'
@@ -1921,16 +1984,47 @@ function card(f, cls){
     </div>`;
 
   const pp = f.proposal;
-  const prop = !pp ? '' : `<div class="acked ${pp.state==='refused'?'stale':''}">
+  // ★★★ THE OUTCOME GETS THE SAME STALENESS RULE AS THE ACK AND THE ANALYSIS.
+  //   It did not have one. `proposal_state` was rendered raw, so a refusal
+  //   written against evidence that has since moved read as the card's CURRENT
+  //   disposition forever. Live 2026-09-18: "No PR — refused 11.9d ago" sat
+  //   directly beneath "Analysed 4.1h ago" on a finding 3.5 days old, and the
+  //   operator reasonably read the refusal as the answer to the analysis above
+  //   it. The two were about different observations.
+  //
+  // ★ `unknown` is rendered DIFFERENTLY from `stale`. Rows predating the
+  //   provenance column cannot support the claim "the evidence has CHANGED" —
+  //   saying so would invent a comparison that never ran. They get the stale
+  //   TREATMENT (an outcome that cannot be tied to current evidence must not
+  //   read as live) with an honest reason.
+  const ppStale = pp && pp.evidence_state && pp.evidence_state !== 'current';
+  const ppNote = !ppStale ? '' : (pp.evidence_state === 'unknown'
+    ? `<div class="row"><b>⚠ Recorded before proposal provenance was tracked.</b>
+         Which evidence it was made against was never stored, so it cannot be
+         shown to describe what this card reports now.</div>`
+    : `<div class="row"><b>⚠ This outcome describes OLDER evidence than the
+         finding now shows.</b> It is not a verdict on what is on screen —
+         re-investigate, then propose again.</div>`);
+  // A dispatch that never wrote a terminal state leaves "reload in a minute"
+  // on screen forever. Past this the thread is gone, not slow.
+  const ppRunStuck = pp && pp.state === 'running'
+    && (hoursSince(pp.at) === null || hoursSince(pp.at) > 1);
+  const prop = !pp ? '' : `<div class="acked ${
+      pp.state === 'refused' || ppStale || ppRunStuck ? 'stale' : ''}">
       ${pp.state === 'opened'
         ? `<b>🔧 PR opened ${ago(pp.at)} — not merged.</b>
            <a target="_blank" rel="noopener" href="${esc(pp.pr_url)}"
               >${esc(pp.pr_url)} ↗</a>`
         : pp.state === 'running'
-        ? `<b>🔧 Writing a patch…</b> started ${ago(pp.at)}; reload in a minute.`
+        ? (ppRunStuck
+            ? `<b>🔧 Writing a patch — started ${ago(pp.at)} and never
+               finished.</b> The worker was restarted or the thread died; no
+               outcome was ever written. Propose again.`
+            : `<b>🔧 Writing a patch…</b> started ${ago(pp.at)}; reload in a minute.`)
         : pp.state === 'refused'
         ? `<b>🔧 No PR — refused ${ago(pp.at)}.</b> ${esc(pp.detail)}`
         : `<b>🔧 Proposal errored ${ago(pp.at)}.</b> ${esc(pp.detail)}`}
+      ${ppNote}
     </div>`;
 
   // Actions exist on RED — and on an INSTRUMENT FAULT. A gauge makes no claim
