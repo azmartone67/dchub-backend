@@ -31,6 +31,9 @@ after. Live verification against production Postgres is the 06:00 UTC tick.
 """
 import ast
 import os
+import threading
+from datetime import datetime, timezone
+
 import pytest
 import flask
 
@@ -236,3 +239,97 @@ def test_unset_role_is_treated_as_the_actor(monkeypatch):
     fence report on exactly the deployment where it is the only truth."""
     monkeypatch.delenv("DCHUB_ROLE", raising=False)
     assert rms._arm_scope()["is_actor"] is True
+
+
+# ── the half that needs a real engine ────────────────────────────────
+# Postgres, not a fake: the property under test is that ONE of N simultaneous
+# INSERTs wins, which is a database guarantee. A stub cursor would report
+# whatever its author expected. Opt in by adding this file to the
+# a throwaway Postgres via RAG_TICK_CLAIM_DSN; it skips (and says so) without one.
+def _pg():
+    """A THROWAWAY Postgres, opted into by its own variable.
+
+    ★ Deliberately NOT DATABASE_URL. In this repo DATABASE_URL is the
+    PRODUCTION dsn — routes/ai_reach._conn() reads exactly that — and the
+    fixture below DELETEs from rag_tick_claims. Keyed on DATABASE_URL, running
+    the suite on any box configured for prod would delete the live day-claim,
+    and with the shell ARMED that is precisely the permission to fire a second
+    time that this whole change exists to remove. A test that can do that is
+    more dangerous than the bug.
+    """
+    dsn = os.environ.get("RAG_TICK_CLAIM_DSN", "")
+    if not dsn:
+        pytest.skip("set RAG_TICK_CLAIM_DSN to a throwaway Postgres to run this")
+    low = dsn.lower()
+    if any(x in low for x in ("amazonaws", "azure", "supabase", "rds.", "prod")):
+        pytest.fail("RAG_TICK_CLAIM_DSN looks like a managed/production database; "
+                    "this fixture deletes rows — point it at a throwaway")
+    import psycopg2
+    c = psycopg2.connect(dsn, connect_timeout=8)
+    c.autocommit = True          # the claim MUST commit before its rival reads
+    return c
+
+
+@pytest.fixture
+def pg(monkeypatch):
+    monkeypatch.setattr(rms, "_conn", _pg)
+    assert rms._ensure_tables(), "could not create rag_tick_claims"
+    today = datetime.now(timezone.utc).date()
+
+    def _clear():
+        c = _pg()
+        try:
+            with c.cursor() as cur:
+                cur.execute("DELETE FROM rag_tick_claims WHERE utc_day = %s", (today,))
+        finally:
+            c.close()
+
+    _clear()
+    try:
+        yield today
+    finally:
+        _clear()                 # in finally: a failing assert must not leak a claim
+
+
+def test_only_one_of_eight_simultaneous_claims_wins(pg):
+    """The race this whole change exists to lose safely."""
+    out, gate = [], threading.Barrier(8)
+
+    def go():
+        gate.wait()              # release all eight in the same instant
+        out.append(rms._claim_utc_day())
+
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    for t in ts: t.start()
+    for t in ts: t.join(timeout=30)
+
+    assert len(out) == 8, f"a thread did not finish: {out}"
+    won = [r for r in out if r[0]]
+    assert len(won) == 1, f"expected exactly one winner, got {len(won)}: {out}"
+    # The losers must lose for the RIGHT reason. Without ON CONFLICT the
+    # duplicate INSERT raises, the except returns claim_unavailable, and the
+    # winner count is STILL 1 — so counting winners alone cannot tell a working
+    # claim from a broken one that happens to serialise.
+    assert all(r[1] == "already_ran_today" for r in out if not r[0]), (
+        f"a loser reported an outage rather than a lost race: {out}")
+
+
+def test_the_second_day_claims_cleanly(pg):
+    """Yesterday's row must not block today — the key is the day, not a lock."""
+    c = _pg()
+    try:
+        with c.cursor() as cur:
+            cur.execute("INSERT INTO rag_tick_claims (utc_day) VALUES (%s) "
+                        "ON CONFLICT DO NOTHING", (pg.replace(day=1) if pg.day != 1
+                                                   else pg.replace(day=2),))
+    finally:
+        c.close()
+    assert rms._claim_utc_day() == (True, "claimed")
+    assert rms._claim_utc_day() == (False, "already_ran_today")
+
+
+def test_force_reclaims_the_same_day(pg):
+    assert rms._claim_utc_day() == (True, "claimed")
+    assert rms._claim_utc_day() == (False, "already_ran_today")
+    assert rms._claim_utc_day(force=True) == (True, "claimed"), (
+        "?force=1 must be able to re-run a day manually")
