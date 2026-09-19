@@ -35,17 +35,23 @@ def _map_fn():
     raise AssertionError("api_v1_map not found in main.py")
 
 
-def _slug_loop_src():
-    """The `for f in facilities:` loop that assigns f['slug']."""
+def _slug_loops():
+    """(composition loop, collapse loop) — both assign f['slug']."""
     fn = _map_fn()
-    found = []
+    comp, coll = [], []
     for node in ast.walk(fn):
         if isinstance(node, ast.For):
             seg = ast.get_source_segment(_SRC, node)
-            if seg and "'slug'" in seg:
-                found.append(seg)
-    assert len(found) == 1, f"expected exactly 1 slug-assigning loop, got {len(found)}"
-    return found[0]
+            if not seg or "'slug'" not in seg:
+                continue
+            (comp if "build_canonical_slug(" in seg else coll).append(seg)
+    assert len(comp) == 1, f"expected 1 composition loop, got {len(comp)}"
+    assert len(coll) == 1, f"expected 1 served-slug collapse loop, got {len(coll)}"
+    return comp[0], coll[0]
+
+
+def _slug_loop_src():
+    return _slug_loops()[0]
 
 
 def _run_loop(facilities, canon_by_id, builder_returns):
@@ -173,6 +179,56 @@ def test_helper_does_not_query_at_all_for_an_empty_id_list():
     assert cur.seen == [], "no ids means no SQL"
     assert _helper()(cur, _Conn(), [None, None]) == {}
     assert cur.seen == [], "all-None ids means no SQL"
+
+
+# ── stage 2: collapse to the slug the URL is actually SERVED at ────────────
+
+KEEPER = "kaynarca-santrali-kaynarca-santrali-c95ef7d8"
+DUP = "unknown-kaynarca-santrali-d787fb4b"
+
+
+def _run_collapse(facilities, served):
+    ns = {"facilities": facilities, "_served": served}
+    exec(compile(ast.parse(_slug_loops()[1]), "<collapse>", "exec"), ns)  # noqa: S102
+    return facilities
+
+
+def test_a_duplicate_row_slug_collapses_to_its_keeper():
+    """THE regression: the map linked the duplicate, costing a 301 hop."""
+    facs = [{"id": 1, "slug": DUP}]
+    assert _run_collapse(facs, {DUP: KEEPER})[0]["slug"] == KEEPER
+
+
+def test_a_terminal_slug_is_left_alone():
+    facs = [{"id": 2, "slug": KEEPER}]
+    assert _run_collapse(facs, {KEEPER: KEEPER})[0]["slug"] == KEEPER
+
+
+def test_a_slug_the_resolver_never_answered_for_is_kept():
+    """served_slugs failing closed must not blank a link."""
+    facs = [{"id": 3, "slug": DUP}]
+    assert _run_collapse(facs, {})[0]["slug"] == DUP
+
+
+def test_an_empty_slug_is_not_looked_up():
+    facs = [{"id": 4, "slug": ""}]
+    assert _run_collapse(facs, {"": "boom"})[0]["slug"] == ""
+
+
+def test_map_does_not_reimplement_the_twin_redirect_predicate():
+    """The four-condition same-physical-site rule has exactly ONE owner.
+
+    Re-deriving it here would risk pointing a marker at the wrong BUILDING:
+    two rows with different street addresses deliberately serve 200 +
+    cross-canonical rather than 301.
+    """
+    fn_src = ast.get_source_segment(_SRC, _map_fn()) or ""
+    assert "served_slugs(" in fn_src, "map must delegate to the route's resolver"
+    code = "\n".join(l for l in fn_src.splitlines() if not l.strip().startswith("#"))
+    for banned in ("_same_physical_site", "_SAME_SITE_METRES", "slug_rows",
+                   "duplicate_of_id"):
+        assert banned not in code, \
+            f"map re-derives the twin-redirect predicate ({banned}); delegate instead"
 
 
 if __name__ == "__main__":

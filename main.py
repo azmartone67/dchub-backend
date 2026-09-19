@@ -7213,6 +7213,25 @@ def api_v1_map():
                          or build_canonical_slug(f.get('provider'), f.get('name'))
                          or '')
 
+        # ★ r-mapdup (2026-09-18): collapse each slug to the one its URL is
+        # actually SERVED at. ~30% of emitted slugs (measured 18 of 60 sampled,
+        # post-be#4793) were duplicate rows whose canonical is a keeper, so the
+        # marker link cost a 301 hop. served_slugs() is the ROUTE'S OWN resolver
+        # — same _twin_redirect_target, batched by hop not by row, and it returns
+        # the input slug on any failure. NOT a second copy of the four-condition
+        # same-physical-site rule: re-deriving that here would risk pointing a
+        # marker at the wrong BUILDING, since two rows with different street
+        # addresses deliberately serve 200 + cross-canonical rather than 301.
+        try:
+            from routes.facility_profile_page import served_slugs
+            _served = served_slugs(
+                {f['slug'] for f in facilities if f.get('slug')}, conn=conn)
+        except Exception:
+            _served = {}
+        for f in facilities:
+            if f.get('slug'):
+                f['slug'] = _served.get(f['slug'], f['slug'])
+
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
 
