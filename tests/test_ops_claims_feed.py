@@ -427,8 +427,20 @@ def test_a_failed_ledger_read_is_null_not_zero(monkeypatch):
     assert body["count"] is None and "ledger unavailable" in body["basis"]
 
 
+class _FrozenDT(dt.datetime):
+    """datetime whose now() is pinned. _parse_since clamps `since` to 30 days
+    back off the WALL CLOCK, so a test that pins an absolute since= silently
+    becomes a time bomb: it passes until real time drifts 30 days past that
+    date, then clamps to the floor forever. This one went off at 00:00Z on
+    2026-09-19 and failed every backend PR until the clock was pinned."""
+    @classmethod
+    def now(cls, tz=None):
+        return _NOW if tz else _NOW.replace(tzinfo=None)
+
+
 def test_anon_changes_since_carries_the_retraction(monkeypatch):
     cf = _cf()
+    monkeypatch.setattr(cf, "datetime", _FrozenDT)
     judged = _WS + dt.timedelta(days=2)
     cur = _DispatchCur({
         "brain_predictions_log": [(123, "fix", "finding:x", "the old claim",
