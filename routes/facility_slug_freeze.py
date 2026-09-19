@@ -43,6 +43,14 @@ slug_freeze_bp = Blueprint("slug_freeze", __name__)
 # Tables that carry facility rows served under /facilities/<slug>.
 _FACILITY_TABLES = ("discovered_facilities", "facilities")
 
+# ★ r-slugblockers (2026-09-19): MEASURING a table is safe; RE-MINTING one is
+# not. `facilities` has no is_duplicate, so its exact-canonical_slug arm raises
+# and its rows are reachable ONLY through hash8(provider|name) — pinned by
+# tests/test_served_slugs_sql_parity.py. build_disambiguated_slug tails on
+# md5(provider|name|id), so a re-minted slug there matches nothing: a hard 404
+# fed into the sitemap by main.py, with no alias and so no recovery hop.
+_REMINTABLE_TABLES = ("discovered_facilities",)
+
 # ★ r-slugcollide (2026-09-19) — WHICH row a shared frozen slug serves.
 # One frozen canonical_slug is routinely worn by MANY rows (the builder is a
 # pure function of provider+name and the freeze index is non-unique), and
@@ -52,8 +60,15 @@ _FACILITY_TABLES = ("discovered_facilities", "facilities")
 # places — a second copy that drifts would hand the URL to a different
 # facility, which is the churn the whole freeze exists to prevent.
 # routes/facility_profile_page.py imports this; do not inline it there again.
-SLUG_OWNER_ORDER_SQL = (
-    "COALESCE(is_duplicate, 0) ASC, COALESCE(power_mw, 0) DESC, id ASC")
+# ★ r-slugblockers (2026-09-19): a TEMPLATE, because every CTE here names
+# probe-substituted columns and so could not use the finished string. That is
+# why FIVE hand-written copies had accumulated and why the guard claiming "the
+# SAME STRING in both places" was a tautology that survived mutating the
+# ranking to `ORDER BY id DESC`. Format it; never retype it.
+SLUG_OWNER_ORDER_TMPL = (
+    "COALESCE({isdup}, 0) ASC, COALESCE({power}, 0) DESC, id ASC")
+SLUG_OWNER_ORDER_SQL = SLUG_OWNER_ORDER_TMPL.format(
+    isdup="is_duplicate", power="power_mw")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -840,7 +855,15 @@ def _dup_cols(cur, table):
     take out the whole admin route. Same probe-per-table pattern as
     ensure_freeze_schema and stored_slugs_by_id.
     """
-    return tuple(col if _column_exists(cur, table, col) else "NULL"
+    # ★ r-slugblockers (2026-09-19): TYPED. A bare NULL in a CTE output column
+    # is typed `text` by Postgres, so the outer COALESCE(_isdup, 0) in
+    # _INDEPENDENT raised "COALESCE types text and integer cannot be matched"
+    # (reproduced on PG 18.6) and killed BOTH stats and the re-mint for
+    # `facilities` — at the safe dry-run default, and swallowed into a
+    # permanent `collisions: null` on the status route.
+    typed = {"is_duplicate": "NULL::int", "duplicate_of_id": "NULL::text",
+             "power_mw": "NULL::numeric"}
+    return tuple(col if _column_exists(cur, table, col) else typed[col]
                  for col in ("is_duplicate", "duplicate_of_id", "power_mw"))
 
 
@@ -855,14 +878,14 @@ def _ranked_cte(cur, table):
       _fetch_facility_by_slug.)
     """
     isdup, dupof, power = _dup_cols(cur, table)
+    order = SLUG_OWNER_ORDER_TMPL.format(isdup=isdup, power=power)
     return f"""
         WITH ranked AS (
             SELECT id, provider, name, city, state, country, canonical_slug,
                    {isdup} AS _isdup, {dupof} AS _dupof,
                    ROW_NUMBER() OVER (
                        PARTITION BY canonical_slug
-                       ORDER BY COALESCE({isdup}, 0) ASC,
-                                COALESCE({power}, 0) DESC, id ASC) AS rn
+                       ORDER BY {order}) AS rn
               FROM {table}
              WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
         )
@@ -935,17 +958,16 @@ def slug_collision_breakdown(conn, table):
     try:
         cur = conn.cursor()
         isdup, dupof, power = _dup_cols(cur, table)
+        order = SLUG_OWNER_ORDER_TMPL.format(isdup=isdup, power=power)
         cur.execute(f"""
             WITH ranked AS (
                 SELECT id, canonical_slug, {isdup} AS _isdup, {dupof} AS _dupof,
                        ROW_NUMBER() OVER (
                            PARTITION BY canonical_slug
-                           ORDER BY COALESCE({isdup}, 0) ASC,
-                                    COALESCE({power}, 0) DESC, id ASC) AS rn,
+                           ORDER BY {order}) AS rn,
                        FIRST_VALUE(id) OVER (
                            PARTITION BY canonical_slug
-                           ORDER BY COALESCE({isdup}, 0) ASC,
-                                    COALESCE({power}, 0) DESC, id ASC) AS owner_id
+                           ORDER BY {order}) AS owner_id
                   FROM {table}
                  WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
             )
@@ -989,6 +1011,7 @@ def keeper_slug_reachability(conn, table):
     try:
         cur = conn.cursor()
         isdup, dupof, power = _dup_cols(cur, table)
+        order = SLUG_OWNER_ORDER_TMPL.format(isdup=isdup, power=power)
         if dupof == "NULL":
             return None                     # no pointer column on this table
         cur.execute(f"""
@@ -996,12 +1019,10 @@ def keeper_slug_reachability(conn, table):
                 SELECT id, canonical_slug, {dupof} AS _dupof,
                        ROW_NUMBER() OVER (
                            PARTITION BY canonical_slug
-                           ORDER BY COALESCE({isdup}, 0) ASC,
-                                    COALESCE({power}, 0) DESC, id ASC) AS rn,
+                           ORDER BY {order}) AS rn,
                        FIRST_VALUE(id) OVER (
                            PARTITION BY canonical_slug
-                           ORDER BY COALESCE({isdup}, 0) ASC,
-                                    COALESCE({power}, 0) DESC, id ASC) AS owner_id
+                           ORDER BY {order}) AS owner_id
                   FROM {table}
                  WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
             )
@@ -1026,6 +1047,24 @@ def keeper_slug_reachability(conn, table):
         return None
 
 
+def _dry_run_flag(body):
+    """Is this a dry run? FAIL SAFE — anything unrecognised means YES.
+
+    ★ r-slugblockers (2026-09-19): only an explicit bool, or a recognised
+    string, can turn the dry run OFF. `{"dry_run": null}` — what a client that
+    serialises unset fields emits — previously reached a bare `bool(None)` and
+    armed a full rewrite of set-once canonical_slug values. So did 0, [] and {}.
+    This removes an asymmetry where the string "off" was already safe while
+    JSON null was not.
+    """
+    raw = body.get('dry_run', True)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ('false', '0', 'no', 'off')
+    return True
+
+
 def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
                                  dry_run=True):
     """Give every INDEPENDENT row on a shared frozen slug a slug of its own.
@@ -1044,6 +1083,11 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
     Returns (rewritten, remaining). dry_run=True (the default) measures and
     writes nothing.
     """
+    if not dry_run and table not in _REMINTABLE_TABLES:
+        raise ValueError(
+            f"{table} is measure-only: its rows resolve by hash8(provider|name), "
+            f"so a re-minted canonical_slug would 404. Allowed: "
+            f"{list(_REMINTABLE_TABLES)}")
     cur = conn.cursor()
     others = [t for t in _FACILITY_TABLES if t != table]
     taken = ["NOT EXISTS (SELECT 1 FROM facility_slug_aliases a "
@@ -1063,17 +1107,25 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
     guard = "\n              AND ".join(taken)
 
     rewritten = 0
+    # ★ r-slugblockers (2026-09-19): an ID CURSOR. #4830 fixed the COUNT; the
+    # break below still read it as progress. A row whose new slug is already
+    # taken stays selected by the same predicate forever, so `wrote == 0` ended
+    # the whole run on the FIRST fully blocked batch and left every later
+    # fixable row untouched. Walking id forward steps over blocked rows.
+    last_id = ''
     for _ in range(max_batches):
         cur.execute(_ranked_cte(cur, table) + f"""
             SELECT id, provider, name, city, state, country
               FROM ranked
              WHERE {_INDEPENDENT}
-             ORDER BY id
+               AND id::text > %s
+             ORDER BY id::text
              LIMIT {int(batch)}
-        """)
+        """, (last_id,))
         rows = cur.fetchall()
         if not rows:
             break
+        last_id = str(rows[-1][0])
         values = [(fid, build_disambiguated_slug(prov, nm, fid, city, st, ctry)
                    or '')
                   for fid, prov, nm, city, st, ctry in rows]
@@ -1099,10 +1151,7 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
         wrote = len(got or [])
         conn.commit()
         rewritten += wrote
-        # ★ No-progress break. A row whose new slug is already taken stays
-        # selected by the same query forever; without this the loop would burn
-        # every remaining batch re-reading it and report work it never did.
-        if wrote == 0 or len(rows) < batch:
+        if len(rows) < batch:
             break
 
     stats = slug_collision_stats(conn, table) or {}
@@ -1122,9 +1171,7 @@ def slug_disambiguate_run():
     table = body.get('table') or 'discovered_facilities'
     if table not in _FACILITY_TABLES:
         return jsonify(error='bad_table', allowed=list(_FACILITY_TABLES)), 400
-    dry_run = body.get('dry_run', True)
-    if isinstance(dry_run, str):
-        dry_run = dry_run.strip().lower() not in ('false', '0', 'no')
+    dry_run = _dry_run_flag(body)
     conn = None
     try:
         conn = _get_conn()
