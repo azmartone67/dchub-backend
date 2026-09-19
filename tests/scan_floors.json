@@ -229,6 +229,9 @@
     "test_post_merge_lanes_survive_a_bot_merge.py": {
       "pglob": 140
     },
+    "test_pricing_canon_rendered_literals.py": {
+      "walk": 70
+    },
     "test_private_helpers_resolve.py": {
       "pglob": 660
     },
