@@ -17,6 +17,15 @@ Pure local rendering — no DB, no network. Runs in pre-merge.yml (`pytest tests
 import os
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_unsplash_under_the_suite(monkeypatch):
+    """Every card render here pulled a curated photo from images.unsplash.com.
+    tests/_og_photo_stub.py hands the renderer a deterministic canvas instead —
+    see that module for why the fetch was dead weight."""
+    from tests._og_photo_stub import stub_library_photo
+    stub_library_photo(monkeypatch)
+
 FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "routes", "fonts")
 REQUIRED_FACES = ["DejaVuSans-Bold.ttf", "DejaVuSans.ttf", "DejaVuSansMono-Bold.ttf"]

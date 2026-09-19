@@ -24,6 +24,15 @@ import sqlite3
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_unsplash_under_the_suite(monkeypatch):
+    """Every card render here pulled a curated photo from images.unsplash.com.
+    tests/_og_photo_stub.py hands the renderer a deterministic canvas instead —
+    see that module for why the fetch was dead weight."""
+    from tests._og_photo_stub import stub_library_photo
+    stub_library_photo(monkeypatch)
+
 pytest.importorskip("PIL")
 
 
