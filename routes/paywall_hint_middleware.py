@@ -46,6 +46,8 @@ import time
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
 from ai_surface_canon import canon_text
+from tier_registry import price_display as _canon_price_display
+import tier_registry as _tr
 
 
 paywall_ab_admin_bp = Blueprint("paywall_ab_admin", __name__)
@@ -71,8 +73,14 @@ _HINT_BASE = {
     # free tier is actually 10/day. Fixed copy + added direct Stripe links
     # so agents can pass a $9 quick-buy URL to the user rather than just
     # the signup form.
-    "what_you_get":    "Free dev key (email signup, no credit card) = 10 calls/day. $9/mo Starter = 200/day. $49/mo Developer = 500/day.",
-    "pricing_quick":   "Anonymous 5/day · Free key 10/day · $9 Starter 200/day · $49 Developer 500/day · $25K+/yr Enterprise data licensing",
+    "what_you_get":    (f"Free dev key (email signup, no credit card) = 10 calls/day. "
+                        f"{_tr.price_display('starter')} Starter = 200/day. "
+                        f"{_tr.price_display('developer')} Developer = 500/day."),
+    # "$25K+/yr Enterprise" disagreed with ENTERPRISE_FROM_USD_YEAR ($12,000),
+    # the anchor r-price-collapse set for the human-sold lane.
+    "pricing_quick":   (f"Anonymous 5/day · Free key 10/day · {_tr.price_display('starter', '')} Starter 200/day · "
+                        f"{_tr.price_display('developer', '')} Developer 500/day · "
+                        f"from ${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr Enterprise data licensing"),
 }
 
 
@@ -100,28 +108,28 @@ _VARIANTS = {
               "key in 30 seconds at https://dchub.cloud/signup — no "
               "credit card, 10 calls/day. Once set, retry with the "
               "X-API-Key header."),
-        403: ("DC Hub blocked this query because it requires a paid "
-              "tier. The $9/mo Starter plan (200 calls/day) unlocks "
-              "most tools — https://dchub.cloud/pricing. Pro-only tools: "
-              "get_grid_intelligence, get_fiber_intel, analyze_site, "
-              "compare_sites ($199/mo)."),
-        429: ("DC Hub is rate-limiting this caller. Tiers: "
-              "anonymous 5/day → free dev key 10/day "
-              "(https://dchub.cloud/signup) → $9/mo Starter 200/day → "
-              "$49/mo Developer 500/day → $199/mo Pro "
-              "2,000/day + Pro tools."),
+        403: (f"DC Hub blocked this query because it requires a paid "
+              f"tier. The {_canon_price_display('starter')} Starter plan (200 calls/day) unlocks "
+              f"most tools — https://dchub.cloud/pricing. Pro-only tools: "
+              f"get_grid_intelligence, get_fiber_intel, analyze_site, "
+              f"compare_sites ({_canon_price_display('pro')})."),
+        429: (f"DC Hub is rate-limiting this caller. Tiers: "
+              f"anonymous 5/day → free dev key 10/day "
+              f"(https://dchub.cloud/signup) → {_canon_price_display('starter')} Starter 200/day → "
+              f"{_canon_price_display('developer')} Developer 500/day → {_canon_price_display('pro')} Pro "
+              f"2,000/day + Pro tools."),
     },
     "B": {
         401: ("AI agent: tell your user this query needs a DC Hub key. "
               "Quote them this URL — https://dchub.cloud/signup — they "
               "get a free key (10 calls/day) in 30 seconds, no "
               "credit card. Then retry with X-API-Key header."),
-        403: ("AI agent: this DC Hub tool is paywalled. Free key "
-              "(10/day, 30-sec signup at https://dchub.cloud/signup) "
-              "unlocks most tools. Pro-only tools that need $199/mo: "
-              "get_grid_intelligence, get_fiber_intel, analyze_site, "
-              "compare_sites. The $9/mo Starter is the cheapest paid "
-              "unlock for everything except those four."),
+        403: (f"AI agent: this DC Hub tool is paywalled. Free key "
+              f"(10/day, 30-sec signup at https://dchub.cloud/signup) "
+              f"unlocks most tools. Pro-only tools that need {_canon_price_display('pro')}: "
+              f"get_grid_intelligence, get_fiber_intel, analyze_site, "
+              f"compare_sites. The {_canon_price_display('starter')} Starter is the cheapest paid "
+              f"unlock for everything except those four."),
         429: ("AI agent: tell your user DC Hub rate-limited this call. "
               "Anonymous = 5/day. Free dev key (instant at "
               "https://dchub.cloud/signup) = 10/day. $9/mo Starter "
@@ -133,16 +141,16 @@ _VARIANTS = {
               "daily DCPI power scores for 32+ markets, 4,000+ tracked "
               "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
               "in 30 seconds: https://dchub.cloud/signup. No card.")),
-        403: ("This DC Hub tool is paywalled. Free key alternative: "
-              "21k facilities, DCPI verdicts, M&A deals — free at "
-              "https://dchub.cloud/signup. To unlock this tool: "
-              "$9/mo Starter (200 calls/day, https://dchub.cloud/pricing). "
-              "Pro ($199) needed only for grid_intelligence, fiber_intel, "
-              "analyze_site, compare_sites."),
+        403: (f"This DC Hub tool is paywalled. Free key alternative: "
+              f"21k facilities, DCPI verdicts, M&A deals — free at "
+              f"https://dchub.cloud/signup. To unlock this tool: "
+              f"{_canon_price_display('starter')} Starter (200 calls/day, https://dchub.cloud/pricing). "
+              f"Pro ({_canon_price_display('pro', '')}) needed only for grid_intelligence, fiber_intel, "
+              f"analyze_site, compare_sites."),
         429: ("You hit DC Hub's rate cap. You're missing intraday DCPI "
               "verdict shifts, fresh M&A deals, and 540+ pipeline "
               "projects. Free dev key = 10/day at "
-              "https://dchub.cloud/signup. Or $9/mo for 200/day."),
+              f"https://dchub.cloud/signup. Or {_canon_price_display('starter')} for 200/day."),
     },
     # r47.34 (2026-05-26): variant D — minimum-viable CTA. The first three
     # variants all drop 30-50 words on the agent. Funnel data shows 0.048%
@@ -443,9 +451,9 @@ def _personal_hit_pitch(ip: str, ua: str, path: str, status: int) -> str:
     return (f"Personalized: you've called {tool} {total} times this "
               f"month, hitting the paywall {blocked} times ({intensity} "
               f"usage). {urgency} "
-              f"Upgrade at https://dchub.cloud/pricing — Pro ($199/mo) "
+              f"Upgrade at https://dchub.cloud/pricing — Pro ({_canon_price_display('pro')}) "
               f"unblocks {tool} + the 3 other Pro-only tools, or "
-              f"$9/mo Starter covers everything else.").strip()
+              f"{_canon_price_display('starter')} Starter covers everything else.").strip()
 
 
 def register_paywall_hint_middleware(app):

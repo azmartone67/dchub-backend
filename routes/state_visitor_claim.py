@@ -64,6 +64,8 @@ from utils.claim_token import (
     KIND_STATE_OF_2026_VISITOR,
     sign_claim_token,
 )
+from tier_registry import (price_display as _canon_price_display,
+                           calls_per_day as _canon_calls_per_day)
 
 
 logger = logging.getLogger(__name__)
@@ -405,7 +407,7 @@ Here's your trial key — 50 calls/day for 7 days, no card.</p>
 <pre style="background:#f5f5f5;padding:12px;border-radius:6px;font-size:12px;overflow:auto"
 >curl -H "X-API-Key: {api_key}" {public_base}/api/v1/grid/status?iso=ercot</pre>
 
-<p style="margin-top:24px">When you're ready: <b>$199/mo Pro</b> (1,000 calls/day) or
+<p style="margin-top:24px">When you're ready: <b>{_canon_price_display('pro')} Pro</b> ({_canon_calls_per_day('pro'):,} calls/day) or
 <b>$1,188/yr annual</b> (50% off the first year) at
 <a href="{public_base}/pricing">{public_base}/pricing</a>.</p>
 

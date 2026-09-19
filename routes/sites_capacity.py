@@ -37,6 +37,7 @@ from flask import Blueprint, jsonify, request
 from routes.facility_slug import hash_sql
 from util.capacity_pipeline import CP_OK
 from util.db_honesty import close_quietly, open_conn, try_fetchall
+from tier_registry import price_display as _canon_price_display
 
 sites_capacity_bp = Blueprint("sites_capacity", __name__)
 
@@ -310,12 +311,12 @@ def capacity_report(ident):
                     site=site,
                     _teaser=True,
                     _upgrade_hint={
-                        "message": ("Site brief preview. Sign up free (email "
-                                    "only) at https://dchub.cloud/api/v1/keys/claim "
-                                    "for the full report — market capacity "
-                                    "rollup, DCPI verdict, peer facilities, and "
-                                    "news — or unlock everything with Pro "
-                                    "($199/mo): https://dchub.cloud/pricing."),
+                        "message": (f"Site brief preview. Sign up free (email "
+                                    f"only) at https://dchub.cloud/api/v1/keys/claim "
+                                    f"for the full report — market capacity "
+                                    f"rollup, DCPI verdict, peer facilities, and "
+                                    f"news — or unlock everything with Pro "
+                                    f"({_canon_price_display('pro')}): https://dchub.cloud/pricing."),
                         "claim_free_key": "https://dchub.cloud/api/v1/keys/claim",
                         "pricing":        "https://dchub.cloud/pricing",
                         "behind_gate": ["capacity", "dcpi", "pipeline",

@@ -47,6 +47,7 @@ from flask import jsonify, request
 # link falls back to the founding-member $99 page so the CTA still
 # converts somewhere.
 import os as _os
+from tier_registry import price_display as _canon_price_display
 try:
     from tier_registry import _stripe_link as _canon
 except Exception:  # pragma: no cover
@@ -68,9 +69,9 @@ _STRIPE_LINKS = {
 _TIER_PRICE = {
     "FREE":       "$0",
     "IDENTIFIED": "$0 (free with email)",
-    "STARTER":    "$9/mo",
-    "DEVELOPER":  "$49/mo",
-    "PRO":        "$99/mo",
+    "STARTER":    _canon_price_display("starter"),
+    "DEVELOPER":  _canon_price_display("developer"),
+    "PRO":        _canon_price_display("pro"),
     "ENTERPRISE": "Custom",
 }
 

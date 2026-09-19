@@ -41,6 +41,7 @@ import hashlib
 import os
 
 from flask import Blueprint, jsonify, request
+from tier_registry import price_display as _canon_price_display
 
 
 mcp_usage_self_bp = Blueprint("mcp_usage_self", __name__)
@@ -439,7 +440,7 @@ def _draft_near_converter_pitch(nc: dict) -> str:
     _PRO_ONLY = {"analyze_site", "compare_sites"}
     if top_tool in _PRO_ONLY:
         price_block = (
-            f"`{top_tool}` is a Pro-tier tool. The $199/mo Pro plan unlocks it (plus\n"
+            f"`{top_tool}` is a Pro-tier tool. The {_canon_price_display('pro')} Pro plan unlocks it (plus\n"
             f"compare_sites, PDF reports, CSV export, and Slack alerts) at 2,000\n"
             f"calls/day — the 403s stop the moment you swap in your X-API-Key header.")
     else:

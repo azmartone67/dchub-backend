@@ -33,6 +33,7 @@ import psycopg2.extras
 
 # Phase 225: decorator that returns the fallback page on ANY exception
 from functools import wraps
+from tier_registry import price_display as _canon_price_display
 def _safe_dcpi_page(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -7251,7 +7252,7 @@ footer a:hover { color: var(--acc-light); }
   <div class="section-h"><span class="pip"></span>🔓 Pro Access</div>
   <div class="cta-banner">
     <h2>Drill to county level. Get alerts. Export branded PDFs.</h2>
-    <p>Pro shows scores at the county level so you can pinpoint where the headroom actually lives. Plus alert when any market moves &gt;5 points and one-click PDF export for your buyers. $199/mo.</p>
+    <p>Pro shows scores at the county level so you can pinpoint where the headroom actually lives. Plus alert when any market moves &gt;5 points and one-click PDF export for your buyers. __PRO_PRICE__.</p>
     <a class="btn" href="/pricing">Upgrade to Pro →</a>
   </div>
   </div>
@@ -7609,6 +7610,11 @@ buttons.forEach(b => b.addEventListener('click', () => {
 </script>
 </body>
 </html>"""
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+DCPI_INDEX_TEMPLATE = DCPI_INDEX_TEMPLATE.replace("__PRO_PRICE__", _canon_price_display("pro"))
 
 
 DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
@@ -8111,7 +8117,7 @@ h1 {
          ref/tool ARE read, into the Stripe client_reference_id. A fragment is
          never sent to the server and never a separate crawl target. Needs
          fe#1506 live first. Full rationale and evidence: be#4725. -->
-    <a href="/pricing#ref=dcpi&tool={{ s.market_slug }}">Get Pro · $199/mo →</a>
+    <a href="/pricing#ref=dcpi&tool={{ s.market_slug }}">Get Pro · __PRO_PRICE__ →</a>
   </div>
 </div>
 
@@ -8127,6 +8133,11 @@ h1 {
 </div>
 </body>
 </html>"""
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+DCPI_MARKET_TEMPLATE = DCPI_MARKET_TEMPLATE.replace("__PRO_PRICE__", _canon_price_display("pro"))
 
 
 # ---------------------------------------------------------------------------

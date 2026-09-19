@@ -29,6 +29,7 @@ import datetime
 import logging
 from contextlib import contextmanager
 from flask import Blueprint, request, jsonify
+from tier_registry import price_display as _canon_price_display
 
 try:
     import psycopg2 as _pg
@@ -151,7 +152,7 @@ def _generate_draft(lead: dict) -> dict:
         f"DC Hub's analytics flagged your account: {paid_hits} calls "
         f"on paid-tier tools in the last 30 days, primarily {tool_list}. "
         f"That's heavy usage for a free key.\n\n"
-        f"The Pro tier ($199/mo, https://dchub.cloud/pricing) unlocks "
+        f"The Pro tier ({_canon_price_display('pro')}, https://dchub.cloud/pricing) unlocks "
         f"{pitch} — same endpoints you're already hitting, full data instead "
         f"of teaser responses. Most {domain or 'firms'} that pull at this volume "
         f"are using it for {'site selection' if 'site' in top_tool else 'market intelligence'}.\n\n"

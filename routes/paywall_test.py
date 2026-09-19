@@ -37,6 +37,7 @@ from util.admin_auth import accepted_admin_keys
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, render_template_string
+from tier_registry import price_display as _canon_price_display
 
 logger = logging.getLogger(__name__)
 paywall_test_bp = Blueprint("paywall_test", __name__)
@@ -91,7 +92,7 @@ def _build_paywall_payload(tool: str, session_id: str = "") -> dict:
         f"👉 **Human handoff:** get a free dev key here:\n"
         f"{pair['redeem_url']}\n\n"
         f"No credit card. Unlocks 50 facility lookups, real-time grid for 7 ISOs, fiber intel, M&A deals.\n\n"
-        f"_Or upgrade to Pro at {UPGRADE_URL} for $199/mo._"
+        f"_Or upgrade to Pro at {UPGRADE_URL} for {_canon_price_display('pro')}._"
     )
     return {
         "allowed":     False,

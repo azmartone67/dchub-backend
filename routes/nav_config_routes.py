@@ -12,6 +12,7 @@ Register in main.py:
 
 from flask import Blueprint, jsonify
 from ai_surface_canon import canon_text
+from tier_registry import price_display as _canon_price_display
 
 nav_config_bp = Blueprint('nav_config', __name__)
 
@@ -98,8 +99,15 @@ DRAWER_LINKS = [
 FOUNDING_CONFIG = {
     "remaining": 12,
     "total": 50,
-    "price": "$99/month",
-    "normal_price": "$199/month"
+    "price": _canon_price_display("founding", "/month"),
+    # r-redeem-canon (2026-09-18): this read a typed "$199/month". No
+    # renderer in dchub-backend or dchub-frontend reads `normal_price`, so
+    # nothing displayed it as a struck-through anchor — it was simply a
+    # retired price sitting in a served JSON. r-price-collapse retired the
+    # founding SKU into pro at the same $99, so there is no higher "normal"
+    # price to anchor against; the key is kept (it is served at
+    # /api/nav-config) and now reports canon.
+    "normal_price": _canon_price_display("pro", "/month"),
 }
 
 

@@ -142,7 +142,7 @@ def _p99_send_email(email, api_key, tools_tried):
         f"  {hint['curl_example']}\n\n"
         f"{hint['next_step']}\n\n"
         f"Unlocks: 50 facility lookups, real-time grid (7 ISOs), fiber intel, M&A deals, 650+ GW pipeline.\n\n"
-        f"Upgrade to Pro at https://dchub.cloud/pricing — $199/mo.\n"
+        f"Upgrade to Pro at https://dchub.cloud/pricing — {_canon_price_display('pro')}.\n"
     )
     html_install = (
         '{"mcpServers":{"dchub":{"command":"npx",'
@@ -316,6 +316,77 @@ def _is_scanner_request() -> bool:
         return True
     return bool(_SCANNER_UA_RE.search(ua))
 
+# ─────────────────────────────────────────────────────────────────────
+# The pricing ladder is DERIVED, never typed (r-redeem-canon, 2026-09-18).
+#
+# This page hardcoded its own ladder in FORM_HTML and quoted Pro at
+# $199/mo — a price retired TWICE (199→299 at r-reprice 2026-06-19,
+# 299→99 at r-price-collapse 2026-09-05). Verified still live on
+# 2026-09-18:
+#
+#   $ curl -sSL "https://dchub.cloud/api/v1/redeem/<session>?_=$(date +%s)"
+#     <span class="price">$199/mo</span> … 2,000 calls/day + Pro-only tools
+#
+# The anonymous row was stale the same way: it read "10 calls/day · 2
+# results per query" after TIER_LIMITS moved anonymous to 5/5 (2026-08-03),
+# so the page promised an anonymous agent twice the calls it gets.
+#
+# Every number below now comes from tier_registry (price + per-day quota)
+# and routes/_stripe_links (the URL the customer is actually charged on).
+# Retyping the right number here would only reset the clock on the next
+# reprice — which is exactly how it drifted the first two times.
+# ─────────────────────────────────────────────────────────────────────
+from tier_registry import (
+    price_display as _canon_price_display,
+    calls_per_day as _canon_calls_per_day,
+    limits as _canon_limits,
+)
+
+# (display name, canonical tier key, trailing detail clause)
+_LADDER = (
+    ('Anonymous',    'anonymous', None),          # detail built from mcp_results
+    ('Free dev key', 'free',      'email signup'),
+    ('Starter',      'starter',   'most popular'),
+    ('Developer',    'developer', 'all paid tools'),
+    ('Pro',          'pro',       None),          # detail is "+ Pro-only tools"
+)
+
+
+def _canon_price_cell(tier):
+    """'$99/mo', or 'free' for a tier with no list price."""
+    return _canon_price_display(tier) or 'free'
+
+
+def _ladder_rows_html():
+    """The ladder, rendered from canon. No price or quota is typed here."""
+    rows = []
+    for name, tier, clause in _LADDER:
+        calls = _canon_calls_per_day(tier)
+        if tier == 'anonymous':
+            detail = '%d calls/day · %d results per query' % (
+                calls, _canon_limits(tier).get('mcp_results', 0))
+        elif tier == 'pro':
+            detail = '%s calls/day + Pro-only tools' % format(calls, ',')
+        else:
+            detail = '%s calls/day · %s' % (format(calls, ','), clause)
+        rows.append(
+            '    <div class="tier-row">\n'
+            '      <span class="tier-name">%s <span class="price">%s</span></span>\n'
+            '      <span class="tier-detail">%s</span>\n'
+            '    </div>' % (name, _canon_price_cell(tier), detail)
+        )
+    return '\n'.join(rows)
+
+
+def _canon_starter_link():
+    """The Stripe Payment Link the starter row actually charges on."""
+    try:
+        from routes._stripe_links import STRIPE_LINKS
+        return STRIPE_LINKS.get('starter') or 'https://dchub.cloud/pricing'
+    except Exception:
+        return 'https://dchub.cloud/pricing'
+
+
 FORM_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -402,34 +473,15 @@ FORM_HTML = """<!DOCTYPE html>
   </form>
 
   <div class="upgrade-row">
-    <div class="text"><strong>Need more than 10 calls/day?</strong> $9/mo Starter unlocks 200/day instantly.</div>
-    <a href="https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g" target="_blank">$9/mo →</a>
+    <div class="text"><strong>Need more than __FREE_CALLS__ calls/day?</strong> __STARTER_PRICE__ Starter unlocks __STARTER_CALLS__/day instantly.</div>
+    <a href="__STARTER_LINK__" target="_blank">__STARTER_PRICE__ →</a>
   </div>
 
   __MINT_CTA_BLOCK__
 
   <div class="what-you-get">
     <h2>The ladder</h2>
-    <div class="tier-row">
-      <span class="tier-name">Anonymous <span class="price">free</span></span>
-      <span class="tier-detail">10 calls/day · 2 results per query</span>
-    </div>
-    <div class="tier-row">
-      <span class="tier-name">Free dev key <span class="price">free</span></span>
-      <span class="tier-detail">10 calls/day · email signup</span>
-    </div>
-    <div class="tier-row">
-      <span class="tier-name">Starter <span class="price">$9/mo</span></span>
-      <span class="tier-detail">200 calls/day · most popular</span>
-    </div>
-    <div class="tier-row">
-      <span class="tier-name">Developer <span class="price">$49/mo</span></span>
-      <span class="tier-detail">500 calls/day · all paid tools</span>
-    </div>
-    <div class="tier-row">
-      <span class="tier-name">Pro <span class="price">$199/mo</span></span>
-      <span class="tier-detail">2,000 calls/day + Pro-only tools</span>
-    </div>
+__LADDER_ROWS__
   </div>
 
   <p class="note">No password. No spam. Your key arrives by email within ~60 seconds. Already cited by Claude and Cursor · <a href="https://dchub.cloud/cited-by" style="color:#22d3ee">cited-by</a> · Session <code>__SESSION_SHORT__</code></p>
@@ -532,7 +584,7 @@ SUCCESS_HTML = """<!DOCTYPE html>
             background: #f5f9ff; border: 1px solid #c3dafe;
             padding: 0.8rem 1rem; border-radius: 6px;">
     <strong>Need it now?</strong> Skip the email wait — upgrade to Developer
-    ($49/mo · 500 calls/day) right now: <a href="__STRIPE_DEV_LINK__"
+    (__DEV_PRICE__ · __DEV_CALLS__ calls/day) right now: <a href="__STRIPE_DEV_LINK__"
     style="color:#1976d2;font-weight:600;">checkout in 60 seconds &rarr;</a>
   </p>
   <p style="font-size: 0.75rem; color: #888; margin-top: 0.5rem;">
@@ -817,6 +869,8 @@ def phase63_redeem(session_id):
         return Response(
             SUCCESS_HTML.replace('__EMAIL__', email)
                         .replace('__TOOLS__', tools_display)
+                        .replace('__DEV_PRICE__', _canon_price_display('developer'))
+                        .replace('__DEV_CALLS__', format(_canon_calls_per_day('developer'), ','))
                         .replace('__STRIPE_DEV_LINK__', _stripe_dev),
             mimetype='text/html'
         )
@@ -935,6 +989,11 @@ def phase63_redeem(session_id):
         )
 
     html = (FORM_HTML
+            .replace('__LADDER_ROWS__', _ladder_rows_html())
+            .replace('__FREE_CALLS__', str(_canon_calls_per_day('free')))
+            .replace('__STARTER_PRICE__', _canon_price_display('starter'))
+            .replace('__STARTER_CALLS__', format(_canon_calls_per_day('starter'), ','))
+            .replace('__STARTER_LINK__', _canon_starter_link())
             .replace('__SESSION_ID__', session_id)
             .replace('__SESSION_SHORT__', short)
             .replace('__TOOLS_DISPLAY__', tools_display)

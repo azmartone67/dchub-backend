@@ -72,6 +72,7 @@ import io
 import os
 from db_utils import get_db
 from utc_clock import utc_iso_z, utc_now
+import tier_registry as _tier_registry
 
 # Stripe Integration
 try:
@@ -957,9 +958,9 @@ def stripe_config():
         'publishableKey': STRIPE_PUBLISHABLE_KEY,
         'configured': bool(STRIPE_SECRET_KEY),
         'prices': {
-            'pro_monthly': 199,
+            'pro_monthly': _tier_registry.price('pro'),
             'pro_annual': 1188,  # half-price one-time annual deal (50% off vs $1990 recurring)
-            'founding': 99
+            'founding': _tier_registry.price('founding')
         }
     })
 

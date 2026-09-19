@@ -43,6 +43,7 @@ import html as _html
 import secrets
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, Response, redirect
+from tier_registry import price_display as _canon_price_display
 
 
 def _pro_price():
@@ -502,9 +503,9 @@ _CHECKOUT_START_HTML = """<!DOCTYPE html>
   var tool = p.get('tool') || '';
   var sid  = p.get('sid')  || '';
   var ref  = p.get('client_reference_id') || '';
-  var pricing = {developer:'$49/mo', pro:'$299/mo', starter:'$9/mo', enterprise:'custom'};
+  var pricing = {developer:'__DEV_PRICE__', pro:'__PRO_PRICE__', starter:'__STARTER_PRICE__', enterprise:'custom'};
   document.getElementById('tier-tag').textContent = tier.charAt(0).toUpperCase()+tier.slice(1);
-  document.getElementById('price-tag').textContent = (pricing[tier]||'$49/mo')+' · cancel anytime';
+  document.getElementById('price-tag').textContent = (pricing[tier]||'__DEV_PRICE__')+' · cancel anytime';
   document.getElementById('f').addEventListener('submit', function(e){
     e.preventDefault();
     var btn = document.getElementById('submit-btn');
@@ -532,6 +533,13 @@ _CHECKOUT_START_HTML = """<!DOCTYPE html>
 })();
 </script>
 </body></html>"""
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__PRO_PRICE__", _canon_price_display("pro"))
+_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__DEV_PRICE__", _canon_price_display("developer"))
+_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__STARTER_PRICE__", _canon_price_display("starter"))
 
 
 @email_capture_bp.route("/checkout/start", methods=["GET"])

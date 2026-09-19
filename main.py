@@ -35030,6 +35030,7 @@ def _canonical_pricing():
     in-repo mirror of server.mjs PRO_ONLY_TOOLS and is what every other surface
     is already told to derive "gated_tools" from.
     """
+    import tier_registry as _tr
     try:
         from routes.mcp_tool_catalog import PRO_ONLY_TOOLS as _pro_only
         _n_pro = len(_pro_only)
@@ -35079,9 +35080,12 @@ def _canonical_pricing():
                           "contact": "enterprise@dchub.cloud"},
         "legacy_strings": {
             "free":       _canon_text("10 calls/day, truncated results, {canon_tools} tools (preview)"),
-            "developer":  _canon_text("$49/mo · 500/day, all {canon_tools} tools, full results"),
-            "pro":        _canon_text("$99/mo · 2,000/day + all {canon_tools} incl Pro-only tools"),
-            "enterprise": "$499/mo · 100,000/day + SSO + SLA",
+            "developer":  _canon_text(_tr.price_display("developer") + " · 500/day, all {canon_tools} tools, full results"),
+            "pro":        _canon_text(_tr.price_display("pro") + " · 2,000/day + all {canon_tools} incl Pro-only tools"),
+            # Enterprise has no self-serve monthly price — r-price-collapse
+            # put everything above $99 behind a human. This read "$499/mo",
+            # a number nothing in tier_registry has ever charged.
+            "enterprise": f"from ${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr · 100,000/day + SSO + SLA",
         },
     }
 
