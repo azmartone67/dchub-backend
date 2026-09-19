@@ -4194,6 +4194,16 @@ try:
     except Exception as _ffe:
         import logging
         logging.getLogger(__name__).warning('brain_frontend_fix_lane wiring failed: %s', _ffe)
+    # A detector that stops emitting a finding does not close it, so every
+    # detector precision fix strands its own accepted entries. This closes them
+    # — behind three floors, because "not seen lately" is one failed scan away
+    # from resolving the entire queue.
+    try:
+        from routes.brain_stale_finding_sweep import brain_stale_finding_sweep_bp
+        app.register_blueprint(brain_stale_finding_sweep_bp)
+    except Exception as _sfe:
+        import logging
+        logging.getLogger(__name__).warning('brain_stale_finding_sweep wiring failed: %s', _sfe)
     # Phase FF+7-meta (2026-05-19): Brain L16 — Self-Critique. Verifies
     # predictions, builds calibration data so the brain learns its own
     # accuracy. Closes the prediction-outcome loop. Read by L14 prompt.
