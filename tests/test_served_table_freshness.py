@@ -581,3 +581,120 @@ def test_the_step_fails_only_when_the_measurement_or_its_beat_did_not_land(
         assert "::warning::" not in r.stdout and "::error::" not in r.stdout, r.stdout
     if payload is _FROZEN_OK:
         assert "metro_fiber_summary" in r.stdout, r.stdout
+
+
+# ── the health claim needs evidence ───────────────────────────────────────
+#
+# /api/health/data-freshness derived `health = 'healthy' if row_count > 0` for
+# six of its nine feeds and published neither last_updated nor newest_record.
+# A row count measures PRESENCE, not freshness: a feed whose producer died
+# months ago still read healthy while its own `refresh_interval: '6 hours'` was
+# never compared to anything. Measured from the caller's seat 2026-09-19:
+# "6 feed(s) report healthy with no freshness evidence at all".
+def _dt(*a):
+    import datetime as _d
+    return _d.datetime(*a, tzinfo=_d.timezone.utc)
+
+
+class TestFeedHealthFields:
+    def test_a_measured_timestamp_is_published_and_healthy(self):
+        from routes.served_table_freshness import feed_health_fields
+        out = feed_health_fields("updated_at", _dt(2026, 9, 19, 7, 0), 1200)
+        assert out["health"] == "healthy"
+        assert out["freshness_source"] == "updated_at"
+        assert out["last_updated"] == out["newest_record"]
+        assert out["last_updated"].startswith("2026-09-19")
+
+    def test_rows_without_freshness_are_unknown_never_healthy(self):
+        from routes.served_table_freshness import feed_health_fields
+        out = feed_health_fields(None, None, 1200)
+        assert out["health"] == "unknown", (
+            "`healthy` on a row count is a claim no caller can check")
+        assert out["freshness_source"] == "none"
+        assert out["last_updated"] is None
+        assert "newest_record" not in out, (
+            "publishing a null newest_record would put the field on the wire "
+            "with nothing in it, which reads as measured-and-empty")
+
+    def test_an_empty_table_is_stale_however_it_is_dated(self):
+        from routes.served_table_freshness import feed_health_fields
+        assert feed_health_fields(None, None, 0)["health"] == "stale"
+        assert feed_health_fields("updated_at", _dt(2026, 9, 19), 0)["health"] == "stale"
+
+    def test_healthy_is_unreachable_without_a_timestamp(self):
+        # The invariant, stated directly: no combination of arguments without a
+        # measured timestamp may produce `healthy`.
+        from routes.served_table_freshness import feed_health_fields
+        for col, newest, n in ((None, None, 5), ("updated_at", None, 5),
+                               (None, _dt(2026, 9, 19), 5), ("", None, 5)):
+            assert feed_health_fields(col, newest, n)["health"] != "healthy", (
+                col, newest, n)
+
+
+class TestTableFreshness:
+    CAT = [("substations", "public", "r", "id", "integer"),
+           ("substations", "public", "r", "updated_at", "timestamp with time zone"),
+           ("fiber_routes", "public", "r", "ingested_at", "timestamp with time zone"),
+           ("construction_permits", "public", "r", "id", "integer"),
+           ("construction_permits", "public", "r", "expiration_date", "date"),
+           ("a_view", "public", "v", "updated_at", "timestamp with time zone")]
+
+    def test_a_typed_ingest_column_is_measured(self):
+        from routes.served_table_freshness import table_freshness
+        cur = _Cur(self.CAT, newest={"substations": _dt(2026, 9, 19, 6, 0)})
+        assert table_freshness(cur, "substations") == (
+            "updated_at", _dt(2026, 9, 19, 6, 0))
+
+    def test_a_date_column_that_is_not_an_ingest_time_is_not_freshness(self):
+        # construction_permits.expiration_date is about the PERMIT, not about
+        # when we fetched it. The module's own rule; asserted at this seam too.
+        from routes.served_table_freshness import table_freshness
+        assert table_freshness(_Cur(self.CAT), "construction_permits") == (None, None)
+
+    def test_a_view_is_not_measured(self):
+        # ★ The view MUST have a value available, or this passes because the
+        #   fixture had nothing to return rather than because the relkind was
+        #   rejected — measured: without this the relkind check could be
+        #   deleted and every test stayed green.
+        from routes.served_table_freshness import table_freshness
+        cur = _Cur(self.CAT, newest={"a_view": _dt(2026, 9, 19, 4, 0)})
+        assert table_freshness(cur, "a_view") == (None, None)
+
+    def test_an_absent_table_is_not_measured(self):
+        from routes.served_table_freshness import table_freshness
+        assert table_freshness(_Cur(self.CAT), "nope") == (None, None)
+
+    def test_a_failure_rolls_back_so_later_feeds_do_not_cascade(self):
+        """★★★ THE #1683 GUARD. A failed probe aborts the SHARED transaction, so
+        without a rollback every LATER feed on that cursor dies with "current
+        transaction is aborted" and cascades to 0/stale. Swallowing the
+        exception without rolling back reintroduces it through a new door.
+        """
+        from routes.served_table_freshness import table_freshness
+        cur = _Cur(self.CAT, newest={"substations": _dt(2026, 9, 19)},
+                   fail=("substations",))
+        calls = []
+
+        def _rb():
+            calls.append(1)
+            cur.aborted = False
+
+        cur.newest["fiber_routes"] = _dt(2026, 9, 19, 5, 0)
+        assert table_freshness(cur, "substations", rollback=_rb) == (None, None)
+        assert calls, "rollback was never called; the transaction stays aborted"
+        # The proof that matters, and it is the cascade itself: the NEXT feed on
+        # the same cursor must still be measurable.
+        assert table_freshness(cur, "fiber_routes") == (
+            "ingested_at", _dt(2026, 9, 19, 5, 0))
+
+    def test_without_a_rollback_the_cursor_stays_aborted(self):
+        # The control for the test above: shows the abort is real, so the
+        # rollback assertion is not passing on a cursor that never breaks.
+        from routes.served_table_freshness import table_freshness
+        cur = _Cur(self.CAT, newest={"substations": _dt(2026, 9, 19)},
+                   fail=("substations",))
+        cur.newest["fiber_routes"] = _dt(2026, 9, 19, 5, 0)
+        assert table_freshness(cur, "substations") == (None, None)
+        assert cur.aborted is True
+        # …and the next feed is now unmeasurable, which is the regression.
+        assert table_freshness(cur, "fiber_routes") == (None, None)

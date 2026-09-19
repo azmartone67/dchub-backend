@@ -30236,7 +30236,9 @@ def data_freshness():
             'freshness_source': 'none',
             'scheduler': 'manual',
             'refresh_interval': 'on-demand',
-            'health': 'healthy' if pipeline_count > 0 else 'stale'
+            # No freshness source, so no health claim a caller could check.
+            # The same rule `markets` applies a dozen lines below.
+            'health': 'unknown' if pipeline_count > 0 else 'stale'
         }
 
         # markets is the worse of the two: record_count is a STATIC CONSTANT, not a
@@ -30253,38 +30255,58 @@ def data_freshness():
             'health': 'unknown'
         }
 
+        # ★★★ A ROW COUNT IS NOT A FRESHNESS MEASUREMENT, AND `healthy` CLAIMED IT
+        #   WAS. Six of the nine feeds here derived
+        #   `health = 'healthy' if row_count > 0` and published neither
+        #   last_updated nor newest_record. A feed whose producer died months ago
+        #   still reads healthy, because the rows are still there, while its own
+        #   `refresh_interval: '6 hours'` is never compared to anything. The QA
+        #   super-user board measured it from the caller's seat on 2026-09-19:
+        #   "6 feed(s) report healthy with no freshness evidence at all".
+        #
+        #   `markets` already had the right answer in this same handler — "a
+        #   static list cannot be fresh or stale, so the honest verdict is
+        #   'unknown'". It was applied to one feed and not the rest, so the SAME
+        #   response carried `pipeline: freshness_source 'none', health healthy`
+        #   beside `markets: freshness_source 'none', health unknown`.
+        #
+        # ★ PUBLISH THE EVIDENCE, DO NOT JUDGE IT HERE. Deciding staleness needs
+        #   the declared interval parsed, and the probe already runs exactly that
+        #   comparison ("newest content 4h old vs a declared '5 minutes'
+        #   refresh"). The backend's job is to put a checkable timestamp on the
+        #   wire. Downgrading to `unknown` is only for when there is none.
+        def _evidenced(table, count, **extra):
+            from routes.served_table_freshness import (
+                table_freshness, feed_health_fields)
+            # ★ rollback= is load-bearing: a failed probe aborts this SHARED
+            #   transaction and every later feed cascades to 0/stale (#1683).
+            col, newest = table_freshness(c, table, rollback=conn.rollback)
+            out = dict(extra)
+            out['record_count'] = count
+            out.update(feed_health_fields(col, newest, count))
+            return out
+
         transactions_count = safe_query(f"SELECT COUNT(*) FROM deals WHERE buyer IS NOT NULL AND buyer != '' AND seller IS NOT NULL AND seller != '' AND {_DEALS_OK}", 0)
-        feeds['transactions'] = {
-            'record_count': transactions_count,
-            'scheduler': 'autopilot',
-            'refresh_interval': '5 minutes (via autopilot)',
-            'refresh_endpoint': 'POST /api/transactions/refresh',
-            'health': 'healthy' if transactions_count > 0 else 'stale'
-        }
+        feeds['transactions'] = _evidenced(
+            'deals', transactions_count,
+            scheduler='autopilot',
+            refresh_interval='5 minutes (via autopilot)',
+            refresh_endpoint='POST /api/transactions/refresh')
 
         fiber_count = safe_query("SELECT COUNT(*) FROM fiber_routes", 0)
-        feeds['fiber_routes'] = {
-            'record_count': fiber_count,
-            'scheduler': 'infrastructure_sync',
-            'refresh_interval': '6 hours',
-            'health': 'healthy' if fiber_count > 0 else 'stale'
-        }
+        feeds['fiber_routes'] = _evidenced(
+            'fiber_routes', fiber_count,
+            scheduler='infrastructure_sync', refresh_interval='6 hours')
 
         substations_count = safe_query("SELECT COUNT(*) FROM substations", 0)
-        feeds['substations'] = {
-            'record_count': substations_count,
-            'scheduler': 'infrastructure_sync',
-            'refresh_interval': '6 hours',
-            'health': 'healthy' if substations_count > 0 else 'stale'
-        }
+        feeds['substations'] = _evidenced(
+            'substations', substations_count,
+            scheduler='infrastructure_sync', refresh_interval='6 hours')
 
         permits_count = safe_query("SELECT COUNT(*) FROM construction_permits", 0)
-        feeds['construction_permits'] = {
-            'record_count': permits_count,
-            'scheduler': 'infrastructure_sync',
-            'refresh_interval': '6 hours',
-            'health': 'healthy' if permits_count > 0 else 'stale'
-        }
+        feeds['construction_permits'] = _evidenced(
+            'construction_permits', permits_count,
+            scheduler='infrastructure_sync', refresh_interval='6 hours')
 
         healthy_count = sum(1 for f in feeds.values() if f.get('health') == 'healthy')
         stale_count = sum(1 for f in feeds.values() if f.get('health') == 'stale')

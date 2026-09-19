@@ -227,6 +227,72 @@ def catalog(cur, names):
     return out
 
 
+def feed_health_fields(col, newest, count):
+    """The freshness fields + health verdict for one feed. Pure.
+
+    ★★★ THE RULE, IN ONE PLACE: `healthy` requires EVIDENCE a caller can check.
+      • rows + a measured timestamp → healthy, and the timestamp is published so
+        the declared refresh_interval can finally be compared against something.
+      • rows + no measurable freshness → `unknown`. Not `healthy`: that is a
+        claim nobody can falsify, which is what put six feeds on the QA board.
+        Not `stale` either — unmeasured is not broken.
+      • no rows → `stale`, regardless. An empty served table is a real alarm
+        whether or not we can date it.
+    """
+    if col and newest is not None:
+        iso = newest.isoformat() if hasattr(newest, "isoformat") else str(newest)
+        return {"freshness_source": col, "last_updated": iso,
+                "newest_record": iso,
+                "health": "healthy" if count > 0 else "stale"}
+    return {"freshness_source": "none", "last_updated": None,
+            "health": "unknown" if count > 0 else "stale"}
+
+
+def table_freshness(cur, table, rollback=None):
+    """(column, newest_at) for one table's newest INGEST timestamp, or (None, None).
+
+    ★★★ SHARED SO THE HEALTH CLAIM AND THE FREEZE DETECTOR CANNOT DISAGREE.
+    /api/health/data-freshness derived `health: 'healthy' if row_count > 0` for
+    six of its nine feeds — a row count is a measure of PRESENCE, not freshness,
+    so a feed whose producer died months ago still read healthy while its
+    declared `refresh_interval: '6 hours'` was never checked against anything.
+    This module already knows how to answer the real question; it just was not
+    reachable from there.
+
+    Same rules as the sweep: only recognised ingest-time columns, only when the
+    COLUMN TYPE is a timestamp or date (a `construction_permits.expiration_date`
+    is about the permit, not about when we fetched it), and the first schema on
+    the search_path — the relation an unqualified read actually hits.
+
+    Never raises: any failure degrades to (None, None), which the caller must
+    report as `unknown` rather than as healthy.
+
+    ★★ `rollback` IS NOT OPTIONAL WHEN THE CURSOR IS SHARED. A failed query
+    aborts the whole transaction, so without it every LATER read on that cursor
+    dies with "current transaction is aborted" and each remaining feed cascades
+    to 0/stale — the #1683 regression that /api/health/data-freshness already
+    guards against in its own safe_query. Swallowing the exception here without
+    rolling back would reintroduce it through a new door.
+    """
+    try:
+        info = (catalog(cur, [table]) or {}).get(table)
+        if not info or info.get("relkind") not in _TABLE_RELKINDS:
+            return None, None
+        cols = ingest_columns(info.get("columns"))
+        if not cols:
+            return None, None
+        cur.execute(newest_sql(info["schema"], table, cols))
+        row = cur.fetchone()
+        return (cols[0], row[0]) if row and row[0] is not None else (None, None)
+    except Exception:  # noqa: BLE001 - a miss is "unknown", never "healthy"
+        if rollback is not None:
+            try:
+                rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        return None, None
+
+
 def classify_age(newest_at, now, frozen_after_days=FROZEN_AFTER_DAYS):
     """('frozen' | 'fresh', age_days) for a table's newest ingest timestamp."""
     if newest_at.tzinfo is None:
