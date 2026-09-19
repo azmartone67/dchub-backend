@@ -237,11 +237,20 @@ def _is_provisional(body):
     pinned, and a DEGRADED body is live for its siblings and pinned for the one
     rejected key.
 
-    Reads ONLY the floor keys. `substations`, `fiber_routes`,
-    `transmission_lines` and `assets` are "pinned" on a perfectly warm bundle by
-    design — they are not in _PUBLIC_FLOOR_KEYS, so the overlay can never mark
-    them live, and treating them as evidence would make EVERY body look
-    provisional and pin the TTL to 20s forever."""
+    Reads ONLY the floor keys, and that is now a DELIBERATE NARROWING rather
+    than a description of what the overlay can reach.
+
+    ★2026-09-19 — until this date the two were the same statement: the overlay
+    applied live values to _PUBLIC_FLOOR_KEYS and nothing else, so `assets`,
+    `substations`, `fiber_routes` and `transmission_lines` were "pinned" on a
+    perfectly warm bundle and could not be read as evidence of warmth. The
+    overlay now walks every key in PINNED['public'], so those keys DO go live
+    once measured — but this predicate still reads only the four, because the
+    question it asks is "did a real query measure a CITATION-CRITICAL floor",
+    and the answer decides a 20s vs 15m TTL. Widening it would let an asset
+    layer's measurement certify a bundle whose facilities/deals/markets/
+    countries were all still pinned, which is the body this exists to catch.
+    """
     if not isinstance(body, dict):
         return True
     if body.get("cold") or body.get("degraded"):

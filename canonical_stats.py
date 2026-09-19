@@ -108,6 +108,16 @@ _FALLBACK = {
     # a cold start under-claims rather than publishing power lines as fiber.
     "fiber_routes": 58141,
     "transmission_lines": 94633,    # COUNT(*) FROM transmission_lines (EIA population)
+    # ★2026-09-19 cold-start seed for {canon_assets}. Raw measured int, same
+    # convention as the three above; _floor_phrase(step=10000) publishes it
+    # ("330,961 -> 330,000+"), the SAME step mcp_facts_export._floor() applies
+    # to infrastructure_assets_total, so the two surfaces round identically.
+    # Measured 2026-09-19 off live /api/v1/infrastructure/stats
+    # infrastructure_assets_total = 330,961 with basis.complete = true and
+    # members_unmeasured = []. It must stay ABOVE the "320,000+" pin it seeds
+    # or tests/test_public_floor_specs_are_queried.py fails the same way it
+    # did for substations on 2026-09-07.
+    "assets": 330961,
     "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
 }
 
@@ -297,6 +307,58 @@ def _join_series(items) -> str:
     if len(items) == 1:
         return items[0]
     return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _measure_asset_total(cur, conn):
+    """COUNT(*) every mapped-asset layer and return the sum, or None.
+
+    ★2026-09-19. ONE OWNER FOR THE MAPPED-ASSET TOTAL. `assets` was the only
+    public floor with no derivation at all: PINNED['public']['assets'] =
+    "320,000+" was hand-walked once on 2026-08-01 and never again, while
+    /api/v1/infrastructure/stats summed the same layers live. Measured that
+    morning: pin "320,000+" against a live infrastructure_assets_total of
+    330,961 — a full 10k bucket stale — and the MCP server instructions blob
+    had already moved to "330,000+" off the live number, so the two surfaces
+    disagreed in public.
+
+    WHY THIS IMPORTS THE MEMBER TABLE rather than re-listing the layers: a
+    second hand-written sum is a second owner, which is the defect being
+    fixed, not a fix for it. _STATS_MEMBERS is the one place the asset
+    population is defined — which layers count as assets, which table each
+    lives in, and which are EXCLUDED as facilities or as a subset of a layer
+    already counted — and _measure_member is the one place "0 is unmeasured,
+    not a count" is enforced. Reusing both means this total and the endpoint's
+    cannot drift apart without someone editing the shared definition.
+
+    ALL-OR-NOTHING, deliberately, and this is where it differs from the
+    endpoint. /api/v1/infrastructure/stats MAY publish a partial sum because
+    it ships `complete: false` and a `members_unmeasured` list beside it, so a
+    reader can see the figure is a floor. A canon PHRASE carries no such block
+    — "180,000+ assets" reads as the whole population — so a partial sum here
+    would be a silent under-claim of whatever failed to measure. Absent beats
+    partial: return None and the pin stands.
+
+    Returns int > 0 when EVERY asset member measured, else None. Never raises:
+    an unavailable routes import (a non-web process) is an absent total, not
+    an error, for the same fail-soft reason _live_public_floors() returns {}.
+    """
+    try:
+        from routes.infrastructure_data_routes import (
+            _STATS_MEMBERS, _measure_member,
+        )
+    except Exception:
+        return None
+    total = 0
+    seen = 0
+    for key, table, role in _STATS_MEMBERS:
+        if role != 'asset':
+            continue
+        seen += 1
+        value, _reason = _measure_member(cur, conn, key, table)
+        if value is None:
+            return None
+        total += value
+    return total if seen and total > 0 else None
 
 
 def _query_live() -> dict:
@@ -602,6 +664,14 @@ def _query_live() -> dict:
                     c.rollback()
                 except Exception:
                     pass
+
+        # ── assets: ONE owner for the mapped-asset total ──────────────────
+        # See _measure_asset_total() for why this imports the member table
+        # instead of re-listing the layers, and why it is all-or-nothing.
+        _asset_sum = _measure_asset_total(cur, c)
+        if _asset_sum:
+            out["assets"] = _asset_sum
+            _live_keys.add("assets")
     finally:
         try:
             c.close()
@@ -879,6 +949,8 @@ _PUBLIC_FLOOR_SPECS = {
     # specs can actually fire.
     "fiber_routes":       ("fiber_routes",       lambda n: _floor_phrase(n, step=1000)),
     "transmission_lines": ("transmission_lines", lambda n: _floor_phrase(n, step=1000)),
+    # step=10000 matches mcp_facts_export._floor(.., 10000) on the same total.
+    "assets":             ("assets",             lambda n: _floor_phrase(n, step=10000)),
 }
 
 

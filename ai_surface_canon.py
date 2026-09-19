@@ -1455,6 +1455,16 @@ def _floor_int(phrase) -> int | None:
 # The public floors AGENTS.md and friends render. Floors ROUND DOWN and are
 # documented as only ever re-floored downward by a deliberate human edit, so
 # "live is below the pin" is never a real shrink — it is a degraded resolver.
+#
+# ★2026-09-19 — THIS TUPLE IS THE WARMTH DISCRIMINATOR, NOT THE OVERLAY SET.
+# It had been doing both jobs, and the second one was silently wrong. The
+# overlay below now walks EVERY key in PINNED['public']; this tuple is read
+# only by routes/canon_phrases._is_provisional(), which asks "did a real query
+# measure ANY citation-critical floor" to decide a 20s vs 15m cache TTL. The
+# governance four are the right answer to THAT question and a poor answer to
+# "which keys may heal": a key measured perfectly well still served its pin
+# forever merely because it was absent here. Keep the two separate — widening
+# this tuple changes cache behaviour, which is not what an overlay fix means.
 _PUBLIC_FLOOR_KEYS = ("facilities", "deals", "markets", "countries")
 
 
@@ -1486,7 +1496,25 @@ def resolve_public_floors() -> dict:
         live_pub = (resolve_canon() or {}).get("public") or {}
     except Exception:
         live_pub = {}
-    for key in _PUBLIC_FLOOR_KEYS:
+    # ★ EVERY pinned public key, not a typed subset. A key whose measurement
+    # exists but whose name was never added here publishes its pin forever,
+    # and that has now happened twice: `substations` carried a
+    # _PUBLIC_FLOOR_SPECS entry from 2026-09-02 that never fired until the
+    # query landed 2026-09-07, and `fiber_routes`/`transmission_lines` landed
+    # WITH their queries on 2026-09-07 and still never published, because the
+    # overlay was gated on a four-name tuple nobody thought to extend.
+    # Measured 2026-09-19 on live /api/v1/canon/phrases: facilities/deals/
+    # markets/countries = "live"; assets, substations, fiber_routes,
+    # transmission_lines, dcpi_countries, dcpi_regions, news_sources =
+    # "pinned" — an exact partition on tuple membership, not on measurement.
+    # transmission_lines was the one carrying real drift: pinned "94,000+"
+    # against a live 95,569.
+    #
+    # Non-numeric and unmeasured keys are SAFE here without a type test:
+    # _floor_int() returns None for a phrase that carries no count and for an
+    # absent live value, and None hits the `continue` below. The raise-only
+    # rule is what keeps a degraded resolver from publishing under a pin.
+    for key in list(out):
         live_i = _floor_int(live_pub.get(key))
         pin_i = _floor_int(out.get(key))
         if live_i is None:
