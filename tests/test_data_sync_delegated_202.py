@@ -115,16 +115,24 @@ def _jobs_wm(job, last_completed_at):
             % (job, last_completed_at, last_completed_at))
 
 
+# The always-fresh process-local `last_cycle` value the stubs serve. It is a
+# YEAR far enough ahead that no real watermark can carry it — so tests match it
+# as an ISO DATE, never as the bare digits "2099" (see
+# test_kmz_reads_the_db_watermark_not_the_process_local_cache for why).
+_KMZ_CACHE_SENTINEL = "2099-01-01T00:00:00"
+_KMZ_CACHE_SENTINEL_DATE = _KMZ_CACHE_SENTINEL.split("T")[0]
+
+
 def _kmz_wm(last_cycle_at):
     # `last_cycle` is deliberately populated with a DIFFERENT, always-fresh
     # value: a step that read the process-local key instead of the DB-backed
     # one would then pass for the wrong reason, and the tests below would not
     # notice. This makes that substitution observable.
     if not last_cycle_at:
-        return ('{"success": true, "last_cycle": "2099-01-01T00:00:00", '
-                '"last_cycle_at": null}')
-    return ('{"success": true, "last_cycle": "2099-01-01T00:00:00", '
-            '"last_cycle_at": "%s"}' % last_cycle_at)
+        return ('{"success": true, "last_cycle": "%s", '
+                '"last_cycle_at": null}' % _KMZ_CACHE_SENTINEL)
+    return ('{"success": true, "last_cycle": "%s", '
+            '"last_cycle_at": "%s"}' % (_KMZ_CACHE_SENTINEL, last_cycle_at))
 
 
 # Stub curl. With -o it writes the body to that file and echoes the status
@@ -284,7 +292,9 @@ def test_news_non_200_still_fails_loudly():
     for code in ("401", "500", "000"):
         rc, out, _ = _exec(_news_block(), '{"error":"nope"}', code)
         assert rc != 0, f"HTTP {code} did not fail the step:\n{out}"
-        assert "::error::" in out and code in out, out
+        # "HTTP {code}", not a bare 3-digit run: the step echoes "HTTP $CODE",
+        # and a loose match is satisfied by any digits that happen to line up.
+        assert "::error::" in out and f"HTTP {code}" in out, out
 
 
 # --------------------------------------------------------------------------
@@ -353,7 +363,40 @@ def test_kmz_reads_the_db_watermark_not_the_process_local_cache():
     assert rc != 0, (
         "the step accepted the process-local last_cycle instead of the "
         "DB-backed last_cycle_at:\n" + out)
-    assert "2099" not in out, out
+    # Matched as an ISO DATE, not as the bare digits "2099". The captured
+    # output carries timestamps whose 6-digit microsecond field can contain
+    # that run by chance: on 2026-09-19 (run 35451285258) _fresh(30) produced
+    # "pre-run last_cycle_at=2026-09-18T09:28:48.820998+00:00", "820998"
+    # matched, and a correct step went red. A year is always followed by the
+    # ISO date separator; a microsecond field never is.
+    assert _KMZ_CACHE_SENTINEL_DATE not in out, out
+
+
+def test_the_cache_sentinel_is_matched_as_a_year_not_as_loose_digits():
+    """The regression pin for the guard above. 2026-09-19 (unit-tests run
+    35451285258) it read `assert "2099" not in out` — a bare digit run matched
+    against a blob that carries ISO timestamps. `_fresh(30)` produced
+    "pre-run last_cycle_at=2026-09-18T09:28:48.820998+00:00"; the microsecond
+    field 820998 contains "2099"; a correct step went red. ~3e-4 per run, so it
+    reads as an infrastructure blip and costs a cycle every time it lands.
+
+    The microsecond field is pinned here, not left to the wall clock: this test
+    reproduces the flake every run, so re-loosening the anchor fails at once
+    instead of once in three thousand builds."""
+    stale = (datetime.now(timezone.utc) - timedelta(hours=30)).replace(
+        microsecond=820998).isoformat()
+    # The fixture really is flake-shaped: the old bare-substring guard would
+    # have fired on it, the year-anchored one must not.
+    assert "2099" in stale, stale
+    assert _KMZ_CACHE_SENTINEL_DATE not in stale, stale
+
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm(stale), _kmz_wm(stale))
+    assert rc != 0, out
+    # ...and it reached the captured output, so the old guard had something to
+    # match. Without this the test could pass for saying nothing.
+    assert f"pre-run last_cycle_at={stale}" in out, out
+    assert _KMZ_CACHE_SENTINEL_DATE not in out, out
 
 
 def test_kmz_200_reports_real_counters():
@@ -376,7 +419,9 @@ def test_kmz_non_2xx_fails_loudly():
     for code in ("401", "500", "000"):
         rc, out, _ = _exec(_kmz_block(), '{"error":"nope"}', code)
         assert rc != 0, f"HTTP {code} did not fail the step:\n{out}"
-        assert "::error::" in out and code in out, out
+        # "HTTP {code}", not a bare 3-digit run: the step echoes "HTTP $CODE",
+        # and a loose match is satisfied by any digits that happen to line up.
+        assert "::error::" in out and f"HTTP {code}" in out, out
 
 
 # --------------------------------------------------------------------------
@@ -389,9 +434,9 @@ def test_kmz_non_2xx_fails_loudly():
 # --------------------------------------------------------------------------
 
 def _kmz_wm_with_status(last_cycle_at, status):
-    return ('{"success": true, "last_cycle": "2099-01-01T00:00:00", '
+    return ('{"success": true, "last_cycle": "%s", '
             '"last_cycle_at": "%s", "last_cycle_status": "%s"}'
-            % (last_cycle_at, status))
+            % (_KMZ_CACHE_SENTINEL, last_cycle_at, status))
 
 
 def test_kmz_newest_cycle_failed_fails_the_step():
@@ -536,7 +581,9 @@ def test_evolution_non_200_fails_loudly():
     for code in ("401", "500", "000"):
         rc, out, _ = _exec(_evo_block(), '{"error":"nope"}', code)
         assert rc != 0, f"HTTP {code} did not fail the step:\n{out}"
-        assert "::error::" in out and code in out, out
+        # "HTTP {code}", not a bare 3-digit run: the step echoes "HTTP $CODE",
+        # and a loose match is satisfied by any digits that happen to line up.
+        assert "::error::" in out and f"HTTP {code}" in out, out
 
 
 # --------------------------------------------------------------------------
