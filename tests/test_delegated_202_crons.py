@@ -250,7 +250,12 @@ def test_l16_warns_on_delegated_202():
     rc, out = _exec(_l16_block(), DELEGATED_202, "202")
     assert rc == 0, out
     assert "::warning::" in out, f"202 produced no warning:\n{out}"
-    assert "202" in out
+    # "HTTP 202", not a bare 3-digit run. The step echoes "L16 self-critique
+    # HTTP $CODE"; the bare form is also satisfied by the warning's own prose
+    # ("...delegated to dchub-worker (202)..."), i.e. by the explanation of
+    # the bug rather than by the step reporting the status — the same trap
+    # _strip_bash_comments() below exists to close on the RULE side.
+    assert "HTTP 202" in out, out
     assert "UNKNOWN" in out, "must say the counters are unknown, not zero"
 
 
@@ -271,7 +276,8 @@ def test_l16_warns_when_curl_produced_no_status():
 def test_l16_warns_on_a_non_200_status():
     rc, out = _exec(_l16_block(), '{"error":"nope"}', "503")
     assert rc == 0, out
-    assert "::warning::" in out and "503" in out
+    # "HTTP 503", not a bare 3-digit run searched in the whole blob.
+    assert "::warning::" in out and "HTTP 503" in out, out
 
 
 # --------------------------------------------------------------------------
