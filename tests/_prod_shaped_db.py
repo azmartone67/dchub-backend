@@ -2,7 +2,7 @@
 
 These fixtures were written against an empty `postgres:` service, where
 `DROP TABLE IF EXISTS x` always succeeds. Pointed at a `schema-only` Neon branch
-cut from production — the `ephemeral-db` db-parity lane — the same statement
+cut from production -- the `ephemeral-db` db-parity lane -- the same statement
 fails two ways. On 2026-09-19 it errored the SETUP of 40 tests across three
 files:
 
@@ -12,23 +12,29 @@ files:
 
     WrongObjectType: "mcp_calls_identity" is not a table
 
-★ `DROP ... CASCADE` IS NOT THE FIX. All 19 lanes share ONE branch, so cascading
-would delete production's views out of the shared schema — `global_infrastructure`
-among them, whose definition exists in no file in this repo — and every later
-lane reading them would fail, or pass vacuously. What this module does instead,
-per relation:
+So: DROP first, exactly as before, and fall back only when the drop is REFUSED.
 
-  * ABSENT  -> say so, and let the fixture CREATE it. The empty-postgres path is
-    unchanged, which is where these tests still run outside the parity lane.
-  * TABLE   -> TRUNCATE it and keep PRODUCTION's shape. That is the entire point
-    of a parity lane: the test then exercises the real column list instead of
-    the fixture's idea of it. `TRUNCATE ... CASCADE` removes ROWS from
-    referencing tables and drops NOT ONE OBJECT — that is the whole difference
-    from the trap above.
-  * VIEW    -> the fixture's model of the schema disagrees with production and
-    nothing here can reconcile them. Skip, naming the object, so the
-    disagreement is reported rather than raised as a setup error or, worse,
+  * ABSENT              -> report it; the fixture's CREATE makes it.
+  * TABLE, droppable    -> DROP and report it, so the fixture recreates it in
+    its own shape. This is the empty-postgres path and it is deliberately
+    unchanged: `test_continuation_compliance_sql` and
+    `test_live_proof_platform_basis_sql` both build `mcp_calls_identity` with
+    DIFFERENT columns, and the drop is what reconciles them. Truncating instead
+    made the second file inherit the first one's table and errored 8 tests --
+    measured, not hypothetical.
+  * TABLE, drop refused -> TRUNCATE ... CASCADE and keep PRODUCTION's shape.
+    That removes ROWS from referencing tables and drops NOT ONE OBJECT -- the
+    whole difference from the trap below. The fixture's `CREATE TABLE IF NOT
+    EXISTS` then no-ops and the test runs against production's real column list.
+  * VIEW                -> the fixture's model of the schema disagrees with
+    production and nothing here can reconcile them. Skip, naming the object, so
+    the disagreement is reported rather than raised as a setup error or, worse,
     silently satisfied.
+
+* `DROP ... CASCADE` IS NOT THE FALLBACK. All 19 lanes share ONE branch, so
+cascading would delete production's views out of the shared schema --
+`global_infrastructure` among them, whose definition exists in no file in this
+repo -- and every later lane reading them would fail, or pass vacuously.
 
 This deliberately does NOT cover a table a fixture wants ABSENT. A drop can be
 an assertion: `test_transmission_readers_sql.py` drops
@@ -40,7 +46,7 @@ from __future__ import annotations
 
 import pytest
 
-# relkind values that TRUNCATE accepts: ordinary and partitioned tables.
+# relkind values TRUNCATE accepts: ordinary and partitioned tables.
 _TABLE = ("r", "p")
 _VIEWS = {"v": "view", "m": "materialized view"}
 
@@ -53,34 +59,48 @@ _RELKIND = """
 
 
 def reset_tables(cur, *names: str) -> tuple[str, ...]:
-    """Empty each named table, or report it absent so the caller creates it.
+    """Clear each named table; return the ones the caller must now CREATE.
 
-    Returns the names that do not exist yet. Skips the test when production
-    carries one of them as a view.
+    A name comes back when it does not exist or was dropped here. A name does
+    NOT come back when production's dependencies forced a truncate instead --
+    it still exists, so the caller's `CREATE TABLE IF NOT EXISTS` no-ops.
+    Skips the test when the relation is a view.
     """
     # Imported here, not at module scope: every caller reaches this module via
     # `pytest.importorskip("psycopg2")`, and a top-level import would turn that
     # clean skip into a collection error wherever the driver is absent.
-    from psycopg2 import sql
+    from psycopg2 import errors, sql
 
-    absent = []
+    if not cur.connection.autocommit:
+        raise RuntimeError(
+            "reset_tables needs an autocommit connection: it DROPs first and "
+            "falls back to TRUNCATE when a dependent object refuses the drop. "
+            "Inside a transaction that first failure aborts the session and "
+            "every later statement fails with InFailedSqlTransaction instead.")
+
+    to_create = []
     for name in names:
         cur.execute(_RELKIND, (name,))
         row = cur.fetchone()
         kind = row[0] if row else None
         if kind is None:
-            absent.append(name)
+            to_create.append(name)
             continue
         if kind in _VIEWS:
             pytest.skip(
                 f"this database carries `{name}` as a {_VIEWS[kind]}, not a "
                 f"table, so this fixture's model of the schema disagrees with "
                 f"it. `{name}` is rendered by scripts/render_identity_views.py "
-                f"in production. Reconcile the model — do not delete the view "
+                f"in production. Reconcile the model -- do not delete the view "
                 f"to make the fixture fit.")
         if kind not in _TABLE:
             pytest.skip(f"`{name}` is relkind {kind!r}, which cannot be reset "
                         f"as a table")
-        cur.execute(sql.SQL("TRUNCATE TABLE {} CASCADE").format(
-            sql.Identifier("public", name)))
-    return tuple(absent)
+        ident = sql.Identifier("public", name)
+        try:
+            cur.execute(sql.SQL("DROP TABLE {}").format(ident))
+        except errors.DependentObjectsStillExist:
+            cur.execute(sql.SQL("TRUNCATE TABLE {} CASCADE").format(ident))
+        else:
+            to_create.append(name)
+    return tuple(to_create)
