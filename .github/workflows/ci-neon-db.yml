@@ -2,8 +2,8 @@ name: neon-ephemeral-db
 
 # ADVISORY, DELIBERATELY. Nothing here is a required check yet.
 #
-# `db-parity` (pre-merge.yml) is REQUIRED on main and runs 19 SQL lanes against
-# a postgres:16 service container. This workflow runs the SAME 19 lanes against
+# `db-parity` (pre-merge.yml) is REQUIRED on main and runs 20 SQL lanes against
+# a postgres:16 service container. This workflow runs the SAME 20 lanes against
 # a schema-only Neon branch — prod's schema and extensions, zero rows — so the
 # two can be compared on real PRs before anything is cut over. Repointing a
 # required check at a mechanism that has never run is how you take main's merge
@@ -12,7 +12,7 @@ name: neon-ephemeral-db
 # ★ ROOT-BRANCH CAP IS THE BINDING CONSTRAINT, not cost.
 #   `init_source: schema-only` produces an independent ROOT branch, and roots
 #   are capped per project (3 Free / 5 Launch / 25 Scale). So this workflow
-#   creates ONE branch per job, never one per matrix leg — a 19-way matrix
+#   creates ONE branch per job, never one per matrix leg — a 20-way matrix
 #   would exhaust the cap from a single PR and every later PR would fail to get
 #   a database. Three defences, because one is not enough when the symptom
 #   surfaces hours after the cause:
@@ -244,7 +244,7 @@ jobs:
             exit 1
           fi
 
-      - name: Phase 2 — the 19 db-parity lanes against a prod-shaped branch
+      - name: Phase 2 — the 20 db-parity lanes against a prod-shaped branch
         if: steps.neon.outputs.slot != 'none'
         # ADVISORY: `|| true` on purpose. These lanes have only ever seen an
         # empty postgres:16; the whole point of this run is to LEARN which of
@@ -272,8 +272,9 @@ jobs:
             tests/test_paid_attributed_relayed_checkout_sql.py \
             tests/test_connect_keys_used_day2_sql.py \
             tests/test_capacity_source_search_sql.py \
+            tests/test_alias_repoint_scoping_sql.py \
             -v --tb=short -rs 2>&1 | tee parity.log || true
-          echo "### Phase 2 — 19 lanes on a Neon branch" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Phase 2 — 20 lanes on a Neon branch" >> "$GITHUB_STEP_SUMMARY"
           tail -1 parity.log >> "$GITHUB_STEP_SUMMARY"
 
       - name: Phase 2b — the GSC schema must be able to build itself

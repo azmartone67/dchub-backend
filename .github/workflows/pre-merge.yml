@@ -941,6 +941,41 @@ jobs:
             echo "::error::the Capacity Source search SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The alias-repoint ON CONFLICT clause, against the same Postgres ─
+      # routes/facility_slug_freeze._ALIAS_REPOINT is ONE clause shared by the
+      # three alias emitters, and it replaced DO NOTHING — which froze a stale
+      # 301 target for good once a re-mint moved a facility from slug S to S'.
+      # Until now that scoping was guarded only by source-text assertions: they
+      # prove the characters are in the file, never that Postgres AGREES a
+      # 'gsc' row is left alone by a 'stored-slug' emit, that IS NOT DISTINCT
+      # FROM matches NULL to NULL where `=` does not, or that an unchanged
+      # re-emit returns ZERO rows so the emitters' counter cannot overstate.
+      # The test imports the constant and runs it through
+      # execute_values(fetch=True) — the emitters' own call shape, never a
+      # retyped copy that would keep passing while the real clause drifted.
+      #
+      # Safe to share the `parity` database: each case owns a throwaway schema
+      # and builds facility_slug_aliases with the module's own schema step.
+      - name: Alias-repoint scoping SQL against a real Postgres
+        env:
+          ALIAS_REPOINT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+          ALIAS_REPOINT_SQL_REQUIRE: '1'
+        run: python3 -m pytest tests/test_alias_repoint_scoping_sql.py -v --tb=short
+
+      - name: Prove the alias-repoint SQL test actually RAN
+        # It skips itself when no DSN is set, which is exactly how it would
+        # ride green here. A skipped proof is not a proof.
+        env:
+          ALIAS_REPOINT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+          ALIAS_REPOINT_SQL_REQUIRE: '1'
+        run: |
+          python3 -m pytest tests/test_alias_repoint_scoping_sql.py \
+            -q -rs --tb=no > ar.txt 2>&1 || { cat ar.txt; exit 1; }
+          cat ar.txt
+          if grep -qi "skipped" ar.txt; then
+            echo "::error::the alias-repoint SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -986,6 +1021,7 @@ jobs:
             pa.txt
             kd.txt
             cs.txt
+            ar.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
