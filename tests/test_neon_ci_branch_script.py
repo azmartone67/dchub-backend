@@ -542,14 +542,22 @@ def test_a_zero_ceiling_disables_the_wait_without_an_api_call(monkeypatch):
 # ── expires_at is READ BACK, never assumed ───────────────────────────────────
 
 
-def _create(monkeypatch, capsys, branch):
+def _create(monkeypatch, capsys, branch, endpoints=None):
     monkeypatch.setattr(nb, "_preflight", lambda *a, **k: None)
     # Returns True, like the real one. A stub returning None reads as "no slot"
     # and routes cmd_create into the UNMEASURED branch, which is how this fixture
     # first went wrong when the verdict was introduced.
     monkeypatch.setattr(nb, "_await_root_slot", lambda *a, **k: True)
     monkeypatch.setattr(nb, "_default_branch_id", lambda *a, **k: "br-parent")
-    monkeypatch.setattr(nb, "_create_branch", lambda *a, **k: {"branch": branch})
+    # A real create response carries the endpoint Neon BUILT, and the CU
+    # read-back reads it. Trimming `endpoints` out of this fixture made the
+    # happy path emit an UNVERIFIED warning — the fixture was below the shape,
+    # not the check wrong.
+    built = {"branch": branch,
+             "endpoints": [{"type": "read_write", "id": "ep-x",
+                            "autoscaling_limit_max_cu": nb.CI_MAX_CU}]
+             if endpoints is None else endpoints}
+    monkeypatch.setattr(nb, "_create_branch", lambda *a, **k: built)
     monkeypatch.setattr(nb, "_connection_uri", lambda *a, **k: "postgres://x/y")
     monkeypatch.setattr(nb, "_emit", lambda **k: None)
     nb.cmd_create(type("A", (), {
@@ -700,3 +708,88 @@ def test_the_default_ceiling_leaves_no_root_unspent(monkeypatch):
     assert seen["max_roots"] == 4
     assert seen["wait_minutes"] == 8, (
         "the wait is sized against the 15-23m hold; change it deliberately")
+
+
+# ── the compute ceiling Neon actually built ──────────────────────────────────
+# 2026-09-19: three of four live `ci-*-parity` computes were read back from the
+# Neon API at `0.25-8` CU while `cmd_create` had asked for `0.25-0.25`. The
+# request was never compared with the response, so 32x the intended cost
+# ceiling ran unremarked. These cover the comparison, not Neon.
+
+
+class _Endpoint:
+    """Records PATCHes so a test can assert what the repair actually sent."""
+
+    def __init__(self, after=None):
+        self.patched = []
+        self._after = after
+
+    def __call__(self, method, path, key, body=None):
+        if method == "PATCH" and "/endpoints/" in path:
+            self.patched.append((path.rsplit("/", 1)[-1], body))
+            cu = nb.CI_MAX_CU if self._after is None else self._after
+            return {"endpoint": {"autoscaling_limit_max_cu": cu}}
+        raise AssertionError(f"unexpected {method} {path}")
+
+
+def _built(**endpoint):
+    """A create response carrying one read_write endpoint."""
+    return {"endpoints": [dict({"type": "read_write", "id": "ep-x"}, **endpoint)]}
+
+
+def _verify(monkeypatch, out, after=None):
+    api = _Endpoint(after)
+    monkeypatch.setattr(nb, "_req", api)
+    nb._verify_compute_ceiling("k", "p", out)
+    return api
+
+
+def test_it_pins_a_compute_neon_built_above_the_ceiling(monkeypatch):
+    api = _verify(monkeypatch, _built(autoscaling_limit_max_cu=8))
+    assert api.patched == [("ep-x", {"endpoint": {
+        "autoscaling_limit_min_cu": nb.CI_MAX_CU,
+        "autoscaling_limit_max_cu": nb.CI_MAX_CU}})]
+
+
+def test_it_leaves_a_compute_already_at_the_ceiling_alone(monkeypatch):
+    api = _verify(monkeypatch, _built(autoscaling_limit_max_cu=nb.CI_MAX_CU))
+    assert api.patched == []
+
+
+def test_an_absent_setting_is_reported_not_treated_as_a_pass(monkeypatch,
+                                                             capsys):
+    """"Neon did not say" and "Neon said 8" are different outcomes. Collapsing
+    them would let a renamed field read as a compute that is correctly pinned."""
+    api = _verify(monkeypatch, _built())
+    assert api.patched == []
+    assert "UNVERIFIED" in capsys.readouterr().err
+
+
+def test_no_read_write_endpoint_is_reported_not_treated_as_a_pass(monkeypatch,
+                                                                 capsys):
+    api = _verify(monkeypatch, {"endpoints": []})
+    assert api.patched == []
+    assert "UNVERIFIED" in capsys.readouterr().err
+
+
+def test_it_says_so_when_the_pin_does_not_take(monkeypatch, capsys):
+    """A PATCH that returns the OLD value is not a repair. Reporting success
+    off the fact that the call returned 200 is the bug this whole check exists
+    to catch, one layer down."""
+    api = _verify(monkeypatch, _built(autoscaling_limit_max_cu=8), after=8)
+    assert api.patched, "the oversized compute was never patched"
+    assert "did not take" in capsys.readouterr().err
+
+
+def test_cmd_create_checks_the_compute_it_was_handed(monkeypatch, capsys):
+    """The read-back is WIRED into cmd_create, not merely unit-tested beside it.
+    A verifier nothing calls is the same as no verifier.
+    """
+    api = _Endpoint()
+    monkeypatch.setattr(nb, "_req", api)
+    err = _create(monkeypatch, capsys,
+                  {"id": "br-x", "expires_at": "2026-09-18T10:00:00Z"},
+                  endpoints=[{"type": "read_write", "id": "ep-x",
+                              "autoscaling_limit_max_cu": 8}])
+    assert api.patched, "cmd_create never checked the compute it was handed"
+    assert "32x" in err, err
