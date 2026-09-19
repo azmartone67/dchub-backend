@@ -201,7 +201,74 @@ def test_a_promoted_draft_starts_counting(tmp_path, monkeypatch):
 # refresh-architecture-map.yml mints it at :110 as "chore/arch-map-<sha>" and
 # matches on that prefix at :104; tests/test_architecture_map_autoheal.py:73
 # already pins the string, so this reuses a constant rather than inventing one.
+#
+# ★ Advisory is not the same as invisible, and it was invisible until 2026-09-19.
+# The skip below carried a full explanation that nobody could read: pytest shows
+# a skip as one `s`, and the unit-tests step runs ~22,000 tests, so a PR author
+# saw a green check and learned about the drift when MAIN went red after their
+# merge. Drift is now ANNOUNCED on the PR — a ::warning annotation and a job
+# summary — while staying advisory, so the author sees it without the generated
+# file having to travel in the branch.
 _HEALER_BRANCH_PREFIX = "chore/arch-map-"
+
+_DRIFT_TITLE = "architecture map drifted"
+
+
+def _workflow_escape(value) -> str:
+    """Workflow-command escaping, so a filename cannot end the annotation early."""
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _drift_message(stale) -> str:
+    """The one-line version, for the annotation."""
+    return (
+        "%s: %s. NOT failing this PR — refresh-architecture-map.yml regenerates it "
+        "on main after the merge. Run `python3 scripts/generate_vault_map.py` if "
+        "you want the diff in your branch." % (_DRIFT_TITLE, ", ".join(stale))
+    )
+
+
+def _announce_drift(stale, request) -> None:
+    """Put PR drift where the author will actually see it. Never raises.
+
+    ★ The annotation goes to STDERR, and that is not a style choice.
+    test_inspector_failure_diagnostics_reach_the_log records the 2026-08-12
+    failure where a block's stdout was redirected into $GITHUB_STEP_SUMMARY and
+    swallowed the ::warning whole. The unit-tests step pipes pytest's stdout
+    through `tee`. stderr is left alone by both.
+
+    ★ pytest captures fd 1 AND fd 2, so a plain write would surface only in the
+    captured-output section of a SKIPPED test, which is exactly where nobody
+    looked. Global capture is suspended for the write.
+
+    The job summary is a file, so it needs neither of those workarounds — and it
+    is the half that renders on the PR's own checks page.
+    """
+    import os
+    import sys
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as fh:
+                fh.write(
+                    "### %s\n\n"
+                    "`docs/architecture/` no longer matches the tree: %s\n\n"
+                    "This does **not** block the PR — `refresh-architecture-map.yml` "
+                    "regenerates it on `main` after the merge. Commit it here only if "
+                    "you want the diff in your branch:\n\n"
+                    "```\npython3 scripts/generate_vault_map.py\n```\n"
+                    % (_DRIFT_TITLE, ", ".join(stale)))
+        except OSError:
+            pass
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        line = "::warning title=%s::%s" % (
+            _workflow_escape(_DRIFT_TITLE), _workflow_escape(_drift_message(stale)))
+        capture = request.config.pluginmanager.getplugin("capturemanager")
+        if capture is None:
+            print(line, file=sys.stderr, flush=True)
+        else:
+            with capture.global_and_fixture_disabled():
+                print(line, file=sys.stderr, flush=True)
 
 
 def _is_pull_request() -> bool:
@@ -224,7 +291,7 @@ def _is_pull_request() -> bool:
     return not head.startswith(_HEALER_BRANCH_PREFIX)
 
 
-def test_the_in_repo_copy_is_current():
+def test_the_in_repo_copy_is_current(request):
     """★THE ACTUAL CI GATE, and the reason an in-repo copy exists at all.
 
     The vault is a local Obsidian directory outside the repo, so a runner has no
@@ -248,6 +315,8 @@ def test_the_in_repo_copy_is_current():
         # Reported, not enforced — refresh-architecture-map.yml regenerates this
         # on main after the merge. Failing here would force the PR to carry the
         # file, which is the conflict generator described above.
+        # ANNOUNCE FIRST: the skip reason below is one `s` in a 22,000-test run.
+        _announce_drift(stale, request)
         import pytest as _pt
         _pt.skip(
             "architecture map drifted (%s) — NOT failing the PR: "
@@ -459,3 +528,140 @@ def test_the_healer_that_justifies_the_exemption_exists():
     text = wf.read_text(encoding="utf-8")
     assert "branches: [main]" in text, "the healer no longer runs on main pushes"
     assert "generate_vault_map" in text, "the healer no longer runs the generator"
+
+
+# ── the advisory PR path has to be LOUD, or it is the same as silent ────────
+#
+# These exist because the failure they guard against already happened: the skip
+# above carried a careful explanation and a PR author never saw it. A guard that
+# reads as wired and reports nothing is the exact shape this file's docstring is
+# about, so the announcement is tested end to end rather than by reading it.
+def _pr_env(monkeypatch, tmp_path):
+    """Env of a PR running in Actions, with a job summary to write to."""
+    summary = tmp_path / "summary.md"
+    summary.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "feat/some-branch")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    return summary
+
+
+def test_drift_reaches_the_job_summary(tmp_path, monkeypatch, request):
+    """The half that renders on the PR's own checks page."""
+    summary = _pr_env(monkeypatch, tmp_path)
+    _announce_drift(["Architecture Map.md"], request)
+    body = summary.read_text(encoding="utf-8")
+    assert "Architecture Map.md" in body, "the summary does not name what drifted"
+    assert "python3 scripts/generate_vault_map.py" in body, \
+        "the summary does not tell the author how to regenerate"
+    assert "not** block" in body, \
+        "the summary does not say the PR is unblocked, so it reads as a failure"
+
+
+def test_the_annotation_goes_to_stderr_not_stdout():
+    """★Mirrors test_inspector_failure_diagnostics_reach_the_log. On 2026-08-12 a
+    ::warning on stdout was eaten whole by a $GITHUB_STEP_SUMMARY redirect; the
+    unit-tests step pipes pytest's stdout through `tee`. stderr survives both."""
+    import inspect
+    src = inspect.getsource(_announce_drift)
+    assert "file=sys.stderr" in src, \
+        "the drift annotation left stderr — a redirect or a pipe will eat it again"
+    # ★ The positive alone is VACUOUS and was measured so: switching the
+    # capture-suspended branch to stdout left this test green, because the
+    # `capture is None` fallback still contained the string it looked for. A
+    # substring check over source passes on the wrong occurrence.
+    assert "sys.stdout" not in src, \
+        "an annotation print went to stdout; the unit-tests step pipes stdout " \
+        "through `tee` and the 2026-08-12 failure had it redirected away entirely"
+    assert "global_and_fixture_disabled" in src, \
+        "pytest capture is no longer suspended, so the annotation lands in the " \
+        "captured output of a skipped test, which is where nobody looked"
+
+
+def test_the_annotation_escapes_a_percent_so_it_cannot_be_truncated():
+    line = _drift_message(["odd%name.md"])
+    assert "%" in line and _workflow_escape(line).count("%25") == 1
+
+
+def test_the_pr_skip_announces_before_it_skips(tmp_path, monkeypatch, request):
+    """★THE WIRING TEST. Everything above tests _announce_drift in isolation; this
+    one proves the gate actually calls it. Deleting the call would leave every
+    other test here green and put the PR author back where they started."""
+    summary = _pr_env(monkeypatch, tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "Architecture Map.md").write_text("what is committed", encoding="utf-8")
+
+    class _Fake:
+        _REPO_DOCS = str(docs)
+
+        @staticmethod
+        def build():
+            return {"Architecture Map.md": "what the tree says now"}
+
+    monkeypatch.setitem(globals(), "_mod", lambda: _Fake)
+    with pytest.raises(pytest.skip.Exception) as excinfo:
+        test_the_in_repo_copy_is_current(request)
+    assert "Architecture Map.md" in str(excinfo.value)
+    assert "Architecture Map.md" in summary.read_text(encoding="utf-8"), \
+        "the gate skipped without announcing — the drift is invisible again"
+
+
+def test_a_clean_tree_announces_nothing(tmp_path, monkeypatch, request):
+    """The announcement must be drift-only; a summary that always says something
+    is noise the author learns to scroll past."""
+    summary = _pr_env(monkeypatch, tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "Architecture Map.md").write_text("identical", encoding="utf-8")
+
+    class _Fake:
+        _REPO_DOCS = str(docs)
+
+        @staticmethod
+        def build():
+            return {"Architecture Map.md": "identical"}
+
+    monkeypatch.setitem(globals(), "_mod", lambda: _Fake)
+    test_the_in_repo_copy_is_current(request)          # passes, does not skip
+    assert summary.read_text(encoding="utf-8") == "", \
+        "a matching map still wrote to the job summary"
+
+
+def test_the_annotation_really_lands_on_stderr_under_pytest(tmp_path):
+    """★THE BEHAVIOURAL ONE. The source checks above are a backstop; this runs
+    the real function inside a real pytest process with fd 1 and fd 2 pointed at
+    different files, which is the only way to see which one it came out of.
+
+    A subprocess because _announce_drift suspends pytest's global capture: while
+    it is suspended, sys.stderr is the ORIGINAL object, so rebinding it from
+    inside this process would be undone before the write. Separate fds are the
+    only honest observation point.
+    """
+    import os
+    import subprocess
+    import sys
+
+    probe = tmp_path / "test_probe.py"
+    probe.write_text(
+        "import importlib.util\n"
+        "_s = importlib.util.spec_from_file_location('vmg', %r)\n"
+        "_m = importlib.util.module_from_spec(_s)\n"
+        "_s.loader.exec_module(_m)\n"
+        "def test_probe(request):\n"
+        "    _m._announce_drift(['PROBE-MARKER.md'], request)\n" % str(_ROOT / "tests" / "test_vault_map_generator.py"),
+        encoding="utf-8")
+    out, err = tmp_path / "out.txt", tmp_path / "err.txt"
+    env = {**os.environ, "GITHUB_ACTIONS": "true"}
+    env.pop("GITHUB_STEP_SUMMARY", None)
+    with open(out, "w") as fo, open(err, "w") as fe:
+        subprocess.run([sys.executable, "-m", "pytest", str(probe), "-q",
+                        "-p", "no:cacheprovider"],
+                       cwd=str(tmp_path), stdout=fo, stderr=fe, env=env, timeout=300)
+    stdout, stderr = out.read_text(encoding="utf-8"), err.read_text(encoding="utf-8")
+    assert "PROBE-MARKER.md" in stderr, (
+        "the ::warning did not reach stderr — pytest capture swallowed it, or it "
+        "was printed somewhere a redirect will eat.\nstdout=%r" % stdout[-400:])
+    assert "PROBE-MARKER.md" not in stdout, \
+        "the ::warning came out on stdout, which the unit-tests step pipes through `tee`"
