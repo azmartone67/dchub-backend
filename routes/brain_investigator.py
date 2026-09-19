@@ -847,7 +847,8 @@ def _source_evidence(question: str) -> list[dict]:
     if (os.environ.get("BRAIN_SOURCE_EVIDENCE") or "").strip() == "0":
         return []
     try:
-        from routes.brain_source_map import resolve_finding_to_sources
+        from routes.brain_source_map import (resolve_finding_to_sources,
+                                             structural_candidates)
     except Exception as e:                       # import must never kill the lane
         logger.warning("brain_investigator: source-map import failed: %s", e)
         return [{
@@ -866,7 +867,31 @@ def _source_evidence(question: str) -> list[dict]:
         logger.warning("brain_investigator: source resolution failed: %s", e)
         cands = []
 
+    # ★★★ DROP THE TEXT TIER BEFORE IT REACHES THE MODEL.
+    #
+    # `text` candidates are bare prose words from the question grepped across
+    # the repo (see _STRUCTURAL_KINDS in brain_source_map for the measurement).
+    # Rendered as "SOURCE CANDIDATE 3 of 5" they are indistinguishable in FORM
+    # from a 0.8 exact-table match, and the confidence number does not carry
+    # what 0.3 means here. Measured on the live queue: every one of twelve
+    # consecutive investigations was handed the same four unrelated files and
+    # refused — correctly, and with no way for the reader to tell the lookup
+    # had failed. (Finding keys are not quoted here on purpose: this file is in
+    # the same index, and naming them would make it a match for them.)
+    #
+    # ★ The noise is NAMED in the miss message below rather than silently
+    #   dropped, so a resolver regression is still visible from the outside.
+    _noise = [c for c in cands if c not in structural_candidates(cands)]
+    cands = structural_candidates(cands)
+
     if not cands:
+        _noise_note = (
+            f" The index did return {len(_noise)} NON-STRUCTURAL hit(s) "
+            f"({', '.join(sorted({str(c.get('file')) for c in _noise})[:5])}) "
+            f"— these are bare words from the question text grepped across the "
+            f"repo, with NO structural relationship to the subject. They are "
+            f"deliberately withheld as candidates and must not be treated as "
+            f"one." if _noise else "")
         return [{
             "claim": f"NO SOURCE RESOLVED for this question. The repo index was "
                      f"searched by route, filename, table, symbol and free text and "
@@ -874,7 +899,7 @@ def _source_evidence(question: str) -> list[dict]:
                      f"lookup — the subject may live in another repo "
                      f"(dchub-frontend / dchub-mcp-server), in config, or in "
                      f"infrastructure. Do NOT guess a file path, and do NOT emit a "
-                     f"remedy block.",
+                     f"remedy block.{_noise_note}",
             "source": "brain_source_map (question-targeted, 0 candidates)",
             "value": 0,
         }]

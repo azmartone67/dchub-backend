@@ -134,3 +134,195 @@ def test_one_file_cannot_eat_the_whole_candidate_budget(repo):
     for f in _files(c):
         counts[f] = counts.get(f, 0) + 1
     assert max(counts.values()) <= 2, f"one file took {max(counts.values())} slots: {counts}"
+
+
+# ── the text tier is not a candidate ───────────────────────────────────────
+#
+# Measured 2026-09-18: twelve consecutive bug-squasher investigations were each
+# handed the same four unrelated files and each refused to emit a remedy, with
+# `0 fixes landed · last merge never` on the board. The cause is that the
+# symbol/text fallback separates the two kinds on one predicate — whether the
+# token contains an underscore — so any bare English word from a prose question
+# produces "candidates" that are just the first files it occurs in.
+class TestStructuralCandidateFilter:
+
+    def _cands(self):
+        return [
+            {"file": "routes/real.py", "line": 10, "match_kind": "table",
+             "confidence": 0.8},
+            {"file": "routes/also_real.py", "line": 20, "match_kind": "symbol",
+             "confidence": 0.45},
+            {"file": "news_digests_read.py", "line": 30, "match_kind": "text",
+             "confidence": 0.3},
+            {"file": "partnership_email_drafts.py", "line": 40,
+             "match_kind": "text", "confidence": 0.3},
+        ]
+
+    def test_text_matches_are_withheld(self):
+        from routes.brain_source_map import structural_candidates
+        out = structural_candidates(self._cands())
+        assert [c["file"] for c in out] == ["routes/real.py",
+                                            "routes/also_real.py"]
+
+    def test_every_structural_kind_survives(self):
+        # A filter that dropped a real kind would starve the lane silently —
+        # the failure one row down from the one being fixed.
+        from routes.brain_source_map import structural_candidates
+        kinds = ("route", "filename", "table", "symbol")
+        out = structural_candidates(
+            [{"file": f"f_{k}.py", "line": 1, "match_kind": k} for k in kinds])
+        assert [c["match_kind"] for c in out] == list(kinds)
+
+    def test_an_all_text_result_resolves_to_nothing(self):
+        # This is the live case: no structural handle at all. The lane must be
+        # able to say "we could not locate this", not hand over four files.
+        from routes.brain_source_map import structural_candidates
+        assert structural_candidates([
+            {"file": "a.py", "line": 1, "match_kind": "text"},
+            {"file": "b.py", "line": 2, "match_kind": "text"}]) == []
+
+    def test_malformed_entries_never_raise(self):
+        from routes.brain_source_map import structural_candidates
+        assert structural_candidates(None) == []
+        assert structural_candidates([{}, {"match_kind": None}]) == []
+
+    # ★★ THE FINDING KEYS BELOW ARE ASSEMBLED AT RUNTIME, NOT WRITTEN OUT.
+    #    The resolver indexes this repo including its tests, so a test that
+    #    spells a live finding key makes ITSELF a symbol match for that finding
+    #    — measured: the first draft of this test put
+    #    tests/test_source_map_finding_shapes.py into the candidate set for the
+    #    key it was asserting about. Splitting the literal keeps the assertion
+    #    honest about production code.
+    CSP_KEY = "csp_" + "violation_recurring"
+    CRAWL_KEY = "ai_platform_" + "crawl_drop:perplexity"
+
+    def test_prose_in_the_question_cannot_manufacture_candidates(self):
+        # End-to-end against the real repo index. Wrapping a finding key in an
+        # ordinary English sentence used to add files whose only relationship to
+        # the subject was a shared word ("firing", "does", "keep").
+        #
+        # ★ This does NOT assert prose ⊇ bare. It is not true and it is not the
+        #   property wanted: prose changes which tokens the resolver picks, so
+        #   the two forms legitimately resolve differently. What must hold is
+        #   that nothing NON-STRUCTURAL survives either way.
+        from routes.brain_source_map import (resolve_finding_to_sources,
+                                             structural_candidates)
+        prose = structural_candidates(resolve_finding_to_sources(
+            f"Why does {self.CSP_KEY} keep firing on dchub.cloud?") or [])
+        assert all(c["match_kind"] != "text" for c in prose), prose
+        assert not any(str(c["file"]).endswith(
+            ("news_digests_read.py", "partnership_email_drafts.py",
+             "redeem_diagnostic.py", "sources.py")) for c in prose), prose
+
+    def test_the_bare_key_still_resolves(self):
+        # The filter must not starve the lane. The detector that OWNS this
+        # finding has to survive it — a filter that returned [] for everything
+        # would pass every noise assertion above and be useless.
+        from routes.brain_source_map import (resolve_finding_to_sources,
+                                             structural_candidates)
+        out = structural_candidates(
+            resolve_finding_to_sources(self.CSP_KEY) or [])
+        assert out, "the bare finding key must still locate its detector"
+        assert any("brain_consistency_radar" in str(c["file"]) for c in out), out
+
+    def test_no_file_that_merely_describes_a_finding_is_its_answer(self):
+        # A comment or test that quotes its subject becomes its subject. Caught
+        # twice while writing this fix — once in brain_source_map.py, once here.
+        from routes.brain_source_map import (resolve_finding_to_sources,
+                                             structural_candidates)
+        for q in (self.CSP_KEY, self.CRAWL_KEY):
+            files = {str(c["file"]) for c in structural_candidates(
+                resolve_finding_to_sources(q) or [])}
+            assert not any(f.endswith(("brain_source_map.py",
+                                       "brain_investigator.py",
+                                       "test_source_map_finding_shapes.py"))
+                           for f in files), (q, files)
+
+
+# ── the wiring, not just the helper ───────────────────────────────────────
+#
+# ★★★ ADDED AFTER A SURVIVING MUTATION. The filter helper above was fully
+# covered while `_source_evidence` — the function that actually decides what
+# reaches the model — was not: replacing its filter call with a no-op left all
+# 42 tests green. A tested helper wired to nothing is the defect this whole
+# change is about, committed one layer up.
+class TestInvestigatorWithholdsTheTextTier:
+
+    MIXED = [
+        {"file": "routes/real.py", "line": 10, "match_kind": "table",
+         "confidence": 0.8, "snippet": "CREATE TABLE real"},
+        {"file": "news_digests_read.py", "line": 30, "match_kind": "text",
+         "confidence": 0.3, "snippet": "def unrelated():"},
+        {"file": "partnership_email_drafts.py", "line": 40,
+         "match_kind": "text", "confidence": 0.3, "snippet": "def other():"},
+    ]
+
+    def _run(self, monkeypatch, cands):
+        import routes.brain_source_map as sm
+        from routes.brain_investigator import _source_evidence
+        monkeypatch.setattr(sm, "resolve_finding_to_sources",
+                            lambda *_a, **_k: list(cands))
+        return _source_evidence("any question at all")
+
+    def test_no_text_tier_file_reaches_the_model(self, monkeypatch):
+        blob = " ".join(str(e.get("claim") or "")
+                        for e in self._run(monkeypatch, self.MIXED))
+        assert "routes/real.py" in blob
+        assert "news_digests_read.py" not in blob, blob[:400]
+        assert "partnership_email_drafts.py" not in blob, blob[:400]
+
+    def test_an_all_text_result_is_reported_as_a_measured_miss(self, monkeypatch):
+        noise = [c for c in self.MIXED if c["match_kind"] == "text"]
+        out = self._run(monkeypatch, noise)
+        blob = " ".join(str(e.get("claim") or "") for e in out)
+        assert "NO SOURCE RESOLVED" in blob, blob[:400]
+        # Named, not silently dropped — a resolver regression must stay visible.
+        assert "news_digests_read.py" in blob, blob[:400]
+        assert "must not be treated as one" in blob, blob[:400]
+        assert all(e.get("value") == 0 for e in out), out
+
+    def test_a_real_hit_is_never_downgraded_to_a_miss(self, monkeypatch):
+        blob = " ".join(str(e.get("claim") or "")
+                        for e in self._run(monkeypatch, self.MIXED))
+        assert "NO SOURCE RESOLVED" not in blob, blob[:400]
+
+
+# ── Layer 5 uses the same filter ──────────────────────────────────────────
+#
+# ★★★ ALSO ADDED AFTER A SURVIVING MUTATION. Unwrapping layer 5's resolver call
+# left all 45 tests green, so the propose lane could have gone back to spending
+# a Claude call per finding to buy a refusal with nobody noticing.
+#
+# ★ This is an AST check, not a substring check. `"structural_candidates" in
+#   src` would be satisfied by the import line alone, and by this comment.
+class TestLayer5ResolverIsAlwaysFiltered:
+
+    def _calls(self):
+        import ast, inspect, routes.brain_v2_layer5 as l5
+        tree = ast.parse(inspect.getsource(l5))
+        raw, wrapped = [], []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name == "resolve_finding_to_sources":
+                raw.append(node)
+            if name == "structural_candidates":
+                for a in node.args:
+                    if (isinstance(a, ast.Call)
+                            and (getattr(a.func, "id", None)
+                                 or getattr(a.func, "attr", None))
+                            == "resolve_finding_to_sources"):
+                        wrapped.append(a)
+        return raw, wrapped
+
+    def test_every_resolver_call_is_wrapped_by_the_filter(self):
+        raw, wrapped = self._calls()
+        assert raw, "the resolver call vanished — this guard would be vacuous"
+        unwrapped = [n for n in raw if n not in wrapped]
+        assert not unwrapped, (
+            "brain_v2_layer5 calls resolve_finding_to_sources without "
+            "structural_candidates at line(s) "
+            f"{[n.lineno for n in unwrapped]} — the text tier would reach the "
+            "model again and buy a refusal per finding")

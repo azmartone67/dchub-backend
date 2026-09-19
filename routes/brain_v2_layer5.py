@@ -1330,8 +1330,23 @@ def learn_backend_issues():
                     break
         if not source_locations:
             try:
-                from routes.brain_source_map import resolve_finding_to_sources
-                resolved_candidates = resolve_finding_to_sources(issue)
+                from routes.brain_source_map import (
+                    resolve_finding_to_sources, structural_candidates)
+                # ★★★ THE SAME FILTER THE INVESTIGATOR USES — and the reason r37
+                # below did not hold. r37 (2026-05-31) fixed the case where a
+                # finding NAMES a .py file, after the live run handed Claude
+                # news_digests_read.py / partnership_email_drafts.py for an
+                # ai_interconnection.py finding. Findings keyed on a DETECTOR
+                # name have no filename to resolve and still fell through to
+                # the text tier — bare prose words grepped across the repo — so
+                # the same two files were still being served on 2026-09-18.
+                #
+                # Feeding them costs a Claude call to buy a refusal, and
+                # records an outcome that reads like a judgement about the code
+                # rather than a failed lookup. `no_source_map` is the honest
+                # outcome and the board already counts it.
+                resolved_candidates = structural_candidates(
+                    resolve_finding_to_sources(issue))
             except Exception:
                 resolved_candidates = []
             # De-dupe by file (preserve rank order), cap at 2 to bound token

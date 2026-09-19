@@ -460,6 +460,61 @@ def _distinctive_tokens(text: str, limit: int = 6) -> list:
 # ──────────────────────────────────────────────────────────────────
 # The resolver.
 # ──────────────────────────────────────────────────────────────────
+# ── candidate tiers ───────────────────────────────────────────────
+#
+# ★★★ "text" IS NOT A WEAK CANDIDATE. IT IS NOT A CANDIDATE.
+#
+# In the symbol/text fallback the ONLY thing separating the two kinds is
+# whether the token contains an underscore:
+#
+#     kind = "symbol" if "_" in tok else "text"
+#
+# So `text` means: a bare English word out of the question's prose was grepped
+# across the repo and these are the first files it happened to occur in. There
+# is no structural relationship to the subject whatsoever — change the wording
+# of the question and you get different files.
+#
+# Measured 2026-09-18 on the live bug-squasher queue: twelve consecutive
+# investigations — spanning CSP violations, per-platform crawl drops, data
+# freshness, product gaps and tool sunsets — were each handed the SAME four
+# unrelated files and each correctly refused to emit a remedy.
+# `0 fixes landed · last merge never`.
+#
+# ★★ THE FINDING KEYS AND THE WRONG FILENAMES ARE DELIBERATELY NOT SPELLED
+#    OUT ABOVE. Writing them here indexes THIS file as a symbol match for the
+#    very findings it describes — measured while writing this comment:
+#    brain_source_map.py became a candidate for two of them. A comment that
+#    quotes its subject becomes its subject. See the PR for the literals.
+#
+# brain_v2_layer5:1310 recorded this exact symptom on 2026-05-31 — naming the
+# same two files — and fixed only the case where a finding NAMES a .py file.
+# Findings keyed on a detector name still fall through to here.
+#
+# A text hit rendered beside a 0.8 table match reads as a peer to the model.
+# The cost is not a wrong patch — the model refuses — it is that "we could not
+# locate this" becomes indistinguishable from "we looked and the code is fine",
+# which is the exact collapse every other surface in this repo refuses.
+_STRUCTURAL_KINDS = ("route", "filename", "table", "symbol")
+
+
+def structural_candidates(cands: list) -> list:
+    """The candidates that have a STRUCTURAL relationship to the subject.
+
+    Shared by every consumer that feeds a model, so the investigator and
+    Layer 5 cannot disagree about what counts as a located file. The raw list
+    is left untouched for /api/v1/brain/source-map, where seeing the noise tier
+    is the diagnostic.
+    """
+    out = []
+    for c in cands or []:
+        try:
+            if (c.get("match_kind") or "") in _STRUCTURAL_KINDS:
+                out.append(c)
+        except Exception:  # noqa: BLE001 - never raise, this is a filter
+            continue
+    return out
+
+
 def resolve_finding_to_sources(finding: dict, repo_root: str = "") -> list:
     """Resolve an abstract brain finding to ranked concrete source
     locations.
