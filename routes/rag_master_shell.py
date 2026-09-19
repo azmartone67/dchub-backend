@@ -258,6 +258,20 @@ def _ensure_tables() -> bool:
                     detail                JSONB
                 )
             """)
+            # ★2026-09-19: the day-claim that actually makes the tick
+            # once-per-day. The 20h check in master_tick() reads the previous
+            # snapshot and the blocking row is not written until _persist(),
+            # which runs AFTER tier3_act() has already fired — so two
+            # heartbeats landing in the same second both read a stale prev,
+            # both pass, and both act. PRIMARY KEY on the UTC day makes the
+            # claim atomic, and it is taken BEFORE the action, which is the
+            # only ordering that can stop a double nudge.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS rag_tick_claims (
+                    utc_day     DATE PRIMARY KEY,
+                    claimed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
         return True
     except Exception:
         return False
@@ -770,6 +784,94 @@ def rag_score(levers: dict) -> float:
     return round(100.0 * (0.7 * health_avg + 0.3 * reach), 2)
 
 
+def _claim_utc_day(force: bool = False) -> tuple[bool, str]:
+    """Atomically claim today (UTC) for exactly one tick. Returns (won, reason).
+
+    WHY A SEPARATE TABLE and not a unique index on rag_snapshots: the snapshot
+    row is written by _persist(), which runs AFTER tier3_act() has fired. A
+    unique index there rejects the duplicate ROW but not the duplicate NUDGE —
+    the reindex/deep-dive fire has already left the box. The claim has to be
+    takeable before the action, so it lives in its own row.
+
+    FAILS CLOSED. If the claim cannot be taken because the DB is unreachable we
+    skip the tick rather than act unguarded: for an ARMED shell a missed day is
+    cheap and a double fire is not. A conflict ("someone else has today") and an
+    outage are reported as DIFFERENT reasons so the operator can tell a healthy
+    dedupe from a broken one.
+    """
+    # ★ _ensure_tables() FIRST and not in _persist() alone: the claim runs BEFORE
+    # _persist(), so on the first tick after deploy rag_tick_claims does not exist
+    # yet, the INSERT raises, and a fail-closed claim skips the tick — which never
+    # reaches _persist() to create the table. The shell would brick itself
+    # permanently on exactly the deploy that was meant to protect it.
+    if not _ensure_tables():
+        return False, "claim_unavailable"
+    c = _conn()
+    if c is None:
+        return False, "claim_unavailable"
+    try:
+        with c.cursor() as cur:
+            # The day is computed here and PASSED, not spelled as a SQL literal.
+            # regression_lint's insert-no-on-conflict rule matches
+            # INSERT INTO <tbl> up to the first quote, so an inline date literal
+            # puts ON CONFLICT outside the match and the rule reports an
+            # idempotent INSERT as a non-idempotent one. The module already
+            # trusts the app clock (the 20h gate above uses it), so this loses
+            # nothing. Whitelisting the table instead is explicitly the wrong
+            # move — the rule's own comment says so.
+            today = datetime.now(timezone.utc).date()
+            if force:
+                cur.execute("DELETE FROM rag_tick_claims WHERE utc_day = %s",
+                            (today,))
+            cur.execute("""
+                INSERT INTO rag_tick_claims (utc_day)
+                VALUES (%s)
+                ON CONFLICT (utc_day) DO NOTHING
+                RETURNING utc_day
+            """, (today,))
+            return (True, "claimed") if cur.fetchone() else (False, "already_ran_today")
+    except Exception:
+        return False, "claim_unavailable"
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _levers_off() -> list:
+    """Which levers are fenced IN THIS PROCESS. tier3_act() consults _lever_off()
+    per lever, but nothing SURFACED that, so an operator reading mode="armed"
+    could not see that a branch was switched off underneath it."""
+    return [n for n in ("freshness", "coverage", "retrieval", "gap") if _lever_off(n)]
+
+
+def _arm_scope() -> dict:
+    """WHOSE env the mode/levers_off above actually describe.
+
+    ★ /master-state is a GET and is served by whichever process answers it. The
+    TICK is not: '/api/v1/admin/rag/master-tick' is in main.py's
+    _WORKER_PROXY_POST_PATHS, so on a DCHUB_ROLE=web box the POST is relayed to
+    DCHUB_WORKER_INTERNAL_URL and tier3_act() runs — and reads RAG_MASTER_ARM and
+    RAG_LEVER_*_OFF — in the WORKER's environment.
+
+    So on web, `mode` has always described a process that does not act. It read
+    "armed" on 2026-09-19 from the web service while the worker was the one
+    arming; the answer happened to agree, and the evidence did not support it.
+    A fence set on the wrong service reads identically to a fence that works.
+
+    This does not fix that — web cannot read the worker's env — it LABELS it, so
+    a reader knows whether they are looking at the actor.
+    """
+    role = (os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all")
+    return {
+        "role": role,
+        "is_actor": role != "web",
+        "note": ("this process does NOT run the tick — it relays master-tick to "
+                 "the worker, whose env governs the action; read mode/levers_off "
+                 "there" if role == "web" else
+                 "this process runs the tick, so mode/levers_off govern it"),
+    }
+
+
 def _prev_snapshot() -> dict | None:
     c = _conn()
     if c is None:
@@ -858,6 +960,23 @@ def master_tick():
                                mode=("armed" if _act_enabled() else "shadow")), 200
         except Exception:
             pass
+
+    # ★2026-09-19: the check ABOVE cannot stop a concurrent double-fire, and on
+    # 2026-09-17 and 2026-09-09 it did not: two snapshots landed 1s and 3s apart
+    # (06:00:54/06:00:55, 06:00:37/06:00:40) — 2 of 18 days. It reads `prev` and
+    # the row that would block the second tick is not written until _persist(),
+    # below, AFTER tier3_act() has fired. Both requests read the same stale prev,
+    # both passed, both acted. Harmless while the shell was SHADOW; the flag went
+    # to RAG_MASTER_ARM=1 on 2026-09-18, and the guard's own comment says it
+    # exists so an armed shell does not "re-fire the reindex/deep-dive nudges".
+    # So take an ATOMIC claim on the UTC day, and take it BEFORE the action.
+    _won, _why = _claim_utc_day(force=request.args.get("force") in ("1", "true"))
+    if not _won:
+        return jsonify(ok=True, skipped=_why,
+                       mode=("armed" if _act_enabled() else "shadow"),
+                       levers_off=_levers_off(),
+                       arm_scope=_arm_scope()), 200
+
     measure = tier1_measure(prev)
     levers = tier2_score_levers(measure)
     action = tier3_act(measure, levers)
@@ -886,6 +1005,8 @@ def master_tick():
         tier3_action=action,
         persisted=persisted,
         mode=("armed" if _act_enabled() else "shadow"),
+        levers_off=_levers_off(),
+        arm_scope=_arm_scope(),
         generated_at=datetime.now(timezone.utc).isoformat(),
     ), 200
 
@@ -907,6 +1028,8 @@ def master_state():
             latest=(rows[0] if rows else None),
             history=rows,
             mode=("armed" if _act_enabled() else "shadow"),
+        levers_off=_levers_off(),
+        arm_scope=_arm_scope(),
         ), 200
     except Exception as e:
         return jsonify(error=f"{type(e).__name__}: {str(e)[:160]}"), 500
