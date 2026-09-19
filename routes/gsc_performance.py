@@ -80,9 +80,21 @@ gsc_perf_bp = Blueprint("gsc_performance", __name__)
 DEFAULT_WINDOW_DAYS = int(os.environ.get("GSC_PERF_WINDOW_DAYS", "5"))
 
 # Per-day cap for the query and page grains. The site grain is always 1 row/day.
-# 500 keeps a year of daily ingest well inside a few hundred thousand rows while
-# still covering the long tail that matters for content decisions.
-DEFAULT_ROW_LIMIT = int(os.environ.get("GSC_PERF_ROW_LIMIT", "500"))
+#
+# ★★★ 2026-09-19: 500 was seven times too small and it silently broke the
+# trailing window above. The budget below is `row_limit * days` requested as ONE
+# top-K list over the whole (date,page) grid, and GSC fills that list from the
+# window START — so `5 days x 500 = 2,500` rows against a real ~3,400 pages/day
+# meant every daily run refreshed only the OLDEST day of its window and the
+# other four received nothing. The 72 h self-correction DEFAULT_WINDOW_DAYS
+# exists for could therefore never happen.
+#
+# Measured per-day distinct page rows, 2026-07-12..2026-09-14 (GSC, live):
+# min 1,973 / median ~3,100 / max 4,098 (2026-08-11). 5,000 clears the measured
+# peak with headroom, and a short page still ends the fetch early on quiet days.
+# The 480-day seed is unaffected: _wanted there is far past _SEED_ROW_CEILING,
+# which still caps it at 100,000.
+DEFAULT_ROW_LIMIT = int(os.environ.get("GSC_PERF_ROW_LIMIT", "5000"))
 
 _API = "https://www.googleapis.com/webmasters/v3/sites/{site}/searchAnalytics/query"
 
@@ -252,13 +264,20 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         ("page",  ["date", "page"],  _per_grain),
     )
 
-    written, errors, scanned = {}, {}, {}
+    written, errors, scanned, truncated = {}, {}, {}, {}
     for label, dims, limit in grains:
         rows, err = _query_gsc(token, s, e, dims, limit)
         if err:
             errors[label] = err
             continue
         scanned[label] = len(rows)
+        # ★ A fetch that stopped on its own budget did NOT read the window — it
+        # read a top-K PREFIX of it, and GSC fills that prefix from the window
+        # start, so the newest days receive nothing at all. `rows_written` still
+        # reports a healthy-looking five figures, which is why this ran unseen
+        # from 2026-08-31 to 2026-09-19. Measure the EFFECT, not the intent.
+        if len(rows) >= limit:
+            truncated[label] = {"limit": limit, "returned": len(rows)}
 
         payload = []
         for r in rows:
@@ -320,6 +339,17 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
                 (proven or {}).get("error") if isinstance(proven, dict) else proven
                 or "refresh_proven_pages reported success:false")[:300]
 
+    # ★ On a NON-seed window a budget truncation is a defect, not a caveat: the
+    # window the caller asked for was not read. A seed deliberately caps at
+    # _SEED_ROW_CEILING and reports that through `rows_capped` instead, so it is
+    # excluded here rather than being made permanently red.
+    _ceiling_bit = _wanted > _SEED_ROW_CEILING
+    if truncated and not _ceiling_bit:
+        errors["window_truncated"] = (
+            f"budget {_per_grain} rows did not cover {int(days)}d for "
+            f"{sorted(truncated)} — GSC fills from the window START, so the "
+            f"newest days received nothing. Raise GSC_PERF_ROW_LIMIT.")
+
     return {
         # A partial failure is a failure. Reporting success:true with one grain
         # missing is exactly the "green board, dead lane" pattern the audit found.
@@ -331,6 +361,8 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         "proven_pages": proven,
         # Say so when the ceiling bit. A silent truncation reads as full
         # coverage, which is the failure mode this whole module exists to refuse.
+        # Which grains stopped on their budget rather than on a short page.
+        "window_truncated": truncated or None,
         "rows_capped": ({"per_grain_ceiling": _SEED_ROW_CEILING,
                          "wanted": _wanted,
                          "note": "query/page grains were capped; the long tail "
