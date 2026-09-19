@@ -991,12 +991,12 @@ def _pending(cur, cap):
     per-corpus budget. Allocates the cap roughly EVENLY across corpora so one
     large corpus (facilities) doesn't starve the others until it's done. A
     corpus whose columns don't resolve is skipped (rollback), never fatal."""
-    rows = []
-    per = max(1, cap // max(1, len(CORPORA) + len(CHUNKED_CORPORA)))
-    for src, spec in CORPORA.items():
-        if len(rows) >= cap:
-            break
-        lim = min(per, cap - len(rows))
+    def _take(src, spec, lim, exclude=None):
+        """One corpus's pending rows, optionally excluding ids already taken.
+
+        `exclude` is what makes the second pass safe: the rows are unordered
+        for corpora with no fresh_col, so OFFSET would not be stable — the
+        same rows could come back twice and be embedded twice in one run."""
         fresh = spec.get("fresh_col")
         tbl = _src_table(src, spec)
         pick = "e.id IS NULL"
@@ -1004,20 +1004,53 @@ def _pending(cur, cap):
         if fresh and _fresh_col_active(cur, tbl, fresh):
             pick = f"(e.id IS NULL OR t.{fresh} > e.updated_at)"
             order = "ORDER BY (e.id IS NULL) DESC "
+        skip = f"AND ({spec['id']}) <> ALL(%s) " if exclude else ""
         q = (f"SELECT '{src}', ({spec['id']}) AS sid, '{spec['kind']}', "
              f"left({spec['text']}, 1600) "
              f"FROM {tbl} t "
              f"LEFT JOIN brain_corpus_embeddings e "
              f"  ON e.source_table='{src}' AND e.source_id=({spec['id']}) "
              f"WHERE {pick} AND ({spec['where']}) "
+             f"{skip}"
              f"{order}"
              f"LIMIT {int(lim)}")
         try:
-            cur.execute(q)
-            rows += cur.fetchall()
+            cur.execute(q, ([str(x) for x in exclude],) if exclude else None)
+            return cur.fetchall()
         except Exception:
             try: cur.connection.rollback()
             except Exception: pass
+            return []
+
+    rows = []
+    per = max(1, cap // max(1, len(CORPORA) + len(CHUNKED_CORPORA)))
+    taken, hungry = {}, []
+    for src, spec in CORPORA.items():
+        if len(rows) >= cap:
+            break
+        lim = min(per, cap - len(rows))
+        got = _take(src, spec, lim)
+        rows += got
+        taken[src] = [r[1] for r in got]
+        # Filled its whole slice, so it probably has more waiting.
+        if len(got) >= lim:
+            hungry.append(src)
+
+    # ★ 2026-09-19 — SECOND PASS: hand the unused budget back.
+    # The even split above stops a big corpus starving the others, but it also
+    # capped every corpus at cap/18 even when the other 17 had nothing pending,
+    # so a backlog in ONE corpus drained at cap/18 per run however high the cap
+    # was set. Measured on `announcements`: two cron runs at cap=500 embedded
+    # 193 rows total (19% of budget) of which exactly 26/run were announcements
+    # — 500//18 — against a 1,383-row backlog that grows daily. That is ~9 days
+    # to drain a backfill the budget could absorb in three runs.
+    #
+    # Fairness is preserved because this runs only AFTER every corpus has had
+    # its slice; all this spends is budget nobody else asked for.
+    for src in hungry:
+        if len(rows) >= cap:
+            break
+        rows += _take(src, CORPORA[src], cap - len(rows), taken.get(src))
     return rows
 
 
