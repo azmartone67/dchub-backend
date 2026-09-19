@@ -427,6 +427,31 @@ def test_a_failed_ledger_read_is_null_not_zero(monkeypatch):
     assert body["count"] is None and "ledger unavailable" in body["basis"]
 
 
+def test_changes_since_clamps_beyond_30_days(monkeypatch):
+    """The 30-day ceiling on /api/v1/changes/since is a load bound on a PUBLIC
+    endpoint, and nothing covered it — removing it was invisible. Found while
+    fixing the pinned-date bomb above: a mutation deleting the clamp left the
+    whole file green.
+
+    Written RELATIVE on purpose. A test that pins an absolute date against a
+    rolling window is the bug it is guarding."""
+    cf = _cf()
+    cur = _DispatchCur({"brain_predictions_log": []})
+    monkeypatch.setattr(cf, "open_conn", lambda *a, **k: _Conn(cur))
+    before = dt.datetime.now(_UTC)
+    too_old = (before - dt.timedelta(days=60)).isoformat().replace("+00:00", "Z")
+    with _app(cf.changes_feed_bp).test_client() as c:
+        body = c.get(f"/api/v1/changes/since?since={too_old}").get_json()
+    after = dt.datetime.now(_UTC)
+    assert body["since_mode"] == "clamped-30d", (
+        f"a 60-day-old since was accepted as {body['since_mode']} — the "
+        f"public endpoint will scan further back than its stated ceiling")
+    got = dt.datetime.fromisoformat(body["since"])
+    # The clamp is computed from now(), so bound it by the call window rather
+    # than comparing to a second now() that has already moved on.
+    assert before - dt.timedelta(days=30) <= got <= after - dt.timedelta(days=30)
+
+
 def test_anon_changes_since_carries_the_retraction(monkeypatch):
     cf = _cf()
     judged = _WS + dt.timedelta(days=2)
@@ -436,8 +461,20 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     })
     conn = _Conn(cur)
     monkeypatch.setattr(cf, "open_conn", lambda *a, **k: conn)
+    # ★ RELATIVE, not pinned (2026-09-19). This sent
+    # `since=2026-08-20T00:00:00Z` and asserted the parsed value came back
+    # verbatim — but changes_feed._parse_since CLAMPS anything older than 30
+    # days to `now - 30d`. A pinned absolute date inside a ROLLING window is a
+    # time bomb with a known fuse: it passed for 30 days, then at
+    # 2026-09-19 00:00 UTC `now - 30d` crossed 2026-08-20 00:00 and the call
+    # started returning the clamp (a wall-clock timestamp), reddening main for
+    # every open PR. The date here is incidental to what the test checks — it
+    # only has to be inside the window — so derive it.
+    since_dt = (dt.datetime.now(_UTC).replace(microsecond=0)
+                - dt.timedelta(days=10))
+    since_raw = since_dt.isoformat().replace("+00:00", "Z")
     with _app(cf.changes_feed_bp).test_client() as c:
-        rv = c.get("/api/v1/changes/since?since=2026-08-20T00:00:00Z")
+        rv = c.get(f"/api/v1/changes/since?since={since_raw}")
     assert rv.status_code == 200
     body = rv.get_json()
     claims = body["claims"]
@@ -448,7 +485,12 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     assert body["drill_deeper"]["claims_full"] == "/api/v1/ops/claims"
     sql, params = _sql(cur, "brain_predictions_log")[0]
     assert "outcome_at >= %s" in sql and "IN ('confirmed', 'retracted')" in sql
-    assert params[0] == "CLAIM" and params[1] == dt.datetime(2026, 8, 20, tzinfo=_UTC)
+    assert params[0] == "CLAIM" and params[1] == since_dt
+    # Name the clamp explicitly: if the window ever swallows this date again,
+    # fail saying WHY rather than on an opaque datetime mismatch.
+    assert body["since_mode"] == "iso", (
+        f"since was clamped ({body['since_mode']}) — the test date fell "
+        f"outside _parse_since's 30-day window again")
     # The block is additive: the lanes and their counts are untouched.
     assert "counts" in body and "diff" in body
 
