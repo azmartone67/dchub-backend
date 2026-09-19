@@ -539,6 +539,55 @@ def validate_api_key(api_key):
                 pass
 
 
+# ★2026-09-19. THE WEB PATH MUST NOT OUTRANK THE API PATH.
+# main.py:handle_payment_failed demotes `api_keys.rate_limit_tier` and
+# deliberately PRESERVES `users.plan` ("so a successful retry will restore
+# them"). But get_user_plan() — the web-session / JWT path — reads users.plan and
+# treated only ('canceled','unpaid') as free. Measured 2026-09-19: an account
+# stamped demoted_reason='dunning_prior_payer' since 2026-08-23 was serving
+# `founding` (rank 4, api_tier 'pro', Pro-equivalent limits) on the website while
+# flask_mcp_endpoints.py:1463 and ai_deals_api.py:54 — which read
+# rate_limit_tier — correctly served free. One account, two answers, decided by
+# which surface the caller happened to hit.
+#
+# ★ THE PREDICATE IS A CONJUNCTION, AND BOTH HALVES ARE LOAD-BEARING:
+#
+#   status alone is WRONG. handle_payment_failed sets
+#   subscription_status='payment_failed' on the FIRST failure, while the demote
+#   fires at DEMOTE_AFTER_N_FAILURES (>=4 for a prior payer). Its docstring
+#   grants real customers "~21 days of full paid access" through Stripe's retry
+#   cycle ON PURPOSE. Keying on the status alone would cut a paying customer's
+#   web access on failure #1 and delete that grace — a harsher web path instead
+#   of an agreeing one.
+#
+#   the stamp alone is WRONG TOO. r46-restore clears demoted_at only for
+#   demoted_reason='dunning_prior_payer'; a 'first_charge_never_succeeded' stamp
+#   has no such clearer. Keying on the stamp alone could lock someone out of the
+#   website permanently after they finally paid. handle_invoice_paid sets
+#   subscription_status='active', so requiring the status means recovery is
+#   guaranteed by the payment itself, whether or not anything clears the stamp.
+#
+# So: demoted AND still unresolved. That is exactly the window in which the API
+# path is already serving free.
+DUNNING_DEMOTE_STATUS = 'payment_failed'
+
+
+def resolve_effective_plan(plan, status, role, demoted_at):
+    """The tier an account is entitled to, given its stored columns.
+
+    Hoisted out of get_user_plan() so it can be tested without a database, and
+    so the web path's rule is one readable predicate rather than a chain buried
+    in a connection handler.
+    """
+    if role == 'admin':
+        return 'admin'
+    if status in ('canceled', 'unpaid'):
+        return 'free'
+    if status == DUNNING_DEMOTE_STATUS and demoted_at is not None:
+        return 'free'
+    return plan or 'free'
+
+
 def get_user_plan(user_id=None, email=None):
     """Get a user's current plan from Neon — direct psycopg2 (bypasses db_utils)."""
     if not user_id and not email:
@@ -556,27 +605,24 @@ def get_user_plan(user_id=None, email=None):
         row = None
 
         if user_id:
-            c.execute("SELECT plan, subscription_status, role FROM users WHERE id = %s", (str(user_id),))
+            c.execute("SELECT plan, subscription_status, role, demoted_at FROM users WHERE id = %s", (str(user_id),))
             row = c.fetchone()
         if not row and email:
-            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (email,))
+            c.execute("SELECT plan, subscription_status, role, demoted_at FROM users WHERE email = %s", (email,))
             row = c.fetchone()
         if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
-            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (user_id,))
+            c.execute("SELECT plan, subscription_status, role, demoted_at FROM users WHERE email = %s", (user_id,))
             row = c.fetchone()
 
         if not row:
             return 'free'
 
-        plan_val = row[0] or 'free'
-        status_val = row[1] or ''
-        role_val = row[2] or ''
-
-        if role_val == 'admin':
-            return 'admin'
-        if status_val in ('canceled', 'unpaid'):
-            return 'free'
-        return plan_val
+        return resolve_effective_plan(
+            row[0] or 'free',
+            row[1] or '',
+            row[2] or '',
+            row[3] if len(row) > 3 else None,
+        )
 
     except Exception as e:
         import logging
