@@ -198,3 +198,114 @@ def test_the_price_is_derived_not_typed(live, monkeypatch):
         "the price in registry copy did not follow tier_registry — it is a "
         "hand-typed literal, which is the defect this rung was built to avoid")
     assert real("pro") not in desc
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ★2026-09-19 — the POSITIONING clause, and the cap cliff that pays for it.
+#
+# A registry listing is read inside a directory, beside other directories. The
+# opening clause was "DC Hub is the data layer for data-center infrastructure",
+# which does not distinguish DC Hub from the thing the reader is already
+# looking at. It now says what DC Hub is NOT.
+#
+# The clause is only worth anything if it reaches the registries with the
+# TIGHTEST caps, and adding length to `lean` is exactly how it would fail to:
+# `full` + the Capacity Source blurb sat at 496 of the 500 that smithery,
+# pulsemcp and every unknown registry use. A longer opening alone measures 510
+# and silently demotes all three to `lean` — trading the tier sentence for the
+# positioning one. It is paid for out of the tail instead.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Retyped, not imported: importing the phrase from the module under test would
+# assert the module equals itself.
+POSITIONING = "not a static directory"
+TIGHTEST_CAP = 500
+
+
+# cursor_directory's 280-char cap cannot hold the clause. Measured, not
+# assumed: the Capacity Source blurb alone is 119 of those 280, and the
+# tightest honest phrasing that keeps the four floors lands at 279 today and
+# 284 after one canon move. Forcing it in would buy the positioning sentence by
+# dropping either Capacity Source or a published floor — the trade the `micro`
+# rung already refuses. So it is a NAMED exclusion with its cap pinned below,
+# not a silent gap.
+CLAUSE_CANNOT_FIT = {"cursor_directory": 280}
+
+
+def test_the_positioning_clause_reaches_every_registry_that_can_hold_it(live):
+    """The whole point is the registries that are themselves directories."""
+    reached = 0
+    for registry, cap in mpc._DESCRIPTION_CHAR_CAPS.items():
+        desc = mpc._build_canonical_description(registry)
+        assert len(desc) <= cap, f"{registry}: {len(desc)} chars over cap {cap}"
+        if registry in CLAUSE_CANNOT_FIT:
+            # The exclusion still has to publish the things it was excluded to
+            # protect, or it is not a trade — it is just a worse listing.
+            assert BLURB in desc, f"{registry} lost Capacity Source anyway"
+            assert LIVE_PUBLIC["facilities"] in desc
+            continue
+        assert POSITIONING in desc, (
+            f"{registry} (cap {cap}) does not say what DC Hub is not: {desc!r}")
+        assert "MCP infrastructure layer for AI agents" in desc, (
+            f"{registry} dropped the positive half of the positioning clause")
+        reached += 1
+    assert reached >= 6, (
+        f"the clause reached only {reached} registries — if the ladder shifted, "
+        "this test would otherwise pass by excluding everything")
+
+
+def test_the_named_exclusion_cannot_outlive_its_reason(live):
+    """An exemption with no expiry is how a workaround becomes permanent. The
+    ONLY reason cursor_directory is excluded is its 280-char cap; if that cap
+    is ever raised, this fails and the exclusion gets re-decided rather than
+    inherited."""
+    for registry, cap_when_excluded in CLAUSE_CANNOT_FIT.items():
+        assert mpc._DESCRIPTION_CHAR_CAPS.get(registry) == cap_when_excluded, (
+            f"{registry}'s cap moved from {cap_when_excluded} to "
+            f"{mpc._DESCRIPTION_CHAR_CAPS.get(registry)}. Re-measure whether "
+            "the positioning clause fits now and drop it from "
+            "CLAUSE_CANNOT_FIT if it does.")
+
+
+def test_positioning_was_not_paid_for_with_the_tier_sentence(live):
+    """THE REGRESSION THIS FILE EXISTS TO CATCH, in its newest shape.
+
+    A silent demotion looks like success: every assertion about the clause
+    passes, the description still fits, and the 500-cap registries quietly stop
+    publishing the price a reader converts on. Pin the rung, not the length.
+    """
+    for registry in ("smithery", "pulsemcp", "_default"):
+        desc = mpc._build_canonical_description(registry)
+        assert FULL_ONLY in desc, (
+            f"{registry} fell off the `full` rung — the positioning clause was "
+            f"paid for with the tier sentence. Got {len(desc)} chars: {desc!r}")
+        assert BLURB in desc, f"{registry} lost Capacity Source to the clause"
+        # ...and the canonical floors are all still there, which is the other
+        # way the ladder could have paid for it.
+        for floor in (LIVE_PUBLIC["facilities"], LIVE_PUBLIC["markets"],
+                      LIVE_PUBLIC["deals"]):
+            assert floor in desc, f"{registry} dropped the {floor} floor"
+
+
+def test_the_clause_survives_the_next_canon_move(live, monkeypatch):
+    """3 characters of headroom is not headroom — it is the next count growing
+    a digit. `full`+blurb measures 497/500 today; at 100 tools and 100,000+
+    facilities it measures 500. Beyond that the ladder is SUPPOSED to fall to
+    `lean`, so this asserts the near move survives and does not pretend the far
+    one does."""
+    _canon(monkeypatch, dict(LIVE_PUBLIC, facilities="100,000+"), 100)
+    desc = mpc._build_canonical_description("smithery")
+    assert len(desc) <= TIGHTEST_CAP, f"{len(desc)} chars over {TIGHTEST_CAP}"
+    assert FULL_ONLY in desc, (
+        "one canon move demoted the tightest-cap registries off `full`. Buy "
+        "the room back out of the prose, not out of a floor or the tier line.")
+    assert POSITIONING in desc
+
+
+def test_positioning_clause_carries_no_number(live):
+    """Same rule as the Capacity Source line: registry copy is outside every
+    drift detector we own, so a digit pasted into it can never be healed."""
+    desc = mpc._build_canonical_description("smithery")
+    head = desc.split(":")[0] + ":"
+    assert not re.search(r"\d", head), (
+        f"the positioning clause grew a digit: {head!r}")
