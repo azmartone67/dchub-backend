@@ -326,3 +326,73 @@ def test_html_is_matched_case_insensitively(monkeypatch):
     built, _ = _plan_with(monkeypatch, [_row("Capacity-Pipeline.HTML")],
                           {"Capacity-Pipeline.HTML": _HTML_SRC})
     assert [p["path"] for p in built["plan"]] == ["Capacity-Pipeline.HTML"]
+
+
+# ── a row the lane itself fixed is resolved, not stale ──────────────────────
+_LIVE_VALUE_READS = [
+    "        const operatorInitials = (item.operator || 'UN').substring(0, 2).toUpperCase();",
+    "        <span class=\"operator-name\">${item.operator || 'Unknown'}</span>",
+    "            item.operator || 'Unknown',",
+    "      OPERATOR: item.operator || item.name,",
+]
+
+
+@pytest.mark.parametrize("src", _LIVE_VALUE_READS)
+def test_the_lanes_own_landed_fix_reports_already_fixed_not_stale(src):
+    """★ 2026-09-19. After dchub-frontend#1509 merged, all four rows came back
+    as `stale_finding` -- "re-scan before patching" -- because the lane's OWN
+    edit is what stopped the recorded snippet matching. That reads as "the file
+    moved under you" for a row that is simply done, and it devalues the label
+    on rows where something really did move.
+
+    The round trip runs through the real transform: patch the line the way the
+    lane does, then re-classify it against the ORIGINAL snippet."""
+    patched, disp, _ = lane._classify(_f(1, detail_snippet=src), [src])
+    assert disp == APPLY
+
+    new, disp2, why = lane._classify(_f(1, detail_snippet=src), [patched])
+    assert new is None
+    assert disp2 == "already_fixed", f"{disp2}: {why}"
+    assert "the fix landed" in why
+
+
+@pytest.mark.parametrize("line_on_disk", [
+    # .company, but inserted ahead of the read instead of after it -- not our
+    # edit, so we cannot claim the row is resolved.
+    "            item.company || item.operator || 'Unknown',",
+    # our link IS there, but the final fallback was changed too -- something
+    # else moved on this line and a human should look.
+    "            item.operator || item.company || 'Somebody Else',",
+    # a different field entirely gained the fallback
+    "            item.owner || item.company || 'Unknown',",
+])
+def test_a_company_that_arrived_any_other_way_is_still_stale(line_on_disk):
+    """The negative that proves this is not just a reordering of the checks.
+    If `already_fixed` were hoisted above the snippet test, every line here
+    would wrongly report resolved -- each one contains `.company`."""
+    assert ".company" in line_on_disk, "fixture must carry the tempting token"
+    new, disp, why = lane._classify(
+        _f(1, detail_snippet="item.operator || 'Unknown',"), [line_on_disk])
+    assert new is None
+    assert disp == "stale_finding", f"{disp}: {why}"
+    assert "does not account for the difference" in why
+
+
+def test_classify_and_the_already_fixed_check_share_one_transform():
+    """Both paths call _rewrite. If someone re-implements the edit in either
+    place, the two drift and this goes red: the check would stop recognising
+    the very line _classify produces."""
+    src = "            item.operator || 'Unknown',"
+    patched, disp, _ = lane._classify(_f(1), [src])
+    assert disp == APPLY
+    direct, disp2, _ = lane._rewrite(src)
+    assert disp2 == APPLY
+    assert direct == patched
+
+
+def test_a_row_with_no_recorded_snippet_still_reports_already_fixed():
+    """The pre-existing path, unchanged: with no snippet to compare, a line
+    that already names .company is resolved on that evidence alone."""
+    new, disp, _ = _classify_one(
+        "            item.operator || item.company || 'Unknown',")
+    assert new is None and disp == "already_fixed"

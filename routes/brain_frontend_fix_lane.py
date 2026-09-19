@@ -245,6 +245,34 @@ def _open_findings():
     return out, None
 
 
+def _same_line(a: str, b: str) -> bool:
+    """The one comparison rule for "is this still the line the finding named".
+    Bounded, because a recorded snippet may have been truncated."""
+    return a.strip()[:160] == b.strip()[:160]
+
+
+def _rewrite(line):
+    """The edit itself: insert ONE link into an existing fallback chain.
+
+    Returns (new_line | None, disposition, reason) so _classify can return it
+    directly — and so the already-fixed check can ask "would WE have produced
+    this line?" using the real transform instead of a second copy of it.
+    """
+    hits = _VALUE_READ_RE.findall(line)
+    if len(hits) != 1:
+        return None, ("no_value_read" if not hits else "ambiguous_line"), (
+            f"expected exactly one `<var>.{_PRIMARY} ||` on the line, found "
+            f"{len(hits)}")
+
+    var = hits[0]
+    old = f"{var}.{_PRIMARY}"
+    new = f"{var}.{_PRIMARY} || {var}.{_FALLBACK}"
+    if line.count(old) != 1:
+        return None, "ambiguous_line", (
+            f"`{old}` appears {line.count(old)}x on the line")
+    return line.replace(old, new, 1), "apply", None
+
+
 def _classify(f, file_lines):
     """One finding -> (new_line | None, disposition, reason).
 
@@ -264,9 +292,27 @@ def _classify(f, file_lines):
     line = file_lines[n - 1]
 
     want = _SNIPPET_RE.search(f["detail"] or "")
-    if want and want.group(1).strip()[:160] != line.strip()[:160]:
+    if want and not _same_line(want.group(1), line):
+        # ★ 2026-09-19 — a row this lane ALREADY fixed also fails the snippet
+        # match, because our own edit is what changed the line. Reported as
+        # `stale_finding` ("re-scan before patching") it reads as "the file
+        # moved under you", which invites a re-scan that finds nothing and
+        # hides the rows where something really did move.
+        #
+        # So ask the precise question instead of reordering the checks: does
+        # the recorded snippet, put through THIS lane's own transform, come
+        # out as the line now on disk? Only our edit answers yes. A `.company`
+        # that arrived any other way -- a different chain, a hand edit, a
+        # changed final fallback -- still lands as stale.
+        ours, _, _ = _rewrite(want.group(1).strip())
+        if ours is not None and _same_line(ours, line):
+            return None, "already_fixed", (
+                "the recorded snippet plus this lane's own edit is exactly the "
+                "line on disk: the fix landed. The row is resolved, not stale "
+                "-- nothing moved under it and a re-scan would find nothing.")
         return None, "stale_finding", (
-            "the recorded snippet no longer matches this line; re-scan before "
+            "the recorded snippet no longer matches this line, and this lane's "
+            "own edit does not account for the difference; re-scan before "
             "patching")
 
     if f".{_FALLBACK}" in line:
@@ -280,19 +326,7 @@ def _classify(f, file_lines):
             "The detector's regex cannot tell a value read from a predicate "
             "read; this is a detector-precision gap, not a plumbing gap.")
 
-    hits = _VALUE_READ_RE.findall(line)
-    if len(hits) != 1:
-        return None, ("no_value_read" if not hits else "ambiguous_line"), (
-            f"expected exactly one `<var>.{_PRIMARY} ||` on the line, found "
-            f"{len(hits)}")
-
-    var = hits[0]
-    old = f"{var}.{_PRIMARY}"
-    new = f"{var}.{_PRIMARY} || {var}.{_FALLBACK}"
-    if line.count(old) != 1:
-        return None, "ambiguous_line", (
-            f"`{old}` appears {line.count(old)}x on the line")
-    return line.replace(old, new, 1), "apply", None
+    return _rewrite(line)
 
 
 def _plan():
