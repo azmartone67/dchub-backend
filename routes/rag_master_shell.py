@@ -749,6 +749,13 @@ def _claim_utc_day(force: bool = False) -> tuple[bool, str]:
     outage are reported as DIFFERENT reasons so the operator can tell a healthy
     dedupe from a broken one.
     """
+    # ★ _ensure_tables() FIRST and not in _persist() alone: the claim runs BEFORE
+    # _persist(), so on the first tick after deploy rag_tick_claims does not exist
+    # yet, the INSERT raises, and a fail-closed claim skips the tick — which never
+    # reaches _persist() to create the table. The shell would brick itself
+    # permanently on exactly the deploy that was meant to protect it.
+    if not _ensure_tables():
+        return False, "claim_unavailable"
     c = _conn()
     if c is None:
         return False, "claim_unavailable"

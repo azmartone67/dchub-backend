@@ -165,3 +165,38 @@ def test_the_claim_table_is_keyed_on_the_day():
     ddl = " ".join(SRC.split()).upper()
     assert "UTC_DAY DATE PRIMARY KEY" in ddl, (
         "uniqueness must be enforced by the DB, not by application logic")
+
+
+# ── the bootstrap deadlock ───────────────────────────────────────────
+def test_claim_creates_its_table_before_claiming(monkeypatch):
+    """The claim runs BEFORE _persist(). If rag_tick_claims is only created by
+    _persist() (where the rest of this module's DDL lives), the first tick after
+    deploy raises on the INSERT, fails closed, and never reaches _persist() to
+    create the table — the shell bricks itself permanently on exactly the deploy
+    meant to protect it. So the claim must ensure its own table first."""
+    order = []
+
+    class _Cur:
+        def execute(self, sql, params=None): order.append("INSERT")
+        def fetchone(self): return ("2026-09-19",)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Conn:
+        def cursor(self, *a, **k): return _Cur()
+        def close(self): pass
+
+    monkeypatch.setattr(rms, "_ensure_tables", lambda: (order.append("DDL"), True)[1])
+    monkeypatch.setattr(rms, "_conn", lambda: _Conn())
+    won, why = rms._claim_utc_day()
+    assert won and why == "claimed"
+    assert "DDL" in order, "the claim never ensured its table exists"
+    assert order.index("DDL") < order.index("INSERT"), (
+        f"table must be ensured before the claim INSERT, got {order}")
+
+
+def test_claim_fails_closed_when_the_table_cannot_be_created(monkeypatch):
+    monkeypatch.setattr(rms, "_ensure_tables", lambda: False)
+    monkeypatch.setattr(rms, "_conn",
+                        lambda: pytest.fail("must not reach the DB after DDL failure"))
+    assert rms._claim_utc_day() == (False, "claim_unavailable")
