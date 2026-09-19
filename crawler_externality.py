@@ -197,6 +197,27 @@ _BUCKET_RULES = (
         "/transactions",
         "/land-power",
         "/map",
+        # ★ 2026-09-19 — the three money surfaces. Measured 2026-09-18 while
+        #   baselining assistant citation: /connect, /pricing and /ai-agents
+        #   were in NEITHER this tuple nor ai_tracking.AI_ENDPOINT_PATTERNS,
+        #   so a crawler fetching one was recorded by nobody and the resulting
+        #   zero read as a measurement rather than as a missing instrument —
+        #   the same failure this module's header opens with, one level down.
+        #
+        #   SAFE TO ADD, MEASURED NOT ASSUMED: over the whole ai_requests table
+        #   (from 2026-02-01) the only row under any of the three prefixes is a
+        #   single /ai-agents.json fetch, and that one keeps its existing
+        #   bucket because instructed_metadata is evaluated FIRST — both here
+        #   in classify_path() and in the rendered path_bucket_case() CASE.
+        #   So this reclassifies ZERO historical rows.
+        #
+        #   ★ The edge beacon has no such ordering: dchub-frontend/_worker.js
+        #   matches with startsWith() against one flat list, so it carries an
+        #   explicit ORGANIC_CONTENT_EXCLUDE = ['/ai-agents.json'] instead.
+        #   Editing this tuple means editing that array in the same change.
+        "/connect",
+        "/pricing",
+        "/ai-agents",
     )),
     # ── AMBIGUOUS: substantive data queries ─────────────────────────────
     # Neither metadata-about-us nor a content page: a real data question,
