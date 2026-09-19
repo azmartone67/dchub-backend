@@ -256,9 +256,58 @@ class TestPaidVersusAnonymous:
     def test_bytes_cannot_rescue_a_worse_field_count(self):
         # The signature takes no byte counts at all — the old failure mode is
         # now unrepresentable rather than merely unused.
+        # ★ Asserted on the ABSENCE of a byte parameter rather than on an exact
+        #   parameter list. The list form pinned the signature so tightly that
+        #   adding the gating-aware inputs broke a test whose subject is bytes,
+        #   which teaches the next author to loosen the wrong thing.
         import inspect
-        params = inspect.signature(seat_comparison_verdict).parameters
-        assert list(params) == ["paid_n", "anon_n"]
+        params = list(inspect.signature(seat_comparison_verdict).parameters)
+        assert params[:2] == ["paid_n", "anon_n"]
+        assert not [p for p in params if "byte" in p or p.endswith("_b")], params
+
+    # ── gated-anon scaffolding: the defect that fired three times ──────────
+    #
+    # preview_is_partial (2026-08-04), machine_pay (2026-08-21), continuation
+    # (2026-09-18) each filed a CRITICAL saying the paywall was inverted, when
+    # the only "missing" field was one the gateway emits ONLY while walling a
+    # caller. Under the gateway contract this module's own basis states — gating
+    # KEEPS data keys and EMPTIES values — a real data field can never be absent
+    # from a gated response, so this comparison cannot be a true positive.
+
+    def test_gated_anon_extra_names_are_a_gauge_not_a_red(self):
+        verdict, sev, title = seat_comparison_verdict(
+            9, 10, anon_gated=True, paid_gated=False,
+            anon_only=("continuation",))
+        assert verdict == GAUGE, (
+            "a field only a WALLED caller receives cannot evidence that the "
+            "paying seat was short-changed")
+        assert sev == INFO
+        assert "continuation" in title, (
+            "the gauge must NAME the field — going quiet is how gating field #4 "
+            "reaches the denylist only after another false CRITICAL")
+
+    def test_both_seats_gated_still_reds_on_fewer_fields(self):
+        # Like-for-like: the contract argument does not apply, so a genuine
+        # inversion must survive. A guard that suppressed every red would be
+        # the same defect pointed the other way.
+        verdict, sev, _t = seat_comparison_verdict(
+            9, 10, anon_gated=True, paid_gated=True, anon_only=("x",))
+        assert verdict == RED
+        assert sev == CRITICAL
+
+    def test_neither_seat_gated_still_reds_on_fewer_fields(self):
+        verdict, sev, _t = seat_comparison_verdict(
+            9, 10, anon_gated=False, paid_gated=False, anon_only=("x",))
+        assert verdict == RED
+        assert sev == CRITICAL
+
+    def test_gating_awareness_cannot_invent_a_pass(self):
+        # The downgrade is RED -> GAUGE only. If it ever reported PASS the board
+        # would claim the paywall was verified working on a run that measured
+        # nothing of the kind.
+        verdict, _sev, _t = seat_comparison_verdict(
+            9, 10, anon_gated=True, anon_only=("continuation",))
+        assert verdict != PASS
 
 
 class TestEnvelopeClassification:
@@ -268,6 +317,11 @@ class TestEnvelopeClassification:
         # 2026-08-21: the MPP pay offer a gated anon answer carries; a paying
         # seat never gets it, and counting it as data filed a false CRITICAL.
         "machine_pay",
+        # 2026-09-18: the standardized continuation object the gateway emits
+        # only in its gated branch (server.mjs r-continuation), one line below
+        # preview_is_partial. It names the three ways past the wall; a paying
+        # seat is correctly never handed one.
+        "continuation",
     ])
     def test_selling_and_meta_keys_are_envelope(self, key):
         assert _is_envelope(key) is True

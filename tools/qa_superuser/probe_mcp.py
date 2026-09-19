@@ -24,6 +24,11 @@ from . import config as C
 from .finding import (CRITICAL, GAUGE, INFO, MAJOR, MINOR, PASS, RED,
                       SEAT_ANON, SEAT_PAID, Finding, blind, stable_key)
 from .http import MCPSession, Unreachable, envelope_all
+# ★ ONE gating predicate for the whole harness. probe_relay already owns
+#   `is_gated_shape` and names its markers in its own basis string; a second
+#   copy here would drift the moment a marker is renamed and the two probes
+#   would disagree about whether the same response was walled.
+from .probe_relay import is_gated_shape
 
 # Keys that sell, meter or narrate rather than answer the question. Everything
 # else in structuredContent counts as DATA. Kept explicit so the ratio stays
@@ -58,6 +63,21 @@ ENVELOPE_KEYS = {
     # convicted the paywall for working, for 2 days, and filed spec-debt
     # inv-100258 on top.
     "machine_pay",
+    # ★ Added 2026-09-18 — THE THIRD occurrence of this exact defect, after
+    # `preview_is_partial` (08-04) and `machine_pay` (08-21). The board filed a
+    # CRITICAL "paying key receives FEWER data fields than an anonymous caller
+    # (9 vs 10)" whose one missing field was `continuation` — the standardized
+    # "what continuing returns" object the gateway emits ONLY in its gated
+    # branch (server.mjs, r-continuation 2026-09-03), one line below
+    # `preview_is_partial: true`. It names the three ways past the wall. A
+    # paying key is correctly not handed one. Counting the offer as data
+    # convicted the paywall for working, for 3.5 days.
+    #
+    # ★★★ THE DENYLIST IS NOT THE FIX — it is the third application of the same
+    # patch. Every gating field the gateway ships lands here only AFTER it has
+    # filed a false CRITICAL. `seat_comparison_verdict` below now carries the
+    # structural rule so field #4 is a gauge on arrival, not an incident.
+    "continuation",
 }
 
 
@@ -827,7 +847,10 @@ def _probe_seat_paid(findings: list[Finding]) -> None:
     _check_error_mitigation(s, findings)
 
 
-def seat_comparison_verdict(paid_n: int, anon_n: int) -> tuple[str, str, str]:
+def seat_comparison_verdict(paid_n: int, anon_n: int,
+                            anon_gated: bool = False,
+                            paid_gated: bool = False,
+                            anon_only: tuple = ()) -> tuple[str, str, str]:
     """Decide paid-vs-anon on DATA FIELDS alone. Pure, so it is testable.
 
     ★ The first version passed on ``paid_n > anon_n OR paid_b > anon_b``, so a
@@ -842,6 +865,42 @@ def seat_comparison_verdict(paid_n: int, anon_n: int) -> tuple[str, str, str]:
     """
     if paid_n > anon_n:
         return PASS, INFO, "A paying key buys more data than anonymous access"
+
+    # ★★★ A GATED CONTROL CANNOT EVIDENCE WITHHELD DATA — SO DO NOT CONVICT ON IT.
+    #
+    # Three times now (preview_is_partial 08-04, machine_pay 08-21,
+    # continuation 09-18) this check has filed a CRITICAL "the paywall is
+    # inverted" whose entire basis was a field the gateway emits ONLY when it
+    # walls a caller. Each was closed by adding one more name to ENVELOPE_KEYS
+    # above, which fixes the instance and guarantees the recurrence.
+    #
+    # The rule that closes the class comes from the gateway's own contract,
+    # which this module's `basis` string already states: under gating the server
+    # KEEPS data keys and EMPTIES their values. A real data field therefore
+    # never goes missing from a gated response — it goes empty. So when the anon
+    # control was gated and the paid seat was not, every name in
+    # (anon_keys - paid_keys) is scaffolding by construction, and "paid has
+    # fewer field NAMES" cannot be a true positive. Convicting on it measures
+    # the wall working.
+    #
+    # ★ THIS MUST NOT GO BLIND, and that is why it returns a GAUGE rather than
+    #   dropping the finding. An unrecognised gating field still gets published
+    #   by name on every run — which is how field #4 reaches ENVELOPE_KEYS
+    #   without first costing a 3-day CRITICAL, a brain investigation and a
+    #   spec-debt row (inv-100258 was filed on top of occurrence #2).
+    #
+    # ★★ SCOPED TO THE ASYMMETRIC CASE ONLY. If BOTH seats are gated the
+    #   comparison is like-for-like and a genuine inversion is still RED; if
+    #   NEITHER is gated the contract does not apply and it is still RED. Only
+    #   gated-anon vs ungated-paid — the one shape that cannot discriminate — is
+    #   downgraded. A guard that suppressed the red in every case would be the
+    #   same class of defect pointed the other way.
+    if paid_n < anon_n and anon_gated and not paid_gated:
+        return (GAUGE, INFO,
+                f"Anon-only field(s) {sorted(anon_only)} exist only because the "
+                f"anonymous control was GATED ({anon_n} name(s) vs paid "
+                f"{paid_n}) — gating scaffolding, not withheld data")
+
     if paid_n < anon_n:
         return (RED, CRITICAL,
                 f"A paying key receives FEWER data fields than an anonymous "
@@ -943,7 +1002,20 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
                   f"{_remaining!r}; anon data-field count {anon_n}"))
         return
 
-    verdict, severity, title = seat_comparison_verdict(paid_n, anon_n)
+    # Read the gating state of BOTH seats from their own envelopes — the shape
+    # the gateway published, never an assumption about what a tier "should" get.
+    # ★★ `is_gated_shape` reads BROADLY — `upgrade`/`agent_payment` count as
+    #   gated even though they are upsell blocks rather than a wall. That is
+    #   deliberate and it fails in the safe direction HERE: a paid envelope
+    #   carrying an upsell reads as gated, which makes this a like-for-like
+    #   comparison and KEEPS the red. The downgrade below is the claim that
+    #   needs the tighter evidence, so the loose reading must never be what
+    #   enables it. A narrower predicate would silence more reds, not fewer.
+    anon_gated = is_gated_shape(anon_env.get("structuredContent") or {})
+    paid_gated = is_gated_shape(paid_env.get("structuredContent") or {})
+    verdict, severity, title = seat_comparison_verdict(
+        paid_n, anon_n, anon_gated=anon_gated, paid_gated=paid_gated,
+        anon_only=tuple(missing))
 
     findings.append(Finding(
         key=key, surface="mcp", seat=SEAT_PAID,
@@ -967,13 +1039,28 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
               "evidence only; "
               "payload size is inflated by the envelope this tool discounts. "
               "★ Field NAMES survive gating untouched — the server keeps keys "
-              "and empties values — so this cannot see depth gating.",
-        red_when="the paying seat receives strictly fewer data fields than the "
-                 "anonymous seat — whatever the tier is doing, it is not buying "
-                 "more of the answer"
-                 if verdict != GAUGE else
-                 "n/a — GAUGE: identical field sets may still differ in depth, "
-                 "and this probe does not compare value depth",
+              "and empties values — so this cannot see depth gating. "
+              "★★ That same contract is why a GATED anon control cannot evidence "
+              "withheld data: a real data field goes EMPTY, never missing, so "
+              "an anon-only NAME is scaffolding by construction. When the anon "
+              "control was gated and the paid seat was not, this reports a "
+              "gauge naming those fields instead of a red "
+              f"(anon gated={anon_gated}, paid gated={paid_gated}).",
+        # ★ The GAUGE branch is now reached two different ways and they have
+        #   DIFFERENT reasons. Printing "identical field sets" under the
+        #   gated-scaffolding gauge would describe a comparison that did not
+        #   happen — the sets are not identical there, they are incomparable.
+        red_when=("the paying seat receives strictly fewer data fields than the "
+                  "anonymous seat — whatever the tier is doing, it is not buying "
+                  "more of the answer"
+                  if verdict != GAUGE else
+                  "n/a — GAUGE: the anon control was GATED and the paid seat was "
+                  "not, so its extra field NAMES are gating scaffolding the "
+                  "paying seat is correctly not handed. A red here would convict "
+                  "the paywall for working"
+                  if paid_n != anon_n else
+                  "n/a — GAUGE: identical field sets may still differ in depth, "
+                  "and this probe does not compare value depth"),
         remedy="Verify tier resolution for the key and that the gate reads the "
                "resolved tier, not a cached anon bucket."))
 
