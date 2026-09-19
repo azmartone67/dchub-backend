@@ -2096,3 +2096,329 @@ class TestAutoInvestigateRefusesLoudly:
         assert investigated == ["a"], "the analysis must actually run"
         assert proposed == [], \
             "the automatic lane must never generate a diff — that stays a click"
+
+
+# ── the auto-propose lane ─────────────────────────────────────────────────
+#
+# ★★★ WHY DRAFT IS THE WHOLE SAFETY STORY. .github/workflows/
+# auto-enable-automerge.yml fires on `pull_request_target: [opened,
+# ready_for_review]` and arms GitHub native auto-merge on every NON-draft PR.
+# It skips drafts deliberately — its own comment says arming auto-merge on a
+# draft would turn "a propose-only lane into a merging one". So a non-draft PR
+# from a lane with no human in it merges to main on green and DEPLOYS, while
+# the board's footer promises "every success is a PR for you to review".
+class TestAutoProposeSelection:
+
+    def _gate(self, ok=True, why="fine"):
+        return lambda inv: (ok, why)
+
+    def _red(self, **kw):
+        f = {"key": "k", "verdict": "RED", "severity": "critical",
+             "investigation": {"state": "current", "survived": True,
+                               "recommendation": "do it"}}
+        f.update(kw)
+        return f
+
+    def test_an_eligible_red_is_dispatched(self):
+        from routes.qa_superuser_dashboard import auto_propose_candidates
+        todo, skipped = auto_propose_candidates([self._red()], self._gate())
+        assert [f["key"] for f in todo] == ["k"]
+        assert skipped == []
+
+    def test_a_gauge_is_not_a_candidate_at_all(self):
+        from routes.qa_superuser_dashboard import auto_propose_candidates
+        todo, skipped = auto_propose_candidates(
+            [self._red(verdict="GAUGE", severity="info")], self._gate())
+        assert todo == [] and skipped == []
+
+    def test_an_unreadable_investigation_never_dispatches(self):
+        # A DB blip must not read as "nothing proposed yet" on every red and
+        # open a PR per finding on recovery.
+        from routes.qa_superuser_dashboard import auto_propose_candidates
+        f = self._red()
+        f.pop("investigation")
+        f["investigation_unreadable"] = "database unreachable"
+        todo, skipped = auto_propose_candidates([f], self._gate())
+        assert todo == []
+        assert "unreadable" in skipped[0]["why"]
+
+    def test_a_finding_that_already_has_a_proposal_is_left_alone(self):
+        from routes.qa_superuser_dashboard import auto_propose_candidates
+        todo, skipped = auto_propose_candidates(
+            [self._red(proposal={"state": "refused"})], self._gate())
+        assert todo == []
+        assert "already exists" in skipped[0]["why"]
+
+    def test_the_gate_decides_and_its_reason_is_carried(self):
+        # The lane must not re-implement "fit to generate code from" — it is
+        # injected, so the button, the endpoint and this lane cannot disagree.
+        from routes.qa_superuser_dashboard import auto_propose_candidates
+        todo, skipped = auto_propose_candidates(
+            [self._red()], self._gate(False, "knocked down by refutation"))
+        assert todo == []
+        assert skipped[0]["why"] == "knocked down by refutation"
+
+    def test_the_real_gate_refuses_a_refuted_investigation(self):
+        # Ties the injected gate to the REAL one: a stub that always passes
+        # would make every case above vacuous.
+        from tools.qa_superuser.propose import gate_investigation
+        from routes.qa_superuser_dashboard import auto_propose_candidates
+        todo, _s = auto_propose_candidates(
+            [self._red(investigation={"state": "current", "survived": False,
+                                      "recommendation": "r"})],
+            gate_investigation)
+        assert todo == []
+        ok, _w = gate_investigation({"state": "current", "survived": True,
+                                     "recommendation": "r"})
+        assert ok, "the real gate must still pass a sound investigation"
+
+
+class TestAutoProposeOpensADraft:
+    """Drive _run_proposal end to end and read the payload it actually sends."""
+
+    def _fixture(self, monkeypatch, auto, pr_draft=True):
+        import routes.qa_superuser_dashboard as mod
+        from tools.qa_superuser import propose as P
+        import routes.brain_investigator as binv
+        import routes.brain_pr_opener as opener
+        import requests
+
+        monkeypatch.setattr(
+            binv, "_call_model",
+            lambda *a, **k: ('{"file": "routes/x.py", "find": "FIND", '
+                             '"replace": "REPL", "rationale": "r"}', None, "m"))
+        monkeypatch.setattr(P, "build_fix_prompt", lambda *a, **k: "p")
+        monkeypatch.setattr(P, "pr_title_for", lambda *a, **k: "t")
+        monkeypatch.setattr(P, "repo_path", lambda f: ("routes/x.py", "ok"))
+        monkeypatch.setattr(P, "validate_fix", lambda *a, **k: (True, "valid"))
+        monkeypatch.setattr(opener, "_get_file", lambda p: ("a FIND b", "sha"))
+
+        sent = {}
+
+        class _R:
+            status_code = 200
+            content = b"{}"
+
+            def json(self):
+                return {"ok": True, "pr_url": "https://x/pr/1",
+                        "pr_number": 1, "draft": pr_draft}
+
+        def _post(url, **kw):
+            sent["url"], sent["json"] = url, kw.get("json") or {}
+            return _R()
+
+        monkeypatch.setattr(requests, "post", _post)
+
+        marks = []
+        monkeypatch.setattr(mod, "_mark_proposal",
+                            lambda *a, **k: marks.append(a))
+        mod._run_proposal({"key": "k", "title": "t", "surface": "mcp",
+                           "seat": "paid", "evidence": "e", "red_when": "w",
+                           "investigation": {"recommendation": "r"},
+                           **({"auto": True} if auto else {})})
+        return sent, marks
+
+    def test_the_auto_lane_asks_for_a_draft(self, monkeypatch):
+        sent, marks = self._fixture(monkeypatch, auto=True)
+        assert sent["json"]["draft"] is True, sent["json"]
+        assert marks and marks[-1][1] == "opened", marks
+
+    def test_a_human_click_does_not_ask_for_a_draft(self, monkeypatch):
+        # The human already made the decision draft exists to defer.
+        sent, _m = self._fixture(monkeypatch, auto=False)
+        assert sent["json"]["draft"] is False, sent["json"]
+
+    def test_a_non_draft_result_is_recorded_as_an_error_not_opened(
+            self, monkeypatch):
+        # The safety property is on the RESULT. If GitHub (or an older backend
+        # that drops the field) returns a non-draft PR, auto-merge is already
+        # armed and "opened" would hide it.
+        _s, marks = self._fixture(monkeypatch, auto=True, pr_draft=False)
+        assert marks[-1][1] == "error", marks
+        assert "NOT A DRAFT" in marks[-1][2]
+
+    def test_a_human_click_is_not_failed_by_a_non_draft_result(self, monkeypatch):
+        # The check must be scoped to the auto lane; a human PR is never a draft
+        # and must still record as opened.
+        _s, marks = self._fixture(monkeypatch, auto=False, pr_draft=False)
+        assert marks[-1][1] == "opened", marks
+
+
+class TestTheOpenerHonoursDraft:
+    def test_the_flag_reaches_the_github_payload(self, monkeypatch):
+        import routes.brain_pr_opener as opener
+        seen = {}
+
+        class _R:
+            status_code = 201
+
+            def json(self):
+                return {"html_url": "u", "number": 1, "draft": True}
+
+        def _gh(method, path, payload=None, **kw):
+            seen["payload"] = payload
+            return _R()
+
+        monkeypatch.setattr(opener, "_gh", _gh)
+        opener._open_pr("t", "h", "b", draft=True)
+        assert seen["payload"]["draft"] is True
+
+    def test_existing_callers_still_open_a_normal_pr(self, monkeypatch):
+        import routes.brain_pr_opener as opener
+        seen = {}
+
+        class _R:
+            status_code = 201
+
+            def json(self):
+                return {"html_url": "u", "number": 1}
+
+        monkeypatch.setattr(opener, "_gh",
+                            lambda m, p, payload=None, **k: (
+                                seen.__setitem__("payload", payload), _R())[1])
+        opener._open_pr("t", "h", "b")
+        assert seen["payload"]["draft"] is False
+
+
+class TestAutoProposeRefusesLoudly:
+    """Strictly more expensive than an analysis, so never a weaker gate."""
+
+    def _client(self, monkeypatch, latest, err=None):
+        import flask
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        monkeypatch.delenv("QA_AUTO_PROPOSE", raising=False)
+        monkeypatch.setattr(mod, "_load",
+                            lambda limit=1: {"latest": latest, "error": err,
+                                             "history": []})
+        monkeypatch.setattr(mod, "_attach_investigations", lambda l: None)
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        return app.test_client(), mod
+
+    def _run(self, findings=(), canary=True, when=None):
+        import datetime
+        when = when or datetime.datetime.now(datetime.timezone.utc)
+        return {"generated_at": when.isoformat(), "canary_fired": canary,
+                "findings": list(findings), "counts": {}}
+
+    def _post(self, client, **body):
+        return client.post("/api/v1/admin/qa-superuser/auto-propose",
+                           headers={"X-Admin-Key": "secret"}, json=body)
+
+    def test_unauthorized_without_the_admin_key(self, monkeypatch):
+        client, _ = self._client(monkeypatch, self._run())
+        assert client.post(
+            "/api/v1/admin/qa-superuser/auto-propose", json={}).status_code == 401
+
+    def test_the_kill_switch_stops_it(self, monkeypatch):
+        client, _ = self._client(monkeypatch, self._run())
+        monkeypatch.setenv("QA_AUTO_PROPOSE", "0")
+        body = self._post(client).get_json()
+        assert body["ok"] is False and body["refused"] == "kill switch"
+
+    def test_its_own_kill_switch_not_the_investigate_one(self, monkeypatch):
+        # Two lanes, two switches. Sharing one would make disarming the cheap
+        # lane silently disarm the expensive one, or worse, the reverse.
+        client, _ = self._client(monkeypatch, self._run())
+        monkeypatch.setenv("QA_AUTO_INVESTIGATE", "0")
+        assert self._post(client).get_json().get("refused") != "kill switch"
+
+    def test_an_unreadable_board_refuses(self, monkeypatch):
+        client, _ = self._client(monkeypatch, None, err="database unreachable")
+        r = self._post(client)
+        assert r.status_code == 503
+        assert r.get_json()["refused"] == "board unreadable"
+
+    def test_a_stale_board_is_refused(self, monkeypatch):
+        import datetime
+        old = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.timedelta(hours=30))
+        client, _ = self._client(monkeypatch, self._run(when=old))
+        assert self._post(client).get_json()["refused"] == "board is stale"
+
+    def test_a_run_whose_canary_did_not_fire_is_refused(self, monkeypatch):
+        client, _ = self._client(monkeypatch, self._run(canary=False))
+        body = self._post(client).get_json()
+        assert body["refused"] == "must-fail control did not fire"
+
+    def test_dry_run_dispatches_nothing(self, monkeypatch):
+        fired = []
+        client, mod = self._client(monkeypatch, self._run([{
+            "key": "a", "verdict": "RED", "severity": "critical",
+            "evidence": "e",
+            "investigation": {"state": "current", "survived": True,
+                              "recommendation": "r"}}]))
+        monkeypatch.setattr(mod, "_run_proposal", lambda m: fired.append(m))
+        body = self._post(client, dry_run=True).get_json()
+        assert body["would_dispatch"] == ["a"]
+        assert fired == [], "dry run must open nothing"
+
+    def test_the_default_cap_is_one_and_the_rest_is_reported(self, monkeypatch):
+        findings = [{"key": f"k{i}", "verdict": "RED", "severity": "critical",
+                     "evidence": "e",
+                     "investigation": {"state": "current", "survived": True,
+                                       "recommendation": "r"}}
+                    for i in range(4)]
+        client, _ = self._client(monkeypatch, self._run(findings))
+        body = self._post(client, dry_run=True).get_json()
+        assert len(body["would_dispatch"]) == 1
+        assert len(body["deferred_to_next_run"]) == 3
+
+    def test_a_refuted_investigation_is_never_dispatched(self, monkeypatch):
+        # End to end through the REAL gate, not the injected stub.
+        fired = []
+        client, mod = self._client(monkeypatch, self._run([{
+            "key": "a", "verdict": "RED", "severity": "critical",
+            "evidence": "e",
+            "investigation": {"state": "current", "survived": False,
+                              "recommendation": "r"}}]))
+        monkeypatch.setattr(mod, "_run_proposal", lambda m: fired.append(m))
+        body = self._post(client).get_json()
+        assert body["dispatched"] == [] and fired == []
+        assert "refutation" in body["skipped"][0]["why"]
+
+    def test_a_dispatch_carries_the_auto_flag(self, monkeypatch):
+        # Without it the opener is asked for a non-draft PR and auto-merge is
+        # armed on an autonomously-written diff.
+        fired = []
+        client, mod = self._client(monkeypatch, self._run([{
+            "key": "a", "verdict": "RED", "severity": "critical",
+            "evidence": "e",
+            "investigation": {"state": "current", "survived": True,
+                              "recommendation": "r"}}]))
+        monkeypatch.setattr(mod, "_run_proposal", lambda m: fired.append(m))
+        monkeypatch.setattr(mod, "_mark_proposal", lambda *a, **k: None)
+        import threading
+        monkeypatch.setattr(threading, "Thread",
+                            lambda target, args=(), daemon=None: type(
+                                "T", (), {"start": lambda s: target(*args)})())
+        self._post(client)
+        assert fired and fired[0].get("auto") is True, fired
+
+
+class TestTheRunWiresTheLane:
+    def test_the_board_run_calls_the_auto_propose_endpoint(self):
+        import inspect
+        from tools.qa_superuser import board
+        src = inspect.getsource(board.request_auto_proposal)
+        assert "/api/v1/admin/qa-superuser/auto-propose" in src
+
+    def test_the_publish_flow_invokes_it(self):
+        # A lane nothing calls is the RAG-shell failure: shipped, green, inert.
+        import ast, inspect
+        from tools.qa_superuser import board
+        tree = ast.parse(inspect.getsource(board))
+        called = {getattr(n.func, "id", None) for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)}
+        assert "request_auto_proposal" in called
+        assert "request_auto_investigation" in called
+
+    def test_it_is_not_chained_to_the_investigate_calls_result(self):
+        # One lane's transient outage must not silently disarm the other.
+        import inspect
+        from tools.qa_superuser import board
+        src = inspect.getsource(board)
+        i = src.index("prop_ok, prop_note = request_auto_proposal")
+        window = src[max(0, i - 300):i]
+        assert "if auto_ok" not in window, window[-200:]

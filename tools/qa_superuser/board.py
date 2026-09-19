@@ -496,8 +496,10 @@ def render(run: dict, state: dict, deltas: dict[str, str],
         "exclude it from reach and usage metrics by **User-Agent**, not by "
         "platform tag (the MCP server overwrites the platform field).*",
         "",
-        "*This board never merges, deploys or executes. It reports and keeps one "
-        "issue current.*",
+        "*This board never merges, deploys or executes. It reports, keeps one "
+        "issue current, and may open a DRAFT pull request when a red's cause "
+        "is already established — draft because this repo arms auto-merge on "
+        "every non-draft PR at open.*",
     ]
     return "\n".join(lines)
 
@@ -682,6 +684,68 @@ def request_auto_investigation(admin: str) -> tuple[bool, str]:
     note = f"dispatched {n}"
     if deferred:
         note += f", {deferred} deferred to the next run"
+    return True, note
+
+
+def request_auto_proposal(admin: str) -> tuple[bool, str]:
+    """Ask the backend to write a patch for every red whose CAUSE is settled.
+
+    ★ ORDER: after `request_auto_investigation`, which dispatches its analyses
+      on a background thread and returns immediately. So this run's fresh
+      investigations are NOT visible here — this lane acts on investigations
+      already stored and still bound to evidence that has not moved.
+
+      That one-cycle lag is a FEATURE and is why it is not worth chasing. A
+      finding only becomes proposable if it was red, analysed, and its evidence
+      was byte-identical across two 4h runs. A patch is the most expensive and
+      least reversible thing this harness can emit; earning it with proven
+      stability rather than a single sighting is the right trade.
+
+    ★ THE SELECTION LIVES ON THE SERVER, for the same reason the investigate
+      dispatcher says: eligibility depends on the evidence_sha binding and the
+      proposal rows that only the backend holds.
+
+    Non-fatal, exactly like the beat and the investigate call.
+    """
+    if not admin:
+        return False, "no admin key — cannot reach the auto-propose lane"
+    url = f"{C.ORIGIN}/api/v1/admin/qa-superuser/auto-propose"
+    try:
+        import requests
+        r = requests.post(url, json={}, timeout=30, headers={
+            "X-Admin-Key": admin,
+            "User-Agent": QA_UA_TOKEN + "/1.0",
+        })
+    except Exception as e:  # noqa: BLE001
+        detail = f"{type(e).__name__}: {e}"
+        print(f"::warning::auto-propose call failed (non-fatal): {detail}")
+        return False, detail
+    if r.status_code >= 400:
+        detail = f"HTTP {r.status_code} {r.text[:160]}"
+        print(f"::warning::auto-propose rejected (non-fatal): {detail}")
+        return False, detail
+    try:
+        body = r.json() or {}
+    except Exception:  # noqa: BLE001
+        return True, f"posted to {url} (unparseable body)"
+    # A refusal is an answer and belongs in the run log — a silent "ok" on a
+    # lane that declined to act is how a dead actuator looks healthy.
+    if body.get("refused"):
+        print(f"::warning::auto-propose REFUSED: {body.get('refused')} — "
+              f"{body.get('reason')}")
+        return False, f"refused: {body.get('refused')}"
+    n = len(body.get("dispatched") or [])
+    deferred = len(body.get("deferred_to_next_run") or [])
+    note = f"dispatched {n}"
+    if deferred:
+        note += f", {deferred} deferred to the next run"
+    # ★ A lane that proposes NOTHING every run for weeks is the RAG-shell
+    #   failure: running, green, inert. Name the reasons so a permanently empty
+    #   lane is legible in the run log instead of reading as "all clear".
+    if not n:
+        why = [str(x.get("why") or "")[:90]
+               for x in (body.get("skipped") or [])[:3]]
+        note += f"; nothing eligible ({'; '.join(why) or 'no actionable reds'})"
     return True, note
 
 
@@ -998,11 +1062,18 @@ def actuate(run: dict) -> dict:
     #   the first — a 4h-old run passes it and would still be the wrong run.)
     if beat_ok and not C.DRY_RUN:
         auto_ok, auto_note = request_auto_investigation(C.ADMIN_KEY)
+        # ★ GATED ON THE SAME CONDITION, not on the investigate call's result.
+        #   A failed investigate dispatch does not make the ALREADY-STORED
+        #   investigations unfit to propose from — chaining them would make one
+        #   lane's transient outage silently disarm the other.
+        prop_ok, prop_note = request_auto_proposal(C.ADMIN_KEY)
     else:
         auto_ok, auto_note = False, ("skipped — the beat did not land"
                                      if not beat_ok else "skipped — dry run")
+        prop_ok, prop_note = False, auto_note
 
     return {"body": body, "deltas": deltas, "memory_ok": memory[0],
             "dashboard_ok": beat_ok, "dashboard_note": beat_note,
             "auto_investigate_ok": auto_ok, "auto_investigate_note": auto_note,
+            "auto_propose_ok": prop_ok, "auto_propose_note": prop_note,
             "closed_issues": closed}
