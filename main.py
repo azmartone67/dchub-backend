@@ -24086,6 +24086,44 @@ def facility_by_slug(slug):
                           default_v="tracked")
                 except Exception:
                     _data_id.pop('is_duplicate', None)
+                # ★ r-corpusgate-followup (2026-09-19): #4856 gated the
+                # hash-slug branch of this handler (_resp_slug) and left THIS
+                # one — the numeric-id branch — serving the full row. Measured
+                # live after #4856 shipped, no key, cache-busted:
+                #
+                #   /api/v1/facilities/8484   -> 8 fields, tier=free, _upgrade
+                #   /api/v1/facilities/8484/  -> 14 fields incl power_mw,
+                #                                latitude, longitude, address
+                #
+                # One trailing slash was the whole difference: it routes here
+                # instead of to the tier-aware get_facility_by_id, and this
+                # branch had no gate. Same block as the slug branch, same
+                # vocabulary, gated LAST for the same reason — normalize_
+                # coordinates must see raw values and verified_flag() reads
+                # is_duplicate, which the allow-list drops.
+                try:
+                    from util.facility_tier_gate import (
+                        gate_record as _fg_rec, coord_dp_for_tier as _fg_dp)
+                    from api_tier_gating import get_request_tier as _fg_tier
+                    _g_tier_id = (_fg_tier() or 'anon').lower()
+                    _g_data_id, _g_n_id = _fg_rec(_data_id, _g_tier_id)
+                    _resp_id['data'] = _g_data_id
+                    _g_prec_id = _fg_dp(_g_tier_id)
+                    if _g_prec_id is not None:
+                        _resp_id['_gated'] = True
+                        _resp_id['_coord_precision_dp'] = _g_prec_id
+                        _resp_id['_redacted_values'] = _g_n_id
+                        _resp_id['_upgrade_cta'] = (
+                            'Power capacity, operator, on-site fiber and exact '
+                            'coordinates require a Developer key — dchub.cloud/pricing')
+                        _resp_id['_pricing_url'] = 'https://dchub.cloud/pricing'
+                except Exception:
+                    # Fail CLOSED. An import error or a tier-resolution raise
+                    # must not be the thing that serves the full record.
+                    from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _fg_min
+                    _resp_id['data'] = {k: v for k, v in _data_id.items()
+                                        if k in _fg_min}
+                    _resp_id['_gated'] = True
                 return jsonify(_resp_id)
             return jsonify({'success': False, 'error': 'Facility not found', 'id': slug}), 404
         except Exception as _e_id:
