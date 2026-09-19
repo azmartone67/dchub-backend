@@ -15,6 +15,7 @@ The properties worth guarding are the ones whose failure is SILENT:
 """
 
 import ast
+import logging
 import pathlib
 import re
 
@@ -391,3 +392,203 @@ def test_the_refresh_can_be_switched_off_explicitly_only():
     ingest = _exec_ingest(lambda token, **kw: pytest.fail("must not refresh when refresh_proven=False"))
     out = ingest("tok", refresh_proven=False)
     assert out["success"] is True and out["proven_pages"] is None
+
+
+# ── the trailing window must actually be read (2026-09-19) ──────────────
+#
+# The budget is `row_limit * days`, requested as ONE top-K list over the whole
+# (date,page) grid. GSC fills that list from the window START, so a budget
+# smaller than the window's real row count does not thin the window evenly —
+# it drops the NEWEST days entirely. Measured live: `days=62` wrote 50,000 rows
+# and populated 07-19..08-01, then nothing. The daily `days=5 x 500 = 2,500`
+# against ~3,400 pages/day refreshed only the oldest day of its own window, so
+# the 72 h self-correction DEFAULT_WINDOW_DAYS exists for never ran, from the
+# writer's first run (2026-08-31) to 2026-09-19.
+
+# Measured OUTSIDE this repo: per-day distinct page rows from GSC,
+# 2026-07-12..2026-09-14. Peak day 2026-08-11 = 4,098. This is an external
+# floor, not a mirror of the constant — if the shipped default falls under it
+# the trailing window silently stops covering its own newest days again.
+MEASURED_PEAK_PAGE_ROWS_PER_DAY = 4098
+
+
+def _shipped_env_default_int(const_name):
+    """The literal default this module SHIPS, read from its own source.
+
+    ★ NOT the value `_exec_ingest` injects. These guards exist to check that the
+    shipped default covers the shipped window; a harness supplying its own
+    numbers would pass whatever main.py binds — be#4722's lesson, a harness
+    strictly more capable than the module runs a different program.
+    """
+    node = _const(const_name)
+    assert node is not None, f"{const_name} is not a module-level assignment"
+    call = node.value                        # int(os.environ.get("X", "500"))
+    assert isinstance(call, ast.Call) and getattr(call.func, "id", None) == "int"
+    inner = call.args[0]                     # os.environ.get("X", "500")
+    assert isinstance(inner, ast.Call) and getattr(inner.func, "attr", None) == "get"
+    return int(ast.literal_eval(inner.args[1]))
+
+
+def test_the_shipped_row_limit_covers_a_measured_peak_day():
+    limit = _shipped_env_default_int("DEFAULT_ROW_LIMIT")
+    assert limit >= MEASURED_PEAK_PAGE_ROWS_PER_DAY, (
+        f"DEFAULT_ROW_LIMIT={limit} is below the measured peak of "
+        f"{MEASURED_PEAK_PAGE_ROWS_PER_DAY} page rows in a single day, so "
+        f"`row_limit * days` cannot cover the trailing window and GSC will "
+        f"drop the newest days of it.")
+
+
+class _FakeGSC:
+    """`_query_gsc`, faithful on the one property that caused the defect.
+
+    The real API returns the window's rows as ONE list and truncates it to the
+    requested limit, and the surviving prefix fills from the window START. That
+    is reproduced here. It never returns more rows than it was asked for, and
+    never rows outside [start, end] — a fake more generous than the API would
+    hide exactly the bug this guards.
+    """
+
+    def __init__(self, rows_per_day):
+        self.rows_per_day = rows_per_day
+        self.asked = []
+
+    def __call__(self, token, start, end, dims, row_limit, max_pages=20):
+        from datetime import date, timedelta as _td
+        day, last, out = date.fromisoformat(start), date.fromisoformat(end), []
+        while day <= last:
+            n = 1 if dims == ["date"] else self.rows_per_day
+            for i in range(n):
+                keys = ([day.isoformat()] if dims == ["date"]
+                        else [day.isoformat(), f"https://dchub.cloud/p/{i}"])
+                out.append({"keys": keys, "clicks": 0, "impressions": 1,
+                            "ctr": 0.0, "position": 9.0})
+            day += _td(days=1)
+        self.asked.append((tuple(dims), row_limit, len(out)))
+        return out[:row_limit], None
+
+
+class _RecordingDB:
+    """Records the parameters execute() was actually handed.
+
+    ★ It also checks the SQL it is given: a fake cursor that accepts any string
+    and reports rows written would pass while the caller built nonsense.
+    """
+
+    def __init__(self):
+        self.params, self.commits = [], 0
+
+    def cursor(self):
+        return self
+
+    def execute(self, sql, params):
+        groups = sql.count("(%s,%s,%s,%s,%s,%s,%s)")
+        assert groups == len(params) // 7, (
+            f"placeholder groups ({groups}) do not match the parameters "
+            f"supplied ({len(params)} = {len(params)/7:.1f} rows)")
+        self.params.extend(params)
+
+    def commit(self):
+        self.commits += 1
+
+    def close(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def days_written(self):
+        return {p for p in self.params[0::7]}
+
+
+def _run_ingest(rows_per_day, days=None, row_limit=None):
+    """Execute the real `ingest_daily_performance` with the SHIPPED defaults."""
+    fn = _func("ingest_daily_performance")
+    from datetime import datetime, timedelta
+    db, gsc = _RecordingDB(), _FakeGSC(rows_per_day)
+    ns = {
+        "datetime": datetime, "timedelta": timedelta,
+        "DEFAULT_WINDOW_DAYS": _shipped_env_default_int("DEFAULT_WINDOW_DAYS"),
+        "DEFAULT_ROW_LIMIT": _shipped_env_default_int("DEFAULT_ROW_LIMIT"),
+        "_GSC_MAX_ROW_LIMIT": 25000, "_SEED_ROW_CEILING": 100000,
+        "_UPSERT": ("INSERT INTO gsc_daily_performance VALUES {values} "
+                    "ON CONFLICT DO NOTHING"),
+        "_ensure_table": lambda: None,
+        "_query_gsc": gsc,
+        "get_db": lambda: db,
+        "refresh_proven_pages": lambda token, **kw: {"success": True},
+        "logger": logging.getLogger("t"),
+    }
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(SRC), "exec"), ns)
+    kwargs = {}
+    if days is not None:
+        kwargs["days"] = days
+    if row_limit is not None:
+        kwargs["row_limit"] = row_limit
+    return ns["ingest_daily_performance"]("tok", **kwargs), db, gsc
+
+
+def test_the_default_daily_run_writes_every_day_of_its_window():
+    """The whole point of a trailing window: every day in it gets re-read."""
+    out, db, _ = _run_ingest(rows_per_day=MEASURED_PEAK_PAGE_ROWS_PER_DAY)
+    # ★ Take the window from what the run REPORTED, never from the wall clock.
+    # Recomputing `utcnow().date()` here races the module across UTC midnight —
+    # one side lands on the next day and the guard flakes — and it would assert
+    # against a window the run never claimed. This also checks the stronger
+    # property: every day it SAYS it covered was actually written.
+    from datetime import date, timedelta
+    start = date.fromisoformat(out["window"]["start"])
+    end = date.fromisoformat(out["window"]["end"])
+    expected, day = set(), start
+    while day <= end:
+        expected.add(day.isoformat())
+        day += timedelta(days=1)
+    assert len(expected) == _shipped_env_default_int("DEFAULT_WINDOW_DAYS") + 1
+    missing = expected - db.days_written()
+    assert not missing, (
+        f"{len(missing)} of {len(expected)} days in the trailing window were "
+        f"never written: {sorted(missing)}. GSC fills the row budget from the "
+        f"window START, so a budget short of the window drops its NEWEST days "
+        f"— the days a trailing re-read exists to correct.")
+    assert out["success"] is True, out.get("errors")
+    assert out["window_truncated"] is None
+
+
+def test_a_budget_truncated_window_is_an_error_not_a_silent_partial():
+    """`rows_written` looks healthy on a truncated fetch — 50,000 rows that
+    covered 14 days of a 62-day window. Only an explicit signal catches it."""
+    out, _, _ = _run_ingest(rows_per_day=MEASURED_PEAK_PAGE_ROWS_PER_DAY,
+                            days=5, row_limit=500)
+    assert out["success"] is False, (
+        "a fetch that stopped on its own budget did not read the window, and "
+        "must not report success")
+    assert "window_truncated" in out["errors"]
+    assert out["window_truncated"], "the truncated grains must be named"
+    assert set(out["window_truncated"]) >= {"page", "query"}
+
+
+def test_a_seed_ceiling_truncation_is_reported_but_not_an_error():
+    """A 480-day seed is capped by design; it must stay green.
+
+    ★ rows_per_day must be big enough to ACTUALLY hit _SEED_ROW_CEILING —
+    481 x 250 = 120,250 against a 100,000 ceiling. At 50/day nothing truncates
+    and the assertion below is vacuous: it passed even with `_ceiling_bit`
+    hard-coded False, which is the mutation that would redden every seed.
+    """
+    out, _, _ = _run_ingest(rows_per_day=250, days=480, row_limit=5000)
+    assert out["rows_capped"] is not None
+    assert out["window_truncated"], (
+        "this guard is vacuous unless the ceiling actually bit")
+    assert "window_truncated" not in (out["errors"] or {})
+    assert out["success"] is True, out.get("errors")
+
+
+def test_a_zero_row_limit_does_not_fabricate_a_truncation():
+    """`row_limit=0` makes the budget 0, and `len(rows) >= 0` is always true.
+
+    Without the `limit and` guard every grain reports a truncation that never
+    happened — and, because a non-seed truncation is an error, the ingest would
+    fail for a reason that does not exist. (Edge found by be#4824.)
+    """
+    out, _, gsc = _run_ingest(rows_per_day=3, days=2, row_limit=0)
+    assert out["window_truncated"] is None, out["window_truncated"]
+    assert "window_truncated" not in (out["errors"] or {})
