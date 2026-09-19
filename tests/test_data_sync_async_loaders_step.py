@@ -200,7 +200,9 @@ def test_the_status_is_read_six_times():
 def test_a_refused_fire_fails_the_step_and_reads_nothing():
     rc, out, urls = _run([_status()], fire_code="403", fire_body='{"error": "forbidden"}')
     assert rc != 0, f"a refused POST left the step green:\n{out}"
-    assert "::error::" in out and "403" in out, out
+    # "HTTP 403", not a bare 3-digit run: the step echoes "$endpoint answered
+    # HTTP $CODE", and a loose match is satisfied by any digits that line up.
+    assert "::error::" in out and "HTTP 403" in out, out
     assert not any("loader-status" in u for u in urls), urls
 
 
