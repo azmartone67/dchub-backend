@@ -34,6 +34,36 @@ SHARED_CRITICAL_VARS = (
     "MODELREL_KEY_MOONSHOT", "MODELREL_KEY_COHERE", "COHERE_API_KEY",
     "MODELREL_KEY_DEEPSEEK", "MODELREL_KEY_QWEN", "MODELREL_KEY_ZAI",
     "DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY", "SMITHERY_TOKEN",
+
+    # ★ ACTION GATES (2026-09-18). Not secrets — but the criterion above is
+    # "MUST be identical on both services", and these decide whether a
+    # WORKER-OWNED master shell ACTS at all. A half-set one is invisible and
+    # expensive: RAG_MASTER_ARM was set on dchub-backend only, so
+    # GET /api/v1/admin/rag/master-state reported mode "armed" for 78 ticks
+    # while every tick — relayed to the WORKER per main.py's worker-owned
+    # list — recorded "SHADOW (set RAG_MASTER_ARM=1 to act)". The shell
+    # measured and scored daily for three months and never once acted, and
+    # this detector could not see it because the var was not in this tuple.
+    #
+    # ONLY flags whose tick route is in main.py's worker-owned relay list
+    # belong here — verified one by one, not added in bulk. A flag that
+    # legitimately differs per service would file a PERMANENT finding, and a
+    # permanently-firing finding gets auto-quarantined as a runaway, which is
+    # strictly worse than the blindness it replaced.
+    # tests/test_env_drift_action_gates.py pins the membership rule so a NEW
+    # worker-owned shell cannot ship a gate that drifts invisibly.
+    "RAG_MASTER_ARM",                    # /api/v1/admin/rag/master-tick
+    "RELIABILITY_MASTER_ARM",            # /api/v1/admin/reliability/master-tick
+    "BRAIN_PROMOTE_ON_FAILURE_ENABLED",  # /api/v1/admin/brain/master-tick
+    "BRAIN_SELF_DIRECT_ENABLED",         # /api/v1/brain/self-direct/tick
+    # Found by tests/test_env_drift_action_gates.py, not by hand — these three
+    # were missed by a manual grep and are the highest-stakes gates here:
+    # AUTONOMY/AUTOMERGE decide whether the brain opens and merges PRs on its
+    # own, so a half-set pair means the lane is live on one service and dead
+    # on the other with nothing saying which.
+    "BRAIN_AUTONOMY_ENABLED",            # brain_autonomy_loop (worker-relayed)
+    "BRAIN_AUTOMERGE_ENABLED",           # brain_autonomy_loop (worker-relayed)
+    "BRAIN_RAG_ENABLED",                 # /api/v1/admin/brain/rag/reindex
 )
 
 
