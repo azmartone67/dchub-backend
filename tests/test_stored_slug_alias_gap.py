@@ -64,16 +64,47 @@ def test_the_backfill_exists():
         "cover it")
 
 
-def test_the_backfill_never_repoints_an_existing_alias():
-    """ON CONFLICT DO NOTHING, not DO UPDATE.
+def _alias_repoint_clause():
+    """The shared ON CONFLICT clause, whitespace-normalised.
 
-    An explicit load (GSC-export capture) or an id-scheme alias must win. This
-    pass ADDS rescue paths; if it could repoint one it could break a redirect
-    that is already correct and already indexed.
+    It is a MODULE CONSTANT read by three emitters. A guard that greps only the
+    emitter function cannot see it — which is exactly how the footgun ban below
+    went green on a clause it had stopped reading.
+    """
+    whole = open(_FREEZE, encoding="utf-8").read()
+    return " ".join(whole.split("_ALIAS_REPOINT = ", 1)[1]
+                         .split('"""')[1].split())
+
+
+def _effective_backfill_src():
+    """backfill_stored_slug_aliases' source WITH _ALIAS_REPOINT inlined."""
+    return _src(_FREEZE, _func(_FREEZE, "backfill_stored_slug_aliases")).replace(
+        "_ALIAS_REPOINT", _alias_repoint_clause())
+
+
+def test_the_backfill_repoints_only_its_own_alias_for_its_own_facility():
+    """An explicit load (GSC-export capture) or another emitter's alias must
+    still win — but this pass MUST correct the alias it wrote itself.
+
+    This was `assert "DO UPDATE" not in src`, which is stricter than the
+    sentence above it and banned the fix as well as the hazard. A re-mint moves
+    facility F from S to S'; the alias old_X -> S this emitter wrote then 301s
+    an indexed URL to a page that has since become a DIFFERENT facility, and
+    DO NOTHING made that permanent. What actually has to hold is that the
+    repoint cannot reach an alias this emitter did not write for this facility,
+    so that is what is asserted — a guard that fails on an UNSCOPED DO UPDATE,
+    which the old one could not distinguish from a scoped one.
     """
     src = _src(_FREEZE, _func(_FREEZE, "backfill_stored_slug_aliases"))
-    assert "ON CONFLICT (old_slug) DO NOTHING" in src
-    assert "DO UPDATE" not in src
+    assert "_ALIAS_REPOINT" in src, "the emitter no longer shares the one clause"
+    flat = _alias_repoint_clause()
+    assert "DO UPDATE" in flat, "nothing repoints a stale alias any more"
+    # the two scopes that keep somebody else's alias out of reach
+    assert "facility_slug_aliases.source = EXCLUDED.source" in flat, (
+        "without a source match this would repoint gsc / manual loads")
+    assert ("facility_slug_aliases.facility_id IS NOT DISTINCT FROM "
+            "EXCLUDED.facility_id") in flat, (
+        "without a facility match this would repoint another facility's alias")
 
 
 def test_the_backfill_only_aliases_slugs_that_differ_from_canonical():
@@ -195,7 +226,27 @@ def test_a_db_failure_yields_no_finding_rather_than_a_false_clean():
     assert "if conn is None:" in src
 
 
-@pytest.mark.parametrize("bad", ["DO UPDATE", "slug = canonical_slug"])
+@pytest.mark.parametrize("bad", ["slug = canonical_slug"])
 def test_backfill_does_not_contain_known_footguns(bad):
-    assert bad not in _src(
-        _FREEZE, _func(_FREEZE, "backfill_stored_slug_aliases"))
+    """"DO UPDATE" used to be on this list.
+
+    ★ It did not leave because the ban was wrong — it left because the clause
+    moved into a module constant and the ban STOPPED BEING ABLE TO SEE IT. The
+    assertion kept passing while reading a function that no longer contained
+    the statement. The repoint is now deliberate and narrowly scoped (see
+    test_the_backfill_repoints_only_its_own_alias_for_its_own_facility); the
+    hazard the blanket ban was aiming at is an UNSCOPED one, fenced below
+    against the EFFECTIVE source rather than the emitter alone.
+    """
+    assert bad not in _effective_backfill_src()
+
+
+def test_no_alias_repoint_is_unscoped():
+    """A DO UPDATE with no WHERE overwrites whatever alias it collides with —
+    a gsc capture, a manual load, another facility's rescue path."""
+    src = _effective_backfill_src()
+    tails = src.split("DO UPDATE")[1:]
+    assert tails, "nothing repoints at all — the emitter cannot self-correct"
+    for tail in tails:
+        assert "WHERE" in tail.split("RETURNING")[0], (
+            "an UNSCOPED repoint: it can overwrite an alias it never wrote")

@@ -39,6 +39,7 @@ Postgres, in the db-parity job.
 Run:  python3 -m pytest tests/test_served_slugs_batch.py -v
 """
 import ast
+import logging
 import pathlib
 import sys
 import types
@@ -277,6 +278,27 @@ def test_a_row_lookup_that_raises_hands_back_every_slug(monkeypatch):
     monkeypatch.setattr(fpp, "_batch_page_rows", _boom)
     assert fpp.served_slugs([TWIN, FR5_TWIN]) == {TWIN: TWIN, FR5_TWIN: FR5_TWIN}
     assert world.closed == 1, "the connection was not handed back after a failure"
+
+
+def test_the_whole_surface_fallback_is_not_silent(monkeypatch, caplog):
+    """Failing open is the contract. Failing open QUIETLY is the defect.
+
+    The arm above hands every slug back unchanged, so every internal link and
+    every sitemap row silently stops resolving past the route's own 301s — and
+    the run looks exactly like one that had nothing to resolve. _batch_page_rows
+    is the arm with no per-arm except of its own (its function-level
+    `from routes.facility_slug_freeze import SLUG_OWNER_ORDER_SQL` lands here
+    too), so an ImportError degrades the whole surface with no line anywhere.
+    """
+    World(DISCOVERED, FACILITIES, ALIASES).install_batch(monkeypatch, fpp)
+    monkeypatch.setattr(fpp, "_batch_page_rows", _boom)
+    with caplog.at_level(logging.ERROR, logger=fpp.logger.name):
+        got = fpp.served_slugs([TWIN, FR5_TWIN])
+        loud = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert got == {TWIN: TWIN, FR5_TWIN: FR5_TWIN}, "it must still fail OPEN"
+    assert loud, (
+        "served_slugs mapped every slug to itself and logged nothing: a run "
+        "that lost the whole surface reads identically to a quiet one")
 
 
 def test_a_keeper_lookup_that_raises_stops_only_the_keeper_hops(monkeypatch):
