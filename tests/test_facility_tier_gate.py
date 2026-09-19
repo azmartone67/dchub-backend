@@ -374,3 +374,77 @@ def test_no_handler_in_the_class_is_left_ungated():
         "these handlers read power_mw + coordinates out of "
         "discovered_facilities with no tier gate in their path: "
         f"{sorted(offenders)}")
+
+
+def test_every_returned_record_in_a_class_handler_is_gated():
+    """Branch-level companion to test_no_handler_in_the_class_is_left_ungated.
+
+    That test asks whether the FUNCTION imports and calls a gate. A function
+    with two exits needs only one of them to satisfy it. `facility_by_slug` is
+    exactly that shape — #4856 gated its hash-slug branch (`_resp_slug`) and
+    left its numeric-id branch (`_resp_id`) returning the full row, and the
+    function-level check stayed green the whole time because the slug branch's
+    import and call were enough to answer for both.
+
+    Measured live 2026-09-19 after #4856 shipped, anonymous, cache-busted:
+
+        /api/v1/facilities/<id>   ->  8 fields, tier=free, _upgrade present
+        /api/v1/facilities/<id>/  -> 14 fields, power_mw + coordinates + address
+
+    One trailing slash chose the branch. So the unit of this check is the
+    RESPONSE, not the function: every response variable a class handler hands
+    to jsonify must itself have been through the gate.
+    """
+    src = (ROOT / 'main.py').read_text(encoding='utf-8')
+    tree = _main_tree()
+
+    # Names a gated response carries. Assigning any of them marks that
+    # particular response object as having been through the gate.
+    GATE_MARKS = {'_gated', 'data'}
+    GATE_CALLS = {'gate_record', 'gate_records', '_fg_rec', '_fg_rows',
+                  'coarsen_coords_deep', '_sc_deep', '_fid_gate', '_sl_gate'}
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        fsrc = ast.get_source_segment(src, node) or ''
+        if not ('discovered_facilities' in fsrc and 'power_mw' in fsrc
+                and 'latitude' in fsrc):
+            continue
+        if node.name in ('api_v1_map', 'api_site_score', 'api_site_forecast',
+                         '_admin_dedup_drain', '_admin_dedup_facilities_soft'):
+            continue
+
+        # Response variables that reach the client as a record.
+        returned = set()
+        for n in ast.walk(node):
+            if (isinstance(n, ast.Return) and isinstance(n.value, ast.Call)
+                    and isinstance(n.value.func, ast.Name)
+                    and n.value.func.id == 'jsonify'
+                    and n.value.args
+                    and isinstance(n.value.args[0], ast.Name)):
+                returned.add(n.value.args[0].id)
+
+        # Response variables that were re-keyed after a gate call ran.
+        gated = set()
+        for n in ast.walk(node):
+            if not isinstance(n, ast.Assign):
+                continue
+            called = {c.func.id for c in ast.walk(n)
+                      if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            for t in n.targets:
+                if (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
+                        and isinstance(t.slice, ast.Constant)
+                        and t.slice.value in GATE_MARKS):
+                    if t.slice.value == '_gated' or (called & GATE_CALLS):
+                        gated.add(t.value.id)
+
+        for var in sorted(returned - gated):
+            offenders.append(f"{node.name}:{var}")
+
+    assert offenders == [], (
+        "these response objects are returned from a class handler without "
+        "passing through the tier gate — a sibling branch being gated does "
+        f"not cover them: {sorted(offenders)}"
+    )
