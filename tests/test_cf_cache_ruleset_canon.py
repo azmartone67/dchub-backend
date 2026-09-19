@@ -348,3 +348,41 @@ def test_refused_message_does_not_assert_an_unverified_permission_group(monkeypa
     # it must hand the reader a way to check for themselves
     assert "check_cf_cache_ruleset.py" in error
     assert "403" in error and "200" in error  # the measured evidence table
+
+
+def test_seo_performance_bypasses_and_outranks_the_public_api_cache_rule(canon):
+    """2026-09-19. `/api/v1/seo/performance` is a no-store analytics aggregate.
+
+    Rule 2 ("Cache Public API") matches every `/api/v1/` path with
+    `edge_ttl: override_origin`, which ignores the origin's `no-store` outright.
+    Measured that day, after a backfill wrote 3,638 rows for 2026-08-05:
+
+        edge,   no cache-buster : cf-cache-status HIT,  age 1996 ->    62 rows
+        edge,   cache-busted    : cf-cache-status MISS            -> 3,638 rows
+        origin (Railway)        : cache-control no-store          -> 3,638 rows
+
+    A 33-minute-old body of a series that had just been rewritten. Anyone
+    verifying a write through dchub.cloud reads the state of a past moment as
+    the present one — the same class as rule 21's liveness endpoints.
+
+    Pinned as an invariant, not a snapshot: cache rules are LAST-MATCH-WINS, so
+    a bypass that sits BEFORE the caching rule is inert.
+    """
+    rules = canon["rules"]
+    public_api = next(
+        r for r in rules
+        if "/api/v1/" in r["expression"] and r["action_parameters"].get("cache") is True
+    )
+    seo = [
+        r for r in rules
+        if "/api/v1/seo/" in r["expression"] and r["action_parameters"].get("cache") is False
+    ]
+    assert seo, (
+        "no bypass rule covers /api/v1/seo/ — Rule 2 caches it with "
+        "override_origin and the origin's no-store is discarded"
+    )
+    assert max(r["position"] for r in seo) > public_api["position"], (
+        "the /api/v1/seo/ bypass sits BEFORE the public-API caching rule; "
+        "last-match-wins means the caching rule wins and stale analytics are "
+        "served again"
+    )
