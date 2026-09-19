@@ -93,29 +93,39 @@ pytestmark = pytest.mark.skipif(
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from tests._prod_shaped_db import reset_tables  # noqa: E402
 
 KML = "{http://www.opengis.net/kml/2.2}"
 
+# The tables this file OWNS. On an empty postgres `reset_tables` reports them
+# absent and the DDL below creates them; on a prod-shaped branch it TRUNCATEs
+# production's own tables and the `IF NOT EXISTS` creates become no-ops, so the
+# readers run against the REAL column list. See tests/_prod_shaped_db.py --
+# a DROP there raises `DependentObjectsStillExist`, and CASCADE would delete
+# production's views out of a branch 19 lanes share.
+#
+# `discovered_transmission_lines` is NOT in this set on purpose: it is dropped
+# and never recreated, so any reader still touching it raises. That drop is an
+# assertion, and truncating it would hand such a reader an empty table instead.
+MANAGED = ("transmission_lines", "substations", "discovered_power_plants",
+           "discovered_pipelines")
+
 DDL = (
     "DROP TABLE IF EXISTS discovered_transmission_lines",
-    "DROP TABLE IF EXISTS transmission_lines",
-    "DROP TABLE IF EXISTS substations",
-    "DROP TABLE IF EXISTS discovered_power_plants",
-    "DROP TABLE IF EXISTS discovered_pipelines",
-    """CREATE TABLE transmission_lines (
+    """CREATE TABLE IF NOT EXISTS transmission_lines (
            id SERIAL PRIMARY KEY, hifld_id VARCHAR(50), name VARCHAR(500),
            operator VARCHAR(500), voltage_kv DOUBLE PRECISION,
            from_sub VARCHAR(500), to_sub VARCHAR(500),
            length_miles DOUBLE PRECISION, state VARCHAR(10), status VARCHAR(50),
            line_type VARCHAR(100), source VARCHAR(50),
            last_updated TIMESTAMP DEFAULT NOW(), created_at TIMESTAMP DEFAULT NOW())""",
-    "CREATE TABLE substations (name TEXT, lat REAL, lng REAL)",
-    """CREATE TABLE discovered_power_plants (
+    "CREATE TABLE IF NOT EXISTS substations (name TEXT, lat REAL, lng REAL)",
+    """CREATE TABLE IF NOT EXISTS discovered_power_plants (
            id TEXT, name TEXT, fuel_type TEXT, capacity_mw REAL,
            generation_mwh REAL, operator TEXT, state TEXT, sector TEXT,
            market TEXT, discovered_at TEXT, last_updated TEXT, source TEXT,
            is_new INTEGER, lat REAL, lng REAL)""",
-    """CREATE TABLE discovered_pipelines (
+    """CREATE TABLE IF NOT EXISTS discovered_pipelines (
            id TEXT, operator TEXT, pipeline_type TEXT, status TEXT,
            diameter_inches REAL, commodity TEXT, name TEXT, capacity_mdth REAL,
            lat REAL, lng REAL, states_served TEXT, state TEXT, market TEXT,
@@ -196,6 +206,7 @@ def db(monkeypatch):
     conn = psycopg2.connect(DSN)
     conn.autocommit = True
     cur = conn.cursor()
+    reset_tables(cur, *MANAGED)
     for stmt in DDL:
         cur.execute(stmt)
     # site_planner opens its own connection from the environment.
