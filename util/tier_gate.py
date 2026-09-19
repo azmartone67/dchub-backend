@@ -61,6 +61,53 @@ TIER_NAME = {
 }
 
 
+# ── REST quota copy is DERIVED (r-rest-gate-canon, 2026-09-18) ───────
+# This CTA typed "2000 calls/day" for Developer and "10k calls/day" for Pro.
+# Those were the REST rate limits when this module was written (Phase GG,
+# 2026-05-15); canon now says 1,000 and 5,000, so the upgrade pitch promised
+# a REST caller twice the calls they would get.
+#
+# ★ WHICH limit belongs here was the whole question. This is a REST soft
+# paywall — see the module docstring: it brings the MCP teaser pattern TO
+# REST — so:
+#   calls/day    = TIER_LIMITS[tier]['rate_limit']   (REST), NOT mcp_daily
+#   results/call = api_tier_gating.TIER_SEARCH_LIMITS (per search/list query)
+# TIER_SEARCH_LIMITS is deliberately NOT in tier_registry — it is its own
+# scale with no TIER_LIMITS column (see the comment above it) — so it is
+# imported from the module that owns it rather than re-typed here.
+#
+# The "100 results/call" and "500 results/call" already on this page were
+# CORRECT: they match TIER_SEARCH_LIMITS developer=100 / pro=500 exactly.
+# Only the calls/day half had drifted. Deriving both anyway, because a
+# correct literal is the same bug with a later fuse.
+
+_TIER_KEY = {
+    Tier.ANONYMOUS:  "anonymous",
+    Tier.IDENTIFIED: "identified",
+    Tier.DEVELOPER:  "developer",
+    Tier.PRO:        "pro",
+    Tier.ENTERPRISE: "enterprise",
+}
+
+
+def _rest_calls_per_day(tier: "Tier") -> str:
+    """REST calls/day for a tier, from canon. '' when unknown."""
+    try:
+        import tier_registry as _tr
+        return format(_tr.limits(_TIER_KEY[tier])["rate_limit"], ",")
+    except Exception:
+        return ""
+
+
+def _rest_results_per_call(tier: "Tier") -> str:
+    """Max results per search/list query, from the map that enforces it."""
+    try:
+        from api_tier_gating import TIER_SEARCH_LIMITS
+        return format(TIER_SEARCH_LIMITS[_TIER_KEY[tier]], ",")
+    except Exception:
+        return ""
+
+
 # Plan/string → Tier mapping. Identical vocabulary to mcp_gatekeeper.
 _PLAN_TO_TIER = {
     "free":          Tier.ANONYMOUS,
@@ -331,14 +378,23 @@ def _build_cta(current: Tier, required: Tier, teaser: str) -> str:
         if required == Tier.IDENTIFIED:
             return (f"Sign up free with your email to unlock {teaser}. "
                     "No credit card. Takes 30 seconds: dchub.cloud/signup")
+        # The price must follow `required`. This typed "$49/mo" for whatever
+        # tier it named — so an endpoint requiring PRO invited the caller to
+        # "upgrade to Pro ($49/mo)". $49 is a real price, just not Pro's,
+        # which is why a canon-vs-literal check never flagged it.
         return (f"To unlock {teaser}, sign up free (email only) — then "
-                f"upgrade to {TIER_NAME[required]} ($49/mo) for the full "
+                f"upgrade to {TIER_NAME[required]} "
+                f"({_canon_price_display(_TIER_KEY[required])}) for the full "
                 "data set: dchub.cloud/pricing")
     if current == Tier.IDENTIFIED and required == Tier.DEVELOPER:
-        return (f"Upgrade to Developer ({_canon_price_display('developer')}) to unlock {teaser} + "
-                "2000 calls/day + 100 results/call. dchub.cloud/pricing")
+        return (f"Upgrade to Developer ({_canon_price_display('developer')}) "
+                f"to unlock {teaser} + {_rest_calls_per_day(Tier.DEVELOPER)} "
+                f"calls/day + {_rest_results_per_call(Tier.DEVELOPER)} "
+                "results/call. dchub.cloud/pricing")
     if current == Tier.DEVELOPER and required == Tier.PRO:
-        return (f"Upgrade to Pro ({_canon_price_display('pro')}) to unlock {teaser} + "
-                "10k calls/day + 500 results/call. dchub.cloud/pricing")
+        return (f"Upgrade to Pro ({_canon_price_display('pro')}) "
+                f"to unlock {teaser} + {_rest_calls_per_day(Tier.PRO)} "
+                f"calls/day + {_rest_results_per_call(Tier.PRO)} "
+                "results/call. dchub.cloud/pricing")
     return (f"This endpoint requires {TIER_NAME[required]} tier. "
             "See dchub.cloud/pricing for upgrade options.")
