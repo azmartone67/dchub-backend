@@ -25,9 +25,15 @@ imported — `_flush_once` imports it lazily, so a stub in sys.modules is enough
 import importlib
 import sys
 
+import pytest
+
 
 def _writer():
-    """Fresh module state per test (the buffer and counters are globals)."""
+    """Fresh module state per test (the buffer and counters are globals).
+
+    The original module object is restored on teardown by
+    `_agent_request_writer_module_comes_back` below.
+    """
     sys.modules.pop("agent_request_writer", None)
     m = importlib.import_module("agent_request_writer")
     m._started = True          # never start the real background flusher thread
@@ -35,6 +41,32 @@ def _writer():
     for k in ("enqueued", "inserted", "dropped", "poisoned"):
         m._stats[k] = 0
     return m
+
+
+@pytest.fixture(autouse=True)
+def _agent_request_writer_module_comes_back():
+    """Undo `_writer()`: put the ORIGINAL module object back under its name.
+
+    `_writer()` pops `agent_request_writer` and re-imports it, which is the
+    point — the module keeps its buffer and counters in globals, so each test
+    needs a clean one. What it left behind was a SECOND module object compiled
+    from the same file. Anything that bound the first (another test module at
+    collection, the real app at import) keeps that one, so a patch applied
+    through one reference is invisible through the other, and the two disagree
+    about `_buf` and `_stats` forever.
+
+    Re-ASSIGNS the saved object rather than deleting the name: leaving it
+    absent is what makes the next import build yet another module.
+    """
+    present = "agent_request_writer" in sys.modules
+    saved = sys.modules.get("agent_request_writer")
+    try:
+        yield
+    finally:
+        if present:
+            sys.modules["agent_request_writer"] = saved
+        else:
+            sys.modules.pop("agent_request_writer", None)
 
 
 class _FakeConn:

@@ -59,19 +59,26 @@ class InnerWrapper:
 def _load_real_surface_brain():
     """Load routes/surface_brain.py FROM DISK, bypassing sys.modules.
 
-    ★ `import routes.surface_brain` is NOT safe in a full-suite run.
-      tests/test_market_brief_guard.py and tests/test_market_rotation_
-      reachability.py each do
+    ★ `import routes.surface_brain` is not safe to rely on here.
+      Until 2026-09-13, tests/test_market_brief_guard.py and
+      tests/test_market_rotation_reachability.py each did
 
           sys.modules.setdefault("routes.surface_brain",
                                  types.ModuleType("routes.surface_brain"))
 
-      to keep their own imports cheap. Whichever is collected first installs a
-      STUB carrying only `auto_log` for the rest of the process. Running this
-      file alone gets the real module and passes; `pytest tests/` gets the stub
-      and this test would either error on the missing attribute or — far worse
-      — silently exercise a stub and report green. Load by path so the answer
-      does not depend on collection order.
+      at MODULE SCOPE to keep their own imports cheap. Whichever was collected
+      first installed a STUB carrying only `auto_log` for the rest of the
+      process: running this file alone got the real module and passed, while
+      `pytest tests/` got the stub and this test would either error on the
+      missing attribute or — far worse — silently exercise a stub and report
+      green. Both files now install that stub from an autouse fixture that is
+      torn down per test, so the entry no longer outlives them.
+
+      Loading by PATH stays, for two reasons that did not go away: an ordinary
+      `import routes.surface_brain` would pull the real route module (and
+      main.py behind it) into the test process, and the answer should not
+      depend on what any other file has done to sys.modules. The
+      `hasattr(mod, "_conn")` check below is what proves we got the real file.
     """
     import importlib.util
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
