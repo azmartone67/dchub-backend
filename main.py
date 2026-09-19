@@ -30282,20 +30282,27 @@ def data_freshness():
         #   'fine' — it is invisible to this guard." The first draft of this
         #   change failed that check as UNMEASURED, which is not a pass. So the
         #   helper returns FIELDS and each feed still spells its own keys.
-        def _freshness_of(table, count):
+        def _freshness_of(table, count, interval):
             from routes.served_table_freshness import (
                 table_freshness, feed_health_fields)
             # ★ rollback= is load-bearing: a failed probe aborts this SHARED
             #   transaction and every later feed cascades to 0/stale (#1683).
             col, newest = table_freshness(c, table, rollback=conn.rollback)
-            return feed_health_fields(col, newest, count)
+            # ★★ The feed's OWN declared cadence is the threshold. Publishing the
+            #   timestamp was not enough: this endpoint served
+            #   `transactions: healthy, last_updated 2026-07-27` against a
+            #   declared "5 minutes" refresh — 54 days late, with the
+            #   contradicting evidence in the same object, and only the off-box
+            #   probe called it stale.
+            return feed_health_fields(col, newest, count, interval)
 
         transactions_count = safe_query(f"SELECT COUNT(*) FROM deals WHERE buyer IS NOT NULL AND buyer != '' AND seller IS NOT NULL AND seller != '' AND {_DEALS_OK}", 0)
-        _fr_tx = _freshness_of('deals', transactions_count)
+        _iv_tx = '5 minutes (via autopilot)'
+        _fr_tx = _freshness_of('deals', transactions_count, _iv_tx)
         feeds['transactions'] = {
             'record_count': transactions_count,
             'scheduler': 'autopilot',
-            'refresh_interval': '5 minutes (via autopilot)',
+            'refresh_interval': _iv_tx,
             'refresh_endpoint': 'POST /api/transactions/refresh',
             'freshness_source': _fr_tx['freshness_source'],
             'last_updated': _fr_tx['last_updated'],
@@ -30304,7 +30311,7 @@ def data_freshness():
         }
 
         fiber_count = safe_query("SELECT COUNT(*) FROM fiber_routes", 0)
-        _fr_fib = _freshness_of('fiber_routes', fiber_count)
+        _fr_fib = _freshness_of('fiber_routes', fiber_count, '6 hours')
         feeds['fiber_routes'] = {
             'record_count': fiber_count,
             'scheduler': 'infrastructure_sync',
@@ -30316,7 +30323,7 @@ def data_freshness():
         }
 
         substations_count = safe_query("SELECT COUNT(*) FROM substations", 0)
-        _fr_sub = _freshness_of('substations', substations_count)
+        _fr_sub = _freshness_of('substations', substations_count, '6 hours')
         feeds['substations'] = {
             'record_count': substations_count,
             'scheduler': 'infrastructure_sync',
@@ -30328,7 +30335,7 @@ def data_freshness():
         }
 
         permits_count = safe_query("SELECT COUNT(*) FROM construction_permits", 0)
-        _fr_cp = _freshness_of('construction_permits', permits_count)
+        _fr_cp = _freshness_of('construction_permits', permits_count, '6 hours')
         feeds['construction_permits'] = {
             'record_count': permits_count,
             'scheduler': 'infrastructure_sync',
