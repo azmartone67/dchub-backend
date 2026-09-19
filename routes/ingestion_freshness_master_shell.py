@@ -706,6 +706,114 @@ def _lane_curated(spec: dict) -> list[dict]:
     rows, err = _fetch_served(spec)
     return _curated_checks(spec, rows, err)
 
+
+# ── CROSS-SOURCE DETECTOR ───────────────────────────────────────────────────
+# The freshness lane above answers "how old is this row?". It cannot answer
+# "is this row WRONG?" — a row verified yesterday can still be wrong today.
+#
+# This lane answers the second question by pointing two DC Hub datasets at each
+# other. permitting_intel carries human-verified jurisdiction records with a
+# `tax` class ("tax changes"); tax-incentives carries the program rows. If
+# permitting_intel holds a published tax record for a state whose incentive row
+# declares NO status, DC Hub is holding evidence that contradicts its own
+# published answer. That is the exact shape of the Ohio defect: the pause was
+# knowable for ~4 months before anyone noticed the row still said "available".
+#
+# ★ ZERO EVIDENCE ON ONE SIDE IS NOT AGREEMENT. permitting_intel currently has
+# NINE records, all class=moratorium, and ZERO class=tax — the tax lane has
+# never been populated. A cross-check that reports "0 disagreements -> PASS"
+# against an empty side is vacuous: it would go green precisely because nobody
+# is feeding it, and stay green through every future miss. With no tax records
+# to compare, this lane returns None (indeterminate) and says the side is
+# empty. Only a non-empty comparison can produce a PASS.
+_PERMITTING_ENDPOINT = "/api/v1/permitting/intel?class=tax"
+
+
+def _fetch_permitting_tax():
+    """(records, error). Never raises — unreachable is UNOBSERVED, not empty."""
+    url = _INTERNAL_API_ORIGIN + _PERMITTING_ENDPOINT
+    try:
+        req = _urlreq.Request(url, headers={
+            "User-Agent": "DCHub-IngestionFreshness/1.0",
+            "X-DC-Internal-Warmup": "1"})
+        with _urlreq.urlopen(req, timeout=10) as r:
+            payload = _json.loads(r.read())
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {str(e)[:90]}"
+    recs = payload.get("records")
+    if not isinstance(recs, list):
+        return None, "response carried no records[] list"
+    return recs, None
+
+
+def _cross_source_checks(rows, rows_err, recs, recs_err) -> list[dict]:
+    """Pure. Three checks; only the second can convict.
+
+    1. sides_readable  Either side unreadable -> None. UNREADABLE IS NOT
+                       AGREEMENT, the same way it is not staleness.
+    2. no_contradiction THE VERDICT. A state with a published tax record but
+                       no status on its incentive row is a contradiction.
+                       Returns None — never True — when there are no tax
+                       records to compare, because an empty side cannot
+                       vindicate anything. critical=True.
+    3. coverage        GAUGE — states whose incentive row carries a status but
+                       which permitting_intel has no tax record for. Never
+                       convicts: our row can be right and the jurisdiction
+                       store simply thinner. It measures the store's gap.
+    """
+    if rows is None or recs is None:
+        which = "tax-incentives" if rows is None else "permitting_intel"
+        why = rows_err if rows is None else recs_err
+        return [_check("xsrc_read", "both sides readable", None,
+                       f"{which} unreadable ({why}) — cross-check UNKNOWN "
+                       f"(not agreement, not a contradiction)", critical=True)]
+
+    flagged = {(r or {}).get("abbr") for r in rows if (r or {}).get("status")}
+    all_states = {(r or {}).get("abbr") for r in rows if (r or {}).get("abbr")}
+    tax_states = {(x or {}).get("state") for x in recs if (x or {}).get("state")}
+    tax_states = {t for t in tax_states if t in all_states}
+
+    checks = [_check("xsrc_sides", "both sides readable", True,
+                     f"{len(rows)} incentive rows vs {len(recs)} published "
+                     f"class=tax permitting records")]
+
+    if not recs:
+        checks.append(_check(
+            "xsrc_contradiction", "no state contradicts its own tax record",
+            None,
+            "permitting_intel holds ZERO class=tax records, so there is "
+            "nothing to cross-check against. An empty side cannot vindicate "
+            "the incentive rows — this is UNKNOWN, not agreement. Populate "
+            "the tax lane (it advertises the class and has never carried one) "
+            "before reading this as healthy.", critical=True))
+    else:
+        contradict = sorted(tax_states - flagged)
+        checks.append(_check(
+            "xsrc_contradiction", "no state contradicts its own tax record",
+            not contradict,
+            ("every state with a tax record also declares a status on its "
+             "incentive row"
+             if not contradict else
+             f"{len(contradict)} state(s) have a published tax record but NO "
+             f"status on the incentive row ({', '.join(contradict)}) — DC Hub "
+             f"is holding evidence against its own published answer"),
+            critical=True))
+
+    gap = sorted(flagged - tax_states)
+    checks.append(_check(
+        "xsrc_coverage", "permitting_intel tax coverage for flagged states",
+        True,
+        (f"{len(gap)} flagged state(s) have no class=tax record "
+         f"({', '.join(gap) if gap else 'none'}) — a gap in the jurisdiction "
+         f"store, not an error in the incentive rows")))
+    return checks
+
+
+def _lane_cross_source() -> list[dict]:
+    rows, rows_err = _fetch_served(_CURATED[0])
+    recs, recs_err = _fetch_permitting_tax()
+    return _cross_source_checks(rows, rows_err, recs, recs_err)
+
 def _tick() -> dict:
     lanes = []
     for spec in _LAYERS:
@@ -716,6 +824,9 @@ def _tick() -> dict:
         checks = _safe_lane(_lane_curated, spec)
         lanes.append({"id": spec["key"], "name": spec["label"],
                       "checks": checks, "verdict": _lane_verdict(checks)})
+    checks = _safe_lane(_lane_cross_source)
+    lanes.append({"id": "tax_cross_source", "name": "tax rows vs permitting intel",
+                  "checks": checks, "verdict": _lane_verdict(checks)})
     checks = _safe_lane(_lane_canon_coverage)
     lanes.append({"id": "canon_coverage", "name": "asset counts in canon",
                   "checks": checks, "verdict": _lane_verdict(checks)})
