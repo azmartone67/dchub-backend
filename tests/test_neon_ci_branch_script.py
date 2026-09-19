@@ -495,15 +495,19 @@ def test_it_waits_for_a_slot_and_then_proceeds(monkeypatch):
     assert api.calls == 3
 
 
-def test_it_gives_up_with_the_holders_named(monkeypatch):
-    """A timeout must say WHICH branches hold the cap, not just that it is full."""
+def test_it_gives_up_with_the_holders_named(monkeypatch, capsys):
+    """A timeout must say WHICH branches hold the cap, not just that it is full.
+
+    It reports False rather than raising: whose PR is queued is not a fact about
+    this diff, and cmd_create turns the False into an explicit UNMEASURED.
+    """
     _no_sleeping(monkeypatch)
     api = _Roots([_root("ci-777-1-parity"), _root("ci-778-1-fullsuite"),
                   _root("ci-779-1-parity")])
     monkeypatch.setattr(nb, "_req", api)
-    with pytest.raises(SystemExit) as exc:
-        nb._await_root_slot("k", "p", "ci-", ceiling=3, wait_minutes=1)
-    msg = str(exc.value)
+    got = nb._await_root_slot("k", "p", "ci-", ceiling=3, wait_minutes=1)
+    assert got is False
+    msg = capsys.readouterr().err
     assert "ci-777-1-parity" in msg and "ci-779-1-parity" in msg
     assert "NEON_CI_MAX_ROOTS" in msg
 
@@ -540,7 +544,10 @@ def test_a_zero_ceiling_disables_the_wait_without_an_api_call(monkeypatch):
 
 def _create(monkeypatch, capsys, branch):
     monkeypatch.setattr(nb, "_preflight", lambda *a, **k: None)
-    monkeypatch.setattr(nb, "_await_root_slot", lambda *a, **k: None)
+    # Returns True, like the real one. A stub returning None reads as "no slot"
+    # and routes cmd_create into the UNMEASURED branch, which is how this fixture
+    # first went wrong when the verdict was introduced.
+    monkeypatch.setattr(nb, "_await_root_slot", lambda *a, **k: True)
     monkeypatch.setattr(nb, "_default_branch_id", lambda *a, **k: "br-parent")
     monkeypatch.setattr(nb, "_create_branch", lambda *a, **k: {"branch": branch})
     monkeypatch.setattr(nb, "_connection_uri", lambda *a, **k: "postgres://x/y")
@@ -587,3 +594,109 @@ def test_the_sweeper_prints_the_population_it_examined(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "2 branches, 2 root, 1 matching 'ci-'" in err
     assert "ci-1-1-parity" in err and "expires_at=NOT SET" in err
+
+
+# ── starvation is UNMEASURED, and UNMEASURED is not a pass ───────────────────
+#
+# 2026-09-19. The ceiling went 3 -> 4 because supply was below demand, not
+# because anything leaked: the holders were live runs aged 3/7/9m with 3h
+# expiries, five ci-neon-db runs overlapped in one 30-minute window, and the
+# 8m wait was shorter than the 15-23m hold. A fourth job could not ever win.
+#
+# Raising the ceiling spends the last spare root, so the create can now lose a
+# race it previously could not. Both outcomes — lost the wait, lost the race —
+# must land on the SAME honest result: exit 0, lane declared UNMEASURED, and
+# nothing anywhere claiming the database lane passed.
+
+
+def _starved(monkeypatch, tmp_path, *, create=None, max_roots=4):
+    """cmd_create with no slot available, wired to a real GITHUB_OUTPUT file."""
+    out = tmp_path / "gh_out"
+    out.write_text("")
+    summary = tmp_path / "gh_summary"
+    summary.write_text("")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(nb, "_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(nb, "_default_branch_id", lambda *a, **k: "br-parent")
+    monkeypatch.setattr(nb, "_connection_uri", lambda *a, **k: "postgres://x/y")
+    # No slot unless a create stub is supplied, in which case the wait succeeds
+    # and the create is what fails.
+    monkeypatch.setattr(nb, "_await_root_slot", lambda *a, **k: create is not None)
+    if create is not None:
+        monkeypatch.setattr(nb, "_create_branch", create)
+    nb.cmd_create(type("A", (), {
+        "api_key": "k", "project_id": "p", "parent_id": "", "name": "ci-9-1-parity",
+        "database": "neondb", "role": "neondb_owner", "ttl_hours": 3,
+        "prefix": "ci-", "max_roots": max_roots, "wait_minutes": 8})())
+    return out.read_text(), summary.read_text()
+
+
+def test_a_starved_lane_is_unmeasured_not_a_failure(monkeypatch, tmp_path):
+    """Whose PR is queued is not a fact about this diff."""
+    gh_out, _ = _starved(monkeypatch, tmp_path)          # must not raise
+    assert "slot=none" in gh_out
+    assert "dsn=" not in gh_out, "a starved lane must hand out no database"
+    assert "branch_id=" not in gh_out
+
+
+def test_unmeasured_never_claims_the_lane_passed(monkeypatch, tmp_path):
+    """★ The whole risk of exiting 0. A green check that is read as 'the DB
+    lane passed' is strictly worse than the red it replaced."""
+    _, summary = _starved(monkeypatch, tmp_path)
+    assert "UNMEASURED" in summary
+    assert "did NOT run" in summary
+    assert "not a pass" in summary
+
+
+def test_losing_the_last_root_race_is_unmeasured_too(monkeypatch, tmp_path):
+    """Ceiling 4 spends the spare root, so the admission check can be beaten
+    between its GET and the POST. Same event, same honest outcome."""
+    def cap(*a, **k):
+        raise SystemExit('neon api POST /branches -> 422: '
+                         '{"code":"ROOT_BRANCHES_LIMIT_EXCEEDED"}')
+    gh_out, summary = _starved(monkeypatch, tmp_path, create=cap)
+    assert "slot=none" in gh_out and "dsn=" not in gh_out
+    assert "UNMEASURED" in summary
+
+
+def test_a_real_create_failure_still_fails_the_job(monkeypatch, tmp_path):
+    """★ The catch must be scoped to the cap. Swallowing every SystemExit here
+    would turn a broken API key, a 500, or a malformed body into a quiet green
+    — the exact hole this whole change exists to avoid widening."""
+    def boom(*a, **k):
+        raise SystemExit("neon api POST /branches -> 401: unauthorized")
+    with pytest.raises(SystemExit) as exc:
+        _starved(monkeypatch, tmp_path, create=boom)
+    assert "401" in str(exc.value)
+
+
+def test_the_happy_path_marks_the_slot_taken(monkeypatch, tmp_path):
+    """Both branches must set `slot`, or the gated steps skip themselves on the
+    path where the database actually exists."""
+    out = tmp_path / "gh_out"
+    out.write_text("")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    nb._emit(branch_id="br-x", dsn="postgres://x/y")
+    assert "slot=taken" in out.read_text()
+
+
+def test_the_default_ceiling_leaves_no_root_unspent(monkeypatch):
+    """4 is the whole remaining supply under the 5-root Launch cap (production
+    holds one). If this ever reads 5+, the plan must have changed with it.
+
+    Driven through main(), not through a re-derived default: the number that
+    matters is the one the CLI actually hands cmd_create, and the workflow
+    passes neither --max-roots nor NEON_CI_MAX_ROOTS.
+    """
+    monkeypatch.delenv("NEON_CI_MAX_ROOTS", raising=False)
+    seen = {}
+    monkeypatch.setattr(nb, "cmd_create", lambda a: seen.update(vars(a)))
+    monkeypatch.setenv("NEON_API_KEY", "k")
+    monkeypatch.setenv("NEON_PROJECT_ID", "polished-scene-74402045")
+    monkeypatch.setattr(nb.sys, "argv",
+                        ["neon_ci_branch.py", "create", "--name", "ci-1-1-parity"])
+    nb.main()
+    assert seen["max_roots"] == 4
+    assert seen["wait_minutes"] == 8, (
+        "the wait is sized against the 15-23m hold; change it deliberately")
