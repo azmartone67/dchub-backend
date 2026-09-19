@@ -6913,14 +6913,27 @@ def get_facilities():
         # Audit #6/#7: this endpoint also feeds the map — the gating.js MW blur was
         # cosmetic (the real power_mw was in the network response). Strip each row to
         # the tier's allowlist for anon/free (mirrors search_facilities). Paid → full.
+        # ★ r-corpusgate (2026-09-19): two defects fixed here.
+        #
+        # (1) FAIL-OPEN. The handler below used to be `except Exception: pass`,
+        #     annotated "fail-open on import error (non-blocking)". This route
+        #     SELECTs power_mw and facility_type, so an ImportError — or any
+        #     raise inside get_request_tier, which does DB work — served the
+        #     full proprietary row to an anonymous caller. Non-blocking is not
+        #     a reason to fail open on the only gate in the path. It now falls
+        #     back to the minimal anon allow-list.
+        #
+        # (2) NO COORDINATE LADDER. Measured live 2026-09-19: anonymous
+        #     /api/facilities?limit=200 returned 100 rows at 4 dp (~11 m),
+        #     because FACILITY_VISIBLE_FIELDS['anon'] contains latitude and
+        #     longitude with no precision constraint. Same env knobs as the map.
         try:
-            from api_tier_gating import get_request_tier as _grt_fac, FACILITY_VISIBLE_FIELDS as _fvf_fac
-            _fac_vis = _fvf_fac.get((_grt_fac() or 'anon').lower())
-            if _fac_vis:
-                _fac_keep = set(_fac_vis)
-                data = [{k: v for k, v in f.items() if k in _fac_keep} for f in data]
+            from util.facility_tier_gate import gate_records as _fg_rows
+            from api_tier_gating import get_request_tier as _grt_fac
+            data, _fac_n = _fg_rows(data, (_grt_fac() or 'anon').lower())
         except Exception:
-            pass  # fail-open on import error (non-blocking)
+            from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _fg_min
+            data = [{k: v for k, v in f.items() if k in _fg_min} for f in data]
         cur.execute("""SELECT COUNT(*) FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
               AND latitude != 0 AND longitude != 0""" + _filt_sql, tuple(_filt_params))
@@ -24266,6 +24279,49 @@ def facility_by_slug(slug):
                    default_v="tracked")
         except Exception:
             data.pop('is_duplicate', None)
+        # ★ r-corpusgate (2026-09-19): this handler had NO tier resolution and
+        # NO field mask. Measured live, no key and no cookie:
+        #   /api/v1/facility/microsoft-...-mount-pleasant-ai-campus-ed53212e
+        #     -> power_mw 2300.0, provider "Microsoft", fiber_providers,
+        #        address, latitude/longitude at 6 dp (~0.1 m)
+        # and /api/v1/map?limit=25000 hands any anonymous caller all 20,139
+        # slugs in one 4.96 MB response, so this route was the second half of a
+        # complete registry export: one request for the index, then walk it.
+        #
+        # The map's own anonymous response has been coarsened to 2 dp since
+        # #2091/#2096. This route is the SAME corpus at 6 dp, which made that
+        # coarsening decorative — cf. reference_dchub_anon_bulk_exposure_0801,
+        # "gating the map did not gate the corpus".
+        #
+        # Gated LAST, deliberately: normalize_coordinates (r-nullisland) must
+        # see the raw values, and verified_flag() reads `is_duplicate`, which
+        # the allow-list drops. Gating earlier would silently turn every
+        # verified row into 'tracked'.
+        try:
+            from util.facility_tier_gate import (
+                gate_record as _fg_rec, coord_dp_for_tier as _fg_dp)
+            from api_tier_gating import get_request_tier as _fg_tier
+            _g_tier = (_fg_tier() or 'anon').lower()
+            _g_data, _g_n = _fg_rec(data, _g_tier)
+            _resp_slug['data'] = _g_data
+            _g_prec = _fg_dp(_g_tier)
+            if _g_prec is not None:
+                # Same vocabulary the /api/v1/map response already publishes,
+                # so a caller reading one surface can read both.
+                _resp_slug['_gated'] = True
+                _resp_slug['_coord_precision_dp'] = _g_prec
+                _resp_slug['_redacted_values'] = _g_n
+                _resp_slug['_upgrade_cta'] = (
+                    'Power capacity, operator, on-site fiber and exact '
+                    'coordinates require a Developer key — dchub.cloud/pricing')
+                _resp_slug['_pricing_url'] = 'https://dchub.cloud/pricing'
+        except Exception:
+            # Fail CLOSED. An import error or a tier-resolution raise must not
+            # be the thing that serves the full record.
+            from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _fg_min
+            _resp_slug['data'] = {k: v for k, v in data.items()
+                                  if k in _fg_min}
+            _resp_slug['_gated'] = True
         return jsonify(_resp_slug)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -25103,6 +25159,24 @@ def search_facilities():
         if _svisible:
             _skeep = set(_svisible) | {'slug', 'profile_url', 'confidence_badge'}
             facilities = [{k: v for k, v in f.items() if k in _skeep} for f in facilities]
+        # ★ r-corpusgate (2026-09-19): the field mask above is not the whole
+        # gate. FACILITY_VISIBLE_FIELDS['anon'] CONTAINS latitude/longitude with
+        # no precision constraint, so this route was measured serving anonymous
+        # callers coordinates at 6 dp (~0.1 m) while passing the field audit —
+        # /api/v1/search?q=ashburn&limit=5000, tier=anon, 50 rows, 6 dp. The
+        # coordinate ladder existed only inside /api/v1/map's handler. Apply it
+        # here from the shared module, on the same env knobs, so anon gets the
+        # same ~1.1 km dot it gets on the map. Runs for EVERY tier (the helper
+        # is a no-op for paid) so a tier that stops being in _svisible does not
+        # silently regain exact coordinates.
+        try:
+            from util.facility_tier_gate import coarsen_coords_deep as _sc_deep
+            _sc_deep(facilities, _splan)
+        except Exception:
+            for _sf in facilities:
+                for _sk in ('latitude', 'longitude'):
+                    if isinstance(_sf.get(_sk), (int, float)):
+                        _sf[_sk] = round(float(_sf[_sk]), 2)
 
         return jsonify({
             'success': True,
@@ -38327,7 +38401,22 @@ def get_facility_by_slug(slug):
         if not row:
             return jsonify({'success': False, 'error': 'Facility not found'}), 404
         cols = [desc[0] for desc in c.description]
-        return jsonify({'success': True, 'data': dict(zip(cols, row))})
+        _sl_data = dict(zip(cols, row))
+        # ★ r-corpusgate (2026-09-19): the FIFTH route in this class, and the
+        # one the hand audit missed — tests/test_facility_tier_gate.py's
+        # coverage assertion found it. Measured live, anonymous, no key:
+        #   GET /api/v1/facilities/slug/microsoft-...-ed53212e
+        #     -> {"power_mw": 2300.0, "provider": "Microsoft", ...}
+        # Its docstring says "Public facility lookup" and it is genuinely a
+        # public route — public was never supposed to mean priced fields.
+        try:
+            from util.facility_tier_gate import gate_record as _sl_gate
+            from api_tier_gating import get_request_tier as _sl_tier
+            _sl_data, _sl_n = _sl_gate(_sl_data, (_sl_tier() or 'anon').lower())
+        except Exception:
+            from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _sl_min
+            _sl_data = {k: v for k, v in _sl_data.items() if k in _sl_min}
+        return jsonify({'success': True, 'data': _sl_data})
     except Exception as e:
         import traceback
         return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}), 500
@@ -38441,12 +38530,35 @@ def get_facility_by_id(facility_id):
             except Exception:
                 pass
 
-        if caller_plan in ("pro", "enterprise", "developer"):
+        # ★ r-corpusgate (2026-09-19): `caller_plan` above is resolved by a
+        # single api_keys lookup, so a paying Developer/Pro on an mcp_dev_keys
+        # `dch_*` key resolves "free" and is served the preview they are paying
+        # not to get — the same defect r-fix10 fixed in get_request_tier on
+        # 2026-06-27 and which never travelled here. Prefer the canonical
+        # resolver (JWT + api_keys + mcp_dev_keys + session cookie) and keep the
+        # local lookup only as a fallback, so this route can no longer disagree
+        # with every other route about who is paying.
+        try:
+            from api_tier_gating import get_request_tier as _fid_tier
+            _resolved = (_fid_tier() or '').lower()
+            if _resolved and _resolved != 'anon':
+                caller_plan = _resolved
+        except Exception:
+            pass
+        if caller_plan in ("pro", "enterprise", "developer", "admin", "starter"):
             # Full data for paid users
             return jsonify({"success": True, "data": full_data})
         else:
-            # Free tier: strip sensitive fields, show upgrade CTA
-            free_data = {k: v for k, v in full_data.items() if k in ("id", "name", "provider", "city", "state", "country", "status", "region", "permit_date", "permit_source")}
+            # Free tier: strip sensitive fields, show upgrade CTA.
+            # ★ The allow-list was a hardcoded tuple here — a THIRD copy of the
+            # field policy, and the one that omitted the coordinate ladder. It
+            # happened to withhold lat/lon entirely, which is tighter than the
+            # shared mask, so the shared mask is applied and then the local
+            # tuple intersected: this route does not loosen as a side effect of
+            # being unified.
+            from util.facility_tier_gate import gate_record as _fid_gate
+            _gated_data, _fid_n = _fid_gate(full_data, caller_plan or 'anon')
+            free_data = {k: v for k, v in _gated_data.items() if k in ("id", "name", "provider", "city", "state", "country", "status", "region", "permit_date", "permit_source")}
             return jsonify({
                 "success": True,
                 "data": free_data,
