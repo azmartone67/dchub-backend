@@ -609,3 +609,91 @@ class TestSurfaceCoverage:
         from tools.qa_superuser.finding import SEAT_CRAWLER
         assert SEAT_CRAWLER == "crawler"
         assert "Googlebot" in _C.GOOGLEBOT_UA
+
+
+# ── a PINNED canon floor is not a measurement (2026-09-19) ──────────────────
+from tools.qa_superuser.finding import BLIND as _BLIND  # noqa: E402
+from tools.qa_superuser.probe_contract import (  # noqa: E402
+    pinned_canon_keys,
+)
+
+
+class TestPinnedCanonIsNotAnOverClaim:
+    """★ `contract::published-numbers` flipped RED->PASS 13 times in 9 days with
+    no page change.
+
+    /pricing has been a heal target since 2026-09-02, so it carries the LIVE
+    floor, and /api/v1/canon/phrases intermittently answers from the PINNED
+    fallback — 21,900+ against a live 22,900+, measured 2026-09-19. Comparing a
+    heal-bound page against a pinned floor manufactures an over-claim out of a
+    healthy page. The over-claim predicate itself must NOT be loosened: it keeps
+    its "no fudge factor" pin above.
+    """
+
+    PAIRS = [("/pricing", "facilities", r"([\d,]+)\+\s+facilit")]
+
+    @staticmethod
+    def _canon(facilities="21,900+", src="live", cold=False, tools=91):
+        return {"facilities": facilities, "tools": tools, "cold": cold,
+                "source": "resolve_public_floors "
+                          + ("(cold: PINNED floors)" if cold else "(live)"),
+                "value_source": {"facilities": src, "tools": "live"}}
+
+    def _run(self, monkeypatch, canon, body, pairs=None):
+        from tools.qa_superuser import probe_contract as pc
+        monkeypatch.setattr(_C, "PUBLISHED_NUMBERS", pairs or self.PAIRS)
+        monkeypatch.setattr(pc, "fetch", lambda url, **kw: (200, {}, body))
+        out = []
+        pc._check_published_numbers(canon, out)
+        return out
+
+    # ── the control: nothing about a MEASURED floor changes ────────────────
+    def test_a_live_floor_still_catches_the_over_claim(self, monkeypatch):
+        out = self._run(monkeypatch, self._canon(src="live"),
+                        "<p>22,900+ facilities</p>")
+        assert [f.verdict for f in out] == [_RED]
+        assert "facilities=22,900 > canon floor 21,900" in out[0].evidence
+
+    # ── the fix: the same page against a PINNED floor claims nothing ───────
+    def test_the_same_page_against_a_pinned_floor_is_blind_not_red(self, monkeypatch):
+        out = self._run(monkeypatch, self._canon(src="pinned"),
+                        "<p>22,900+ facilities</p>")
+        assert [f.verdict for f in out] == [_BLIND], \
+            "a pinned floor is the platform's cold-start seed, not a measurement"
+        assert "PINNED" in out[0].evidence
+
+    def test_a_cold_read_pins_every_key_it_does_not_mark_live(self, monkeypatch):
+        cold = self._canon(src="pinned", cold=True)
+        cold.pop("value_source")          # an older payload carries only `cold`
+        assert "facilities" in pinned_canon_keys(cold)
+        out = self._run(monkeypatch, cold, "<p>22,900+ facilities</p>")
+        assert [f.verdict for f in out] == [_BLIND]
+
+    # ── what must NOT widen ────────────────────────────────────────────────
+    def test_an_unmarked_key_is_still_compared(self):
+        """Fail-OPEN for detection: only what the producer MARKS pinned is
+        skipped, so a payload that stops publishing provenance does not silently
+        disarm the check."""
+        assert pinned_canon_keys({"facilities": "21,900+"}) == set()
+        assert pinned_canon_keys({"facilities": "21,900+",
+                                  "value_source": {"facilities": "live"}}) == set()
+
+    def test_two_values_for_one_population_is_still_red_when_pinned(self, monkeypatch):
+        """Drift is page-internal — it needs no floor, so a pinned read must not
+        suppress it."""
+        out = self._run(monkeypatch, self._canon(src="pinned"),
+                        "<p>22,900+ facilities</p><p>19,700+ facilities</p>")
+        assert [f.verdict for f in out] == [_RED]
+        assert "publishes [19700, 22900]" in out[0].evidence
+
+    def test_a_pass_names_what_it_did_not_compare(self, monkeypatch):
+        """★ A PASS off zero comparisons would be a pass off an empty
+        denominator; a PARTIAL pass has to say so."""
+        pairs = [("/pricing", "facilities", r"([\d,]+)\+\s+facilit"),
+                 ("/pricing", "tools", r"(\d+)\s+MCP\s+tools")]
+        out = self._run(monkeypatch, self._canon(src="pinned"),
+                        "<p>22,900+ facilities · 91 MCP tools</p>", pairs=pairs)
+        assert [f.verdict for f in out] == [_PASS]
+        assert out[0].value == 1, "the pinned pair must not count as compared"
+        assert "1 of 2 page/number pair(s) compared" in out[0].evidence
+        assert "not compared" in out[0].evidence and "PINNED" in out[0].evidence
