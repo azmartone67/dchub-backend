@@ -656,10 +656,20 @@ def _lane_sentinels() -> dict:
 
 # ═══ 6. permitting ════════════════════════════════════════════════════
 _PERMIT_CLASSES = ("moratorium", "zoning", "tax", "utility_pause", "other")
+# ★ EVERY CLASS IN _PERMIT_CLASSES EXCEPT "other" NEEDS A RULE HERE.
+# "tax" was declared valid, accepted by the admin upsert and advertised by
+# /api/v1/permitting/intel for months with NO pattern — so no article could
+# ever be staged as one, and the class sat at zero rows while nine states
+# paused, repealed or narrowed their data-center tax programs in 2025-26.
+# A class that is valid but unscannable is a silent dead lane, not an empty
+# one. tests/test_permit_scan_covers_every_class.py fences this.
 _PERMIT_SCAN = (
     ("moratorium", r"moratorium"),
     ("zoning", r"(rezon|zoning (fight|dispute|denial|restrict))"),
     ("utility_pause", r"(paus|halt|freez)\w* .{0,60}(data.?cent|interconnect)"),
+    # Incentive-shaped tax news only. Bare "tax" would stage every article
+    # mentioning a levy; the noun after it is what makes it a PROGRAM story.
+    ("tax", r"tax (exemption|abatement|break|credit|incentive|subsid)"),
 )
 
 
