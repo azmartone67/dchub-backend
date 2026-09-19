@@ -276,7 +276,11 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         # start, so the newest days receive nothing at all. `rows_written` still
         # reports a healthy-looking five figures, which is why this ran unseen
         # from 2026-08-31 to 2026-09-19. Measure the EFFECT, not the intent.
-        if len(rows) >= limit:
+        # `limit and` is not defensive noise: row_limit=0 makes _per_grain 0,
+        # `len(rows) >= 0` is always true, and every grain would report a
+        # truncation that never happened. (Folded in from be#4824, which found
+        # the same defect independently and guarded this edge.)
+        if limit and len(rows) >= limit:
             truncated[label] = {"limit": limit, "returned": len(rows)}
 
         payload = []

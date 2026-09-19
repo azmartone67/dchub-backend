@@ -580,3 +580,15 @@ def test_a_seed_ceiling_truncation_is_reported_but_not_an_error():
         "this guard is vacuous unless the ceiling actually bit")
     assert "window_truncated" not in (out["errors"] or {})
     assert out["success"] is True, out.get("errors")
+
+
+def test_a_zero_row_limit_does_not_fabricate_a_truncation():
+    """`row_limit=0` makes the budget 0, and `len(rows) >= 0` is always true.
+
+    Without the `limit and` guard every grain reports a truncation that never
+    happened — and, because a non-seed truncation is an error, the ingest would
+    fail for a reason that does not exist. (Edge found by be#4824.)
+    """
+    out, _, gsc = _run_ingest(rows_per_day=3, days=2, row_limit=0)
+    assert out["window_truncated"] is None, out["window_truncated"]
+    assert "window_truncated" not in (out["errors"] or {})
