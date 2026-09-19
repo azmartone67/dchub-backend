@@ -118,12 +118,51 @@ def verdict_for_published(published: int, canon: int) -> tuple[str, str, str]:
     return PASS, INFO, "matches"
 
 
+# Keys of the canon payload that are provenance, not a published population.
+_CANON_META = frozenset({"cold", "ok", "source", "value_source", "degraded"})
+
+
+def pinned_canon_keys(canon: dict) -> set[str]:
+    """Canon keys whose value is the PINNED fallback, not a live count. PURE.
+
+    /api/v1/canon/phrases publishes its own provenance twice: per field in
+    `value_source` ("live" | "pinned"), and for the whole read in `cold` plus a
+    `source` that names the path it took ("resolve_public_floors (cold: PINNED
+    floors)").
+
+    ★ WHY THIS EXISTS. The pinned seeds are deliberately far below reality —
+    canonical_stats._FALLBACK calls them "CITATION-safe cold-start floors" — so
+    a page bound to the LIVE floor reads as an over-claim the moment the resolver
+    answers cold. Measured 2026-09-19: pinned facilities 21,900+, live 22,900+,
+    /pricing (a heal target since 2026-09-02, so it carries the live floor)
+    published 22,900+. `contract::published-numbers` flipped RED->PASS 13 times
+    in 9 days on that alternation alone, with no page change; util/canon_floor.py
+    was written for this exact class ("a heal-bound surface carrying the live
+    floor is correct, not stale").
+
+    ★ Only what the producer MARKS pinned is skipped. An unmarked key is still
+    compared, so this cannot quietly widen into a tolerance — the over-claim
+    predicate itself is unchanged, and `verdict_for_published` keeps its "no
+    fudge factor" pin.
+    """
+    vs = canon.get("value_source")
+    vs = vs if isinstance(vs, dict) else {}
+    pinned = {k for k, v in vs.items() if str(v).lower() == "pinned"}
+    if canon.get("cold"):
+        # A cold read served PINNED for everything it does not mark "live".
+        pinned |= {k for k in canon
+                   if k not in _CANON_META
+                   and str(vs.get(k, "")).lower() != "live"}
+    return pinned
+
+
 def _check_published_numbers(canon: dict, findings: list[Finding]) -> None:
     """Does every number on a public page agree with the source that owns it?"""
     key = stable_key("contract", "published-numbers")
     if not canon:
         return  # _canon already filed the blindness
-    over, drift, checked = [], [], 0
+    over, drift, checked, compared, unmeasured = [], [], 0, 0, []
+    pinned = pinned_canon_keys(canon)
     for path, canon_key, pattern in C.PUBLISHED_NUMBERS:
         floor = _num(canon.get(canon_key))
         if floor is None:
@@ -144,6 +183,12 @@ def _check_published_numbers(canon: dict, findings: list[Finding]) -> None:
         #   simultaneously, and a reader cannot tell which to believe.
         if len(found) > 1:
             drift.append(f"{path} publishes {sorted(found)} for {canon_key!r}")
+        # ★ Drift is page-internal and always judged. The OVER-CLAIM comparison
+        #   needs a measured floor: against a pinned one it is not decidable.
+        if canon_key in pinned:
+            unmeasured.append(f"{path}: {canon_key} floor {floor:,} is PINNED")
+            continue
+        compared += 1
         for v in found:
             vd, _sev, _lab = verdict_for_published(v, floor)
             if vd == RED:
@@ -157,6 +202,8 @@ def _check_published_numbers(canon: dict, findings: list[Finding]) -> None:
             basis=f"GET of {len(C.PUBLISHED_NUMBERS)} page(s)"))
         return
 
+    skipped = (f"; {len(unmeasured)} pair(s) not compared "
+               f"({'; '.join(unmeasured)})") if unmeasured else ""
     problems = over + drift
     if problems:
         findings.append(Finding(
@@ -165,7 +212,7 @@ def _check_published_numbers(canon: dict, findings: list[Finding]) -> None:
             verdict=RED, severity=MAJOR, value=len(problems),
             evidence="; ".join(problems[:4])
                      + (f" (+{len(problems) - 4} more)" if len(problems) > 4 else "")
-                     + f"; {checked} page/number pair(s) checked",
+                     + f"; {checked} page/number pair(s) checked" + skipped,
             basis=f"anonymous GET of each page, numbers extracted by regex and "
                   f"compared against {C.CANON_PHRASES_PATH} (the platform's own "
                   f"declared floors)",
@@ -178,12 +225,25 @@ def _check_published_numbers(canon: dict, findings: list[Finding]) -> None:
                    "that is how the homepage came to publish two floors at once."))
         return
 
+    # ★ A PASS off ZERO comparisons is a pass off an empty denominator: every
+    #   readable pair's floor was pinned, so nothing was judged. That is BLIND.
+    if compared == 0:
+        findings.append(blind(
+            key=key, surface="contract", seat=SEAT_ANON,
+            title="Published numbers unobserved",
+            why="every readable pair's canon floor was the PINNED fallback, "
+                "not a measurement: " + "; ".join(unmeasured),
+            basis=f"anonymous GET of each page; {C.CANON_PHRASES_PATH} "
+                  f"cold={canon.get('cold')!r} source={canon.get('source')!r}"))
+        return
+
     findings.append(Finding(
         key=key, surface="contract", seat=SEAT_ANON,
-        title=f"All {checked} published number(s) agree with canon",
-        verdict=PASS, severity=INFO, value=checked,
-        evidence=f"{checked} page/number pair(s); canon floors "
-                 f"{ {k: canon.get(k) for k in ('tools', 'facilities')} }",
+        title=f"All {compared} published number(s) agree with canon",
+        verdict=PASS, severity=INFO, value=compared,
+        evidence=f"{compared} of {checked} page/number pair(s) compared; canon "
+                 f"floors { {k: canon.get(k) for k in ('tools', 'facilities')} }"
+                 + skipped,
         basis=f"anonymous GET, compared against {C.CANON_PHRASES_PATH}",
         red_when="a page publishes a number above the canon floor, or two "
                  "different values for one population"))
