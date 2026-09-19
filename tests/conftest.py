@@ -17,9 +17,16 @@ repo scan a test makes is sized, and a file whose principal scan collapses
 below its pinned floor fails. That closes the class where a stale glob finds
 nothing and the guard reports green anyway. Set DCHUB_SCAN_FLOORS=0 to
 disable locally while debugging — CI runs with it on.
+
+Also installs the NO-NETWORK rule (tests/_no_network/sitecustomize.py) for a
+local run, which until now only the unit-tests step in CI applied: off-loopback
+DNS and connects are refused and logged, in this process and in every child,
+and the session ends with the same verdict that step prints. Set
+DCHUB_NO_NETWORK=0 to let a local run reach the network again.
 """
 import os
 import sys
+import tempfile
 import threading
 
 # Make the project root importable for the test files. Avoids needing
@@ -27,6 +34,69 @@ import threading
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# ── No network in a local run either, not only in CI ─────────────────────────
+#
+# .github/workflows/pre-merge.yml puts tests/_no_network on PYTHONPATH for its
+# unit-tests step, so THAT step has refused off-loopback DNS and connects since
+# 2026-09-16. Only that step. A plain `python3 -m pytest tests/` still reached
+# production on every run: measured 2026-09-13, 41 test IDs in 20 files reached
+# dchub.cloud, the Railway backend, api.github.com, glama.ai, api.cloudflare.com
+# and images.unsplash.com, identically on two consecutive full runs. No test
+# needs them — run the same 20 files with the network refused and all 20 pass —
+# so every local run was sending dead traffic to production and making suite
+# speed depend on those hosts.
+#
+# So install the SAME hook here when the step's PYTHONPATH has not already
+# loaded it. One implementation, two entry points, and CI keeps the earlier
+# one: sitecustomize runs at interpreter startup, before any conftest, which is
+# what covers a fetch at a test module's own import.
+#
+# ★ The child half is not decoration. tests/test_app_contract_gate.py boots
+# main.py in a SUBPROCESS and the register lists it reaching two hosts — an
+# in-process hook cannot see a single one of them. Exporting PYTHONPATH is what
+# carries the refusal across that boundary, which is the whole reason the
+# workflow sets an env var rather than importing something.
+#
+# Refusals are logged, not raised at the test: the code they come from fails
+# soft by design, and 660 of 822 in a full run are off a worker thread, where
+# raising would blame whichever test happened to be current. The gate on new
+# ones is scripts/no_network_verdict.py, in CI; a local run prints the same
+# verdict at the end of the session. DCHUB_NO_NETWORK=0 opts out.
+_NO_NETWORK_DIR = os.path.join(ROOT, "tests", "_no_network")
+
+
+def _install_no_network():
+    """Install the refusal for this process and every child. Returns the hook
+    module, or None when it is off or the workflow already loaded it."""
+    if os.environ.get("DCHUB_NO_NETWORK", "1") == "0":
+        return None
+    import socket
+    if getattr(socket.getaddrinfo, "_dchub_no_network", False) is True:
+        return None                     # PYTHONPATH got here first; leave it alone
+    # Both of these have to be in the environment before any child starts, and
+    # the hook reads the log path at import, so set them before loading it.
+    if not os.environ.get("DCHUB_NO_NETWORK_LOG"):
+        log = os.path.join(tempfile.gettempdir(), "dchub-no-network-%d.log" % os.getpid())
+        try:
+            os.unlink(log)              # a pid comes round again; a stale log reads as this run
+        except OSError:
+            pass
+        os.environ["DCHUB_NO_NETWORK_LOG"] = log
+    inherited = os.environ.get("PYTHONPATH") or ""
+    if _NO_NETWORK_DIR not in inherited.split(os.pathsep):
+        os.environ["PYTHONPATH"] = (
+            _NO_NETWORK_DIR + (os.pathsep + inherited if inherited else ""))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "dchub_no_network", os.path.join(_NO_NETWORK_DIR, "sitecustomize.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)     # installs on import, as it does in CI
+    return module
+
+
+_no_network = _install_no_network()
+
 
 from tests import _scan_floors  # noqa: E402
 from tests import _stub_sentinel  # noqa: E402
@@ -137,6 +207,36 @@ def pytest_configure(config):
 def pytest_unconfigure(config):
     if _FLOORS_ON:
         _scan_floors.uninstall()
+
+
+def pytest_terminal_summary(terminalreporter):
+    """Name every file that tried to reach the network, and judge the run the
+    way the unit-tests step judges CI.
+
+    The same verdict function against the same register, so a local run and the
+    step cannot disagree about what counts as new. It does not touch the exit
+    code: scripts/no_network_verdict.py in .github/workflows/pre-merge.yml is
+    the gate, a refused lookup is not a failed test, and most refusals arrive
+    off a worker thread where the current test did not ask for them.
+    """
+    log = os.environ.get("DCHUB_NO_NETWORK_LOG")
+    if _no_network is None or not log or not os.path.exists(log):
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "dchub_no_network_verdict", os.path.join(ROOT, "scripts", "no_network_verdict.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    code, lines = module.verdict(log, os.path.join(ROOT, "tests", "no_network_register.json"))
+    terminalreporter.write_line("")
+    for line in lines:
+        if line.startswith("::warning"):
+            continue                    # a registered host nothing reached is not news here
+        terminalreporter.write_line(line.split("::", 2)[-1] if line.startswith("::error") else line)
+    if code:
+        terminalreporter.write_line(
+            "no-network: the unit-tests step would FAIL on this. Stub the fetch; "
+            "do not register it. Log: " + log)
 
 
 def pytest_collectstart(collector):
