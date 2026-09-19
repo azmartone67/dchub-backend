@@ -190,6 +190,9 @@ class _Cur:
         return (0,)
 
     def fetchall(self):
+        # execute_values(fetch=True) reads the UPDATE's RETURNING rows here.
+        if "UPDATE" in (self._last or ""):
+            return [(1,)] * (self.rowcount or 0)
         assert "ranked" in (self._last or ""), \
             "rows must come from the ranked CTE"
         rows, self.ranked_rows = self.ranked_rows, []
@@ -257,7 +260,8 @@ def test_no_progress_breaks_the_loop_instead_of_burning_every_batch():
             self.seen.append(sql); self._last = sql
             self.rowcount = 0                 # the guard rejects every write
         def fetchall(self):
-            assert "ranked" in (self._last or "")
+            if "UPDATE" in (self._last or ""):
+                return []                     # the guard rejected every write
             return list(ROWS)                 # never drains
 
     stuck = _Stuck(ROWS)
@@ -269,6 +273,134 @@ def test_no_progress_breaks_the_loop_instead_of_burning_every_batch():
                                  dry_run=False, batch=len(ROWS), max_batches=50)
     assert len(_updates(stuck)) == 1, (
         f"looped {len(_updates(stuck))} times writing nothing")
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-09-19, AFTER the first live run. Two defects it exposed.
+# ─────────────────────────────────────────────────────────────────────────
+from routes.facility_slug_freeze import (          # noqa: E402
+    slug_collision_breakdown, keeper_slug_reachability,
+)
+
+
+class _PagingCur(_Cur):
+    """Cursor that behaves like a real one under execute_values PAGING.
+
+    execute_values splits the argslist (page_size 100) and issues one
+    statement per page. rowcount therefore describes only the LAST page —
+    live this reported 22 for a 722-row rewrite (722 = 7 x 100 + 22).
+    """
+    MARK = "(ROW)"
+
+    def __init__(self, ranked_rows=()):
+        super().__init__(ranked_rows)
+        self._page = 0
+
+    def mogrify(self, template, args):
+        return self.MARK.encode()
+
+    def execute(self, sql, args=None):
+        sql = sql.decode() if isinstance(sql, bytes) else sql
+        self.seen.append(sql)
+        self._last = sql
+        if "UPDATE" in sql:
+            self._page = sql.count(self.MARK)
+            self.rowcount = self._page        # only THIS page, like psycopg2
+
+    def fetchall(self):
+        if "UPDATE" in (self._last or ""):
+            return [(1,)] * self._page        # RETURNING rows for this page
+        return super().fetchall()
+
+
+N = 250                                       # 3 pages: 100 + 100 + 50
+BIG = [(i, "Amazon Web Services", "Amazon Web Services", "Dublin", None, "IE")
+       for i in range(1, N + 1)]
+
+
+def test_the_rewritten_count_spans_every_page_not_just_the_last():
+    """THE miscount: 722 rows rewritten, endpoint reported 22."""
+    cur = _PagingCur(BIG)
+    wrote, _ = disambiguate_slug_collisions(
+        _Conn(cur), "discovered_facilities", dry_run=False,
+        batch=N, max_batches=1)
+    assert wrote == N, (
+        f"reported {wrote} of {N} rewritten — cur.rowcount only describes the "
+        "last execute_values page")
+
+
+def test_the_update_asks_for_returning_so_the_count_is_real():
+    cur = _PagingCur(BIG)
+    disambiguate_slug_collisions(_Conn(cur), "discovered_facilities",
+                                 dry_run=False, batch=N, max_batches=1)
+    assert "RETURNING" in _updates(cur)[0], \
+        "without RETURNING there is nothing for fetch=True to count"
+
+
+# ── the breakdown ──────────────────────────────────────────────────────────
+
+class _OneRowCur(_Cur):
+    """Returns one canned tuple for whichever breakdown query it is handed."""
+    def __init__(self, row): super().__init__(); self._row = row
+    def fetchone(self):
+        last = self._last or ""
+        if "information_schema.columns" in last:
+            return (1,)
+        if "to_regclass" in last:
+            return ("discovered_facilities",)
+        return self._row
+
+
+def test_the_breakdown_buckets_partition_the_non_owner_rows():
+    """Every non-owner row lands in exactly one bucket, or the totals lie."""
+    got = slug_collision_breakdown(
+        _Conn(_OneRowCur((8375, 500, 7000, 153, 722, 7172))),
+        "discovered_facilities")
+    assert got is not None
+    parts = (got['points_at_owner'] + got['points_elsewhere']
+             + got['marked_no_pointer'] + got['unmarked'])
+    assert parts == got['non_owner_rows'], (
+        f"buckets sum to {parts} but there are {got['non_owner_rows']} rows")
+
+
+def test_the_breakdown_compares_against_the_owner_not_merely_any_pointer():
+    """THE rule that was wrong: 'has a duplicate pointer' skipped 7,653 rows
+    including a 62-row group spanning 17,218 km. The bucket must be keyed on
+    whether the pointer names THE ROW THAT KEEPS THE SLUG."""
+    cur = _OneRowCur((1, 0, 1, 0, 0, 1))
+    slug_collision_breakdown(_Conn(cur), "discovered_facilities")
+    sql = [q for q in cur.seen if "FILTER" in q][0]
+    assert "owner_id" in sql, "the breakdown never looks at the owner"
+    assert "FIRST_VALUE" in sql, \
+        "owner_id must come from the same window that ranks rn"
+    assert "_dupof::text = owner_id::text" in sql, \
+        "points_at_owner must be pointer equality against the OWNER"
+
+
+def test_the_breakdown_returns_none_when_it_cannot_measure():
+    """Never a reassuring zero."""
+    class _Boom(_Cur):
+        def execute(self, sql, args=None): raise RuntimeError("no such column")
+    assert slug_collision_breakdown(_Conn(_Boom()), "discovered_facilities") is None
+
+
+def test_keeper_reachability_splits_by_whether_the_keeper_has_a_slug():
+    got = keeper_slug_reachability(
+        _Conn(_OneRowCur((7000, 6800))), "discovered_facilities")
+    assert got == {'points_elsewhere': 7000, 'keeper_has_slug': 6800,
+                   'keeper_has_no_slug': 200}
+
+
+def test_the_new_readers_do_not_rederive_the_same_site_predicate():
+    body = FREEZE_SRC[FREEZE_SRC.index("def slug_collision_breakdown"):
+                      FREEZE_SRC.index("def disambiguate_slug_collisions")]
+    code = "\n".join(l for l in body.splitlines()
+                     if not l.strip().startswith("#"))
+    for banned in ("_same_physical_site", "_SAME_SITE_METRES", "haversine",
+                   "ST_Distance", "latitude", "longitude"):
+        assert banned not in code, f"re-derives the twin predicate ({banned})"
 
 
 if __name__ == "__main__":

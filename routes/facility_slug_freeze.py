@@ -654,7 +654,13 @@ def slug_freeze_status():
                                 'stored_slug_stale': stale,
                                 'stored_slug_no_alias_gap': gap,
                                 'collisions': (slug_collision_stats(conn, t)
-                                               if has_col else None)}
+                                               if has_col else None),
+                                'collision_breakdown': (
+                                    slug_collision_breakdown(conn, t)
+                                    if has_col else None),
+                                'keeper_reachability': (
+                                    keeper_slug_reachability(conn, t)
+                                    if has_col else None)}
         try:
             cur.execute("SELECT COUNT(*), COUNT(DISTINCT source) FROM facility_slug_aliases")
             n, nsrc = cur.fetchone()
@@ -898,6 +904,128 @@ def slug_collision_stats(conn, table):
         return None
 
 
+def slug_collision_breakdown(conn, table):
+    """WHY each non-owner row sits on somebody else's slug.
+
+    ★ THE RULE THAT WAS WRONG (measured live 2026-09-19). The first pass
+    skipped every non-owner row carrying is_duplicate / duplicate_of_id, on
+    the reading that such a row is a twin already collapsed onto the row that
+    keeps the slug. It is not: is_duplicate is a name/provider similarity
+    verdict, not a same-site one — this module's own header records that
+    "17,028 of 21,861 rows are is_duplicate precisely BECAUSE provider strings
+    vary". 7,653 of 8,375 non-owner rows were skipped on that basis, including
+    amazon-web-services-amazon-web-services-7e958426 (62 rows, 17,218 km,
+    cities '', '', Ashburn, Dublin, Sterling). The defect survived the fix.
+
+    The question the skip SHOULD have asked is not "is this row a twin of
+    something" but "is it a twin of THE ROW THAT KEEPS THIS SLUG". That is
+    pointer equality against the window's own owner — no distance, no
+    coordinates, no second copy of _twin_redirect_target.
+
+    Buckets, over rows with rn > 1 on a shared canonical_slug:
+      points_at_owner   duplicate_of_id IS the owner -> correctly sharing
+      points_elsewhere  duplicate_of_id is some OTHER row -> its marker
+                        belongs on THAT keeper's page, not the owner's
+      marked_no_pointer is_duplicate set, duplicate_of_id NULL -> nothing
+                        says which row it is a twin OF
+      unmarked          neither flag -> an independent facility (the bucket
+                        the first pass rewrote)
+    Returns None if it cannot be measured — never a reassuring zero.
+    """
+    try:
+        cur = conn.cursor()
+        isdup, dupof, power = _dup_cols(cur, table)
+        cur.execute(f"""
+            WITH ranked AS (
+                SELECT id, canonical_slug, {isdup} AS _isdup, {dupof} AS _dupof,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY canonical_slug
+                           ORDER BY COALESCE({isdup}, 0) ASC,
+                                    COALESCE({power}, 0) DESC, id ASC) AS rn,
+                       FIRST_VALUE(id) OVER (
+                           PARTITION BY canonical_slug
+                           ORDER BY COALESCE({isdup}, 0) ASC,
+                                    COALESCE({power}, 0) DESC, id ASC) AS owner_id
+                  FROM {table}
+                 WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
+            )
+            SELECT
+              COUNT(*) FILTER (WHERE rn > 1),
+              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NOT NULL
+                                 AND _dupof::text = owner_id::text),
+              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NOT NULL
+                                 AND _dupof::text <> owner_id::text),
+              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NULL
+                                 AND COALESCE(_isdup, 0) <> 0),
+              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NULL
+                                 AND COALESCE(_isdup, 0) = 0),
+              COUNT(DISTINCT canonical_slug) FILTER (WHERE rn > 1)
+              FROM ranked
+        """)
+        tot, at_owner, elsewhere, no_ptr, unmarked, slugs = cur.fetchone()
+        return {'non_owner_rows': int(tot or 0),
+                'points_at_owner': int(at_owner or 0),
+                'points_elsewhere': int(elsewhere or 0),
+                'marked_no_pointer': int(no_ptr or 0),
+                'unmarked': int(unmarked or 0),
+                'shared_slugs': int(slugs or 0)}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"slug collision breakdown for {table}: {e}")
+        return None
+
+
+def keeper_slug_reachability(conn, table):
+    """For points_elsewhere rows: can their OWN keeper actually be linked?
+
+    A row whose marker belongs on keeper K's page is only fixable by pointing
+    it at K if K HAS a canonical_slug. Counting this before choosing a rule
+    stops the next pass minting fresh pages for rows that already have a
+    correct destination, and names the residue that has none.
+    """
+    try:
+        cur = conn.cursor()
+        isdup, dupof, power = _dup_cols(cur, table)
+        if dupof == "NULL":
+            return None                     # no pointer column on this table
+        cur.execute(f"""
+            WITH ranked AS (
+                SELECT id, canonical_slug, {dupof} AS _dupof,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY canonical_slug
+                           ORDER BY COALESCE({isdup}, 0) ASC,
+                                    COALESCE({power}, 0) DESC, id ASC) AS rn,
+                       FIRST_VALUE(id) OVER (
+                           PARTITION BY canonical_slug
+                           ORDER BY COALESCE({isdup}, 0) ASC,
+                                    COALESCE({power}, 0) DESC, id ASC) AS owner_id
+                  FROM {table}
+                 WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
+            )
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE k.canonical_slug IS NOT NULL
+                                      AND k.canonical_slug <> '')
+              FROM ranked r
+              LEFT JOIN {table} k ON k.id::text = r._dupof::text
+             WHERE r.rn > 1 AND r._dupof IS NOT NULL
+               AND r._dupof::text <> r.owner_id::text
+        """)
+        tot, with_slug = cur.fetchone()
+        return {'points_elsewhere': int(tot or 0),
+                'keeper_has_slug': int(with_slug or 0),
+                'keeper_has_no_slug': int((tot or 0) - (with_slug or 0))}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"keeper reachability for {table}: {e}")
+        return None
+
+
 def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
                                  dry_run=True):
     """Give every INDEPENDENT row on a shared frozen slug a slug of its own.
@@ -952,15 +1080,23 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
         values = [(i, s) for i, s in values if s]
         if dry_run or not values:
             break
-        execute_values(cur, f"""
+        # ★ RETURNING + fetch, NOT cur.rowcount. execute_values PAGES the
+        # argslist internally (page_size 100 by default) and issues one
+        # statement per page, so cur.rowcount reports only the LAST page.
+        # Measured live 2026-09-19: 722 rows were rewritten and the endpoint
+        # reported rewritten=22 — 722 = 7 x 100 + 22. The real work was only
+        # visible in the before/after collision counts. fetch=True collects
+        # the RETURNING rows across every page.
+        got = execute_values(cur, f"""
             UPDATE {table} AS t SET canonical_slug = v.slug
             FROM (VALUES %s) AS v(id, slug)
             WHERE t.id::text = v.id::text
               AND v.slug <> ''
               AND t.canonical_slug IS DISTINCT FROM v.slug
               AND {guard}
-        """, values, template="(%s, %s)")
-        wrote = cur.rowcount or 0
+            RETURNING 1
+        """, values, template="(%s, %s)", fetch=True)
+        wrote = len(got or [])
         conn.commit()
         rewritten += wrote
         # ★ No-progress break. A row whose new slug is already taken stays
