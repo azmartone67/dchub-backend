@@ -18281,6 +18281,61 @@ def _plan_write_floor(customer_email, user_id, plan_name, api_tier):
         return plan_name, api_tier
 
 
+# ── r-no-downgrade (2026-09-18, owner-reported) ────────────────────────────
+# A `pro` account bought the $10 one-time credit pack through an agent unlock
+# link and came out of handle_checkout_completed as `starter`. The two rules
+# that stop that, and the full account of how the pack walked into the $9
+# Starter amount band, live in routes/_checkout_plan_guard.py (pure, no DB).
+# This wrapper is the part that needs the database and the mailer: read what
+# the account holds today, apply the rules, say so loudly when they fire.
+#
+# Returns (plan_name, api_tier, guard_note). guard_note is None when the
+# checkout's own resolution stands — callers gate anything that should only
+# happen on a plan this checkout actually BOUGHT on that being None.
+#
+# Fail-soft by construction: any exception returns the caller's own values
+# unchanged. A webhook that 500s loses the purchase; a mis-tier is recoverable
+# and, from here on, alerted.
+def _apply_plan_guard(session, plan_name, api_tier, user_id, customer_email):
+    try:
+        _cp = []
+        if user_id:
+            _, _cp = _pg_execute("SELECT plan FROM users WHERE id = %s",
+                                 (user_id,), fetch=True)
+        elif customer_email:
+            _, _cp = _pg_execute("SELECT plan FROM users WHERE email = %s",
+                                 (customer_email,), fetch=True)
+        current_plan = (_cp[0][0] or '') if _cp else ''
+        from routes._checkout_plan_guard import resolve_plan_write
+        new_plan, new_tier, note = resolve_plan_write(
+            session, plan_name, api_tier, current_plan)
+        if not note:
+            return plan_name, api_tier, None
+        print(f"\U0001F6E1\uFE0F plan guard: {note} "
+              f"(email={customer_email or '(none)'}, "
+              f"session={session.get('id', 'N/A')})")
+        try:
+            send_admin_alert_email(
+                f'\U0001F6E1\uFE0F DC Hub: checkout did NOT change plan for '
+                f'{customer_email or "unknown"}',
+                f'<h2>A payment event was stopped from lowering a tier</h2>'
+                f'<p><b>Email:</b> {customer_email or "(none)"}</p>'
+                f'<p><b>Account already held:</b> {current_plan or "(new account)"}</p>'
+                f'<p><b>Rule:</b> {note}</p>'
+                f'<p><b>Plan written:</b> {new_plan} (api: {new_tier})</p>'
+                f'<p><b>Stripe session:</b> {session.get("id", "N/A")}</p>'
+                f'<p>If this customer genuinely meant to move DOWN a tier, change '
+                f'it by hand \u2014 a real downgrade arrives as '
+                f'customer.subscription.updated, not as a completed checkout.</p>')
+        except Exception:
+            pass
+        return new_plan, new_tier, note
+    except Exception as _guard_err:
+        print(f"\u26A0\uFE0F plan guard failed (non-fatal, plan written "
+              f"unguarded): {str(_guard_err)[:160]}")
+        return plan_name, api_tier, None
+
+
 def handle_checkout_completed(session):
     """Handle successful checkout - upgrade user plan and API key tier. Writes to PostgreSQL first."""
     import traceback
@@ -18458,6 +18513,10 @@ def handle_checkout_completed(session):
 
         stripe_cust = session.get('customer', '')
 
+        # r-no-downgrade: last point before plan_name/api_tier reach a write.
+        plan_name, api_tier, _guard_note = _apply_plan_guard(
+            session, plan_name, api_tier, user_id, customer_email)
+
         # r65-annual-onetime (2026-06-06): one-time Pro Annual link
         # (price_1TecqhJ9ey2ATcQl4Hmp99OU, $1,188 50% off) fires
         # checkout.session.completed with mode='payment' — NO follow-up
@@ -18477,7 +18536,14 @@ def handle_checkout_completed(session):
         # same expiry (still ~NOW()+365d, off by seconds — harmless).
         session_mode = (session.get('mode') or '').lower()
         is_onetime_payment = (session_mode == 'payment')
-        set_tier_expiry = is_onetime_payment and plan_name in ('pro', 'founding', 'enterprise')
+        # r-no-downgrade: a plan the guard HELD was not bought by this
+        # checkout, so it must not collect this checkout's 365-day expiry or
+        # its source_plan label \u2014 otherwise a monthly Pro subscriber who buys
+        # a $10 pack gets stamped source_plan='pro_onetime', the label the
+        # day-330 renewal nudge targets.
+        set_tier_expiry = (is_onetime_payment
+                           and plan_name in ('pro', 'founding', 'enterprise')
+                           and not _guard_note)
         source_plan_label = None
         if set_tier_expiry:
             if amount_dollars >= 500:
