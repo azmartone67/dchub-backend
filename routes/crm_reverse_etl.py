@@ -86,7 +86,13 @@ HUNTER_API_KEY = (os.environ.get("HUNTER_API_KEY") or "").strip()
 # SHAPE costs nothing and turns "401, go guess" into a named problem — a legacy
 # API key, a value pasted with its quotes, or the wrong variable entirely. Only
 # the prefix is ever reported; the value is never logged or returned.
-HUBSPOT_TOKEN_LOOKS_VALID = HUBSPOT_API_KEY.startswith("pat-")
+#
+# ★ DERIVED AT CALL TIME, never cached. As a module constant this was a SECOND
+#   source of truth about HUBSPOT_API_KEY, fixed at import — so it could not
+#   follow the value it describes, and said "wrong shape" about a perfectly good
+#   token supplied later. A sibling test caught it. One value, one reader.
+def _hubspot_token_looks_valid() -> bool:
+    return HUBSPOT_API_KEY.startswith("pat-")
 
 # Admin gate
 DCHUB_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
@@ -716,7 +722,7 @@ def _destination_state() -> tuple:
     if CRM_PROVIDER == "hubspot":
         if not HUBSPOT_API_KEY:
             return False, "CRM_PROVIDER='hubspot' but HUBSPOT_API_KEY is empty"
-        if not HUBSPOT_TOKEN_LOOKS_VALID:
+        if not _hubspot_token_looks_valid():
             # Configured, but it will 401. Say so BEFORE a push burns an
             # attempt — the queue gives up on a row after 5.
             return False, ("HUBSPOT_API_KEY is set but does not start with "
