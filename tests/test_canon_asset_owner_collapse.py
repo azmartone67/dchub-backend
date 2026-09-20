@@ -35,15 +35,22 @@ def _pin(key):
     return (canon.PINNED.get("public") or {}).get(key)
 
 
-def _measured(monkeypatch, *keys):
-    """Declare `keys` as keys a real query measured.
+def _measured(monkeypatch, **vals):
+    """Declare `vals` as the floors a real query measured, key -> phrase.
 
     ★ Tests that monkeypatch resolve_canon() alone prove nothing about the
     label: resolve_canon DEGRADES to the pin, so a key can appear in its
     payload without having been measured. The overlay reads
     _live_public_floors() to tell those apart, so a heal test has to say which
-    side of that line its fixture is on."""
-    monkeypatch.setattr(canon, "_live_public_floors", lambda: {k: None for k in keys})
+    side of that line its fixture is on.
+
+    ★2026-09-19 LATE-2 — this used to pass `None` for every value, which was
+    enough while membership alone decided the LABEL and resolve_canon() supplied
+    the VALUE. It is not enough now: for a non-governance key this peek is the
+    value, so a fixture that declares a key measured without saying what it
+    measured cannot tell a published measurement from a published pin — the
+    exact confusion that shipped assets "320,000+"/live."""
+    monkeypatch.setattr(canon, "_live_public_floors", lambda: dict(vals))
 
 
 def test_overlay_heals_a_key_outside_the_governance_four(monkeypatch):
@@ -56,10 +63,12 @@ def test_overlay_heals_a_key_outside_the_governance_four(monkeypatch):
     assert canon._floor_int(raised) > canon._floor_int(pinned), (
         "fixture must RAISE the floor or it proves nothing about the overlay"
     )
-    _measured(monkeypatch, "transmission_lines")
+    _measured(monkeypatch, transmission_lines=raised)
+    # resolve_canon() has NO writer for this key, so in production it returns
+    # the PIN here. Feeding it `raised` would let an echo pass the test.
     monkeypatch.setattr(
         canon, "resolve_canon",
-        lambda: {"public": {"transmission_lines": raised}},
+        lambda: {"public": {"transmission_lines": pinned}},
     )
     got = canon.resolve_public_floors()
     assert got["transmission_lines"] == raised
@@ -71,9 +80,9 @@ def test_overlay_heals_assets(monkeypatch):
     assert pinned, "assets must still be a pinned public key"
     raised = "330,000+"
     assert canon._floor_int(raised) > canon._floor_int(pinned)
-    _measured(monkeypatch, "assets")
+    _measured(monkeypatch, assets=raised)
     monkeypatch.setattr(
-        canon, "resolve_canon", lambda: {"public": {"assets": raised}},
+        canon, "resolve_canon", lambda: {"public": {"assets": pinned}},
     )
     got = canon.resolve_public_floors()
     assert got["assets"] == raised
@@ -85,10 +94,10 @@ def test_overlay_still_refuses_a_live_value_below_the_pin(monkeypatch):
     rather than raising, so a live number under the pin is a broken resolver,
     not a shrink. Widening the key set must not widen this hole."""
     pinned = _pin("transmission_lines")
-    _measured(monkeypatch, "transmission_lines")
+    _measured(monkeypatch, transmission_lines="12,000+")
     monkeypatch.setattr(
         canon, "resolve_canon",
-        lambda: {"public": {"transmission_lines": "12,000+"}},
+        lambda: {"public": {"transmission_lines": pinned}},
     )
     got = canon.resolve_public_floors()
     assert got["transmission_lines"] == pinned
@@ -112,6 +121,10 @@ def test_overlay_leaves_a_countless_phrase_alone(monkeypatch):
 def test_overlay_survives_a_degraded_resolver(monkeypatch):
     def boom():
         raise RuntimeError("no DATABASE_URL")
+    # Cold peek pinned explicitly: canonical_stats._live_keys is module state
+    # that is never cleared, so a sibling test that warms it would otherwise
+    # decide what this one asserts.
+    monkeypatch.setattr(canon, "_live_public_floors", dict)
     monkeypatch.setattr(canon, "resolve_canon", boom)
     got = canon.resolve_public_floors()
     for key, pinned in (canon.PINNED.get("public") or {}).items():
@@ -270,9 +283,9 @@ def test_a_measured_key_still_heals_after_the_narrowing(monkeypatch):
     pinned = _pin("transmission_lines")
     raised = "95,000+"
     assert canon._floor_int(raised) > canon._floor_int(pinned)
-    _measured(monkeypatch, "transmission_lines")
+    _measured(monkeypatch, transmission_lines=raised)
     monkeypatch.setattr(
-        canon, "resolve_canon", lambda: {"public": {"transmission_lines": raised}},
+        canon, "resolve_canon", lambda: {"public": {"transmission_lines": pinned}},
     )
     got = canon.resolve_public_floors()
     assert got["transmission_lines"] == raised
@@ -298,3 +311,123 @@ def test_the_governance_four_keep_healing_without_a_floors_witness(monkeypatch):
     got = canon.resolve_public_floors()
     assert got["facilities"] == raised
     assert got["_source"]["facilities"] == "live"
+
+
+# ── the label must be earned BY THE VALUE, not by a sibling key ──────────
+
+def test_a_measured_key_publishes_the_measurement_not_the_resolver_echo(monkeypatch):
+    """★ THE RESIDUAL HOLE, 2026-09-19 late-2.
+
+    Gating the label on membership in _live_public_floors() and then publishing
+    live_pub[key] checks the REFERENCE, not the DERIVATION: it confirms a query
+    measured the key, then ships a number that did not come from that query.
+
+    resolve_canon() assigns c["public"][...] for five keys only — deals,
+    facilities, markets, countries, news_sources. `assets`, `substations`,
+    `fiber_routes` and `transmission_lines` have no writer into it, so live_pub
+    carries the PIN for them no matter how warm canonical_stats is. And it IS
+    warm on this path: resolve_canon() calls countries_verified_phrase() ->
+    get_canonical_stats(), which populates _live_keys before the peek runs. So
+    membership passes, live_i == pin_i, raise-only does not fire, and the pin
+    ships stamped "live" — assets "320,000+" against a measured 330,961.
+
+    The fixture is the production shape: measured, and resolve_canon echoing the
+    pin. Publishing the pin here must not be reachable."""
+    for key, measured in (("assets", "330,000+"), ("transmission_lines", "95,000+")):
+        pinned = _pin(key)
+        assert canon._floor_int(measured) > canon._floor_int(pinned), (
+            "%s fixture must outrank its pin or it proves nothing" % key
+        )
+        _measured(monkeypatch, **{key: measured})
+        monkeypatch.setattr(
+            canon, "resolve_canon",
+            lambda: {"public": dict(canon.PINNED["public"])},   # degrades to the pin
+        )
+        got = canon.resolve_public_floors()
+        assert got[key] == measured, (
+            "%s published %r — the pin echoed back by a degraded resolver, "
+            "not the measurement its 'live' label claims" % (key, got[key])
+        )
+        assert got["_source"][key] == "live"
+
+
+def test_an_unmeasured_key_is_pinned_even_when_the_resolver_offers_a_raise(monkeypatch):
+    """The cold-worker control, and the other half of the same rule.
+
+    On the first request in a fresh worker the peek is empty. A resolver value
+    that would RAISE the floor is still not publishable, because nothing has
+    measured it — raise-only answers "is this sane", never "was this measured"."""
+    pinned = _pin("assets")
+    monkeypatch.setattr(canon, "_live_public_floors", dict)      # cold worker
+    monkeypatch.setattr(
+        canon, "resolve_canon", lambda: {"public": {"assets": "990,000+"}},
+    )
+    got = canon.resolve_public_floors()
+    assert got["assets"] == pinned
+    assert got["_source"]["assets"] == "pinned"
+
+
+def test_a_measurement_publishes_even_when_the_resolver_blows_up(monkeypatch):
+    """The peek does not run through resolve_canon(), so a resolver that raises
+    must not strand a floor that canonical_stats already measured. This is the
+    direction the pin-as-cold-start contract promises and nothing else pins."""
+    measured = "330,000+"
+    def boom():
+        raise RuntimeError("no DATABASE_URL")
+    _measured(monkeypatch, assets=measured)
+    monkeypatch.setattr(canon, "resolve_canon", boom)
+    got = canon.resolve_public_floors()
+    assert got["assets"] == measured
+    assert got["_source"]["assets"] == "live"
+
+
+def test_no_public_key_can_be_live_while_holding_its_pin_unmeasured(monkeypatch):
+    """The general invariant, stated once over every public key.
+
+    Whatever the resolver returns, a key may only read "live" if the peek
+    measured it. This is what ai_surface_sentinel and the frontend heal branch
+    on, so it is the property that has to hold key-wise, not just for the two
+    that happened to drift."""
+    monkeypatch.setattr(canon, "_live_public_floors", dict)
+    monkeypatch.setattr(
+        canon, "resolve_canon", lambda: {"public": dict(canon.PINNED["public"])},
+    )
+    got = canon.resolve_public_floors()
+    for key in (canon.PINNED.get("public") or {}):
+        if key in canon._PUBLIC_FLOOR_KEYS:
+            continue
+        assert got["_source"][key] == "pinned", "%s claimed live unmeasured" % key
+
+
+def test_the_governance_four_prefer_their_resolver_over_the_peek(monkeypatch):
+    """The governance four have TWO derivations, and this one is not authority.
+
+    _PUBLIC_FLOOR_SPECS derives facilities from `facilities_verified` at
+    step=100, while resolve_canon() derives it from /api/v1/stats — and
+    countries is required to be measured on the SAME table as the facility
+    count it is paired with (see resolve_canon()). So when both are available
+    the dedicated resolver wins, and swapping that preference is a silent
+    change of which population the headline numbers describe.
+
+    ★ Its sibling test only covers the case where there is NO floors witness,
+    which leaves the branch unpinned exactly when a witness exists: a mutation
+    making these four read the peek whenever it has them survived the whole
+    suite when this was written."""
+    for key in canon._PUBLIC_FLOOR_KEYS:
+        pinned = _pin(key)
+        if not pinned or canon._floor_int(pinned) is None:
+            continue
+        pin_i = canon._floor_int(pinned)
+        from_resolver = f"{pin_i + 1000:,}+"
+        from_peek = f"{pin_i + 900000:,}+"       # would also pass raise-only
+        assert canon._floor_int(from_peek) > canon._floor_int(from_resolver)
+        _measured(monkeypatch, **{key: from_peek})
+        monkeypatch.setattr(
+            canon, "resolve_canon", lambda: {"public": {key: from_resolver}},
+        )
+        got = canon.resolve_public_floors()
+        assert got[key] == from_resolver, (
+            "%s published %r — the _PUBLIC_FLOOR_SPECS peek, not the dedicated "
+            "resolver that governs it" % (key, got[key])
+        )
+        assert got["_source"][key] == "live"

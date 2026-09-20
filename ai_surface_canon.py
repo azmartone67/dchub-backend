@@ -1535,18 +1535,51 @@ def resolve_public_floors() -> dict:
     # governance four keep their exact prior behaviour — they are the keys
     # whose resolvers predate this and are known to measure — so this narrows
     # only the keys the widening newly reached.
-    _measured = set(_live_public_floors().keys())
+    # ★2026-09-19 LATE-2 — MEASURED-KEY was still not MEASURED-VALUE. Gating on
+    # membership above and then publishing live_pub[key] trusts a value that
+    # never came from the measurement the membership attests to. resolve_canon()
+    # assigns c["public"][...] for exactly five keys (deals, facilities,
+    # markets, countries, news_sources); `assets`, `substations`,
+    # `fiber_routes` and `transmission_lines` have NO writer into it at all, so
+    # live_pub carries the PIN for them however warm canonical_stats is.
+    #
+    # canonical_stats IS warm on this path — resolve_canon() above calls
+    # countries_verified_phrase() -> get_canonical_stats(), which populates
+    # _live_keys before the peek below — so the membership test passes, the
+    # raise-only rule sees live_i == pin_i and does not fire, and the pin ships
+    # stamped "live". Reproduced against this very function with the cache
+    # warmed to the live snapshot: assets "320,000+" and transmission_lines
+    # "94,000+" both `live`, against measurements that floor to "330,000+" and
+    # "95,000+". Same false provenance the comment above was written to end,
+    # one layer in: the guard checked the reference, not the derivation.
+    #
+    # So take the VALUE from the same place the permission comes from. For a
+    # non-governance key _live_public_floors()[key] IS the measurement, already
+    # floored by _PUBLIC_FLOOR_SPECS; there is no route by which an unmeasured
+    # key can now be labelled live, including the first request in a cold
+    # worker, where the peek is empty and the key is simply skipped.
+    #
+    # The governance four keep reading live_pub deliberately: their dedicated
+    # resolvers are the documented-correct derivation (countries must be
+    # measured on the SAME table as the facilities count it is paired with —
+    # see resolve_canon()), and _PUBLIC_FLOOR_SPECS derives them a second way.
+    # Two derivations, and this one is not the authority for them.
+    _measured_vals = _live_public_floors()
     for key in list(out):
-        if key not in _PUBLIC_FLOOR_KEYS and key not in _measured:
+        if key in _PUBLIC_FLOOR_KEYS:
+            cand = live_pub.get(key)
+        elif key in _measured_vals:
+            cand = _measured_vals[key]
+        else:
             continue
-        live_i = _floor_int(live_pub.get(key))
+        live_i = _floor_int(cand)
         pin_i = _floor_int(out.get(key))
         if live_i is None:
             continue
         if pin_i is not None and live_i < pin_i:
             rejected.append(f"{key}={live_i}<{pin_i}")
             continue
-        out[key] = live_pub[key]
+        out[key] = cand
         source[key] = "live"
     out["_source"] = source
     out["_rejected"] = rejected
