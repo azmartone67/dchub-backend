@@ -466,6 +466,39 @@ def _enrich_company(email: str) -> dict:
 
 # ── canonical capture_event ──────────────────────────────────────────
 
+# ★2026-09-20 — THE LIFECYCLE STAGE WAS HARDCODED "lead" FOR EVERY EVENT.
+#
+# push_to_hubspot sent `"lifecyclestage": "lead"` and `"hs_lead_status": "NEW"`
+# on every row. 24 of the 31 rows waiting to be pushed are `paid_conversion` —
+# people who have PAID. Filing a customer at the top of the funnel misreports
+# the funnel, and HubSpot deliberately resists walking a contact backwards once
+# a stage is set, so the mistake is expensive to undo after the fact rather
+# than before.
+#
+# The vocabulary is CLOSED — capture_event rejects anything outside this set —
+# so the mapping is exhaustive by construction and
+# test_lifecycle_covers_every_event_type asserts the two stay equal. A default
+# would quietly re-file a new event type as a lead, which is the bug again.
+CAPTURED_EVENT_TYPES = (
+    "mcp_high_intent", "state_visitor_high_intent",
+    "newsletter_signup", "trial_key_activated", "paid_conversion",
+)
+
+_LIFECYCLE_BY_EVENT = {
+    "paid_conversion":           "customer",
+    "trial_key_activated":       "salesqualifiedlead",
+    "mcp_high_intent":           "marketingqualifiedlead",
+    "state_visitor_high_intent": "marketingqualifiedlead",
+    "newsletter_signup":         "subscriber",
+}
+
+# hs_lead_status is a SALES PROSPECTING field. "NEW" on someone who has already
+# paid tells a rep to go work a lead who is a customer. Sent only for stages
+# where it means something; omitted entirely otherwise (HubSpot leaves the
+# property alone when the key is absent).
+_NO_LEAD_STATUS = ("customer",)
+
+
 def capture_event(event_type: str, payload: dict) -> dict:
     """Called by hooks. payload may include: email, session_id, company,
     title, first_name, last_name, ...event-specific keys.
@@ -476,10 +509,7 @@ def capture_event(event_type: str, payload: dict) -> dict:
     flow that called us)."""
     if DISABLE:
         return {"ok": True, "skipped": "disabled"}
-    if event_type not in (
-        "mcp_high_intent", "state_visitor_high_intent",
-        "newsletter_signup", "trial_key_activated", "paid_conversion",
-    ):
+    if event_type not in CAPTURED_EVENT_TYPES:
         return {"ok": False, "error": "bad_event_type"}
 
     email = (payload.get("email") or "").strip().lower() or None
@@ -603,18 +633,21 @@ def push_to_hubspot(lead: dict) -> dict:
     email = lead.get("lead_email") or ""
     if not email:
         return {"ok": False, "error": "no_email_for_hubspot"}
+    _evt = lead.get("event_type") or ""
+    _stage = _LIFECYCLE_BY_EVENT.get(_evt, "lead")
     hs_payload = {"properties": {
         "email":     email,
         "firstname": lead.get("lead_first_name") or "",
         "lastname":  lead.get("lead_last_name") or "",
         "company":   lead.get("lead_company") or "",
         "jobtitle":  lead.get("lead_title") or "",
-        "lifecyclestage": "lead",
-        "hs_lead_status": "NEW",
+        "lifecyclestage": _stage,
         "dchub_event_type":   lead.get("event_type"),
         "dchub_intent_score": str(lead.get("intent_score") or 0),
         "dchub_attribution":  json.dumps(lead.get("attribution_chain"))[:60000],
     }}
+    if _stage not in _NO_LEAD_STATUS:
+        hs_payload["properties"]["hs_lead_status"] = "NEW"
     try:
         r = requests.post(
             "https://api.hubapi.com/crm/v3/objects/contacts",
