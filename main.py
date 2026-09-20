@@ -19473,6 +19473,13 @@ def handle_invoice_paid(invoice):
     # tier FROM plan and clear the demote stamp. Scoped strictly to
     # demoted_reason='dunning_prior_payer' so we never touch a manually-set or
     # first-charge demote. Idempotent.
+    #
+    # BOTH statements carry demoted_at IS NOT NULL. They are two halves of one
+    # operation and must select the same rows: the stamp cleared by the second
+    # is what the first selects on, so clearing it for a row the first did NOT
+    # restore leaves the key on 'free' with nothing left to match — no later
+    # invoice.paid can recover it. The second clause was missing until #4932;
+    # see tests/test_pro_restore_on_renewal.py for the row shape that hit it.
     try:
         _pg_execute(
             """UPDATE api_keys
@@ -19488,7 +19495,8 @@ def handle_invoice_paid(invoice):
             """UPDATE users
                   SET demoted_at = NULL, demoted_reason = NULL
                 WHERE stripe_customer_id = %s
-                  AND demoted_reason = 'dunning_prior_payer'""",
+                  AND demoted_reason = 'dunning_prior_payer'
+                  AND demoted_at IS NOT NULL""",
             (customer_id,),
         )
     except Exception as e:
