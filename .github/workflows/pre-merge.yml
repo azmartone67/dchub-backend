@@ -569,6 +569,36 @@ jobs:
             echo "::error::the tier-gates SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The amplifier log upsert, against the same Postgres ─────────────
+      # multiplatform_amplifier_log_src_tgt is a PARTIAL unique index
+      # (WHERE source_post_id > 0) and _record()'s ON CONFLICT omitted the
+      # predicate, so Postgres could not infer the index and EVERY write
+      # raised InvalidColumnReference — swallowed by _record's own except.
+      # The table held 0 rows from 2026-06-07 to 2026-09-20 while the
+      # fan-out posted to Bluesky normally, and the empty log fed back as
+      # "never amplified", re-publishing the same post on every sweep.
+      # A planner-inference error is invisible to source inspection, so the
+      # shipped DDL and the shipped INSERT are pulled out of the module and
+      # executed for real here.
+      #
+      # Safe to share the `parity` database: this test owns and drops only
+      # multiplatform_amplifier_log, and runs after the lanes above report.
+      - name: Amplifier log upsert SQL against a real Postgres
+        env:
+          AMPLIFIER_LOG_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_amplifier_log_upsert_sql.py -v --tb=short
+
+      - name: Prove the amplifier-log SQL test actually RAN
+        env:
+          AMPLIFIER_LOG_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_amplifier_log_upsert_sql.py \
+            -q -rs --tb=no > al.txt 2>&1 || { cat al.txt; exit 1; }
+          cat al.txt
+          if grep -qi "skipped" al.txt; then
+            echo "::error::the amplifier-log SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── The live-proof PLATFORM query, against the same Postgres ─────────
       # It decides the homepage line naming which platforms call MCP tools.
       # Until 2026-09-03 it counted raw mcp_tool_calls with neither the

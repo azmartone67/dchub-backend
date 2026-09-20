@@ -801,7 +801,19 @@ def _record(cur, source_post_id: int, source_platform: str,
               (source_post_id, source_platform, target_platform,
                content_text, target_post_url, status, error)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
+            -- ★ The WHERE is NOT optional. multiplatform_amplifier_log_src_tgt
+            -- is a PARTIAL unique index (WHERE source_post_id > 0), and
+            -- Postgres cannot infer a partial index unless the ON CONFLICT
+            -- repeats its predicate. Without it EVERY insert here raised
+            -- InvalidColumnReference: "there is no unique or exclusion
+            -- constraint matching the ON CONFLICT specification" — swallowed by
+            -- the except below, which is why this table held 0 rows from
+            -- 2026-06-07 to 2026-09-20 while the fan-out was posting fine.
+            -- A row with source_post_id = 0 (ad-hoc, not from linkedin_posts)
+            -- falls outside the predicate, so it can never conflict and simply
+            -- inserts — which is the intended behaviour for ad-hoc posts.
             ON CONFLICT (source_post_id, target_platform)
+              WHERE source_post_id > 0
               DO UPDATE SET
                 content_text    = EXCLUDED.content_text,
                 target_post_url = EXCLUDED.target_post_url,
@@ -1064,16 +1076,22 @@ def _lookback_minutes() -> int:
     return v if v > 0 else 780
 
 
-def auto_sweep_recent() -> dict:
+def auto_sweep_recent(platforms: tuple[str, ...] | list[str] | None = None) -> dict:
     """Find LinkedIn posts published within the lookback window that have
-    NOT been amplified yet, and amplify each. The window covers the gap
+    NOT been amplified yet, and amplify each.
+
+    `platforms` narrows the fan-out (None = PLATFORMS_DEFAULT). The Substack
+    mirror runs scoped to ("substack",) so waking this lane does not also
+    restart Bluesky/Mastodon, which have been dark since 2026-06-07 —
+    restarting those is a separate, deliberate decision. The window covers the gap
     between cron runs (see _lookback_minutes) — a 60-minute window under a
     twice-daily cron matched nothing, ever. Idempotent — repeat
     sweeps no-op via the UNIQUE(source_post_id, target_platform) index.
 
     Bounded scan: at most 10 posts per sweep (a sane sanity cap)."""
+    targets = tuple(platforms) if platforms else tuple(PLATFORMS_DEFAULT)
     result = {"swept": 0, "amplified": 0, "results": [],
-              "errors": []}
+              "platforms": list(targets), "errors": []}
     conn = _db_conn()
     if conn is None:
         result["errors"].append("no_db_connection")
@@ -1129,7 +1147,7 @@ def auto_sweep_recent() -> dict:
 
     for pid in ids:
         try:
-            r = amplify_to_all(source_post_id=int(pid))
+            r = amplify_to_all(source_post_id=int(pid), platforms=targets)
             posted = sum(1 for v in (r.get("results") or {}).values()
                           if v.get("status") in ("posted", "dry_run"))
             if posted:
@@ -1175,11 +1193,21 @@ def amplify_endpoint():
 @multiplatform_amplifier_bp.route(
     "/api/v1/admin/multiplatform/auto-sweep", methods=["POST", "GET"])
 def auto_sweep_endpoint():
-    """Cron + admin: amplify any unamplified LinkedIn post from the
-    last 60 minutes."""
+    """Cron + admin: amplify any unamplified LinkedIn post inside the
+    lookback window (see _lookback_minutes).
+
+    Optional `platforms` (comma-separated, query arg or JSON body) narrows
+    the fan-out — `?platforms=substack` mirrors to Substack only. Omitted =
+    PLATFORMS_DEFAULT, i.e. all five."""
     if not _admin_or_cron_authorized():
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify(auto_sweep_recent()), 200
+    payload = request.get_json(force=True, silent=True) or {}
+    raw = (payload.get("platforms") or request.args.get("platforms") or "")
+    if isinstance(raw, (list, tuple)):
+        chosen = tuple(str(p).strip() for p in raw if str(p).strip())
+    else:
+        chosen = tuple(p.strip() for p in str(raw).split(",") if p.strip())
+    return jsonify(auto_sweep_recent(platforms=chosen or None)), 200
 
 
 @multiplatform_amplifier_bp.route(

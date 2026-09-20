@@ -93,8 +93,9 @@ class _FakeSession:
 
 
 class _FakeCursor:
-    def __init__(self, sql_log):
+    def __init__(self, sql_log, candidates=()):
         self.sql_log = sql_log
+        self.candidates = list(candidates)
         self._last = ""
 
     def execute(self, sql, params=None):
@@ -110,6 +111,8 @@ class _FakeCursor:
         return None
 
     def fetchall(self):
+        if "FROM linkedin_posts lp" in self._last:
+            return [(i,) for i in self.candidates]
         return []
 
     def close(self):
@@ -123,12 +126,13 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, sql_log):
+    def __init__(self, sql_log, candidates=()):
         self.sql_log = sql_log
+        self.candidates = list(candidates)
         self.autocommit = True
 
     def cursor(self):
-        return _FakeCursor(self.sql_log)
+        return _FakeCursor(self.sql_log, self.candidates)
 
     def commit(self):
         pass
@@ -318,3 +322,65 @@ def test_sweep_skips_failed_linkedin_posts_and_backfills_substack(mod, monkeypat
     assert "COALESCE(lp.status, 'success') = 'success'" in sweep, sweep
     assert "s.target_platform = 'substack'" in sweep, sweep
     assert "OR NOT EXISTS" in sweep, sweep
+
+
+# ── Scoped fan-out ───────────────────────────────────────────────────
+
+def test_sweep_scopes_the_fan_out_to_the_platforms_it_is_given(mod, monkeypatch):
+    """★ Waking this lane must NOT also restart Bluesky and Mastodon, dark
+    since 2026-06-07. The Substack mirror sweeps with platforms=("substack",);
+    an unscoped pass-through would publish to two public accounts nobody
+    asked to restart."""
+    seen = {}
+    monkeypatch.setattr(mod, "_db_conn", lambda: _FakeConn([], candidates=[611]))
+    monkeypatch.setattr(mod, "amplify_to_all",
+                        lambda source_post_id=0, platforms=None, **kw:
+                        seen.update(pid=source_post_id, platforms=platforms)
+                        or {"results": {}})
+
+    out = mod.auto_sweep_recent(platforms=("substack",))
+
+    assert out["swept"] == 1, out
+    assert seen["pid"] == 611
+    assert seen["platforms"] == ("substack",), seen
+    assert out["platforms"] == ["substack"]
+
+
+def test_sweep_defaults_to_every_platform_when_unscoped(mod, monkeypatch):
+    """The opposite arm — the scoping is a parameter, not a hard-coded
+    narrowing that would strand the other four platforms forever."""
+    seen = {}
+    monkeypatch.setattr(mod, "_db_conn", lambda: _FakeConn([], candidates=[611]))
+    monkeypatch.setattr(mod, "amplify_to_all",
+                        lambda source_post_id=0, platforms=None, **kw:
+                        seen.update(platforms=platforms) or {"results": {}})
+
+    mod.auto_sweep_recent()
+
+    assert seen["platforms"] == tuple(mod.PLATFORMS_DEFAULT), seen
+
+
+def test_endpoint_forwards_the_platforms_query_arg(mod, monkeypatch):
+    """The workflow drives this over HTTP with ?platforms=substack — the
+    scoping is worthless if the route drops it."""
+    from flask import Flask
+
+    seen = {}
+    monkeypatch.setattr(mod, "_admin_or_cron_authorized", lambda: True)
+    monkeypatch.setattr(mod, "auto_sweep_recent",
+                        lambda platforms=None:
+                        seen.update(platforms=platforms) or {"swept": 0})
+    app = Flask(__name__)
+    app.register_blueprint(mod.multiplatform_amplifier_bp)
+    client = app.test_client()
+
+    assert client.post(
+        "/api/v1/admin/multiplatform/auto-sweep?platforms=substack"
+    ).status_code == 200
+    assert seen["platforms"] == ("substack",), seen
+
+    client.post("/api/v1/admin/multiplatform/auto-sweep?platforms=substack,bluesky")
+    assert seen["platforms"] == ("substack", "bluesky"), seen
+
+    client.post("/api/v1/admin/multiplatform/auto-sweep")
+    assert seen["platforms"] is None, seen
