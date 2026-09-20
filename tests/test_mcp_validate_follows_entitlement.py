@@ -42,10 +42,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Import-time requirement only; nothing connects until a request runs.
-os.environ.setdefault("NEON_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/db")
+# flask_mcp_endpoints refuses to import without a DB URL, and nothing connects
+# until a request runs — so a dummy satisfies it.
+#
+# ★ CONFINED TO THE IMPORT, AND PUT BACK. pytest collects the whole suite in ONE
+# process, and several tests SKIP on `not (DATABASE_URL or NEON_DATABASE_URL)`
+# precisely because CI runs with neither (see tests/test_top_caller_share_
+# coherence.py, whose header says so outright). Leaving this set turns those
+# skips into connection failures against port 1 — measured: that file is
+# `13 passed, 2 skipped` alone and `17 failed` when this module is collected
+# first. A module-level setdefault here is a suite-wide side effect.
+_injected = not (os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL"))
+if _injected:
+    os.environ["NEON_DATABASE_URL"] = "postgresql://u:p@127.0.0.1:1/db"
+try:
+    import flask_mcp_endpoints as fme
+finally:
+    if _injected:
+        os.environ.pop("NEON_DATABASE_URL", None)
 
-import flask_mcp_endpoints as fme
 from api_tier_gating import resolve_effective_plan
 
 EMAIL = "payer@example.com"
