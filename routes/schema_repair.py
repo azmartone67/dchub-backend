@@ -1885,6 +1885,95 @@ def funnel_leakage():
         except Exception: pass
 
 
+# ── One-time re-resolution of rows latched FALSE ────────────────────
+# self_traffic was two-state until 2026-09-20: "no call_log evidence YET" was
+# written as False, identical to "evidence exists and says external". The
+# backfill only ever revisits NULL, so those rows are stranded — our own
+# traffic, published as unconverted demand, permanently.
+#
+# This promotes FALSE -> TRUE, and ONLY where mcp_call_log now carries a
+# 'dchub-%' platform for that session. It is:
+#   MONOTONIC   it never demotes; a real caller cannot be swept in, because
+#               the only way to qualify is evidence that the session WAS ours.
+#   IDEMPOTENT  a promoted row leaves the `IS FALSE` set, so re-running is a
+#               no-op rather than double-counting.
+#   RESUMABLE   the EXISTS lives INSIDE the LIMIT subquery, so every selected
+#               row is promoted. Selecting the newest N *FALSE* rows and
+#               filtering afterwards would re-pick the same unpromotable rows
+#               forever and never converge.
+# It is NOT in SCHEMA_STATEMENTS: POST /schema/repair already runs ~14s against
+# a 15s edge timeout, and a table-wide UPDATE there would push it over and roll
+# the whole repair back.
+_RERESOLVE_CANDIDATES = """
+      FROM mcp_upgrade_signals s2
+     WHERE s2.self_traffic IS FALSE
+       AND COALESCE(s2.session_id,'') <> ''
+       AND s2.created_at >= NOW() - INTERVAL %s
+       AND EXISTS (SELECT 1 FROM mcp_call_log l
+                    WHERE l.session_id = s2.session_id
+                      AND LOWER(COALESCE(l.platform,'')) LIKE 'dchub-%%')
+"""
+_REMAINING_CAP = 10000
+
+
+@schema_repair_bp.route("/api/v1/admin/funnel/self-traffic/reresolve",
+                        methods=["POST"])
+def funnel_self_traffic_reresolve():
+    """Promote stranded FALSE rows whose session is provably ours.
+
+    Defaults to DRY RUN: it reports what it would promote and writes nothing.
+    Pass confirm=1 to apply. Drive it to completion by repeating until
+    `done` is true; `promoted` equal to `limit` means more remain.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    c = _get_db()
+    if c is None:
+        return jsonify(ok=False, error="no_db"), 503
+    days = max(1, min(365, int(request.args.get("days") or "90")))
+    limit = max(1, min(20000, int(request.args.get("limit") or "5000")))
+    confirm = (request.args.get("confirm") or "").strip() in ("1", "true", "yes")
+    win = f"{days} days"
+    out = {"days": days, "limit": limit, "dry_run": not confirm}
+    try:
+        with c.cursor() as cur:
+            if confirm:
+                cur.execute("UPDATE mcp_upgrade_signals s SET self_traffic = TRUE "
+                            " WHERE s.id IN (SELECT s2.id "
+                            + _RERESOLVE_CANDIDATES
+                            + " ORDER BY s2.created_at DESC LIMIT %s)",
+                            (win, limit))
+                out["promoted"] = cur.rowcount
+                c.commit()
+            else:
+                out["promoted"] = 0
+            # ★ Bounded count. An unbounded COUNT(*) over every FALSE row is the
+            # scan this endpoint exists to avoid. Cap it and SAY it is capped —
+            # a ceiling reported as a total is a number that stops moving and
+            # looks like convergence.
+            cur.execute("SELECT COUNT(*) FROM (SELECT 1 "
+                        + _RERESOLVE_CANDIDATES
+                        + " LIMIT %s) t", (win, _REMAINING_CAP + 1))
+            n = int((cur.fetchone() or [0])[0] or 0)
+            out["remaining_capped"] = n > _REMAINING_CAP
+            out["remaining"] = min(n, _REMAINING_CAP)
+            out["done"] = (n == 0)
+            out["note"] = (
+                "FALSE -> TRUE only, and only where mcp_call_log now shows a "
+                "dchub-% platform for that session. Never demotes. Repeat until "
+                "done is true; remaining_capped means the count is a ceiling, "
+                "not a total."
+            )
+        return jsonify(ok=True, **out)
+    except Exception as e:  # noqa: BLE001
+        try: c.rollback()
+        except Exception: pass
+        return jsonify(ok=False, error=str(e)[:300], **out), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def _smoke():
     logger.info("[schema-repair] ready · POST /schema/repair · "
                  "/geocoding/backfill · GET /funnel/leakage")
