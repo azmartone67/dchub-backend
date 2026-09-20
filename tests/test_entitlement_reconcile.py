@@ -137,3 +137,98 @@ def test_the_query_reads_both_surfaces(er):
     assert "api_keys" in er._PAYERS_SQL and "mcp_dev_keys" in er._PAYERS_SQL
     assert "is_test" in er._PAYERS_SQL and "refunded_at" in er._PAYERS_SQL, \
         "test and refunded conversions must not count as payers"
+
+
+# ── the ACCOUNT surface (2026-09-20) ─────────────────────────────────────────
+#
+# ★ WHAT WENT WRONG. This query described a payer's life from two API surfaces
+# and the response called one class "has access, never called". Read as "has
+# never used the product" — by me, in a written recommendation to the owner
+# about a real customer — when it only ever meant "made no API calls". A payer
+# who signs in and works the Land & Power map weekly makes zero API calls and
+# was indistinguishable here from one who never came back.
+#
+# users.last_login is written on every sign-in and this query was ALREADY
+# touching `users`. One column away, never selected.
+
+def _code(sql: str) -> str:
+    """SQL with `--` comment lines removed.
+
+    ★ Both guards below first failed against the real, correct query — because
+    the comments EXPLAINING each construct contain the construct. The note above
+    the REST lateral literally reads "LEFT JOIN api_keys, not JOIN" and "in the
+    WHERE it filters away...", so splitting the raw string landed inside the
+    prose. A comment that quotes its subject becomes its subject; strip them
+    before asking the code anything."""
+    return "\n".join(ln for ln in sql.splitlines()
+                      if not ln.lstrip().startswith("--"))
+
+
+def _select_list(sql: str) -> str:
+    """The OUTER SELECT list only — everything between the final top-level
+    SELECT and its FROM. A bare `"last_login" in sql` is satisfied by the
+    lateral's own SELECT and even by a comment, so it cannot tell "selected"
+    from "mentioned"; that is the vacuous-substring trap this file has fenced
+    before, and my first version of this guard walked straight into it —
+    four of five mutations survived it."""
+    head = _code(sql).split("FROM payers p", 1)[0]
+    return head[head.rindex("SELECT"):]
+
+
+def test_the_query_reads_the_ACCOUNT_surface_too(er):
+    """Two API surfaces cannot answer 'has this person ever used us'."""
+    sel = _select_list(er._PAYERS_SQL)   # already comment-stripped
+    assert "AS last_login" in sel, (
+        "last_login is not in the OUTER select list — the survey is blind to "
+        "sign-ins again, and `never_started` goes back to overclaiming")
+    assert "AS has_account" in sel, "cannot tell 'no account' from 'no keys'"
+    assert "AS account_created_at" in sel
+    # and has_account must be DERIVED from the account row, not asserted
+    assert "a.id IS NOT NULL" in sel, (
+        "has_account is no longer computed from the users row")
+
+
+def test_the_rest_lateral_is_a_LEFT_join(er):
+    """★ As an inner join this returned NO ROWS for a payer with a users row and
+    no key, so rest_keys read 0 and the users side never surfaced — 'has no
+    account' and 'has an account with no keys' became the same reading."""
+    sql = _code(er._PAYERS_SQL)
+    assert "LEFT JOIN api_keys" in sql, (
+        "api_keys is inner-joined again; a keyless payer's account row vanishes")
+    # ...and the activity filter must be in the ON clause. In the WHERE it drops
+    # the NULL row the LEFT JOIN produces and silently restores the inner join.
+    tail = sql.split("LEFT JOIN api_keys", 1)[1].split(") r ON true", 1)[0]
+    on_clause, _, where_clause = tail.partition("WHERE")
+    assert "is_active" in on_clause, (
+        "is_active moved out of the ON clause — the LEFT JOIN is inner again")
+    assert "is_active" not in where_clause, (
+        "is_active is in the WHERE: it drops the NULL row the LEFT JOIN "
+        "produces and silently restores the inner join")
+
+
+def test_never_started_prose_does_not_claim_more_than_it_measures(er):
+    """The wording is the defect that actually cost something. Pin it."""
+    import inspect
+    src = inspect.getsource(er)
+    i = src.index('"never_started":')
+    blurb = src[i:i + 400]
+    assert "never called" not in blurb, (
+        "'never called' is back — it reads as 'never used the product' and the "
+        "query cannot support that")
+    assert "last_login" in blurb, (
+        "the class description must point the reader at the field that can "
+        "actually answer engagement")
+
+
+def test_classification_is_unchanged_by_the_new_fields(er):
+    """The new columns are for the READER. _FIXABLE drives real key minting, so
+    adding visibility must not move who gets provisioned."""
+    base = _row(mcp_keys=0, rest_keys=0)
+    assert er._classify(base) == "no_access"
+    # same row, now carrying the account fields — verdict must not move
+    rich = dict(base, has_account=True, last_login="2026-04-16T01:13:52",
+                account_created_at="2026-04-16T01:09:52")
+    assert er._classify(rich) == "no_access"
+    busy = _row(mcp_keys=1, rest_keys=1, rest_calls=500, mcp_last="x", rest_last="y")
+    assert er._classify(dict(busy, has_account=True, last_login=None)) == "healthy"
+    assert er._FIXABLE == ("no_access", "mcp_missing")

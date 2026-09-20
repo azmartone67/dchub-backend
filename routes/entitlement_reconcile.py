@@ -34,7 +34,7 @@ So every payer is classified across BOTH surfaces:
     no_access      neither an MCP key nor an active REST key  → provision
     mcp_missing    REST works, MCP never provisioned          → provision MCP
     dormant        has access, used it, then stopped          → NOT provisioning
-    never_started  has access, never called                   → NOT provisioning
+    never_started  has access, no API calls (see last_login)  → NOT provisioning
     healthy        has access and is calling
 
 Only the first two are provisioning failures. The last three are activation or
@@ -103,18 +103,47 @@ SELECT p.email, p.plan, p.mrr_cents, p.paid_at,
        -- REST surface (the half a naive check misses)
        COALESCE(r.active_keys, 0) AS rest_keys,
        COALESCE(r.calls, 0)       AS rest_calls,
-       r.last_used                AS rest_last_used
+       r.last_used                AS rest_last_used,
+       -- ACCOUNT surface (the half BOTH of the above miss)
+       (a.id IS NOT NULL)         AS has_account,
+       a.created_at               AS account_created_at,
+       a.last_login               AS last_login
   FROM payers p
   LEFT JOIN LATERAL (
       SELECT count(*) AS keys, max(last_used_at) AS last_used
         FROM mcp_dev_keys d
        WHERE lower(d.email) = p.email AND d.status = 'active') m ON true
+  -- ★2026-09-20: the ACCOUNT lateral, and why it is its own join.
+  -- This query described a payer's life from two API surfaces and reported
+  -- `never_started` for people it had no way to observe. A payer who signs in
+  -- and works the Land & Power map every week makes zero API calls and looked
+  -- identical here to one who has never returned. `users.last_login` is
+  -- written on every sign-in (api_server.py) and this query was ALREADY
+  -- touching `users` — one column away, never selected.
+  -- Measured the day this shipped: of four payers reported as having used
+  -- nothing, all four HAD accounts, and one had signed in (once, four minutes
+  -- after signup, a month before he paid). "No keys" was being read as "never
+  -- used the product"; it never meant that.
   LEFT JOIN LATERAL (
-      SELECT count(*) AS active_keys, sum(COALESCE(ak.usage_count, 0)) AS calls,
-             max(ak.last_used_at) AS last_used
-        FROM users u JOIN api_keys ak ON ak.user_id = u.id
+      SELECT u.id, u.created_at, u.last_login
+        FROM users u
        WHERE lower(u.email) = p.email
-         AND COALESCE(ak.is_active, 1) <> 0) r ON true
+       ORDER BY u.created_at ASC
+       LIMIT 1) a ON true
+  -- ★ LEFT JOIN api_keys, not JOIN. As an inner join this lateral returned NO
+  -- ROWS for a payer with a users row but no key — so `rest_keys` came back 0
+  -- and the users side never surfaced at all, making "has no account" and "has
+  -- an account with no keys" the same reading. `is_active` has to sit in the
+  -- ON clause: in the WHERE it filters away the NULL row a LEFT JOIN produces
+  -- and quietly turns it back into an inner join.
+  LEFT JOIN LATERAL (
+      SELECT count(ak.id) AS active_keys,
+             sum(COALESCE(ak.usage_count, 0)) AS calls,
+             max(ak.last_used_at) AS last_used
+        FROM users u
+        LEFT JOIN api_keys ak
+               ON ak.user_id = u.id AND COALESCE(ak.is_active, 1) <> 0
+       WHERE lower(u.email) = p.email) r ON true
  ORDER BY p.paid_at
 """
 
@@ -148,7 +177,8 @@ def _survey():
             for r in cur.fetchall():
                 row = dict(zip(cols, r))
                 row["mrr_usd"] = round((row.pop("mrr_cents") or 0) / 100.0, 2)
-                for k in ("paid_at", "mcp_last_used", "rest_last_used"):
+                for k in ("paid_at", "mcp_last_used", "rest_last_used",
+                          "account_created_at", "last_login"):
                     if row.get(k) is not None:
                         row[k] = row[k].isoformat()
                 row["klass"] = _classify(row)
@@ -243,8 +273,17 @@ def reconcile():
         classes={
             "no_access": "neither MCP nor active REST key — provision",
             "mcp_missing": "REST works, MCP never provisioned — provision MCP",
-            "dormant": "had access, used it, stopped — relationship, not provisioning",
-            "never_started": "has access, never called — activation, not provisioning",
+            "dormant": "had access, made API calls, stopped — relationship, "
+                       "not provisioning",
+            # ★2026-09-20: this used to read "has access, never called —
+            # activation". A reader (me) took that as "has never used the
+            # product" and told the owner so about a customer. It only ever
+            # meant NO API CALLS. Web-app use is a different surface and this
+            # class has never been able to see it — read `last_login` on the
+            # row before concluding anything about engagement.
+            "never_started": "has access, no API calls in either surface — "
+                             "activation, not provisioning. Says NOTHING about "
+                             "web-app use; check last_login on the row.",
             "healthy": "has access and is calling",
         },
     )
