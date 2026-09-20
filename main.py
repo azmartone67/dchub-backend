@@ -17609,6 +17609,98 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id):
     threading.Thread(target=_send, daemon=True).start()
 
 
+def _send_dunning_demote_notice(to_email, plan, reason, user_id, demoted_at,
+                                failed_count=None):
+    """Tell a demoted payer their tier was pulled — the ONLY out-of-band signal.
+
+    r-demote-notice (2026-09-20). The dunning demote wrote
+    rate_limit_tier='free', stamped users.demoted_at/demoted_reason, and then
+    emitted a print() and an in-memory list. Nothing else. `demoted` appears in
+    neither flask_mcp_endpoints.py nor mcp_gatekeeper.py, so the agent is served
+    free tier with no way to tell a demote from a quota change, and the HUMAN —
+    the only party who can fix the card — was never told at all.
+
+    ★ WHY EMAIL FIRST, and not a payload field. The in-band signal has a
+    measured reachability problem: 3 of 2,529 real payable-tool calls in 30d
+    were EVER gated (0.1%), because the auto-trial grants full data on
+    essentially every call. A demoted agent keeps being served and never hits a
+    wall, so a notice placed at the wall reaches almost nobody — that is exactly
+    how the pre-wall pay offer shipped as a no-op (2026-07-27, measured 07-28).
+    Email does not depend on the agent reaching anything, and it lands with the
+    person who owns the card.
+
+    Modelled on _send_payment_receipt above: kill switch, claim row, fire-and-
+    forget thread, never raises into the webhook.
+
+    ★ IDEMPOTENCY IS THE CALLER'S rowcount, not a guess here. The demote UPDATE
+    carries `AND demoted_at IS NULL`, so it affects a row only on the TRANSITION
+    into demoted; the call site emails only when that rowcount is 1. Stripe
+    re-delivers webhooks and a dunning cycle fires repeatedly, so emailing on
+    every failed charge would spam a customer whose card is already failing.
+    The claim row below is the second belt: it keys on this specific demote
+    (user + stamp), so a genuine LATER demote still notifies.
+
+    Kill switch: DCHUB_DEMOTE_NOTICE_DISABLE=1."""
+    if (os.environ.get("DCHUB_DEMOTE_NOTICE_DISABLE") or "").strip() == "1":
+        return
+    if not to_email:
+        return
+    plan_tag = f"demote:{user_id}:{str(demoted_at or '')[:19]}"
+
+    def _send():
+        try:
+            _rc, rows = _pg_execute(
+                """INSERT INTO welcome_email_log (email, plan, status)
+                   SELECT %s, %s, 'claimed'
+                   WHERE NOT EXISTS (SELECT 1 FROM welcome_email_log
+                                      WHERE plan = %s)
+                   RETURNING id""",
+                (to_email, plan_tag, plan_tag), fetch=True)
+            if not rows:
+                return  # already notified for THIS demote
+            claim_id = rows[0][0]
+            try:
+                from routes.billing_portal import support_mailto as _support
+                support = _support()
+            except Exception:
+                support = os.environ.get("DCHUB_SUPPORT_EMAIL", "jonathan@dchub.cloud")
+            # No self-serve card-update URL is linked on purpose: the billing
+            # portal route is authenticated (main.py ~19762, request.user), so
+            # there is no public link to send, and _routes.json is at its 98/98
+            # deploy cap so a new public path cannot be added. Reply-to is a
+            # channel that demonstrably exists.
+            html = f"""<div style="font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;max-width:560px;margin:0 auto;">
+  <h2 style="margin:24px 0 8px;">Your DC Hub plan was paused</h2>
+  <p style="color:#4a4a5a;">We could not charge your card, so your API key has been
+     moved to the free tier for now.</p>
+  <p style="color:#4a4a5a;"><strong>Your key still works.</strong> It is not revoked —
+     it is answering at free-tier limits, so calls that used to return full results
+     may now come back trimmed.</p>
+  <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:15px;">
+    <tr><td style="padding:8px 0;color:#6a6a7a;">Plan</td><td style="text-align:right;font-weight:600;">{plan or 'paid'}</td></tr>
+    <tr><td style="padding:8px 0;color:#6a6a7a;">Now serving</td><td style="text-align:right;font-weight:600;">free tier</td></tr>
+  </table>
+  <p style="color:#4a4a5a;">Update your card and the next successful payment restores
+     your tier automatically — you do not need to re-subscribe or swap keys.</p>
+  <p style="color:#4a4a5a;">Reply to this email and we will sort it out, or write to
+     <a href="mailto:{support}">{support}</a>.</p>
+  <p style="color:#9a9aaa;font-size:12px;">DC Hub · dchub.cloud · live infrastructure data for AI</p>
+</div>"""
+            mid = _resend_email(to_email, "Your DC Hub plan was paused", html)
+            ok = bool(mid)
+            _pg_execute(
+                "UPDATE welcome_email_log SET status = %s, "
+                "resend_message_id = %s, attempted_at = NOW() WHERE id = %s",
+                ('sent_via_resend' if ok else 'failed',
+                 (mid if isinstance(mid, str) else None), claim_id))
+            print(f"🪫 demote notice {'sent' if ok else 'FAILED'} for {to_email} "
+                  f"({reason}, {plan_tag})")
+        except Exception as _e:
+            print(f"⚠️ _send_dunning_demote_notice failed (non-fatal): {_e}")
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 def _welcome_mcp_connector_html(to_email, raw_api_key):
     """r-onboarding-fix (2026-07-03, defect #6): the 'Connect to Claude' section
     of the welcome email, carrying the customer's dch_live_ MCP key + the
@@ -19634,7 +19726,15 @@ def handle_payment_failed(invoice):
             try:
                 # Mark the demote (idempotent — only if not already
                 # demoted, so a later failure doesn't reset the clock).
-                _pg_execute(
+                # ★ r-demote-notice: the rowcount IS the transition. This
+                # UPDATE carries `AND demoted_at IS NULL`, so it touches a row
+                # only when the user crosses INTO demoted; a dunning cycle and
+                # Stripe's webhook re-delivery both re-run this handler, and
+                # emailing on every pass would spam a customer whose card is
+                # already failing. 0 here means "already demoted" (or the write
+                # failed — _pg_execute returns (0, []) on error), and both are
+                # correctly silent.
+                _demote_rc, _ = _pg_execute(
                     """UPDATE users
                           SET demoted_at = NOW(),
                               demoted_reason = %s
@@ -19659,6 +19759,14 @@ def handle_payment_failed(invoice):
                     f"failed={failed_count} attempt={attempt_count} "
                     f"→ rate_limit_tier=free (key stays active)"
                 )
+                # r-demote-notice: the ONLY signal that leaves this process.
+                # Gated on the rowcount above so a dunning cycle and Stripe's
+                # webhook re-delivery cannot re-send. Fire-and-forget; a mail
+                # failure must never turn a completed demote into an exception.
+                if _demote_rc:
+                    _send_dunning_demote_notice(
+                        email, plan, demote_reason, user_id, now_iso,
+                        failed_count=failed_count)
             except Exception as e:
                 print(f"[dunning] demote failed for user_id={user_id}: {e}")
     # FOLLOW-UP (needs DB access, not done here): some lapsed renewals never
