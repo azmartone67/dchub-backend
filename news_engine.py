@@ -584,11 +584,20 @@ def _is_implausibly_future(pub, now=None, hours=FUTURE_REJECT_HOURS):
     return dt > ref + timedelta(hours=hours)
 
 
-def _drop_implausibly_future(articles, source_label):
-    """Filter out rows _is_implausibly_future flags; log what was dropped."""
+def _drop_implausibly_future(articles, source_label, now=None):
+    """Filter out rows _is_implausibly_future flags; log what was dropped.
+
+    ★ `now` exists so a test can pin the clock, and for nothing else — every
+    production caller omits it and gets the wall clock, exactly as before.
+    _is_implausibly_future has taken `now` since #3043; this wrapper simply
+    never passed it on, so the only way to exercise the wrapper was a literal
+    future date. The one in the test stopped being >24h ahead at
+    2026-09-20T11:00Z and turned the REQUIRED unit-tests check red on every
+    open PR in the repo. A date is not a clock.
+    """
     kept, dropped = [], []
     for a in articles:
-        if _is_implausibly_future(a.get('published_at')):
+        if _is_implausibly_future(a.get('published_at'), now=now):
             dropped.append(a)
             continue
         kept.append(a)

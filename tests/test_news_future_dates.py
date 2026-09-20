@@ -354,12 +354,29 @@ class TestIngestRejectsImplausiblyFutureDates:
         assert rej("2999-01-01T00:00:00+00:00") is True
 
     def test_drop_helper_actually_filters(self):
+        from datetime import datetime
         drop = self._h()["_drop_implausibly_future"]
+        now = datetime(2026, 8, 22)          # pinned; the row dates below are relative to IT
         rows = [{"published_at": "2026-09-21T11:00:00", "url": "https://x/events/a"},
                 {"published_at": "2026-08-21T23:35:55", "url": "https://x/b"},
                 {"published_at": None, "url": "https://x/c"}]
-        kept = drop(rows, "t")
+        kept = drop(rows, "t", now=now)
         assert [r["url"] for r in kept] == ["https://x/b", "https://x/c"]
+
+    def test_drop_helper_pins_the_24h_boundary_not_merely_far_future(self):
+        """Straddles FUTURE_REJECT_HOURS itself, derived from `now`.
+
+        The sibling above reads as a boundary test but is not one: any threshold
+        from 1h to 29 days drops a row dated 2026-09-21 when now is 2026-08-22.
+        These two rows are 23h and 25h out, so only a 24h threshold splits them.
+        """
+        from datetime import datetime, timedelta
+        drop = self._h()["_drop_implausibly_future"]
+        now = datetime(2026, 8, 22, 12, 0, 0)
+        rows = [{"published_at": (now + timedelta(hours=23)).isoformat(), "url": "https://x/in"},
+                {"published_at": (now + timedelta(hours=25)).isoformat(), "url": "https://x/out"}]
+        kept = drop(rows, "t", now=now)
+        assert [r["url"] for r in kept] == ["https://x/in"]
 
     def test_both_fetchers_drop_before_returning(self):
         # fetch_all_rss_feeds is called DIRECTLY by main.daily_cron,
