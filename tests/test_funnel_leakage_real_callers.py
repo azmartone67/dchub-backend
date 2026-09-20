@@ -115,3 +115,34 @@ def test_rates_spanning_two_populations_are_named(src):
     for rate in ("drop_calls_to_signals_pct", "drop_signals_to_codes_pct",
                  "drop_codes_to_conversions_pct", "drop_conversions_to_paid_pct"):
         assert rate in code
+
+
+# ── a source block must not read a source that is not set yet ────────
+
+def test_stage_sources_reads_a_set_stage_4_source(src):
+    """be#4890 shipped stage_sources reading out.get("stage_4_source") while
+    that key was assigned BELOW it, so the nested source was always None —
+    verified live on the deployed board: top-level correct, nested None.
+
+    The one row that could not say where its number came from was stage 4, the
+    only other real-callers-only stage. Pinned by POSITION because that is the
+    actual failure: a dict literal reading a key the same function sets later
+    cannot be caught by asserting the key exists."""
+    code = _code_only(src)
+    assign = code.index('out["stage_4_source"] =')
+    reader = code.index('out["stage_sources"]')
+    assert assign < reader, (
+        "out[\"stage_4_source\"] is assigned after the stage_sources block "
+        "that reads it — the nested source will be None")
+
+
+def test_every_declared_source_is_resolvable(src):
+    """No stage may name its source with a bare out.get() of a key this
+    function has not set by that point. Catches the same class for stage 2."""
+    code = _code_only(src)
+    block_start = code.index('out["stage_sources"]')
+    block = code[block_start:code.index("}", code.index("top_leak_tools", block_start))]
+    for key in ("stage_2_source", "stage_4_source"):
+        if f'out.get("{key}")' in block:
+            assert code.index(f'out["{key}"] =') < block_start, (
+                f"stage_sources reads {key} before it is assigned")
