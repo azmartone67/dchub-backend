@@ -2200,6 +2200,36 @@ def _inherit_paid_tier(cur, api_key, email):
         return 0
 
 
+def _advertised_daily(tier: str) -> int:
+    """The ADVERTISED daily cap for a tier, from canon — never a literal.
+
+    ★2026-09-20. Four surfaces in this service published 100/day for the free
+    tier. Nothing enforces 100. main.py's MCP_FREE_DAILY_LIMIT note is explicit
+    about the split: 10 is ADVERTISED (ai_surface_canon.PINNED, tier_registry
+    TIER_LIMITS['free'], and the edge worker MCP_TIERS.free.daily_limit, which
+    is the public gate), while the 25 in that file gates only the legacy Flask
+    surface and carries "DO NOT quote this number on a public surface".
+
+    So the published number had drifted to a figure no gate honours, in the
+    response a partner integration reads first. Quote canon instead of a
+    literal, so a repriced tier heals every surface at once.
+    """
+    try:
+        import tier_registry
+        n = tier_registry.calls_per_day(tier)
+        if n:
+            return int(n)
+    except Exception:
+        pass
+    try:
+        from ai_surface_canon import PINNED as _P
+        key = ("identified_calls_per_day" if tier == "identified"
+               else "free_tier_calls_per_day")
+        return int(_P[key])
+    except Exception:
+        return 50 if tier == "identified" else 10
+
+
 @mcp_bp.post("/api/v1/keys/claim")
 def claim_key():
     """Public: claim a free dev key without email. Rate-limited by IP.
@@ -2334,7 +2364,7 @@ def claim_key():
                 ok=True,
                 api_key=existing_key,
                 tier=existing_tier,
-                daily_calls=(50 if existing_tier == "identified" else 100),
+                daily_calls=_advertised_daily(existing_tier),
                 reused=True,
                 note=(f"Existing key reused for client_name='{client_name or '(anon)'}' "
                       f"from this IP within the reuse window. This is idempotent — call "
@@ -2577,7 +2607,7 @@ def claim_key():
             "key to your account, get usage alerts before you hit the cap, and "
             "early access to new tools."),
         free_tier_summary=(None if _claimed_paid else {
-            "daily_calls": 100,
+            "daily_calls": _advertised_daily("free"),
             "daily_caps": {"get_grid_intelligence": 10, "get_fiber_intel": 10},
             "paid_only_tools": ["analyze_site", "compare_sites", "get_dchub_recommendation"],
             # r-streak (2026-07-18): teach the progressive unlock at claim time
@@ -2862,12 +2892,23 @@ def identify_key():
                             _mirror(api_key, email)
                         except Exception:
                             pass  # never let the mirror affect the bind
+                        # ★2026-09-20: was daily_calls=50 with "15 -> 50" typed
+                        # into the message. Both are right today and neither is
+                        # bound to anything: routes.auto_trial is what enforces
+                        # the trial path, so quote ITS constants. A retune there
+                        # now moves the number we tell the caller.
+                        try:
+                            from routes.auto_trial import (
+                                TRIAL_DAILY_CALLS as _T_BOUND,
+                                TRIAL_DAILY_UNBOUND as _T_UNB)
+                        except Exception:
+                            _T_BOUND, _T_UNB = 50, 15
                         return jsonify(
                             ok=True, identified=True, key_type="trial",
                             operator_email=email,
-                            daily_calls=50,
-                            message=("Email bound to this trial key — daily cap "
-                                     "raised 15 → 50 calls/day. Convert to a "
+                            daily_calls=_T_BOUND,
+                            message=(f"Email bound to this trial key — daily cap "
+                                     f"raised {_T_UNB} → {_T_BOUND} calls/day. Convert to a "
                                      "365-day identified key: POST "
                                      "/api/v1/keys/auto-trial/redeem "
                                      "{api_key, email}. One-click upgrade: "
@@ -3032,8 +3073,13 @@ def identify_key():
         quote_capture_url="https://dchub.cloud/api/v1/keys/claim/quote",
         email_masked=masked,
         unlocked={
-            "daily_calls": int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100")),
-            "previous_daily_calls": int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25")),
+            # Was env(MCP_IDENTIFIED_DAILY_LIMIT, 100) / env(MCP_FREE_DAILY_LIMIT, 25):
+            # the first is advertised nowhere, and the second is the LEGACY Flask
+            # enforcement constant whose own note says not to quote it publicly.
+            # This is the moment we ask for an email, so the before/after it shows
+            # has to be the pair we actually advertise.
+            "daily_calls": _advertised_daily("identified"),
+            "previous_daily_calls": _advertised_daily("free"),
             "extras": ["key tied to your account — recoverable from the dashboard",
                        "upgrade receipts + billing land on this email"],
             # r-streak (2026-07-18): identified keys keep climbing too — the
