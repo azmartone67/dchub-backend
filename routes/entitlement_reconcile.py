@@ -165,6 +165,37 @@ def _classify(row: dict) -> str:
     return "healthy"
 
 
+# Columns whose SOURCE is a real timestamptz — these arrive as datetimes.
+_TS_COLS = ("paid_at", "mcp_last_used", "rest_last_used")
+# ★2026-09-20: and the two that are NOT. `users.created_at` and
+# `users.last_login` are TEXT in the DDL (api_server.py, main.py:14812,
+# static/auto_pilot.py) and are WRITTEN as ISO-8601 by utc_iso_z(), so they
+# arrive already serialized. #4915 added them to the isoformat loop beside the
+# timestamptz columns, and `.isoformat()` on a str took the ENTIRE endpoint to a
+# 500 the same day:
+#
+#     {"error":"'str' object has no attribute 'isoformat'","success":false}
+#
+# ★ Split by SOURCE TYPE rather than defending all five with hasattr(). A
+#   blanket guard would work and would hide the fact a reader needs — that two
+#   of these columns are text. The hasattr below is scoped to exactly the two
+#   that are, so it survives a future migration to timestamptz without
+#   pretending the other three might be strings.
+_TEXT_TS_COLS = ("account_created_at", "last_login")
+
+
+def _iso_row(row):
+    """Make the date-ish fields JSON-serializable, in place."""
+    for k in _TS_COLS:
+        if row.get(k) is not None:
+            row[k] = row[k].isoformat()
+    for k in _TEXT_TS_COLS:
+        v = row.get(k)
+        if v is not None and hasattr(v, "isoformat"):
+            row[k] = v.isoformat()          # migrated to timestamptz one day
+    return row
+
+
 def _survey():
     c = _conn()
     if c is None:
@@ -177,10 +208,7 @@ def _survey():
             for r in cur.fetchall():
                 row = dict(zip(cols, r))
                 row["mrr_usd"] = round((row.pop("mrr_cents") or 0) / 100.0, 2)
-                for k in ("paid_at", "mcp_last_used", "rest_last_used",
-                          "account_created_at", "last_login"):
-                    if row.get(k) is not None:
-                        row[k] = row[k].isoformat()
+                _iso_row(row)
                 row["klass"] = _classify(row)
                 out.append(row)
     finally:
