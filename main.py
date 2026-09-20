@@ -5945,13 +5945,17 @@ def phase14c_health_aggregate():
         #   endpoint that calls another admin endpoint adds an auth hop and a
         #   timeout inside the one probe that must always answer.
         try:
+            # ★ ONE definition of "not yet delivered", shared with the flusher.
+            #   A local copy here is how 'queued_export' became invisible to
+            #   flush_outbound_queue in the first place.
+            from routes.crm_reverse_etl import UNSENT_STATUSES as _UNSENT
             cur.execute("""
                 SELECT COUNT(*) AS n,
                        MIN(captured_at) AS oldest,
                        COUNT(*) FILTER (WHERE event_type = 'paid_conversion') AS paid
                   FROM crm_outbound_queue
-                 WHERE status IN ('queued', 'queued_export')
-            """)
+                 WHERE status = ANY(%s)
+            """, (list(_UNSENT),))
             row = cur.fetchone() or {}
             n = int(row.get('n') or 0)
             oldest = row.get('oldest')
