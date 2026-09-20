@@ -1438,16 +1438,57 @@ def _tier_cross_check(cur, api_key, user_email, want_metered=False):
     api_key_tier = None
     metered_over = False
 
-    # users.plan via email join (most paying customers)
+    # users.plan via email join (most paying customers).
+    #
+    # ★ ASK THE ENTITLEMENT AUTHORITY; DO NOT RESTATE IT IN SQL.
+    # This SELECT used to carry its own status allowlist — a third
+    # hand-written copy of the rule api_tier_gating.resolve_effective_plan
+    # owns. #4877 removed one (keys_recover.py), #4903 the second
+    # (mcp_key_email_verification.py); this was the last one left, on the
+    # hop that gates every MCP tool call.
+    #
+    # The copy and the authority DISAGREE inside the dunning grace window.
+    # main.handle_payment_failed stamps the failure status on failure #1
+    # but leaves a prior payer's users.plan AND api_keys.rate_limit_tier
+    # alone until failure #4 — its docstring grants them "~21 days of full
+    # paid access" ON PURPOSE. resolve_effective_plan honours that (it
+    # demotes only once demoted_at is ALSO stamped); the allowlist did not,
+    # so this leg went None from failure #1.
+    #
+    # That stays invisible while api_keys.rate_limit_tier still reads paid.
+    # It bites the cohort this cross-check EXISTS for: a customer whose
+    # paid signal lives ONLY in users.plan — a web checkout driving an
+    # MCP-minted dch_live_ key, which has an mcp_dev_keys row and no
+    # api_keys row at all. For them every leg read non-paid and the MCP
+    # served free on the first failed retry, while the website kept serving
+    # pro. That is the inversion "THE WEB PATH MUST NOT OUTRANK THE API
+    # PATH" (api_tier_gating.py) was written to prevent, running backwards.
+    #
+    # resolve_effective_plan also answers 'free' for a genuinely demoted or
+    # canceled account, so tier_detail.users_plan now distinguishes "this
+    # account resolves to free" from "no such user" (None) — a demote is
+    # legible in the response instead of looking like a missing row.
+    #
+    # Fail-soft: if the authority cannot be imported, fall back to the old
+    # allowlist. That is the PREVIOUS behaviour, which under-grants rather
+    # than over-grants.
     if user_email:
         cur.execute(
-            "SELECT plan FROM users WHERE LOWER(email) = LOWER(%s) "
-            "AND subscription_status IN ('active','trialing') LIMIT 1",
+            "SELECT plan, subscription_status, role, demoted_at FROM users "
+            "WHERE LOWER(email) = LOWER(%s) LIMIT 1",
             (user_email,),
         )
         ur = cur.fetchone()
-        if ur and ur[0]:
-            plan_tier = ur[0].lower()
+        if ur:
+            _plan, _status, _role, _demoted_at = ur[0], ur[1], ur[2], ur[3]
+            try:
+                from api_tier_gating import resolve_effective_plan
+                _eff = resolve_effective_plan(
+                    _plan or 'free', _status or '', _role or '', _demoted_at)
+            except Exception:
+                _eff = (_plan or '') if (_status or '') in ('active', 'trialing') else ''
+            if _eff:
+                plan_tier = _eff.lower()
 
     # api_keys.rate_limit_tier (covers enterprise/research_seed keys
     # minted outside the Stripe flow). 2026-07-30: this SELECTed by
