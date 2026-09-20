@@ -76,6 +76,45 @@ _MAX_AGE_SECONDS = 14 * 24 * 3600
 _PAID_PLANS = ("developer", "pro", "founding", "enterprise")
 
 
+def _still_entitled(plan, status, role, demoted_at) -> bool:
+    """True unless the entitlement authority demotes this account to free.
+
+    ★2026-09-20 — THE COLUMN IS NOT THE ENTITLEMENT. Both queries below used to
+    filter u.subscription_status down to the literal 'active', which is a
+    STRICTER rule than the one that decides what the account may actually use.
+    api_tier_gating.resolve_effective_plan keeps a customer on their plan while
+    subscription_status is 'payment_failed' and demoted_at is still NULL — the
+    dunning window, deliberately ~21 days of full paid access. During it the
+    platform serves them as paid while this module refused to let them confirm
+    a binding and apply that same paid plan. Same shape as the fix in
+    routes/keys_recover.py (#4877); this was its other half.
+
+    CALLS the authority rather than restating it. The rule is four lines long
+    and it would be easy to mirror in SQL — and then there would be two owners
+    of it, which is the defect, not a fix for it. The columns are selected and
+    handed to resolve_effective_plan() so a change to the dunning policy
+    reaches this module for free.
+
+    "NOT demoted to free" rather than "in _PAID_PLANS" is deliberate: an admin
+    resolves to 'admin', which is not in that tuple, and testing membership
+    would newly exclude an admin who holds a paid plan. The SQL keeps
+    `u.plan = ANY(_PAID_PLANS)` as the population filter, so this only ever
+    REMOVES accounts the authority has demoted.
+
+    Fails CLOSED to the previous predicate: if the authority cannot be
+    imported, grant exactly what this module granted before rather than
+    widening on a broken import.
+    """
+    try:
+        from api_tier_gating import resolve_effective_plan
+    except Exception:
+        return (status or "") == "active"
+    try:
+        return resolve_effective_plan(plan, status, role, demoted_at) != "free"
+    except Exception:
+        return (status or "") == "active"
+
+
 def _secret():
     """The signing key, or None when none is configured.
 
@@ -220,20 +259,20 @@ def confirmation_is_pending(cur, api_key: str, email: str) -> bool:
         return False
     try:
         cur.execute(
-            """SELECT 1
+            """SELECT u.plan, u.subscription_status, u.role, u.demoted_at
                  FROM mcp_dev_keys k
                  JOIN users u ON LOWER(u.email) = LOWER(k.email)
                 WHERE k.api_key = %s
                   AND LOWER(k.email) = LOWER(%s)
                   AND u.plan = ANY(%s)
-                  AND COALESCE(u.subscription_status,'') = 'active'
                   AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
                   AND LOWER(COALESCE(k.metadata->>'email_verified_for',''))
                       <> LOWER(%s)
                 LIMIT 1""",
             (api_key, email, list(_PAID_PLANS), email),
         )
-        return cur.fetchone() is not None
+        row = cur.fetchone()
+        return bool(row) and _still_entitled(row[0], row[1], row[2], row[3])
     except Exception:
         return False
 
@@ -339,20 +378,22 @@ def offer_confirmation_for_address(email: str, cur=None, limit: int = 5) -> int:
 
 def _offer_for_address(cur, e: str, limit: int) -> int:
     cur.execute(
-        """SELECT k.api_key, k.developer_id
+        """SELECT k.api_key, k.developer_id,
+                  u.plan, u.subscription_status, u.role, u.demoted_at
              FROM mcp_dev_keys k
              JOIN users u ON LOWER(u.email) = LOWER(k.email)
             WHERE LOWER(k.email) = LOWER(%s)
               AND COALESCE(k.status,'active') = 'active'
               AND u.plan = ANY(%s)
-              AND COALESCE(u.subscription_status,'') = 'active'
               AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
               AND LOWER(COALESCE(k.metadata->>'email_verified_for','')) <> LOWER(%s)
             ORDER BY k.created_at DESC NULLS LAST
             LIMIT %s""",
         (e, list(_PAID_PLANS), e, int(limit)),
     )
-    rows = [(r[0], confirm_url(r[0], r[1], e)) for r in (cur.fetchall() or [])]
+    rows = [(r[0], confirm_url(r[0], r[1], e))
+            for r in (cur.fetchall() or [])
+            if _still_entitled(r[2], r[3], r[4], r[5])]
     rows = [(k, u) for k, u in rows if u]        # unsignable links are not links
     if not rows or not _may_send(e):
         return 0

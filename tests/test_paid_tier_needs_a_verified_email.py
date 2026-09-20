@@ -88,6 +88,31 @@ class _Cursor:
         """The offer queries look for the NEGATION: eligible but unconfirmed."""
         return self._eligible(row, email) and not self._verified(row, email, sql)
 
+    def _awaits_proof_select(self, row, email, sql):
+        """Same question for the two SELECT offer queries, which since
+        2026-09-20 no longer filter on subscription_status in SQL —
+        routes/mcp_key_email_verification._still_entitled() decides that in
+        Python from columns the statement now selects, so the dunning window
+        reaches the authority instead of being dropped by the query.
+
+        Applies the status clause only when the statement still CARRIES it, so
+        restoring the predicate in the module really does change what this fake
+        returns. _eligible/_grants_tier are deliberately untouched: they model
+        the UPDATE path, which was not changed."""
+        u = self.db.users.get((email or "").lower())
+        if "u.subscription_status,'') = 'active'" in sql:
+            if not (u and u.get("status") == "active"):
+                return False
+        return bool(
+            u and u["plan"] in ("developer", "pro", "founding", "enterprise")
+            and (row["email"] or "").lower() == (email or "").lower()
+            and (row["tier"] or "free") not in ("paid", "enterprise")
+            and not self._verified(row, email, sql))
+
+    def _user_cols(self, email):
+        u = self.db.users.get((email or "").lower()) or {}
+        return (u.get("plan"), u.get("status"), u.get("role"), u.get("demoted_at"))
+
     def execute(self, sql, params=()):
         s = " ".join(sql.split())
         self.db.statements.append(s)
@@ -110,16 +135,20 @@ class _Cursor:
                 self.rowcount = 1
             return
 
-        if s.startswith("SELECT 1 FROM mcp_dev_keys k JOIN users u"):  # pending?
+        if s.startswith("SELECT u.plan, u.subscription_status, u.role, "
+                        "u.demoted_at FROM mcp_dev_keys k JOIN users u"):
             row = self.db.keys.get(params[0])
-            if row and self._awaits_proof(row, params[1], s):
-                self._rows = [(1,)]
+            if row and self._awaits_proof_select(row, params[1], s):
+                self._rows = [self._user_cols(params[1])]
             return
 
-        if s.startswith("SELECT k.api_key, k.developer_id FROM mcp_dev_keys k JOIN users u"):
-            self._rows = [(r["api_key"], r["developer_id"])
+        if s.startswith("SELECT k.api_key, k.developer_id, u.plan, "
+                        "u.subscription_status, u.role, u.demoted_at "
+                        "FROM mcp_dev_keys k JOIN users u"):
+            cols = self._user_cols(params[0])
+            self._rows = [(r["api_key"], r["developer_id"]) + cols
                           for r in self.db.keys.values()
-                          if self._awaits_proof(r, params[0], s)]
+                          if self._awaits_proof_select(r, params[0], s)]
             return
 
         if s.startswith("SELECT id, LOWER(email) AS email"):      # reconcile: payers
