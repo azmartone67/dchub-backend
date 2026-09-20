@@ -1397,6 +1397,26 @@ def geocoding_backfill():
         except Exception: pass
 
 
+def _safe_ratio(num, den, digits=2):
+    """Divide for a PUBLISHED board field. Returns None — not 0.0, and never a
+    raise — when the denominator is zero or missing.
+
+    Two reasons it is a named helper and not an inline expression:
+      * /funnel/leakage has already been taken down in full by an arithmetic
+        error on a row nobody expected (the 5_paid_keys KeyError), and every
+        field here is inside one big try that would swallow the whole block.
+      * 0.0 is a MEASURED zero. An unmeasurable ratio that renders as 0.0 on an
+        admin board reads as "none of this tool's clients are generic", which
+        is the opposite of what an absent denominator means.
+    """
+    try:
+        if not den:
+            return None
+        return round(num / den, digits)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ── Funnel leakage diagnostic ───────────────────────────────────────
 @schema_repair_bp.route("/api/v1/admin/funnel/leakage", methods=["GET"])
 def funnel_leakage():
@@ -1543,20 +1563,95 @@ def funnel_leakage():
                 except Exception: pass
 
             # Per-tool drop-off — tools with highest paywall-signal
-            # volume that have NEAR-ZERO conversions
+            # volume that have NEAR-ZERO conversions.
+            #
+            # ★2026-09-20 (r-leak-composition): the RANKING alone is not
+            # something you can aim at. be#4890 filtered self-traffic out of
+            # this list and the #1 leak changed identity
+            # (get_interconnection_queue 651 signals/491 sessions -> 203/46); a
+            # reader who never saw the unfiltered number could not have known
+            # that. Two reasons it can happen again:
+            #   • is_synthetic is a ~50-pattern DENYLIST over mcp_client, so it
+            #     is only ever as good as the last probe name somebody added.
+            #     Our OWN hand-run verification procedures use plausible agent
+            #     names ('acme-siting-agent') that match none of the patterns.
+            #   • mcp_client is the DEGRADED copy of caller identity — 82.2% of
+            #     trial_preview rows carry the literal generic 'mcp' — so even
+            #     a perfect denylist has little to key on.
+            # Neither is visible in a {tool, signals, sessions} row, so publish
+            # the COMPOSITION beside the count:
+            #   excluded_synthetic   raw volume the filter removed for this
+            #                        tool. Near zero on a high-volume tool
+            #                        means the denylist may simply be missing
+            #                        this population, not that it is clean.
+            #   generic_client_pct   share of the KEPT signals that are
+            #                        unattributable ('' or 'mcp'). High means
+            #                        the row cannot tell an agent from a probe
+            #                        whatever the filter did.
+            #   signals_per_session  near 1.0 is the signature of many
+            #                        single-shot sessions — a harness opening a
+            #                        fresh MCP session per run — not of an
+            #                        agent working a problem.
+            # Read over mcp_funnel_canonical, NOT mcp_funnel_real, because the
+            # excluded count is exactly what mcp_funnel_real has thrown away.
+            # Ordering and the signals/sessions values stay on the REAL
+            # (is_synthetic = FALSE) population, so the published ranking is
+            # byte-identical to what this endpoint returned before.
             try:
                 cur.execute("""
                     SELECT tool_requested,
-                           COUNT(*) AS signals,
-                           COUNT(DISTINCT session_id) AS distinct_sessions
-                      FROM mcp_funnel_real
+                           COUNT(*) FILTER (WHERE NOT is_synthetic) AS signals,
+                           COUNT(DISTINCT session_id)
+                             FILTER (WHERE NOT is_synthetic) AS distinct_sessions,
+                           COUNT(*) FILTER (WHERE is_synthetic)
+                             AS excluded_synthetic,
+                           COUNT(DISTINCT mcp_client)
+                             FILTER (WHERE NOT is_synthetic) AS distinct_clients,
+                           COUNT(*) FILTER (
+                             WHERE NOT is_synthetic
+                               AND LOWER(COALESCE(mcp_client,'')) IN ('', 'mcp')
+                           ) AS generic_client_signals
+                      FROM mcp_funnel_canonical
                      WHERE created_at >= NOW() - INTERVAL %s
                      GROUP BY tool_requested
+                    HAVING COUNT(*) FILTER (WHERE NOT is_synthetic) > 0
                      ORDER BY signals DESC
                      LIMIT 15
                 """, (f"{days} days",))
                 out["top_leak_tools"] = [
-                    {"tool": r[0], "signals": r[1], "sessions": r[2]}
+                    {"tool": r[0], "signals": r[1], "sessions": r[2],
+                     "excluded_synthetic": r[3],
+                     "distinct_clients": r[4],
+                     # ★ Both denominators go through _safe_ratio. r[1] > 0
+                     # holds by the HAVING clause TODAY, and r[2] is NOT
+                     # guaranteed at all — every signal for a tool can carry a
+                     # NULL session_id, which counts 0 distinct sessions. An
+                     # unguarded divide there takes the whole board down.
+                     "generic_client_pct": _safe_ratio(100 * r[5], r[1], 1),
+                     "signals_per_session": _safe_ratio(r[1], r[2], 2)}
+                    for r in cur.fetchall()
+                ]
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+
+            # ★ WHO the kept signals belong to. A denylist cannot report its
+            # own misses, so name the survivors instead: a probe name nobody
+            # has added to is_synthetic shows up here as a large client. This
+            # is the field to read BEFORE believing any tool's rank.
+            try:
+                cur.execute("""
+                    SELECT COALESCE(NULLIF(mcp_client, ''), '(none)') AS client,
+                           COUNT(*) AS signals,
+                           COUNT(DISTINCT session_id) AS sessions
+                      FROM mcp_funnel_real
+                     WHERE created_at >= NOW() - INTERVAL %s
+                     GROUP BY 1
+                     ORDER BY signals DESC
+                     LIMIT 10
+                """, (f"{days} days",))
+                out["real_top_clients"] = [
+                    {"client": r[0], "signals": r[1], "sessions": r[2]}
                     for r in cur.fetchall()
                 ]
             except Exception:
@@ -1610,9 +1705,22 @@ def funnel_leakage():
                 "4_conversions": {"source": out.get("stage_4_source"), "real_callers_only": True},
                 "5_paid_keys": {"source": "api_keys (plan IN developer/pro/enterprise)",
                                 "real_callers_only": False},
-                "top_leak_tools": {"source": "mcp_funnel_real (is_synthetic = FALSE)",
+                "top_leak_tools": {"source": "mcp_funnel_canonical "
+                                             "(signals/sessions are "
+                                             "is_synthetic = FALSE)",
                                    "real_callers_only": True},
+                "real_top_clients": {"source": "mcp_funnel_real "
+                                               "(is_synthetic = FALSE)",
+                                     "real_callers_only": True},
             }
+            out["composition_note"] = (
+                "top_leak_tools[].excluded_synthetic / generic_client_pct / "
+                "signals_per_session describe the POPULATION behind a rank, "
+                "not the rank. is_synthetic is a denylist over mcp_client and "
+                "mcp_client is degraded on the trial_preview path, so a rank "
+                "on its own cannot be aimed at. Read real_top_clients for the "
+                "client names that survived the filter."
+            )
             out["mixed_population_rates"] = [
                 "drop_calls_to_signals_pct",   # unfiltered calls vs real signals
                 "drop_signals_to_codes_pct",   # real signals vs unfiltered codes
