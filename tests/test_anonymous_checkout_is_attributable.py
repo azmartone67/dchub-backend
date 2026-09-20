@@ -52,6 +52,19 @@ def paywall(monkeypatch):
     monkeypatch.setattr(pair_code, "get_or_create_code", _fake_code)
     monkeypatch.setattr(mcp_signal_canonical, "_compute_caller_id",
                         lambda **kw: ANON_ID)
+    # STRIPE_DEVELOPER_LINK resolves to '' with no env var, so without this the
+    # developer CTA is never built and half of every assertion below passes
+    # vacuously in CI — while production, which HAS the link configured, is the
+    # case that matters. STRIPE_STARTER_LINK has a hardcoded fallback and needs
+    # no help.
+    #
+    # Taken from the canon rather than invented: a made-up buy.stripe.com URL
+    # here fails tests/test_stripe_link_canonical.py, and rightly — a bare
+    # Stripe URL pasted anywhere in this repo is how a wrong price ships. Using
+    # the real one also makes this fixture exercise the shape production has.
+    from routes._stripe_links import STRIPE_LINKS
+    monkeypatch.setattr(pr, "STRIPE_DEVELOPER_LINK",
+                        STRIPE_LINKS["developer"], raising=False)
     return pr, minted
 
 
@@ -111,3 +124,40 @@ def test_the_recommended_product_did_not_change(paywall):
     out = _build(pr)
     assert out.get("recommended_upgrade_tier") == "starter"
     assert "tier=starter" in out.get("recommended_upgrade_url", "")
+
+
+def test_the_prose_carries_no_unreferenced_stripe_link(paywall):
+    """human_message is what text-relay clients actually show.
+
+    #4872 attributed the structured fields. Measured live immediately after it
+    deployed, an anonymous gated call still carried FOUR unreferenced
+    buy.stripe.com links — all of them inside human_message, written as
+    [URL](URL) by the module-level line builders, which never see the pair code.
+
+    A client that drops structuredContent still relays the prose (the FF+16
+    note in the source says exactly that), so the message was sending humans
+    straight to Stripe with nothing to bridge while the field beside it pointed
+    at an attributed checkout.
+    """
+    import re
+    pr, _ = paywall
+    out = _build(pr)
+    msg = out.get("human_message") or ""
+    links = re.findall(r"https://buy\.stripe\.com/[^\s\"\\)\]]+", msg)
+    unreferenced = [u for u in links if "client_reference_id" not in u]
+    assert not unreferenced, (
+        f"human_message carries {len(unreferenced)} Stripe link(s) with no "
+        f"client_reference_id: {unreferenced}"
+    )
+
+
+def test_the_prose_and_the_structured_field_agree(paywall):
+    """They pointed at different destinations for the same CTA."""
+    pr, _ = paywall
+    out = _build(pr)
+    msg = out.get("human_message") or ""
+    rec = out.get("recommended_upgrade_url", "")
+    assert rec and rec in msg, (
+        "the recommended CTA in the prose is not the same URL as the "
+        "structured recommended_upgrade_url"
+    )
