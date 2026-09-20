@@ -12759,23 +12759,11 @@
    ]
   },
   "GET /api/v1/facilities/<facility_id>": {
-   "source": "main.py:37654",
+   "source": "main.py:38503",
    "handler": "get_facility_by_id",
-   "resolution": "resolved",
-   "open_at": [
-    "data"
-   ],
-   "keys": [
-    "_upgrade",
-    "_upgrade.checkout",
-    "_upgrade.message",
-    "_upgrade.price",
-    "_upgrade.tier",
-    "_upgrade.url",
-    "_user_facing_note",
-    "data",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/facilities/<facility_id>/tenants": {
    "source": "routes/tenant_directory.py:138",

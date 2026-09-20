@@ -160,3 +160,32 @@ def test_the_gate_preserves_what_the_route_already_attached():
     assert out.get('cite'), "the gate dropped the route's citation"
     assert out['data']['latitude'] == round(ROW['latitude'], 2), (
         "preserving extras must not have skipped the gating itself")
+
+
+# ── the key surface the static contract guard can no longer see ─────────────
+
+def test_no_previously_published_key_was_dropped():
+    """Replaces the static coverage this endpoint lost.
+
+    contracts/api_response_surface.json recorded GET /api/v1/facilities/
+    <facility_id> as `resolved` with these nine keys. Building the response
+    through apply_record_gate instead of a dict literal made it `opaque`, so
+    the contract guard stopped being able to see it — and an opaque endpoint
+    cannot report a removed key. That is how `_user_facing_note` nearly went
+    out silently.
+
+    These are the keys the baseline protected. The envelope adds more, which is
+    always allowed; what is not allowed is losing one.
+    """
+    WAS_PUBLISHED = {
+        'success', 'data', '_user_facing_note', '_upgrade',
+    }
+    UPGRADE_SUBKEYS = {'checkout', 'message', 'price', 'tier', 'url'}
+    r = apply_record_gate({'success': True, 'data': dict(ROW)}, 'anon')
+    missing = WAS_PUBLISHED - set(r)
+    assert not missing, (
+        f"these keys were in the contract baseline and are gone: {sorted(missing)} "
+        "— the endpoint is opaque to the static guard now, so nothing else "
+        "would have caught it")
+    missing_sub = UPGRADE_SUBKEYS - set(r['_upgrade'])
+    assert not missing_sub, f"_upgrade lost subkeys: {sorted(missing_sub)}"

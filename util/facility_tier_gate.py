@@ -320,6 +320,16 @@ def apply_record_gate(resp, tier) -> dict:
         'Power capacity, operator, on-site fiber and exact coordinates '
         'require a Developer key — dchub.cloud/pricing')
     resp['_pricing_url'] = UPGRADE_PRICING_URL
+    # Published key, kept deliberately. get_facility_by_id emitted this before
+    # the routes were unified, and the contract baseline recorded it. Because
+    # this endpoint's response is now built by a call rather than a dict
+    # literal, the static guard can no longer see its keys — so dropping this
+    # would have been an invisible removal of a public key. Additive only.
+    resp['_user_facing_note'] = (
+        '\U0001f4a1 This is a free preview from DC Hub — coordinates are '
+        'rounded to ~1.1 km for anonymous callers and ~110 m with a free key. '
+        'Full data with exact coordinates, power capacity and connectivity '
+        'specs is available at dchub.cloud/developers')
     resp['_upgrade'] = {
         'tier': tier_s,
         'message': (
