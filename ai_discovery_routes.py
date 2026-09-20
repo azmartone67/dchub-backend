@@ -481,6 +481,35 @@ def register_discovery_routes(app):
                         "tags": ["Public"]
                     }
                 },
+                "/api/v1/facilities/{facility_id}": {
+                    "get": {
+                        "operationId": "getFacilityDetail",
+                        "summary": "One facility by id",
+                        "description": (
+                            "Full record for a single facility. The `id` returned by "
+                            "searchFacilities round-trips here. Answers 200 with no key: "
+                            "name, provider, city, state, country, region and status are "
+                            "free. An X-API-Key adds exact coordinates, power capacity, "
+                            "address and source — the response carries an `_upgrade` block "
+                            "naming what is withheld. A free dev key is one POST to "
+                            "/api/v1/keys/claim (no email, no account). "
+                            "Use the path WITHOUT a trailing slash: that is the canonical "
+                            "form, and the two spellings reach different handlers with "
+                            "different free surfaces."
+                        ),
+                        "parameters": [
+                            {"name": "facility_id", "in": "path", "required": True,
+                             "schema": {"type": "string"},
+                             "description": "Numeric facility id from searchFacilities, or a "
+                                            "provider-name-hash8 slug"}
+                        ],
+                        "responses": {
+                            "200": {"description": "Facility record; free tier omits gated fields and sets _upgrade"},
+                            "404": {"description": "No facility with that id or slug"}
+                        },
+                        "tags": ["Public"]
+                    }
+                },
                 "/api/v1/markets": {
                     "get": {
                         "operationId": "getMarkets",

@@ -40,6 +40,13 @@ UNGATED = [
     "/api/v1/stats",
     "/api/v1/facilities",
     "/api/v1/markets",
+    # Published 2026-09-19. Measured cold, no key, cache-busted, ids 8484 and
+    # 11342: both 200. It is FIELD-gated, not REQUEST-gated — the free response
+    # carries an _upgrade block and omits coordinates/power/address/source — and
+    # `security` here would make an importer generate a tool that demands a key
+    # the endpoint does not want. That is the same mistake the note above the
+    # GATED map records.
+    "/api/v1/facilities/{facility_id}",
 ]
 
 
@@ -131,24 +138,36 @@ def test_ungated_endpoints_do_not_claim_a_gate(spec, path):
     assert "401" not in op.get("responses", {}), f"{path} documents a 401 it never sends"
 
 
-def test_facility_detail_stays_out_until_its_gate_is_settled(spec):
-    """getFacilityDetail is deliberately ABSENT from the curated spec.
+def test_facility_detail_is_published_against_the_form_that_resolves(spec):
+    """Replaces test_facility_detail_stays_out_until_its_gate_is_settled.
 
-    Two handlers answer facility detail and they disagree about tiering:
-    `get_facility_by_id` (main.py:38254) splits free from keyed, and the
-    `<path:slug>` route (main.py:23923) registers first, shadows it, and does
-    not. Which behaviour is correct is a product decision, not a documentation
-    one, so the operation is not published while the two disagree — a spec that
-    third parties generate connectors from bakes whatever it says into
+    That test held getFacilityDetail out of the spec "while the two [handlers]
+    disagree" about tiering, and said to re-add the operation in the change that
+    reconciles them. #4856 and #4862 gated the branch that was serving the raw
+    row, so the disagreement it named is over.
+
+    Its docstring also mis-stated the mechanism: it read the split as the
+    `<path:slug>` route "registers first, shadows it". Werkzeug sorts rules by
+    complexity, not registration order, so a <path:...> rule does NOT shadow a
+    plain one — the TRAILING SLASH is what selects the handler. Corrected at the
+    route in #4861.
+
+    That is why only the bare form is published. It is what OpenAPI path
+    templating emits, it is what /api/v1/agent/tools-manifest already advertises
+    as get_facility's REST equivalent, and the slashed spelling reaches the other
+    handler, whose free surface differs (coordinates at 2dp, no `provider`).
+    Publishing the slashed form would bake that spelling into third-party
     catalogues we cannot edit afterwards.
-
-    Re-add this operation in the same change that reconciles the two handlers,
-    and delete this test with it.
     """
-    assert "/api/v1/facilities/{facility_id}" not in spec["paths"]
-    assert "/api/v1/facilities/{facility_id}/" not in spec["paths"]
-    ops = [o.get("operationId") for p in spec["paths"].values() for o in p.values()]
-    assert "getFacilityDetail" not in ops
+    path = "/api/v1/facilities/{facility_id}"
+    assert path in spec["paths"], "getFacilityDetail is no longer published"
+    assert path + "/" not in spec["paths"], (
+        "the trailing-slash spelling must not be published — it reaches "
+        "facility_by_slug, not get_facility_by_id, and gates differently")
+    op = _op(spec, path)
+    assert op.get("operationId") == "getFacilityDetail"
+    ids = [p for p in op.get("parameters", []) if p["name"] == "facility_id"]
+    assert ids and ids[0].get("required"), "facility_id is a path param; it must be required"
 
 
 def test_claim_describes_the_ip_metered_bind_gate(spec):
