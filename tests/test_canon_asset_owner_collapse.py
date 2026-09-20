@@ -35,6 +35,17 @@ def _pin(key):
     return (canon.PINNED.get("public") or {}).get(key)
 
 
+def _measured(monkeypatch, *keys):
+    """Declare `keys` as keys a real query measured.
+
+    ★ Tests that monkeypatch resolve_canon() alone prove nothing about the
+    label: resolve_canon DEGRADES to the pin, so a key can appear in its
+    payload without having been measured. The overlay reads
+    _live_public_floors() to tell those apart, so a heal test has to say which
+    side of that line its fixture is on."""
+    monkeypatch.setattr(canon, "_live_public_floors", lambda: {k: None for k in keys})
+
+
 def test_overlay_heals_a_key_outside_the_governance_four(monkeypatch):
     """The regression. A measured key not named in _PUBLIC_FLOOR_KEYS used to
     publish its pin forever; transmission_lines is the one that was actually
@@ -45,6 +56,7 @@ def test_overlay_heals_a_key_outside_the_governance_four(monkeypatch):
     assert canon._floor_int(raised) > canon._floor_int(pinned), (
         "fixture must RAISE the floor or it proves nothing about the overlay"
     )
+    _measured(monkeypatch, "transmission_lines")
     monkeypatch.setattr(
         canon, "resolve_canon",
         lambda: {"public": {"transmission_lines": raised}},
@@ -59,6 +71,7 @@ def test_overlay_heals_assets(monkeypatch):
     assert pinned, "assets must still be a pinned public key"
     raised = "330,000+"
     assert canon._floor_int(raised) > canon._floor_int(pinned)
+    _measured(monkeypatch, "assets")
     monkeypatch.setattr(
         canon, "resolve_canon", lambda: {"public": {"assets": raised}},
     )
@@ -72,6 +85,7 @@ def test_overlay_still_refuses_a_live_value_below_the_pin(monkeypatch):
     rather than raising, so a live number under the pin is a broken resolver,
     not a shrink. Widening the key set must not widen this hole."""
     pinned = _pin("transmission_lines")
+    _measured(monkeypatch, "transmission_lines")
     monkeypatch.setattr(
         canon, "resolve_canon",
         lambda: {"public": {"transmission_lines": "12,000+"}},
@@ -220,3 +234,67 @@ def test_the_assets_seed_does_not_sit_below_the_pin_it_seeds():
     seed = cstats._FALLBACK["assets"]
     pin = canon._floor_int((canon.PINNED.get("public") or {}).get("assets"))
     assert seed >= pin, "seed %s < pin %s" % (seed, pin)
+
+
+# ── the label must be earned ─────────────────────────────────────────────
+
+def test_a_degraded_key_is_not_relabelled_live(monkeypatch):
+    """★ THE PRODUCTION REGRESSION, 2026-09-19 late.
+
+    resolve_canon() degrades: a key it cannot measure comes back carrying the
+    PINNED literal rather than being absent. So live_pub[key] == the pin,
+    live_i == pin_i, and the `live_i < pin_i` rejection does not fire. The
+    overlay stamped value_source "live" over a hand-walked number — measured in
+    production as assets "320,000+"/live against a live 330,961, and
+    transmission_lines "94,000+"/live against 95,569.
+
+    A wrong number labelled "pinned" is honest. The same number labelled "live"
+    silences ai_surface_sentinel and the frontend heal, which both branch on
+    value_source. Nothing measured means nothing relabelled."""
+    monkeypatch.setattr(canon, "_live_public_floors", dict)   # nothing measured
+    for key, pinned in (canon.PINNED.get("public") or {}).items():
+        if key in canon._PUBLIC_FLOOR_KEYS:
+            continue
+        monkeypatch.setattr(
+            canon, "resolve_canon", lambda: {"public": dict(canon.PINNED["public"])},
+        )
+        got = canon.resolve_public_floors()
+        assert got["_source"][key] == "pinned", (
+            "%s was relabelled live off a degraded payload" % key
+        )
+        assert got[key] == pinned
+
+
+def test_a_measured_key_still_heals_after_the_narrowing(monkeypatch):
+    """The fix must not pin the keys it was written to free."""
+    pinned = _pin("transmission_lines")
+    raised = "95,000+"
+    assert canon._floor_int(raised) > canon._floor_int(pinned)
+    _measured(monkeypatch, "transmission_lines")
+    monkeypatch.setattr(
+        canon, "resolve_canon", lambda: {"public": {"transmission_lines": raised}},
+    )
+    got = canon.resolve_public_floors()
+    assert got["transmission_lines"] == raised
+    assert got["_source"]["transmission_lines"] == "live"
+
+
+def test_the_governance_four_keep_healing_without_a_floors_witness(monkeypatch):
+    """The narrowing is deliberately NOT applied to the governance four.
+
+    Their resolvers predate _live_public_floors() and do not all report through
+    it — markets, countries and deals reach resolve_canon() by other paths — so
+    requiring a floors witness for them would re-pin the keys that have been
+    healing correctly for months. This is the conservative half of the fix and
+    nothing else pins it: a mutation that drops the `key not in
+    _PUBLIC_FLOOR_KEYS` clause otherwise passes the whole suite."""
+    monkeypatch.setattr(canon, "_live_public_floors", dict)   # no witness at all
+    pinned = _pin("facilities")
+    raised = "%s0,000+" % (canon._floor_int(pinned) // 10000 + 1)
+    assert canon._floor_int(raised) > canon._floor_int(pinned)
+    monkeypatch.setattr(
+        canon, "resolve_canon", lambda: {"public": {"facilities": raised}},
+    )
+    got = canon.resolve_public_floors()
+    assert got["facilities"] == raised
+    assert got["_source"]["facilities"] == "live"

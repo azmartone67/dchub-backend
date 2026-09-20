@@ -1514,7 +1514,31 @@ def resolve_public_floors() -> dict:
     # _floor_int() returns None for a phrase that carries no count and for an
     # absent live value, and None hits the `continue` below. The raise-only
     # rule is what keeps a degraded resolver from publishing under a pin.
+    # ★2026-09-19 LATE — "live" HAS TO BE EARNED, and presence in live_pub is
+    # not evidence of it. resolve_canon() DEGRADES: a key it cannot measure
+    # comes back carrying the PINNED literal, not absent. So for a key with no
+    # measurement, live_pub[key] IS the pin, live_i == pin_i, the rejection
+    # below (live_i < pin_i) does not fire, and the overlay would stamp "live"
+    # over a hand-walked number.
+    #
+    # Measured in production 20 minutes after the overlay widened: assets
+    # "320,000+" and transmission_lines "94,000+" both served value_source
+    # "live" against a live 330,961 and 95,569. Before the widening those read
+    # "pinned" — the same wrong number with an HONEST label. A wrong number
+    # that claims to be measured is strictly worse than one that admits it is
+    # pinned: ai_surface_sentinel.py and the frontend heal both branch on
+    # value_source, so a false "live" silences the very alert that would have
+    # reported the staleness.
+    #
+    # _live_public_floors() is the authority, not live_pub: a key appears there
+    # ONLY when stat_is_live() confirms a real query measured it. The
+    # governance four keep their exact prior behaviour — they are the keys
+    # whose resolvers predate this and are known to measure — so this narrows
+    # only the keys the widening newly reached.
+    _measured = set(_live_public_floors().keys())
     for key in list(out):
+        if key not in _PUBLIC_FLOOR_KEYS and key not in _measured:
+            continue
         live_i = _floor_int(live_pub.get(key))
         pin_i = _floor_int(out.get(key))
         if live_i is None:
