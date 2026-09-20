@@ -1130,6 +1130,19 @@ def canon_nums() -> dict:
         # fiber or transmission count had no way to derive one.
         '{canon_fiber_routes}': _live.get('fiber_routes') or _pub.get('fiber_routes') or '',
         '{canon_transmission_lines}': _live.get('transmission_lines') or _pub.get('transmission_lines') or '',
+        # ★2026-09-20 — the SIXTH addition for the reason stated five times in
+        # _PUBLIC_FLOOR_SPECS: a surface that needs a number and has no
+        # {canon_*} placeholder to reach it HAS to hardcode. `assets` proved it
+        # the same way "40+ sources" and "50,000+ fiber routes" did.
+        # canonical_stats._FALLBACK has described its seed as the "cold-start
+        # seed for {canon_assets}" since 2026-09-19 — a comment naming a
+        # placeholder that did not exist, which is how long prose has had no way
+        # to cite the number.
+        #
+        # Same shape as every sibling: live floor first, pin only at cold start.
+        # PINNED['public']['assets'] is the floor, so step=10000 comes from
+        # _PUBLIC_FLOOR_SPECS and needs no second definition here.
+        '{canon_assets}':     _live.get('assets')     or _pub.get('assets') or '',
         '{canon_deals}':      _live.get('deals')      or _pub.get('deals') or '',
         # ★2026-09-06 r-news-sources. See PINNED['public']['news_sources'] for
         # why this is named for NEWS and not the bare `sources` the surfaces
