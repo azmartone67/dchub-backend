@@ -160,11 +160,20 @@ def test_facility_detail_is_published_with_optional_auth(spec):
     assert any("apiKey" in alt for alt in sec if alt), "the keyed alternative is missing"
     assert "404" in op["responses"], "the unknown-id 404 is undocumented"
     desc = op["description"].lower()
-    # The fact an integrator loses a day to: claiming the free key advertised
-    # everywhere else does NOT widen this endpoint.
-    assert "free claimed key does not lift" in desc, (
-        "the description must say a free key does not lift this endpoint — "
-        "otherwise an integrator claims one and cannot explain the preview"
+    # r-slashparity (2026-09-20): this used to assert the description said a
+    # free key "does not lift" the endpoint. That was true only of
+    # get_facility_by_id's legacy hardcoded tuple, which withheld coordinates
+    # entirely. Now every single-facility route shares util.facility_tier_gate,
+    # where a free key IS a rung: 2dp -> 3dp plus provider/operator/market/
+    # region. The assertion moved with the behaviour rather than pinning the
+    # old sentence.
+    assert "3 dp" in desc and "2 decimal places" in desc, (
+        "the description must state BOTH unpaid precisions — an integrator who "
+        "cannot see the rung does not know a free key buys anything"
+    )
+    assert "_coord_precision_dp" in desc, (
+        "the description must name the field that reports the rounding, or a "
+        "caller treats a 2dp coordinate as an exact one"
     )
     assert "branch on `_upgrade`" in desc, (
         "the description must name the field to branch on, not just mention it"

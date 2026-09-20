@@ -416,15 +416,19 @@ def register_discovery_routes(app):
                         "summary": "One facility's record",
                         "description": (
                             "Look up a single facility by the `id` or `slug` that "
-                            "searchFacilities returns. Two response shapes, decided by "
-                            "the caller's tier — call it without a key and you get a "
-                            "basic preview (id, name, provider, city, state, country, "
-                            "region, status) plus an `_upgrade` block; a Developer or "
-                            "Pro key returns the full record, adding coordinates, "
-                            "power_mw, address and source. A free claimed key does NOT "
-                            "lift this one: the preview is the same for anonymous and "
-                            "free-tier callers, so branch on `_upgrade` being present "
-                            "rather than on whether you sent a key."
+                            "searchFacilities returns. THREE response shapes, decided "
+                            "by the caller's tier. Anonymous: id, name, city, state, "
+                            "country, status, slug, plus coordinates rounded to 2 "
+                            "decimal places (~1.1 km) and an `_upgrade` block. A free "
+                            "claimed key adds provider, operator, market and region and "
+                            "sharpens coordinates to 3 dp (~110 m) — it does lift this "
+                            "endpoint, but only that far. A Developer or Pro key returns "
+                            "the full record: exact coordinates, power_mw, address and "
+                            "source, and no `_upgrade`. Branch on `_upgrade` being "
+                            "present rather than on whether you sent a key — a free key "
+                            "still carries it. `_coord_precision_dp` states the rounding "
+                            "applied, so never treat a returned coordinate as exact "
+                            "without checking it."
                         ),
                         "parameters": [
                             {"name": "facility_id", "in": "path", "required": True,
