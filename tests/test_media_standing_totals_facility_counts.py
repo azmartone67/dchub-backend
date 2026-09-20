@@ -809,9 +809,26 @@ def test_composer_and_gate_read_the_same_canonical_key():
     assert _reads_key(guard_path, "_live_facility_counts", "facilities_verified"), (
         "media_fact_check_guard._live_facility_counts stopped reading "
         "facilities_verified — the gate's ceiling moved off distinct buildings")
-    assert _reads_key(cs_path, "facilities_verified_phrase", "facilities_verified"), (
-        "canonical_stats.facilities_verified_phrase stopped reading "
-        "facilities_verified — the composer's anchor moved off the gate's key")
+    # ★2026-09-20 the composer's helper and key were RENAMED —
+    # facilities_verified -> facilities_with_keeper_distinct — because a keeper
+    # election is a DE-DUPLICATION state, not a source verification, and the old
+    # word collided with a different predicate on /api/v1/stats and
+    # /api/v1/stats/canonical (duplicate_of_id IS NULL).
+    #
+    # The fence's intent is unchanged and is now asserted STRICTER than before:
+    # string equality only ever proved the two sides shared a literal, while the
+    # alias map proves they are ONE METRIC. #3111 is still fenced.
+    assert _reads_key(cs_path, "facilities_with_keeper_distinct_phrase",
+                      "facilities_with_keeper_distinct"), (
+        "canonical_stats.facilities_with_keeper_distinct_phrase stopped reading "
+        "facilities_with_keeper_distinct — the composer's anchor moved off the "
+        "gate's key")
+    import canonical_stats as _cs
+    assert "facilities_verified" in _cs._METRIC_ALIASES.get(
+        "facilities_with_keeper_distinct", ()), (
+        "the composer's key is no longer an alias of the gate's key — that is "
+        "two names for two numbers, and it re-opens #3111 with both sides "
+        "looking correct in isolation")
     distinct_sql = ("SELECT COUNT(DISTINCT canonical_slug) FROM "
                     "discovered_facilities WHERE COALESCE(is_duplicate,0)=0 "
                     "AND canonical_slug IS NOT NULL")
