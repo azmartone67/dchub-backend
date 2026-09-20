@@ -751,11 +751,29 @@ def _canonical_short_desc() -> str:
     """Derive the outbound pitch's tool count from the canon so it can never
     go stale here again (this was a hardcoded "48 tools" while the live
     tools/list served 73 — the exact drift the honest-numbers guard now
-    watches). Falls back to a count-free phrasing if the canon import fails."""
+    watches). Falls back to a count-free phrasing if the canon import fails.
+
+    ★2026-09-19: the facility floor is RESOLVED, not pinned. This string is
+    POSTed into third-party registry listings, which are re-crawled on the
+    registry's own schedule — a number pasted into one goes stale where no
+    drift detector of ours can reach it, so it must be the freshest floor we
+    stand behind at submit time, not the cold-start literal.
+
+    resolve_public_floors_cached(), never resolve_public_floors(): the
+    uncached call probes live HTTP (measured 7.59s / 7.78s / 15.46s), and
+    never resolve_canon(), which DEGRADES rather than raising. The overlay
+    only ever RAISES, so the pin remains the floor under a dead resolver.
+
+    `tools` stays on PINNED['tools_advertised'] — it is not a floor, it has
+    no resolver, and it is hand-walked by design."""
     try:
-        from ai_surface_canon import PINNED
+        from ai_surface_canon import PINNED, resolve_public_floors_cached
         tools = PINNED.get("tools_advertised")
-        pub = PINNED.get("public") or {}
+        try:
+            resolved = resolve_public_floors_cached() or {}
+        except Exception:      # documented never to raise; belt and braces
+            resolved = {}
+        pub = {**(PINNED.get("public") or {}), **resolved}
         facs = pub.get("facilities") or canon_text("{canon_facilities}")
         if tools:
             return (f"Data center intelligence MCP server. {tools} tools. "
