@@ -1337,6 +1337,40 @@ def resolve_canon() -> dict:
         c["public"]["news_sources"] = _np
     except Exception as e:
         c["_news_sources_error"] = str(e)[:120]
+    # ── the asset floors: substations / fiber / transmission / assets ────
+    #
+    # ★2026-09-19 — THESE HAD NO WRITER INTO c["public"] AT ALL. Every block
+    # above assigns c["public"][<key>] from its own resolver; the four asset
+    # keys had none, so c["public"] kept the copy of PINNED["public"] it was
+    # seeded with and /api/v1/canon/phrases — which reads
+    # resolve_public_floors() -> resolve_canon()["public"] — could not publish
+    # a measured asset floor no matter what had been measured.
+    #
+    # PROVEN, not inferred. Injecting a PERFECT _live_public_floors() for every
+    # key and reading resolve_canon()["public"] returned facilities and deals
+    # moved (to their own resolvers' values) and substations "127,000+",
+    # fiber_routes "58,000+", transmission_lines "94,000+", assets "320,000+"
+    # all UNCHANGED at the pin. The measurement layer was never the problem:
+    # _live_public_floors() was consumed only by canon_nums(), for the
+    # {canon_substations} / {canon_fiber_routes} / {canon_transmission_lines}
+    # PLACEHOLDERS, which is a different path this endpoint never touches.
+    #
+    # _live_public_floors() already returns publishable floor PHRASES and
+    # contains a key ONLY when stat_is_live() confirms a real query measured
+    # it, so an unmeasured key is ABSENT and the pin stands — the same
+    # fail-soft asymmetry every block above relies on. Pair this with the
+    # earned-label rule in resolve_public_floors(): that one refuses to stamp
+    # "live" on a key missing from this same dict, so the two agree on what
+    # "measured" means by reading one source.
+    try:
+        _af = _live_public_floors()
+        for _akey in ("substations", "fiber_routes", "transmission_lines", "assets"):
+            _av = _af.get(_akey)
+            if _av:
+                c[_akey + "_live"] = _av
+                c["public"][_akey] = _av
+    except Exception as e:
+        c["_asset_floors_error"] = str(e)[:120]
     # live tool count from the MCP server — override the pinned fallback so
     # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:
