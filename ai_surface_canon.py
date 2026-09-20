@@ -1265,6 +1265,32 @@ def resolve_canon() -> dict:
     itself is never stale. Falls back to public strings if a resolver fails."""
     c = json.loads(json.dumps(PINNED))  # deep copy
     c["resolved_at_note"] = "moving numbers resolved live"
+    # ★2026-09-20 — EVERY measured floor, not a typed four. #4878 landed this as
+    # `for _akey in ("substations","fiber_routes","transmission_lines","assets")`,
+    # which is the SAME SHAPE as the bug it fixed: _PUBLIC_FLOOR_KEYS was a
+    # four-name tuple, five keys gained a _PUBLIC_FLOOR_SPECS entry and a live
+    # query, and every one of them published its pin for twelve days because
+    # nobody extended the tuple. A second tuple re-arms that for whichever key
+    # is added next — `dcpi_countries` is already measured and already absent
+    # from it.
+    #
+    # Applied HERE, before the resolvers, and that placement is the whole
+    # mechanism: the five blocks below overwrite their own keys afterwards, so
+    # precedence is the ORDER and there is no list to forget. A key that gains a
+    # dedicated resolver later wins automatically; a key that loses one falls
+    # back to its measurement instead of to the pin.
+    #
+    # Values only. The `<key>_live` markers are set AFTER the resolvers run —
+    # see the marker pass below — because `facilities_live` and `markets_live`
+    # are raw INTS from /api/v1/stats that ai_surface_sentinel reads, and
+    # writing a floor PHRASE over them here would change their type.
+    _floors_live: dict = {}
+    try:
+        _floors_live = _live_public_floors() or {}
+        c["public"].update(_floors_live)
+    except Exception as e:
+        _floors_live = {}
+        c["_asset_floors_error"] = str(e)[:120]
     # ★ Monthly quotas resolve from the SAME function that enforces them
     # (monthly_quota.monthly_quota_for over tier_registry.TIER_LIMITS), so
     # served copy cannot quote a ceiling the gate does not grant. Local
@@ -1393,12 +1419,24 @@ def resolve_canon() -> dict:
     # "live" on a key missing from this same dict, so the two agree on what
     # "measured" means by reading one source.
     try:
-        _af = _live_public_floors()
-        for _akey in ("substations", "fiber_routes", "transmission_lines", "assets"):
-            _av = _af.get(_akey)
-            if _av:
-                c[_akey + "_live"] = _av
-                c["public"][_akey] = _av
+        # ★2026-09-20 — the VALUES are overlaid at the top of this function now;
+        # what is left here is the `<key>_live` marker, which has to be written
+        # after the resolvers so it can tell which keys the PEEK actually owns.
+        #
+        # A key qualifies only when the peek's value is what survived into
+        # c["public"] — if a dedicated resolver overwrote it, the resolver owns
+        # it and the marker is not the peek's to claim. The second clause never
+        # clobbers a marker a resolver already wrote: `facilities_live` and
+        # `markets_live` are raw INTS read by ai_surface_sentinel, and a floor
+        # phrase there would change their type.
+        #
+        # substations_live has 3 consumers outside this module, so this marker
+        # is a contract, not bookkeeping — #4878 introduced it and it is kept
+        # byte-identical for the four keys it covered.
+        for _k, _v in _floors_live.items():
+            if c["public"].get(_k) == _v and (_k + "_live") not in c:
+                c[_k + "_live"] = _v
+        c["public_floors_live"] = sorted(_floors_live)
     except Exception as e:
         c["_asset_floors_error"] = str(e)[:120]
     # live tool count from the MCP server — override the pinned fallback so
