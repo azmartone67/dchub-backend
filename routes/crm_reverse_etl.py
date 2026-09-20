@@ -71,9 +71,22 @@ DISABLE = (os.environ.get("CRM_REVERSE_ETL_DISABLE") or "").strip() in ("1", "tr
 DRY_RUN = (os.environ.get("CRM_REVERSE_ETL_DRY_RUN") or "").strip() in ("1", "true", "yes")
 
 SF_INSTANCE_URL = (os.environ.get("SALESFORCE_INSTANCE_URL") or "").rstrip("/")
-SF_ACCESS_TOKEN = os.environ.get("SALESFORCE_ACCESS_TOKEN") or ""
-HUBSPOT_API_KEY = os.environ.get("HUBSPOT_API_KEY") or ""
-HUNTER_API_KEY = os.environ.get("HUNTER_API_KEY") or ""
+# ★2026-09-20: .strip() — CRM_PROVIDER two lines up has always stripped and
+# these never did. A credential pasted into a dashboard picks up a trailing
+# newline or space more often than not, and it goes straight into
+# f"Bearer {HUBSPOT_API_KEY}". HubSpot answered a real 401 with
+# category=INVALID_AUTHENTICATION and "Authentication credentials not found":
+# the request arrived, the header did not parse. hs_configured was True the
+# whole time, because a non-empty string is not the same as a usable one.
+SF_ACCESS_TOKEN = (os.environ.get("SALESFORCE_ACCESS_TOKEN") or "").strip()
+HUBSPOT_API_KEY = (os.environ.get("HUBSPOT_API_KEY") or "").strip()
+HUNTER_API_KEY = (os.environ.get("HUNTER_API_KEY") or "").strip()
+
+# HubSpot private-app tokens are documented as `pat-`-prefixed. Checking the
+# SHAPE costs nothing and turns "401, go guess" into a named problem — a legacy
+# API key, a value pasted with its quotes, or the wrong variable entirely. Only
+# the prefix is ever reported; the value is never logged or returned.
+HUBSPOT_TOKEN_LOOKS_VALID = HUBSPOT_API_KEY.startswith("pat-")
 
 # Admin gate
 DCHUB_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
@@ -701,9 +714,16 @@ def _destination_state() -> tuple:
     if DRY_RUN:
         return False, "DRY_RUN is on — pushes are simulated and nothing reaches a CRM"
     if CRM_PROVIDER == "hubspot":
-        if HUBSPOT_API_KEY:
-            return True, ""
-        return False, "CRM_PROVIDER='hubspot' but HUBSPOT_API_KEY is empty"
+        if not HUBSPOT_API_KEY:
+            return False, "CRM_PROVIDER='hubspot' but HUBSPOT_API_KEY is empty"
+        if not HUBSPOT_TOKEN_LOOKS_VALID:
+            # Configured, but it will 401. Say so BEFORE a push burns an
+            # attempt — the queue gives up on a row after 5.
+            return False, ("HUBSPOT_API_KEY is set but does not start with "
+                           "'pat-'. HubSpot private-app tokens do; a legacy "
+                           "API key, a value pasted with quotes, or the wrong "
+                           "variable will 401 with INVALID_AUTHENTICATION.")
+        return True, ""
     if CRM_PROVIDER == "salesforce":
         if SF_INSTANCE_URL and SF_ACCESS_TOKEN:
             return True, ""
@@ -1069,7 +1089,7 @@ def admin_queue():
                              lead_session_id, lead_company, intent_score,
                              status, crm_pushed_at, crm_provider,
                              crm_external_id, push_attempts, last_error,
-                             attribution_chain
+                             attribution_chain, crm_response
                         FROM crm_outbound_queue""")
             params = []
             if status_filter:
@@ -1093,6 +1113,13 @@ def admin_queue():
                     "crm_external_id":  r[10],
                     "push_attempts":    int(r[11] or 0),
                     "last_error":       r[12],
+                    # ★2026-09-20: crm_response was WRITTEN on every failure and
+                    # SELECTed by nothing. last_error keeps only "hs 401" — the
+                    # status code — while the provider's own explanation sat in
+                    # this column, unreachable. Diagnosing the first real push
+                    # took a hand-written SQL query against Neon to read a field
+                    # the API already had.
+                    "crm_response":     r[14],
                     "attribution_chain": r[13],
                 })
     finally:
