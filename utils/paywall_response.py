@@ -321,6 +321,7 @@ def build_paywall_response(
     # fingerprint (session / MCP-client / IP — the SAME identity mcp_signal_canonical
     # records on every signal) so the discount + email-capture tiers ALSO fire for
     # the anonymous majority, which is most of the grid/fiber paywall volume.
+    _anon_caller_id = None   # hoisted: the pair-code mint below needs it
     if not call_count:
         try:
             from flask import request as _rq
@@ -331,6 +332,7 @@ def build_paywall_response(
                             or _rq.headers.get('User-Agent', ''))[:60],
                 user_agent=_rq.headers.get('User-Agent'),
                 ip_address=(_rq.headers.get('CF-Connecting-IP') or _rq.remote_addr))
+            _anon_caller_id = _cid
             call_count = _caller_call_count(_cid, tool_name)
         except Exception:
             pass
@@ -356,11 +358,33 @@ def build_paywall_response(
     # at main.py:8373 already handles DCM-XXXX redemption — combined
     # with FF+8's hash-match fix, paid checkouts from THIS builder also
     # finally flip the api_key tier.
+    # ★ r-anonattrib (2026-09-20) — WHY THIS IS NOT `if user_id`.
+    # The pair code is the ONLY thing that puts client_reference_id on a
+    # checkout, and it was minted for identified callers only. Anonymous
+    # callers are the MAJORITY of paywall volume (the anon-escalation note
+    # above says so), so their Stripe links carried utm_* and nothing else:
+    # the sale reached the webhook with no session, no caller_id and no
+    # signal id, and every bridge lane in paid_signal_attribution_30d failed
+    # by construction. Measured live 2026-09-19, anonymous:
+    #   recommended_upgrade_url -> buy.stripe.com/...?utm_source=mcp_paywall
+    #                              &utm_tool=pipeline      (no reference)
+    # and attribution_rate_pct read 0.0.
+    #
+    # `_anon_caller_id` is the SAME identity mcp_signal_canonical stamps on
+    # every mcp_upgrade_signals row, so a code minted against it is joinable
+    # by the caller_bridge lane that already exists — no new concept.
+    #
+    # Safe when there is no key behind the hash: redeem_pair_code's two
+    # UPDATEs (api_keys, mcp_dev_keys) match zero rows and it already
+    # tolerates that (rows_flipped = 0, both wrapped). An anonymous buyer has
+    # no key to flip — the point is to RECORD which signal sold, not to
+    # upgrade a key that does not exist yet.
     _pair_code = None
-    if user_id:
+    _pair_identity = user_id or _anon_caller_id
+    if _pair_identity:
         try:
             from routes.pair_code import get_or_create_code
-            pc = get_or_create_code(user_id, tool_name=tool_name)
+            pc = get_or_create_code(_pair_identity, tool_name=tool_name)
             if pc and pc.get("code"):
                 _pair_code = pc["code"]
                 _pair_expires = pc.get("expires_at")
@@ -519,6 +543,24 @@ def build_paywall_response(
         if STRIPE_DEVELOPER_LINK:
             base['one_click_upgrade_url_direct_stripe'] = base.get('one_click_upgrade_url')
             base['one_click_upgrade_url'] = _ec['checkout_start_url']
+        # ★ r-anonattrib (2026-09-20): the DEVELOPER cta was re-routed here in
+        # FF+16 and the STARTER one was not — but `recommended_upgrade_url` is
+        # the field we literally name "recommended", it is the cheapest unblock,
+        # and the human_message leads with it. So the CTA an agent is most
+        # likely to surface was the one raw Stripe link left, and it took its
+        # sale out of DC Hub entirely. Same override, same _direct_stripe
+        # convention, tier='starter' so the PRODUCT does not change.
+        if STRIPE_STARTER_LINK:
+            try:
+                _ec_starter = build_email_capture_urls(
+                    tool=tool_name, api_key=user_id,
+                    tier='starter', client_reference_id=_pair_code,
+                )
+                base['recommended_upgrade_url_direct_stripe'] = base.get(
+                    'recommended_upgrade_url')
+                base['recommended_upgrade_url'] = _ec_starter['checkout_start_url']
+            except Exception:
+                pass  # keep the direct link rather than lose the CTA
         # ALSO inject the URLs into human_message so AI agents that only
         # relay text (don't render structured fields) still surface them
         # to the human. Most agents do at least one of these — making
