@@ -98,6 +98,18 @@ WORKFLOWS = {
     # than "stopped" — the exact absence-vs-zero confusion the route it
     # feeds is built to refuse.
     "gsc-performance-ingest.yml": 30,
+    # 2026-09-20: the Substack mirror. Its slots are 08/12/16/20 UTC, which is
+    # FOUR runs a day but NOT every 6h — the overnight gap is 12h (20:21 to
+    # 08:21), so the usual interval x 1.5 is computed off the LONGEST gap, not
+    # the nominal cadence: 12 x 1.5 = 18. Taking 9 here (four-a-day "feels like"
+    # 6h) would alarm every single night, which is the same copied-number
+    # mistake the failover-canary line above records.
+    # Worth watching rather than listing as unwatched: this workflow exists
+    # BECAUSE the lane it replaces failed silently for 3.5 months — every write
+    # to multiplatform_amplifier_log raised and was swallowed, and an empty
+    # audit table read as "nothing to amplify" to every consumer. A second
+    # silent death would look identical to the first.
+    "multiplatform-amplifier.yml": 18,
     "restore-test.yml": 190,           # weekly Mon — prove the Neon backup restores
     # ★2026-08-31 — WAS 190 WITH THE COMMENT "weekly Mon", COPIED FROM THE
     # restore-test LINE ABOVE. This one is not weekly: its cron is
