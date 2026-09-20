@@ -154,22 +154,17 @@ def test_the_parity_map_export_points_at_a_registered_route():
 
 
 def test_the_openapi_spec_no_longer_names_the_dead_detail_path():
-    """The dead path must never be advertised — that is this test's subject.
+    """The dead path must never be advertised, and the live one must be there.
 
-    The companion assertion that the LIVE detail path is present was removed
-    2026-09-19. getFacilityDetail is now deliberately withheld from the curated
-    spec: one branch of facility_by_slug served the full paid record to
-    anonymous callers, so publishing the operation in a spec third parties
-    generate connectors from would have baked the bypass into catalogues we
-    cannot edit. tests/test_curated_openapi_contract.py::
-    test_facility_detail_stays_out_until_its_gate_is_settled owns that
-    withholding and says when to undo it.
-
-    Restore the presence assertion in the same change that re-adds the
-    operation — not before, or this test simply fails for the wrong reason.
+    The presence half was removed 2026-09-19 while getFacilityDetail was
+    withheld from the curated spec (one branch of facility_by_slug served the
+    full paid record to anonymous callers). #4862 gated that branch, verified
+    live, so the operation is published again and this assertion is restored
+    in the same change, as its removal note required.
     """
     src = _read("ai_discovery_routes.py")
     assert '"/api/v1/facilities/detail/{facility_id}"' not in src
+    assert '"/api/v1/facilities/{facility_id}"' in src
 
 
 @pytest.mark.parametrize("path,module,needle", [

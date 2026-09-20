@@ -410,6 +410,39 @@ def register_discovery_routes(app):
                         "tags": ["Public"]
                     }
                 },
+                "/api/v1/facilities/{facility_id}": {
+                    "get": {
+                        "operationId": "getFacilityDetail",
+                        "summary": "One facility's record",
+                        "description": (
+                            "Look up a single facility by the `id` or `slug` that "
+                            "searchFacilities returns. Two response shapes, decided by "
+                            "the caller's tier — call it without a key and you get a "
+                            "basic preview (id, name, provider, city, state, country, "
+                            "region, status) plus an `_upgrade` block; a Developer or "
+                            "Pro key returns the full record, adding coordinates, "
+                            "power_mw, address and source. A free claimed key does NOT "
+                            "lift this one: the preview is the same for anonymous and "
+                            "free-tier callers, so branch on `_upgrade` being present "
+                            "rather than on whether you sent a key."
+                        ),
+                        "parameters": [
+                            {"name": "facility_id", "in": "path", "required": True,
+                             "schema": {"type": "string"},
+                             "description": "Numeric id (e.g. 8484) or slug (e.g. lumen-technologies-level-3-ashburn-23a0d3a2); searchFacilities returns both on every row"}
+                        ],
+                        # Optional auth: the endpoint answers without a key and returns
+                        # MORE with one. The empty alternative is what says "a key is
+                        # not required" — omitting it generates a client that refuses
+                        # to call without credentials.
+                        "security": [{"apiKey": []}, {}],
+                        "responses": {
+                            "200": {"description": "Facility record — basic preview plus _upgrade for anonymous and free callers, full record for Developer/Pro"},
+                            "404": {"description": "No facility with that id or slug"}
+                        },
+                        "tags": ["Public"]
+                    }
+                },
                 "/api/v1/stats": {
                     "get": {
                         "operationId": "getStats",
