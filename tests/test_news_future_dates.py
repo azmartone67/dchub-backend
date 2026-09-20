@@ -353,13 +353,52 @@ class TestIngestRejectsImplausiblyFutureDates:
         assert rej("2999-01-01T00:00:00") is True
         assert rej("2999-01-01T00:00:00+00:00") is True
 
+    @staticmethod
+    def _future_reject_hours() -> int:
+        """The window the CODE uses. Hardcoding 24 here would re-create the
+        same class of bug one constant over."""
+        m = re.search(r"FUTURE_REJECT_HOURS\s*=\s*(\d+)", _source("news_engine.py"))
+        assert m, "FUTURE_REJECT_HOURS not found in news_engine.py"
+        return int(m.group(1))
+
     def test_drop_helper_actually_filters(self):
+        """★2026-09-20: these rows were PINNED LITERALS and the clock caught up.
+
+        The 'implausibly future' row was "2026-09-21T11:00:00" against a
+        FUTURE_REJECT_HOURS=24 window. At 2026-09-20T11:00 UTC, now+24h passed
+        it — the row became plausible, was kept, and this assertion started
+        failing on every PR in the repo, permanently. A literal date compared
+        against a moving now() is a test with an expiry date nobody wrote down.
+
+        Anchored to now and to the real constant instead, so the row is as far
+        outside the window tomorrow as it is today.
+        """
+        from datetime import datetime, timedelta, timezone
+        hours = self._future_reject_hours()
+        now = datetime.now(timezone.utc)
+        far_future = (now + timedelta(hours=hours * 2 + 1)).isoformat()
+        clearly_past = (now - timedelta(days=30)).isoformat()
         drop = self._h()["_drop_implausibly_future"]
-        rows = [{"published_at": "2026-09-21T11:00:00", "url": "https://x/events/a"},
-                {"published_at": "2026-08-21T23:35:55", "url": "https://x/b"},
+        rows = [{"published_at": far_future, "url": "https://x/events/a"},
+                {"published_at": clearly_past, "url": "https://x/b"},
                 {"published_at": None, "url": "https://x/c"}]
         kept = drop(rows, "t")
         assert [r["url"] for r in kept] == ["https://x/b", "https://x/c"]
+
+    def test_the_boundary_is_read_from_the_code_not_guessed(self):
+        """Control for the fixture above: a row just INSIDE the window must be
+        kept, and one just outside dropped. If the helper stopped filtering
+        entirely, the test above would still pass on a lucky ordering."""
+        from datetime import datetime, timedelta, timezone
+        hours = self._future_reject_hours()
+        now = datetime.now(timezone.utc)
+        drop = self._h()["_drop_implausibly_future"]
+        inside = (now + timedelta(hours=hours - 1)).isoformat()
+        outside = (now + timedelta(hours=hours + 6)).isoformat()
+        kept = [r["url"] for r in drop(
+            [{"published_at": inside, "url": "in"},
+             {"published_at": outside, "url": "out"}], "t")]
+        assert kept == ["in"], kept
 
     def test_both_fetchers_drop_before_returning(self):
         # fetch_all_rss_feeds is called DIRECTLY by main.daily_cron,
