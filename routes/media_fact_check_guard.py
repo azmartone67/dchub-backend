@@ -418,14 +418,28 @@ def _extract_facility_count_claims(text: str) -> list[dict]:
 def _live_facility_counts():
     """(distinct_buildings, raw_records) from canonical_stats, or (None, None).
 
-    distinct = facilities_verified (COUNT(DISTINCT canonical_slug) WHERE NOT
-    is_duplicate) — the citeable basis, and the one /api/v1/canon/phrases and
-    ai_surface_canon already publish. raw = facilities (COUNT(*) rows).
-    None on any failure — callers fail closed."""
+    distinct = facilities_distinct (COUNT(DISTINCT canonical_slug), no
+    de-duplication-state filter) — the citeable basis, and the one
+    /api/v1/canon/phrases and ai_surface_canon publish. raw = facilities
+    (COUNT(*) rows). None on any failure — callers fail closed.
+
+    ★2026-09-20 THE BASIS MOVED, and this docstring had gone FALSE before it
+    did. It claimed facilities_verified was "the one /api/v1/canon/phrases and
+    ai_surface_canon already publish"; #4924 rebased canon onto
+    facilities_distinct, a strictly larger population that includes slugs whose
+    only rows are flagged duplicates. Left as it was, this gate refused canon's
+    own copy — measured, as `welcome email states a facility count above the
+    citeable ceiling: ['24,400+ facilities'], ceiling 21441`.
+
+    util/facility_canon_count.py is the repo's stated ONE definition of the
+    platform-wide count and its CANON_SQL is exactly this unfiltered distinct
+    query, so the gate and the floor it fences now measure one population. A
+    gate on a different population than the copy it checks is the #4884 defect:
+    it blocks true copy, or permits false copy, and looks correct either way."""
     try:
         import canonical_stats as cs
         s = cs.get_canonical_stats() or {}
-        distinct = s.get("facilities_verified")
+        distinct = s.get("facilities_distinct")
         raw = s.get("facilities")
         distinct = int(distinct) if isinstance(distinct, (int, float)) and distinct > 0 else None
         raw = int(raw) if isinstance(raw, (int, float)) and raw > 0 else None

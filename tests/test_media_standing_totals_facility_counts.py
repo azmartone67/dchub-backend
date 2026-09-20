@@ -91,6 +91,13 @@ RECORDS, DISTINCT, DEALS_DISTINCT, DEAL_ROWS, MARKETS = 26388, 18656, 1932, 5121
 LIVE = {
     "facilities": RECORDS,              # COUNT(*) — raw source ROWS
     "facilities_verified": DISTINCT,    # COUNT(DISTINCT canonical_slug) — BUILDINGS
+    # ★2026-09-20: the gate reads facilities_DISTINCT after #4924 rebased
+    # canon onto it. Fed under one key only, every fixture built from LIVE
+    # hands the gate a None ceiling, it fails CLOSED, and each of those
+    # tests reports "measuring different things again" for the wrong reason.
+    # Both names carry the same building count here; they diverge in prod
+    # by the keeper filter, which is what #4924 dropped.
+    "facilities_distinct": DISTINCT,    # same basis, the name canon publishes
     "deals": DEALS_DISTINCT,            # deduped distinct deals
     "countries": 178,
     "countries_verified": 178,
@@ -232,8 +239,36 @@ def pinned_canon(monkeypatch):
 # — check_facility_count_claims' ceiling is 21,441 x 1.05 = 22,513, which the
 # new 21,900+ floor clears, and the whole selection was run to confirm this file
 # reports only the deals gate.
-CANON_ERA_DISTINCT, CANON_ERA_DEALS = 21441, 2237
-CANON_ERA = dict(LIVE, facilities_verified=CANON_ERA_DISTINCT,
+# ★2026-09-20 — CANON_ERA_DISTINCT re-measured 21,441 -> 24,449, AND ITS BASIS
+# CHANGED. #4924 rebased canon's published floor off the keeper count onto
+# facilities_distinct (COUNT(DISTINCT canonical_slug), no de-duplication-state
+# filter). This fence still measured the FILTERED population, so it refused
+# canon's own copy the moment the pin walked to 24,400+ — "welcome email states
+# a facility count above the citeable ceiling: ['24,400+ facilities'], ceiling
+# 21441". The fence was right and its basis was stale, which is the same shape
+# as the 09-16 deals catch: the gate working, not a nuisance.
+#
+# THE INDEPENDENT MEASUREMENT — still NOT read off ai_surface_canon, and still
+# NOT off /api/v1/stats. /api/v1/stats/canonical runs util.facility_canon_count
+# .CANON_SQL through its OWN cur.execute against the primary, and its
+# facilities_distinct has no canonical_stats fallback (the setdefaults at
+# routes/facilities_by_dims.py:207 cover only facilities_verified and
+# facilities_tracked), so it is a direct measurement or it is absent — never
+# canon certifying itself:
+#
+#   SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities
+#    WHERE canonical_slug IS NOT NULL;                      -> 24449
+#   SELECT COUNT(*) FROM discovered_facilities;             -> 30647
+#
+# 24,449 distinct buildings against a 30,647-row pile — a 1.25x gap, so the
+# pile is still refused and this fence still does the job it was built for.
+# Floor rounds DOWN to the nearest 100: 24,400 <= 24,449.
+#
+# ★ The injection key moved with the basis. CANON_ERA fed facilities_verified;
+# feeding the old key while the gate reads the new one would leave the fixture
+# INERT and this fence silently reading whatever the live module returned.
+CANON_ERA_DISTINCT, CANON_ERA_DEALS = 24449, 2237
+CANON_ERA = dict(LIVE, facilities_distinct=CANON_ERA_DISTINCT,
                  deals=CANON_ERA_DEALS)
 
 
@@ -806,9 +841,14 @@ def test_composer_and_gate_read_the_same_canonical_key():
     """
     cs_path = os.path.join(ROOT, "canonical_stats.py")
     guard_path = os.path.join(ROOT, "routes", "media_fact_check_guard.py")
-    assert _reads_key(guard_path, "_live_facility_counts", "facilities_verified"), (
+    # ★2026-09-20: facilities_DISTINCT. #4924 rebased canon's published floor
+    # onto it and this gate followed, re-measured independently at 24,449 (see
+    # the CANON_ERA note above). A gate left on the keeper basis refused canon's
+    # own copy — the failure that surfaced this.
+    assert _reads_key(guard_path, "_live_facility_counts", "facilities_distinct"), (
         "media_fact_check_guard._live_facility_counts stopped reading "
-        "facilities_verified — the gate's ceiling moved off distinct buildings")
+        "facilities_distinct — the gate's ceiling moved off the population canon "
+        "publishes, so it will refuse our own copy or permit an over-claim")
     # ★2026-09-20 the composer's helper and key were RENAMED —
     # facilities_verified -> facilities_with_keeper_distinct — because a keeper
     # election is a DE-DUPLICATION state, not a source verification, and the old

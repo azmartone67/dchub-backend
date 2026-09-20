@@ -49,12 +49,15 @@ def test_the_fence_does_NOT_re_derive_the_fleet_from_its_own_SQL():
     block = _pinned_block()
     assert "discovered_facilities" not in block, (
         "the PINNED fence re-derives the facility count from its own SQL; it "
-        "must read canon (canonical_stats.facilities_verified) so the fence "
+        "must read canon (canonical_stats.facilities_distinct) so the fence "
         "and the floor can never measure different populations again")
 
 
 def test_the_fence_reads_facilities_from_canon():
-    assert "facilities_verified" in _pinned_block()
+    # ★2026-09-20: facilities_DISTINCT. The radar moved with canon's published
+    # floor (#4924); a fence still reading the keeper count would measure a
+    # different population than the floor it fences — the 2026-08-09 defect.
+    assert "facilities_distinct" in _pinned_block()
 
 
 def test_duplicate_of_id_is_not_used_as_a_count_filter_here():
@@ -111,13 +114,13 @@ def fence(monkeypatch):
     monkeypatch.setattr(psycopg2, "connect",
                         lambda *a, **k: _Conn(sql_log), raising=False)
 
-    def _run(*, facilities_verified, floor):
+    def _run(*, facilities_distinct, floor):
         fb = dict(cs._FALLBACK)
         # every non-facilities floor sits far below live so only the key under
         # test can produce a finding
         live = {k: (int(v) * 100 if str(v).isdigit() else v)
                 for k, v in fb.items()}
-        live["facilities_verified"] = facilities_verified
+        live["facilities_distinct"] = facilities_distinct
         monkeypatch.setattr(cs, "_query_live", lambda: live, raising=False)
         # ★2026-09-19: the fence reads as_dict_pinned(), not as_dict(). as_dict()
         # is now the RESOLVED floor (live overlay applied) and this detector
@@ -133,12 +136,12 @@ def fence(monkeypatch):
 
 def test_a_floor_BELOW_live_canon_is_not_convicted(fence):
     """The live case: floor 17,000 vs canon 17,260. This fired 1,436 times."""
-    assert fence(facilities_verified=17_260, floor=17_000) == []
+    assert fence(facilities_distinct=17_260, floor=17_000) == []
 
 
 def test_a_floor_ABOVE_live_canon_still_convicts(fence):
     """The fence must not be defanged — a real over-claim still fires."""
-    out = fence(facilities_verified=16_500, floor=17_000)
+    out = fence(facilities_distinct=16_500, floor=17_000)
     assert len(out) == 1
     assert out[0]["issue"] == "canonical_floor_above_live_reality"
     assert out[0]["count"] == 500
@@ -148,5 +151,5 @@ def test_canon_equal_to_its_fallback_is_BLIND_not_a_verdict(fence, monkeypatch):
     """`_query_live` returns _FALLBACK verbatim on a DB outage. An unanswered
     read must omit the key, never convict the floor of exceeding a fallback."""
     import canonical_stats as cs
-    assert fence(facilities_verified=int(cs._FALLBACK["facilities_verified"]),
+    assert fence(facilities_distinct=int(cs._FALLBACK["facilities_verified"]),
                  floor=17_000) == []

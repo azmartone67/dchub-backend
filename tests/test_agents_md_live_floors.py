@@ -113,7 +113,9 @@ def _as_int(phrase) -> int:
 # to exactly 21,900+ — EQUAL, not above, which is the inversion
 # test_the_risen_scenario_still_rises_above_the_pin exists to catch. Kept 500
 # above the pin, the same margin the 09-09 re-base used.
-RISEN_FACILITIES = "22,400+"
+# ★2026-09-20 re-based 22,400+ -> 24,900+: the pin walked to 24,400+ and this
+# scenario must sit ABOVE it, which the guard below asserts.
+RISEN_FACILITIES = "24,900+"
 
 
 # ── the overlay raises ───────────────────────────────────────────────
