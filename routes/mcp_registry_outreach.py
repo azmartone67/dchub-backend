@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import time
 import logging
 import datetime as _dt
@@ -640,6 +641,94 @@ def _record(target_key: str, target_name: str, action: str,
         except Exception: pass
 
 
+# ──────────────────────────────────────────────────────────────────
+# Listing DRIFT — presence is not currency
+# ──────────────────────────────────────────────────────────────────
+# ★2026-09-20. _audit_target answers one question: is our audit_signal still a
+# substring of the page. That catches DELISTING and nothing else, so mcp.so sat
+# at "12,650+ facilities" against a canon of 24,400+ — and "79 tools" against 91
+# — while its audit stayed green for weeks. yellowmcp sat at "20,000+". Found by
+# hand, which is the whole problem: #4883's own comment says a number pasted into
+# a registry "goes stale where no drift detector of ours can reach it". This is
+# that detector.
+#
+# ★ IT READS THE BODY _audit_target ALREADY FETCHED. No second request, no new
+#   outward traffic — a listing audit that hammered registries to check numbers
+#   would be its own defect.
+_LISTING_FIGURES = (
+    ("facilities",         r'([\d][\d,]*)\s*(k?)\s*\+?\s*(?:global\s+|physical\s+)?'
+                           r'(?:data[-\s]cent(?:er|re)s?|facilities)\b'),
+    ("fiber_routes",       r'([\d][\d,]*)\s*(k?)\s*\+?\s*fiber\s+routes\b'),
+    ("substations",        r'([\d][\d,]*)\s*(k?)\s*\+?\s*substations\b'),
+    ("transmission_lines", r'([\d][\d,]*)\s*(k?)\s*\+?\s*transmission\s+lines\b'),
+    ("deals",              r'([\d][\d,]*)\s*(k?)\s*\+?\s*(?:tracked\s+)?M&A\s+deals\b'),
+)
+
+
+def _fig_int(raw: str, k: str):
+    """'24,400' -> 24400 · '127' + 'k' -> 127000. None if unparseable."""
+    try:
+        n = int(re.sub(r"[^\d]", "", raw or ""))
+    except Exception:
+        return None
+    if not n:
+        return None
+    return n * 1000 if k else n
+
+
+def _listing_drift(body: str, canon: dict | None = None) -> dict:
+    """Compare the figures ON a live listing against canon.
+
+    Returns {"state": "current"|"stale"|"unknown", "drift": [...], "checked": n}.
+
+    ★ THREE STATES, NOT TWO. A page carrying no recognisable figure is
+    "unknown", NEVER "current" — a scan that can find nothing must not read as
+    clean, or this detector becomes the same green-on-nothing the audit already
+    was. Same for an unreadable canon: unknown, not clean.
+
+    ★ Canon is the RESOLVED floor via resolve_public_floors_cached() — the
+    sanctioned non-blocking door. resolve_public_floors() probes live HTTP
+    (7.59s / 7.78s / 15.46s measured) and resolve_canon() DEGRADES rather than
+    raising; either would make a daily audit job answer wrongly or slowly.
+
+    Both directions are drift, and they are NOT equally bad: a figure ABOVE
+    canon is an over-claim published under our name on someone else's site.
+    """
+    if canon is None:
+        try:
+            from ai_surface_canon import resolve_public_floors_cached
+            canon = resolve_public_floors_cached() or {}
+        except Exception as e:  # noqa: BLE001
+            return {"state": "unknown", "drift": [],
+                    "checked": 0, "reason": f"canon_unreadable:{type(e).__name__}"}
+    text = re.sub(r"\s+", " ", body or "")
+    drift, checked = [], 0
+    for key, pat in _LISTING_FIGURES:
+        want = _fig_int(str(canon.get(key) or ""), "")
+        if want is None:
+            continue                      # canon does not publish it — not our business
+        m = re.search(pat, text, re.I)
+        if not m:
+            continue                      # noun absent from this listing
+        got = _fig_int(m.group(1), m.group(2))
+        if got is None:
+            continue
+        checked += 1
+        if got != want:
+            drift.append({
+                "key": key, "listed": got, "canon": want,
+                "direction": "over_claim" if got > want else "stale_under",
+                "detail": (f"listing says {got:,} {key}; canon publishes "
+                           f"{want:,}" + (" — an OVER-CLAIM under our name on a "
+                                          "third-party site" if got > want else "")),
+            })
+    if not checked:
+        return {"state": "unknown", "drift": [], "checked": 0,
+                "reason": "no_comparable_figure_on_page"}
+    return {"state": "stale" if drift else "current",
+            "drift": drift, "checked": checked}
+
+
 def _audit_target(target: dict) -> dict:
     """HEAD or GET the audit_url. If the response body contains
     audit_signal (case-insensitive substring match), we're listed.
@@ -669,9 +758,15 @@ def _audit_target(target: dict) -> dict:
             # Case-insensitive substring match — registries often
             # title-case the listing differently than we expect.
             listed = signal.lower() in body.lower()
-            return {"listed": listed,
-                    "http_code": resp.getcode(),
-                    "reason": "ok" if listed else "signal_missing"}
+            out = {"listed": listed,
+                   "http_code": resp.getcode(),
+                   "reason": "ok" if listed else "signal_missing"}
+            # ★ Only meaningful when we ARE listed: drift on a page that does
+            #   not list us is not our copy going stale, it is us being gone,
+            #   which `listed` already says.
+            if listed:
+                out["drift"] = _listing_drift(body)
+            return out
     except _ue.HTTPError as he:
         if he.code == 404:
             return {"listed": False, "http_code": 404,
