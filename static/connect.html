@@ -359,6 +359,16 @@
             <div class="key-callout" id="free-key" style="scroll-margin-top: 90px;">
                 <div class="kc-title">🔑 Unlock all {canon_tools} tools with one message — no email, no signup</div>
                 <p>Once connected, tell your agent: <code>call claim_free_key and save the key</code>. It mints a free API key in a single tool call and keeps working every session — higher limits, full toolset, nothing to copy-paste. Config-file clients (Copilot, Cursor, VS Code) can paste the returned key as <code>X-API-Key</code>. Already connected? <a href="/my-agent" style="color:#00d4ff;">See what your agent did</a> — its live query log, by key. Just browsing? <a href="/playground" style="color:#00d4ff;">Try the live playground</a> — no signup.</p>
+                <!-- r-restkey (2026-09-20): the page pointed every reader at the MCP
+                     TOOL and never named the REST endpoint that does the same job.
+                     Partners integrating over the OpenAPI spec (rather than MCP) had
+                     no route to a key from here at all — the spec now publishes
+                     POST /api/v1/keys/claim, and this is the human half of it. -->
+                <p style="margin-top:14px;border-top:1px solid #23304a;padding-top:12px;"><strong style="color:#cdd6e2;">Not using MCP?</strong> The same key over plain REST, one request, no browser:</p>
+                <pre style="background:#0b1220;border:1px solid #23304a;border-radius:6px;padding:12px;overflow-x:auto;margin:8px 0;"><code>curl -X POST https://dchub.cloud/api/v1/keys/claim \
+  -H "Content-Type: application/json" \
+  -d '{"client_name": "your-agent-name"}'</code></pre>
+                <p style="color:#8899aa;margin:8px 0 0;">Returns <code>api_key</code> — send it as <code>X-API-Key</code> on any <code>dchub.cloud/api/v1/*</code> request. Two things worth knowing before you build on it: claiming is idempotent per <code>(client_name, source IP)</code>, so the same <code>client_name</code> from the same address returns the same key and a different one mints a new key; and the allowance for keys claimed <em>without</em> an email is metered per <strong>source IP</strong>, carries across re-mints, and a fresh <code>client_name</code> does not reset it. If you are proxying many end users through one address, pass <code>"email"</code> in the same POST — that lifts the gate outright, with no second step.</p>
             </div>
             <div class="prompt-box">
                 <div class="prompt-title">Step 3 — ask your AI:</div>
