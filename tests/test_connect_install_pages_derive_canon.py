@@ -1,3 +1,7 @@
+# ★2026-09-20: these fixtures warm `facilities_distinct`, not
+# `facilities_verified`. canon's facilities floor was REBASED onto the
+# citeable distinct-building count, so warming the old metric leaves the
+# floor on its 400 seed and every assertion below tests the fallback.
 """/connect/<client> must derive its floors AND its price, not freeze them.
 
 MEASURED LIVE 2026-09-10, one process, one second apart:
@@ -92,7 +96,7 @@ _SYNTH, _SYNTH_PHRASE = 12_345, "12,300+"
 def test_install_page_serves_the_resolver_not_the_pin(client, stats_state):
     """THE guard for what was measured live. If the template ever goes back to
     resolving canon at import, this is the test that fails."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body(client)
     assert _SYNTH_PHRASE in body, (
         f"/connect/{client} ignored the live resolver ({_SYNTH_PHRASE}) — the "
@@ -116,7 +120,7 @@ def test_no_placeholder_survives_render(client, stats_state):
     """The failure canon_text() calls worse than the stale number it replaces:
     serving a literal "{canon_facilities}" to an agent. Moving the resolve to
     request time is exactly the edit that could reintroduce it."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body(client)
     leaked = re.findall(r"\{canon_[a-z_]+\}", body)
     assert not leaked, f"/connect/{client} shipped raw placeholders: {leaked}"
@@ -127,7 +131,7 @@ def test_no_format_field_survives_render(client, stats_state):
     """The sibling failure: a {FORMAT_FIELD} added to the template and not passed
     to .format(). Under .format() that raises, but only for fields that are
     REACHED — so assert on the rendered bytes too."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body(client)
     leaked = re.findall(r"\{(?:PRO_PRICE|ANNUAL_PRICE|ANNUAL_SAVE_HTML|ANNUAL_DESC|NAME|KEY)\}", body)
     assert not leaked, f"/connect/{client} shipped raw format fields: {leaked}"
@@ -136,7 +140,7 @@ def test_no_format_field_survives_render(client, stats_state):
 # ── 3. The price is derived, and the retired ones are gone ───────────────
 @pytest.mark.parametrize("client", ALL_CLIENTS)
 def test_price_matches_the_tier_registry_ssot(client, stats_state):
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body(client)
     want = f"${tier_registry.price('pro')}"
     assert f'<div class="price">{want}<' in body, (
@@ -150,7 +154,7 @@ def test_no_retired_price_is_advertised(client, stats_state):
     `"$299" not in body` would be satisfied by any page that merely stops
     mentioning it, and would also fire on a legitimate historical note. This
     asserts on the rendered tile — the thing a buyer reads."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body(client)
     for retired in RETIRED_PRICES:
         if retired == f"${tier_registry.price('pro')}":
@@ -163,7 +167,7 @@ def test_the_page_and_the_button_quote_the_same_price(stats_state):
     """The defect was not just a wrong number — the page said $299 while the
     href beside it opened the $99 Payment Link. Price and link must agree on
     which product is being sold."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body()
     from routes._stripe_links import STRIPE_LINKS
     assert STRIPE_LINKS["pro"] in body, (
@@ -192,7 +196,7 @@ def test_rendered_page_carries_no_untrue_discount_badge(client, stats_state):
     one exercise _annual_save_html(), so re-typing "50% off" directly into the
     TEMPLATE — the exact shape of the original bug — sailed past both. Assert on
     what the page PUBLISHES, not on the helper that is supposed to feed it."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body(client)
     monthly = tier_registry.price("pro")
     claimed = re.findall(r"(\d+)% off", body)

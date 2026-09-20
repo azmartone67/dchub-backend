@@ -1,3 +1,9 @@
+# ★2026-09-20: every `facilities_verified` in this file became
+# `facilities_distinct`. canon's facilities floor was REBASED off the keeper
+# count onto the citeable distinct-building count, so the metric these
+# fixtures must warm is the one _PUBLIC_FLOOR_SPECS now reads. Warming the
+# old key would leave the floor on its 400 seed and the assertions would be
+# testing the fallback, not the derivation.
 """Guards for the PINNED -> resolver derivation (ai_surface_canon.canon_nums).
 
 The defect these exist to prevent is specific and has recurred SIX times:
@@ -58,7 +64,7 @@ _SYNTH_PHRASE = "12,300+"
 
 
 def test_a_measured_floor_beats_the_pin(stats_state):
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     assert asc.canon_nums()["{canon_facilities}"] == _SYNTH_PHRASE
 
 
@@ -67,7 +73,7 @@ def test_a_cold_cache_serves_the_pin_not_the_citation_seed(stats_state):
 
     Publishing it would put '400+ facilities' on every manifest — a ~47x
     under-claim. The seed is citation-safe, not publication-safe."""
-    seed = cs._floor_phrase(cs._FALLBACK["facilities_verified"], step=100)
+    seed = cs._floor_phrase(cs._FALLBACK["facilities_distinct"], step=100)
     pin = asc.PINNED["public"]["facilities"]
     assert seed != pin, (
         "guard-the-guard: the seed has been raised to the pin, so this test can "
@@ -85,7 +91,10 @@ def test_a_warm_but_unmeasured_metric_serves_the_pin(stats_state):
 
 
 @pytest.mark.parametrize("pub_key,phrase_fn", [
-    ("facilities", "facilities_verified_phrase"),
+    # ★2026-09-20: canon's facilities floor rebased off the keeper count onto
+    # the citeable distinct-building count. The pair must move together or the
+    # resolver and the derivation round different numbers.
+    ("facilities", "facilities_distinct_phrase"),
     ("countries",  "countries_verified_phrase"),
     ("markets",    "markets_phrase"),
     ("deals",      "deals_phrase"),
@@ -93,7 +102,7 @@ def test_a_warm_but_unmeasured_metric_serves_the_pin(stats_state):
 def test_the_derivation_rounds_exactly_like_the_resolver(stats_state, pub_key, phrase_fn):
     """A second rounding of the same number would be a NEW drift class, inside
     the module that exists to kill drift. The floors must be one implementation."""
-    _warm(facilities_verified=18_842, countries_verified=178, markets=306, deals=1_931)
+    _warm(facilities_distinct=18_842, countries_verified=178, markets=306, deals=1_931)
     assert cs.live_public_floors()[pub_key] == getattr(cs, phrase_fn)()
 
 
@@ -101,9 +110,9 @@ def test_a_measured_floor_that_shrinks_republishes_lower(stats_state):
     """Heals in BOTH directions. max()-against-the-pin would not, and a floor
     stuck above reality is the exact defect that re-floored this metric three
     times in June 2026."""
-    _warm(facilities_verified=18_842)
+    _warm(facilities_distinct=18_842)
     assert asc.canon_nums()["{canon_facilities}"] == "18,800+"
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     assert asc.canon_nums()["{canon_facilities}"] == _SYNTH_PHRASE
 
 
@@ -112,13 +121,13 @@ def test_the_query_except_path_keeps_the_last_known_good(stats_state, monkeypatc
     when _query_live() raised. Harmless while the seed was only a fallback;
     a ~47x under-claim once stat_is_live() lets a publisher serve the cache,
     because _live_keys would still read True over a dict reset to _FALLBACK."""
-    _warm(facilities_verified=18_842)
+    _warm(facilities_distinct=18_842)
 
     def _boom():
         raise RuntimeError("db down")
 
     monkeypatch.setattr(cs, "_query_live", _boom)
-    assert cs.get_canonical_stats(force=True)["facilities_verified"] == 18_842
+    assert cs.get_canonical_stats(force=True)["facilities_distinct"] == 18_842
     assert asc.canon_nums()["{canon_facilities}"] == "18,800+"
 
 
@@ -148,7 +157,7 @@ def test_every_public_placeholder_stays_non_empty(stats_state, mode):
     if mode == "cold":
         _cold()
     else:
-        _warm(facilities_verified=_SYNTH, countries_verified=178,
+        _warm(facilities_distinct=_SYNTH, countries_verified=178,
               markets=306, deals=1_931)
     nums = asc.canon_nums()
     for ph in ("{canon_facilities}", "{canon_deals}",

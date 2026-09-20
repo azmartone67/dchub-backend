@@ -148,7 +148,12 @@ def _resolved_like_production(monkeypatch):
     monkeypatch.setattr(canon, "_mcp_tool_count", lambda *a, **kw: 91)
     monkeypatch.setattr(canon, "_mcp_server_version", lambda *a, **kw: "2.12.16")
     import canonical_stats
-    for _name, _val in (("facilities_verified_phrase", "21,900+"),
+    # ★2026-09-20: resolve_canon() now imports facilities_distinct_phrase.
+    # Both are stubbed — the old name still has callers, and stubbing only the
+    # one resolve_canon dropped would leave this fixture silently resolving to
+    # the 400 seed while the test claimed it had resolved live.
+    for _name, _val in (("facilities_distinct_phrase", "21,900+"),
+                        ("facilities_verified_phrase", "21,900+"),
                         ("deals_phrase", "2,200+"),
                         ("markets_phrase", "300+"),
                         ("countries_verified_phrase", "170+"),

@@ -194,9 +194,16 @@ def test_must_fail_control_canon_is_live_does_not_catch_the_degrade():
     so nobody 'simplifies' resolve_public_floors down to a canon_is_live gate.
     If this ever fails, canon_is_live grew a sanity check and this helper's
     justification needs rewriting."""
-    from ai_surface_canon import canon_is_live
+    from ai_surface_canon import canon_is_live, _LIVE_WITNESS
+    # ★2026-09-20: the witness TOKEN is derived, not typed. It moved
+    # (facilities_verified_live -> facilities_distinct_live) when canon's
+    # facilities floor was rebased onto the citeable distinct-building count,
+    # and a hardcoded token silently turns this control into "canon_is_live
+    # returns False for an unmapped key" — which is true of any typo and
+    # proves nothing about the degrade.
+    _witness = _LIVE_WITNESS["public.facilities"]
     degraded = {"public": {"facilities": "400+"},
-                "facilities_verified_live": "400+"}
+                _witness: "400+"}
     assert canon_is_live(degraded, "public.facilities") is True, \
         "canon_is_live answers 'was it measured', not 'is it sane'"
 

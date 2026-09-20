@@ -41,6 +41,10 @@ _FALLBACK = {
     # Both must stay in step: a fallback that disagrees with its own
     # alias publishes two floors for one number on a DB outage.
     "facilities_with_keeper_distinct": 400,
+    # ★2026-09-20: the CITEABLE population — COUNT(DISTINCT canonical_slug)
+    # over every row, no de-duplication-state filter. Same citation-safe 400
+    # seed and the same rule: floors round DOWN, so this must stay <= reality.
+    "facilities_distinct": 400,
     "countries": 170,
     "countries_verified": 170,      # ★2026-07-30 re-floored 30 -> 170: live = 178 distinct ISO codes over the deduped fleet (measured; incl. territories — the field is clean codes now, not the dirty mix the old "live ~33" note feared). The stale 30 meant a DB-down cold start published "30+ countries" via countries_verified_phrase — a 5.9x UNDER-claim, and resolve_canon() now serves this phrase on /api/v1/canon/phrases. Floors round DOWN; 170 <= 178. Re-floor downward if the fleet ever shrinks below it.
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
@@ -466,6 +470,30 @@ def _query_live() -> dict:
                 _live_keys.add("facilities_verified")
         except Exception:
             pass
+        # ★2026-09-20 THE CITEABLE COUNT — distinct buildings, no de-duplication
+        # -state filter. This module did not measure it at all, which is why
+        # main.py:23002 records "canonical_stats returns None for
+        # facilities_distinct" as its reason for re-deriving the number locally.
+        #
+        # WHY IT IS THE ONE TO PUBLISH. An is_duplicate-based count SUPPRESSES
+        # real facilities: routes/brain_consistency_radar's QA note measured
+        # 9,318 of 14,686 distinct facilities with NO is_duplicate=0 row at all,
+        # so the facility is invisible to any such count — the suppressed set
+        # named Meta Hyperion, Stargate Abilene, CoreWeave Project Horizon and
+        # Microsoft Wisconsin. /api/v1/stats/canonical's own `purpose` and
+        # /api/v1/stats' _facility_count_notes.primary both say facilities_
+        # distinct is THE FIELD TO CITE. Canon published the keeper count
+        # instead and under-claimed by ~1,500 buildings.
+        try:
+            cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                        "FROM discovered_facilities "
+                        "WHERE canonical_slug IS NOT NULL")
+            n = int((cur.fetchone() or [0])[0] or 0)
+            if n > 0:
+                out["facilities_distinct"] = n
+                _live_keys.add("facilities_distinct")
+        except Exception:
+            pass
         # Distinct countries we have facilities in.
         try:
             cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
@@ -773,6 +801,19 @@ def facilities_with_keeper_distinct_phrase() -> str:
     return _floor_phrase(_v, step=100)
 
 
+def facilities_distinct_phrase() -> str:
+    """The CITEABLE facility floor, e.g. '24,400+' — distinct buildings.
+
+    COUNT(DISTINCT canonical_slug) with no de-duplication-state filter. This is
+    what resolve_canon() and _PUBLIC_FLOOR_SPECS both publish as of 2026-09-20;
+    the keeper-count helper below remains for callers that genuinely want the
+    narrower population."""
+    _v = _read_metric(get_canonical_stats(), "facilities_distinct")
+    if _v is None:
+        _v = _FALLBACK["facilities_distinct"]
+    return _floor_phrase(_v, step=100)
+
+
 def facilities_verified_phrase() -> str:
     """DEPRECATED ALIAS of facilities_with_keeper_distinct_phrase().
 
@@ -1025,8 +1066,13 @@ _PUBLIC_FLOOR_SPECS = {
     # facilities_verified alias. Same number; this map is what turns it into
     # canon's published `facilities` phrase, so it is the one place the honest
     # name has to win.
-    "facilities": ("facilities_with_keeper_distinct",
-                   lambda n: _floor_phrase(n, step=100)),
+    # ★2026-09-20 REBASED onto facilities_distinct. It used to read the keeper
+    # count, which is a DE-DUPLICATION state and suppresses ~1,500 real
+    # buildings (see _query_live). Both /api/v1/stats and
+    # /api/v1/stats/canonical name facilities_distinct as the citeable field;
+    # canon now agrees with them. The floor RISES 22,900+ -> 24,400+, which the
+    # raise-only overlay accepts.
+    "facilities": ("facilities_distinct", lambda n: _floor_phrase(n, step=100)),
     "countries":  ("countries_verified",  _countries_floor),
     "markets":    ("markets",             _markets_floor),
     "deals":      ("deals",               _deals_floor),

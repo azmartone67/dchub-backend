@@ -1,3 +1,7 @@
+# ★2026-09-20: these fixtures warm `facilities_distinct`, not
+# `facilities_verified`. canon's facilities floor was REBASED onto the
+# citeable distinct-building count, so warming the old metric leaves the
+# floor on its 400 seed and every assertion below tests the fallback.
 """/agent must follow the resolver, not the pinned literal.
 
 MEASURED THE HOUR #3196 DEPLOYED. The derivation landed and four surfaces
@@ -59,7 +63,7 @@ _SYNTH, _SYNTH_PHRASE = 12_345, "12,300+"
 def test_the_landing_serves_the_resolver_not_the_pin(stats_state):
     """THE guard for what was measured live. If agent_landing ever goes back to
     substituting off PINNED, this is the test that fails."""
-    _warm(facilities_verified=_SYNTH)
+    _warm(facilities_distinct=_SYNTH)
     body = _body()
     assert _SYNTH_PHRASE in body
     assert asc.PINNED["public"]["facilities"] not in body, (
@@ -98,7 +102,7 @@ def test_no_placeholder_ever_escapes_to_an_agent(stats_state, mode):
         cs._cache, cs._cache_ts = None, 0.0
         cs._live_keys.clear()
     else:
-        _warm(facilities_verified=_SYNTH, countries_verified=178,
+        _warm(facilities_distinct=_SYNTH, countries_verified=178,
               markets=306, deals=1_931)
     body = _body()
     assert "{canon_" not in body
