@@ -1431,12 +1431,15 @@ def _tier_cross_check(cur, api_key, user_email, want_metered=False):
     it. mcp_dev_keys.tier is the caller's job (it owns the key row); this
     returns the other two sources plus the metered flag.
 
-    Returns (plan_tier, api_key_tier, metered_over). Caller owns the
-    cursor and the fail-soft guard — every lookup here is advisory.
+    Returns (plan_tier, api_key_tier, metered_over, demote_reason).
+    demote_reason is non-None only when this account HAS a plan of record and
+    the authority resolved it to free — see the demote block below. Caller owns
+    the cursor and the fail-soft guard — every lookup here is advisory.
     """
     plan_tier = None
     api_key_tier = None
     metered_over = False
+    demote_reason = None
 
     # users.plan via email join (most paying customers).
     #
@@ -1481,14 +1484,53 @@ def _tier_cross_check(cur, api_key, user_email, want_metered=False):
         ur = cur.fetchone()
         if ur:
             _plan, _status, _role, _demoted_at = ur[0], ur[1], ur[2], ur[3]
+            _authority = None
             try:
-                from api_tier_gating import resolve_effective_plan
-                _eff = resolve_effective_plan(
-                    _plan or 'free', _status or '', _role or '', _demoted_at)
+                from api_tier_gating import resolve_effective_plan as _authority
+                _eff = _authority(_plan or 'free', _status or '', _role or '', _demoted_at)
             except Exception:
+                _authority = None
                 _eff = (_plan or '') if (_status or '') in ('active', 'trialing') else ''
             if _eff:
                 plan_tier = _eff.lower()
+
+            # r-auth-demoted (2026-09-20): this account HAS a plan of record and
+            # the authority resolved it to free. It is the one outcome the MCP
+            # layer cannot see for itself — served tier 'free' with valid:true,
+            # byte-identical to a caller who never paid — so this is the only
+            # place in the system where the difference exists.
+            #
+            # ★ THE REASON IS ASKED OF THE AUTHORITY, NOT RESTATED. Re-resolving
+            # WITHOUT the demote stamp says which of its branches fired: still
+            # paid without the stamp -> the stamp pulled them down (dunning);
+            # free either way -> the status did (canceled/unpaid). Hand-copying
+            # those branches here would be the FOURTH restatement of the rule
+            # #4877, #4903 and #4950 removed three of, and it would drift the
+            # first time a branch is added.
+            #
+            # ★ SILENT WITHOUT THE AUTHORITY — STRUCTURALLY, NOT DEFENSIVELY.
+            # Labelling a demote off the fallback allowlist would be a guess
+            # reported as a fact: that allowlist has no demote concept at all.
+            # It cannot happen, and no extra guard is needed to stop it. When the
+            # authority is absent _eff is the fallback, which yields the PLAN for
+            # an active/trialing account and '' otherwise — never the literal
+            # 'free'. So the first condition below is already false, except where
+            # _plan is itself 'free', which the second condition then rejects.
+            # The block is therefore reachable ONLY when _authority answered, and
+            # only then is it called again.
+            #
+            # Two earlier attempts here wrapped this in an availability check and
+            # a try/except. Mutation testing killed neither — they could not
+            # change an outcome, because they sat on a path nothing reaches. Dead
+            # defensive code reads as protection while protecting nothing, and it
+            # hid that the real guarantee is the condition right here.
+            if ((_eff or '').lower() == 'free'
+                    and (_plan or '').lower() not in ('', 'free')):
+                _unstamped = _authority(
+                    _plan or 'free', _status or '', _role or '', None)
+                demote_reason = ('dunning_demote'
+                                 if (_unstamped or 'free').lower() != 'free'
+                                 else 'canceled')
 
     # api_keys.rate_limit_tier (covers enterprise/research_seed keys
     # minted outside the Stripe flow). 2026-07-30: this SELECTed by
@@ -1527,7 +1569,7 @@ def _tier_cross_check(cur, api_key, user_email, want_metered=False):
         except Exception:
             metered_over = False
 
-    return plan_tier, api_key_tier, metered_over
+    return plan_tier, api_key_tier, metered_over, demote_reason
 
 
 def resolve_effective_node_tier(api_key):
@@ -1555,7 +1597,7 @@ def resolve_effective_node_tier(api_key):
             if row and row[2] == "active":
                 user_email = row[0]
                 mcp_tier = (row[1] or "free").lower()
-            plan_tier, api_key_tier, _ = _tier_cross_check(cur, key, user_email)
+            plan_tier, api_key_tier, _, _ = _tier_cross_check(cur, key, user_email)
     except Exception as e:
         try:
             import logging as _lg
@@ -1799,12 +1841,13 @@ def validate_key():
     plan_tier = None
     api_key_tier = None
     _metered_over = False
+    _demote_reason = None
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             # Both other tier sources + the metered flag, in one place —
             # see _tier_cross_check above. Extracted so the monthly-quota
             # gate resolves tiers the SAME way instead of re-deriving them.
-            plan_tier, api_key_tier, _metered_over = _tier_cross_check(
+            plan_tier, api_key_tier, _metered_over, _demote_reason = _tier_cross_check(
                 cur, api_key, user_email, want_metered=True)
     except Exception:
         # fail-soft: stick with mcp_dev_keys.tier if cross-check fails
@@ -1856,6 +1899,20 @@ def validate_key():
         except Exception:
             _streak = None
 
+    # r-auth-demoted (2026-09-20): tell the MCP gateway when a GOOD key is being
+    # served below what its account bought. The gateway cannot work this out —
+    # it sees one tier and has nothing to compare it against — so if this hop
+    # stays silent the customer is served free-tier depth with nothing anywhere
+    # saying why. dchub-mcp-server #480 is the consumer (_authDemoted).
+    #
+    # ★ ONLY WHEN THE DEMOTE ACTUALLY COSTS THEM SOMETHING. demote_reason says
+    # users.plan resolved to free; effective_tier is the HIGHEST of three
+    # sources. A customer whose mcp_dev_keys.tier or api_keys.rate_limit_tier
+    # still carries them is being served paid, so nothing was lost and there is
+    # nothing to report — announcing a demote on a paid response would be a
+    # wrong label on a working call, and the gateway BRANCHES on this field.
+    _demoted = bool(_demote_reason) and effective_tier == "free"
+
     return jsonify({
         "valid":        True,
         "tier":         effective_tier,
@@ -1863,6 +1920,8 @@ def validate_key():
         "email":        row[1],
         "streak":       _streak,
         "metered_enforce": metered_enforce,
+        "demoted":      _demoted,
+        "demote_reason": _demote_reason if _demoted else None,
         "tier_source":  "highest_of_3" if effective_tier != mcp_tier else "mcp_dev_keys",
         "tier_detail":  {
             "mcp_dev_keys": mcp_tier,

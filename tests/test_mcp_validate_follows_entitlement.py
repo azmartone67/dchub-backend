@@ -128,7 +128,7 @@ def _user(plan="pro", status="active", role=None, demoted_at=None):
 ])
 def test_users_leg_follows_the_authority(status, demoted, paid, why):
     cur = _Cur(_user(status=status, demoted_at=demoted))
-    plan_tier, _api_tier, _metered = fme._tier_cross_check(cur, KEY, EMAIL)
+    plan_tier, _api_tier, _metered, _demote = fme._tier_cross_check(cur, KEY, EMAIL)
 
     # It must AGREE with the authority rather than reimplement it.
     expected = resolve_effective_plan("pro", status or "", "", demoted)
@@ -140,7 +140,7 @@ def test_the_dunning_customer_is_served_paid_at_the_node_gate():
     """The outcome that matters: an mcp_dev_keys row lagging at 'free', NO
     api_keys row, and a users.plan of 'pro' inside the dunning window."""
     cur = _Cur(_user(status="payment_failed"), api_key_tier=None)
-    plan_tier, api_key_tier, _ = fme._tier_cross_check(cur, KEY, EMAIL)
+    plan_tier, api_key_tier, _, _ = fme._tier_cross_check(cur, KEY, EMAIL)
 
     assert api_key_tier is None, "this cohort has no api_keys row — that is the point"
     assert fme._node_tier_max(["free", plan_tier, api_key_tier]) == "paid"
@@ -148,7 +148,7 @@ def test_the_dunning_customer_is_served_paid_at_the_node_gate():
 
 def test_a_canceled_account_is_not_widened_to_paid():
     cur = _Cur(_user(status="canceled"), api_key_tier=None)
-    plan_tier, api_key_tier, _ = fme._tier_cross_check(cur, KEY, EMAIL)
+    plan_tier, api_key_tier, _, _ = fme._tier_cross_check(cur, KEY, EMAIL)
     assert fme._node_tier_max(["free", plan_tier, api_key_tier]) == "free"
 
 
@@ -156,10 +156,10 @@ def test_a_demote_is_legible_rather_than_looking_like_a_missing_row():
     """tier_detail.users_plan is surfaced in the validate response. 'free'
     (this account resolves to free) must not read the same as None (no
     such user) — that distinction is the only demote signal the MCP has."""
-    demoted, _a, _m = fme._tier_cross_check(
+    demoted, _a, _m, _r = fme._tier_cross_check(
         _Cur(_user(status="payment_failed", demoted_at="2026-09-01T00:00:00Z")),
         KEY, EMAIL)
-    missing, _a, _m = fme._tier_cross_check(_Cur(None), KEY, EMAIL)
+    missing, _a, _m, _r = fme._tier_cross_check(_Cur(None), KEY, EMAIL)
     assert demoted == "free"
     assert missing is None
 
@@ -168,7 +168,7 @@ def test_an_admin_is_not_dropped_by_the_authority():
     """resolve_effective_plan answers 'admin', which _node_tier_max maps to
     enterprise. Carrying the raw plan instead would silently demote them."""
     cur = _Cur(_user(plan="pro", status="canceled", role="admin"))
-    plan_tier, _a, _m = fme._tier_cross_check(cur, KEY, EMAIL)
+    plan_tier, _a, _m, _r = fme._tier_cross_check(cur, KEY, EMAIL)
     assert plan_tier == "admin"
     assert fme._node_tier_max([plan_tier]) == "enterprise"
 
@@ -187,14 +187,14 @@ def test_the_users_select_no_longer_carries_its_own_allowlist():
 
 def test_the_api_keys_leg_is_untouched():
     cur = _Cur(user=None, api_key_tier="enterprise")
-    plan_tier, api_key_tier, _ = fme._tier_cross_check(cur, KEY, EMAIL)
+    plan_tier, api_key_tier, _, _ = fme._tier_cross_check(cur, KEY, EMAIL)
     assert plan_tier is None
     assert api_key_tier == "enterprise"
 
 
 def test_no_email_skips_the_users_leg_entirely():
     cur = _Cur(_user(), api_key_tier="founding")
-    plan_tier, api_key_tier, _ = fme._tier_cross_check(cur, KEY, None)
+    plan_tier, api_key_tier, _, _ = fme._tier_cross_check(cur, KEY, None)
     assert plan_tier is None
     assert not [s for s in cur.statements if "FROM users" in s]
     assert api_key_tier == "founding"
@@ -214,9 +214,9 @@ def test_a_broken_authority_falls_back_to_the_old_allowlist(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", no_auth)
 
-    ok, _a, _m = fme._tier_cross_check(_Cur(_user(status="active")), KEY, EMAIL)
+    ok, _a, _m, _r = fme._tier_cross_check(_Cur(_user(status="active")), KEY, EMAIL)
     assert ok == "pro", "an ordinary paid customer must survive the fallback"
 
-    dunning, _a, _m = fme._tier_cross_check(
+    dunning, _a, _m, _r = fme._tier_cross_check(
         _Cur(_user(status="payment_failed")), KEY, EMAIL)
     assert dunning is None, "a broken import must not WIDEN the grant"
