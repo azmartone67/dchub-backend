@@ -33424,6 +33424,15 @@ def _build_sitemap_sections():
         # shard so the static shard lists every hub.
         ('/markets', '0.8', 'weekly'),
         ('/ecosystem', '0.8', 'weekly'),
+        # 2026-09-19: /state-of-the-data-center — the annual report. Live
+        # since before the 2026-09-05 shard split and in NO shard: measured
+        # 09-19 against sitemap-static, -markets, -dcpi and -press, 0 hits in
+        # all four. It is the THIRD most-cited DC Hub page in Bing Copilot
+        # (82 of 581 citations over 6 months, 14%) behind /ecosystem and
+        # /platform, and Copilot found it without us ever submitting it.
+        # Qualifies on this list's own rule — measured as Googlebot 09-19:
+        # 200, zero redirects, self-canonical, no noindex, 877 words.
+        ('/state-of-the-data-center', '0.8', 'monthly'),
         ('/transaction-comps', '0.8', 'daily'),
         ('/ai-pipeline', '0.8', 'daily'),
         ('/ai-deals', '0.8', 'daily'),
