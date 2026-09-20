@@ -41,8 +41,13 @@ def leak_block():
 # ── the bug: counting a column that has never had a row ──────────────
 
 def test_stage4_no_longer_reads_the_dead_pair_code_column(leak_block):
+    # 2026-09-20: was `"mcp_pair_codes" not in leak_block`, which banned the
+    # NAME anywhere in the slice, not the QUERY this test's docstring is about.
+    # stage_sources now labels stage 3's source as that table — a label, not a
+    # read — and the bare-name ban failed on it. Pinned on the SQL instead; the
+    # dead column stays banned outright on the line above.
     assert "redeemed_at IS NOT NULL" not in leak_block
-    assert "mcp_pair_codes" not in leak_block
+    assert "FROM mcp_pair_codes" not in leak_block
 
 
 def test_stage4_reads_the_canonical_ledger(leak_block):

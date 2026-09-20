@@ -1425,14 +1425,43 @@ def funnel_leakage():
             except Exception:
                 try: c.rollback()
                 except Exception: pass
-            # Stage 2: paywall-hit signals
+            # Stage 2: paywall-hit signals — REAL callers only.
+            #
+            # 2026-09-20: this counted the RAW mcp_upgrade_signals table, while
+            # the canonical view built earlier in this same file carries the
+            # instruction "every reader queries this, not the raw table".
+            # mcp_funnel_real is mcp_funnel_canonical WHERE is_synthetic =
+            # FALSE, and the r-self-traffic note on that view records what the
+            # filter removes: 318 callers / 4,589 signals in 30d, ZERO of which
+            # ever converted or bound an email.
+            #
+            # So a demand metric was counting DC Hub's own probes, QA sweeps and
+            # monitors — callers that cannot convert by construction. The
+            # published signal-to-code rate got WORSE every time the platform
+            # added a monitor. Same defect as stage 4 (2026-07-27,
+            # tests/test_funnel_leakage_stage4.py), one stage earlier: right
+            # question, wrong source.
+            #
+            # View absent => UNMEASURED, never the raw count. Substituting the
+            # contaminated number on a fallback path would reinstate the bug
+            # exactly, and silently.
             try:
-                cur.execute(
-                    "SELECT COUNT(*) FROM mcp_upgrade_signals "
-                    "WHERE created_at >= NOW() - INTERVAL %s",
-                    (f"{days} days",),
-                )
-                out["stages"]["2_paywall_signals"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT to_regclass('public.mcp_funnel_real')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM mcp_funnel_real "
+                        "WHERE created_at >= NOW() - INTERVAL %s",
+                        (f"{days} days",),
+                    )
+                    out["stages"]["2_paywall_signals"] = int((cur.fetchone() or [0])[0] or 0)
+                    out["stage_2_source"] = "mcp_funnel_real (is_synthetic = FALSE)"
+                else:
+                    out["stages"]["2_paywall_signals"] = None
+                    out["stage_2_source"] = (
+                        "UNMEASURED - the mcp_funnel_real view is absent; run "
+                        "POST /api/v1/admin/schema/repair. The raw "
+                        "mcp_upgrade_signals count is deliberately NOT "
+                        "substituted: it counts our own traffic and is not demand.")
             except Exception:
                 try: c.rollback()
                 except Exception: pass
@@ -1520,7 +1549,7 @@ def funnel_leakage():
                     SELECT tool_requested,
                            COUNT(*) AS signals,
                            COUNT(DISTINCT session_id) AS distinct_sessions
-                      FROM mcp_upgrade_signals
+                      FROM mcp_funnel_real
                      WHERE created_at >= NOW() - INTERVAL %s
                      GROUP BY tool_requested
                      ORDER BY signals DESC
@@ -1556,6 +1585,29 @@ def funnel_leakage():
                 out["drop_codes_to_conversions_pct"] = round(100 * (1 - _cr / max(1, _cm)), 2)
             if _cr:
                 out["drop_conversions_to_paid_pct"] = round(100 * (1 - _pk / max(1, _cr)), 2)
+
+            # Only mcp_upgrade_signals has a canonical real-caller view, so
+            # stages 1 and 3 stay unfiltered and every rate that spans a
+            # filtered and an unfiltered stage compares two populations. Say so
+            # on the board: a reader who assumes one population across five
+            # stages reads self-traffic as lost demand, which is the reading
+            # that set priorities before this endpoint was corrected.
+            out["stage_sources"] = {
+                "1_tool_calls": {"source": "mcp_tool_calls", "real_callers_only": False},
+                "2_paywall_signals": {"source": out.get("stage_2_source"), "real_callers_only": True},
+                "3_codes_minted": {"source": "mcp_pair_codes", "real_callers_only": False},
+                "4_conversions": {"source": out.get("stage_4_source"), "real_callers_only": True},
+                "5_paid_keys": {"source": "api_keys (plan IN developer/pro/enterprise)",
+                                "real_callers_only": False},
+                "top_leak_tools": {"source": "mcp_funnel_real (is_synthetic = FALSE)",
+                                   "real_callers_only": True},
+            }
+            out["mixed_population_rates"] = [
+                "drop_calls_to_signals_pct",   # unfiltered calls vs real signals
+                "drop_signals_to_codes_pct",   # real signals vs unfiltered codes
+                "drop_codes_to_conversions_pct",  # unfiltered codes vs real conversions
+                "drop_conversions_to_paid_pct",   # real conversions vs unfiltered keys
+            ]
             out["stage_4_source"] = ("mcp_conversions (canonical ledger, non-test)"
                                      if _cr is not None else "UNMEASURED — ledger unreadable")
 
