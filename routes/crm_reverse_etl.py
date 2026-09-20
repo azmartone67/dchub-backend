@@ -703,10 +703,30 @@ def _dispatch_push(lead: dict) -> dict:
 
 # ── queue flush ──────────────────────────────────────────────────────
 
-def flush_outbound_queue(limit: int = 100) -> dict:
-    """Push queued rows to the configured CRM. Returns a summary.
+# ★2026-09-20: ONE definition of "not yet delivered".
+#
+# The flusher selected `status = 'queued'`. The stub path parks rows in
+# 'queued_export' (crawler_scheduler: "so the CSV export endpoint can vacuum
+# them later"), and the CSV export reads BOTH. So every row accumulated while
+# provider='stub' was invisible to the one job meant to drain it — permanently,
+# not until some retry.
+#
+# Measured the day a real provider was finally configured: 31 rows, all
+# 'queued_export', 24 of them paid_conversion, oldest 105 days. Setting
+# CRM_PROVIDER=hubspot changed nothing; `flush?limit=1` returned
+# {"ok": true, "pushed": 0, "failed": 0} and moved nothing. A green result
+# that means "I looked at zero rows" is the shape this codebase keeps
+# re-learning.
+#
+# 'queued_export' is not a terminal state — it means "parked because there was
+# nowhere to send it". Once there is somewhere, it is sendable.
+UNSENT_STATUSES = ("queued", "queued_export")
 
-    Idempotent: only picks status='queued' rows + bumps push_attempts.
+
+def flush_outbound_queue(limit: int = 100) -> dict:
+    """Push undelivered rows to the configured CRM. Returns a summary.
+
+    Idempotent: picks rows in UNSENT_STATUSES and bumps push_attempts.
     Rows with push_attempts >= 5 are skipped (marked status='failed')."""
     if DISABLE:
         return {"ok": True, "skipped": "disabled"}
@@ -725,9 +745,10 @@ def flush_outbound_queue(limit: int = 100) -> dict:
                           lead_last_name, attribution_chain, intent_score,
                           push_attempts
                      FROM crm_outbound_queue
-                    WHERE status = 'queued'
+                    WHERE status = ANY(%s)
                       AND push_attempts < 5
-                    ORDER BY captured_at ASC LIMIT %s""", (limit,))
+                    ORDER BY captured_at ASC LIMIT %s""",
+                (list(UNSENT_STATUSES), limit))
             rows = cur.fetchall() or []
         for r in rows:
             qid = int(r[0])
@@ -942,7 +963,8 @@ def admin_health():
                 cur.execute(
                     """SELECT EXTRACT(EPOCH FROM (NOW() - MIN(captured_at)))/3600.0
                          FROM crm_outbound_queue
-                        WHERE status IN ('queued', 'queued_export')""")
+                        WHERE status = ANY(%s)""",
+                    (list(UNSENT_STATUSES),))
                 row = cur.fetchone()
                 if row and row[0] is not None:
                     oldest_queued_age_h = round(float(row[0]), 1)
@@ -951,7 +973,7 @@ def admin_health():
         finally:
             _return(c)
     configured, config_gap = _destination_state()
-    queued = sum(v for k, v in counts.items() if str(k).startswith("queued"))
+    queued = sum(v for k, v in counts.items() if k in UNSENT_STATUSES)
     return jsonify(
         ok=True,
         provider=CRM_PROVIDER,
@@ -1065,8 +1087,8 @@ def admin_export_csv():
                           lead_last_name, intent_score, status,
                           attribution_chain
                      FROM crm_outbound_queue
-                    WHERE status IN ('queued', 'queued_export')
-                    ORDER BY captured_at DESC""")
+                    WHERE status = ANY(%s)
+                    ORDER BY captured_at DESC""", (list(UNSENT_STATUSES),))
             rows = cur.fetchall() or []
     finally:
         _return(c)
