@@ -19484,11 +19484,29 @@ def handle_invoice_paid(invoice):
                          AND demoted_at IS NOT NULL)""",
             (customer_id,),
         )
+        # ★2026-09-20 — `AND demoted_at IS NOT NULL` added so this matches the
+        # api_keys UPDATE above EXACTLY. The two disagreed: that one requires a
+        # non-NULL demoted_at, this one did not. So a row carrying
+        # demoted_reason='dunning_prior_payer' with a NULL demoted_at had its
+        # REASON erased while its tier stayed on free — and the reason is what a
+        # later restore matches on, so that state could never be recovered by
+        # any subsequent invoice.paid. The evidence was destroyed by the very
+        # statement that failed to act on it.
+        #
+        # The invariant is now: NEVER CLEAR THE STAMP OF A DEMOTE YOU DID NOT
+        # UNDO. Both statements select the same rows, so the pair either acts or
+        # does not, and an inconsistent row keeps its reason and stays visible
+        # to whoever looks next.
+        #
+        # Deliberately NOT fixed the other way — dropping the guard from the
+        # api_keys UPDATE would restore a tier from a demote that was never
+        # properly stamped, i.e. act on incomplete state rather than decline to.
         _pg_execute(
             """UPDATE users
                   SET demoted_at = NULL, demoted_reason = NULL
                 WHERE stripe_customer_id = %s
-                  AND demoted_reason = 'dunning_prior_payer'""",
+                  AND demoted_reason = 'dunning_prior_payer'
+                  AND demoted_at IS NOT NULL""",
             (customer_id,),
         )
     except Exception as e:

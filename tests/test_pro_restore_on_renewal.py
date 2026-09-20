@@ -214,20 +214,57 @@ def test_restore_follows_api_keys_plan_even_when_plan_was_lowered(harness):
     )
 
 
-def test_a_stamp_with_no_demoted_at_is_cleared_without_restoring(harness):
-    """★ CHARACTERISATION — an asymmetry between the two statements.
+def test_a_stamp_is_never_cleared_by_a_restore_that_did_not_happen():
+    """★ THE FIX, 2026-09-20. Was a CHARACTERISATION; now a requirement.
 
-    The api_keys UPDATE requires `demoted_at IS NOT NULL`; the users UPDATE does
-    NOT. So a row carrying demoted_reason='dunning_prior_payer' with a NULL
-    demoted_at has its REASON erased while its tier is left on free — and with
-    the reason gone, no later invoice.paid can restore it.
+    The two statements used to disagree: the api_keys UPDATE requires
+    `demoted_at IS NOT NULL`, the users UPDATE did not. So a row carrying
+    demoted_reason='dunning_prior_payer' with a NULL demoted_at had its REASON
+    erased while its tier stayed on free — and since the reason is what a later
+    restore matches on, no subsequent invoice.paid could ever recover it. The
+    statement that declined to act destroyed the evidence that it should have.
 
-    The demote writes both fields together, so this needs a partial write or a
-    manual edit to occur. Recorded because the guard that would notice it does
-    not exist, not because the shape is intended. If the two WHERE clauses are
-    brought into agreement, CHANGE THIS TEST."""
+    The invariant is now: NEVER CLEAR THE STAMP OF A DEMOTE YOU DID NOT UNDO.
+    The row stays untouched and stays visible."""
+    harness = _Harness()
+    sqlite_mirror = sqlite3.connect(":memory:")
+    sqlite_mirror.executescript(
+        "CREATE TABLE users (stripe_customer_id TEXT, invoices_paid_count INTEGER,"
+        " payment_failed_count INTEGER, subscription_status TEXT);")
+    handler = _load_handler({
+        "STRIPE_AVAILABLE": False, "stripe": None,
+        "_pg_execute": harness.pg_execute,
+        "get_db": lambda: sqlite_mirror,
+        "_sync_tables_bg": lambda *a, **k: None,
+        "note_swallowed_write": lambda *a, **k: None,
+    })
     harness.add_user(1, reason="dunning_prior_payer", demoted_at=None,
                      tier="free", plan="pro")
-    harness.handler(_invoice())
-    assert harness.key(1)["rate_limit_tier"] == "free"
-    assert harness.user(1)["demoted_reason"] is None
+    handler(_invoice())
+    assert harness.key(1)["rate_limit_tier"] == "free", (
+        "restored a tier from a demote that was never properly stamped"
+    )
+    assert harness.user(1)["demoted_reason"] == "dunning_prior_payer", (
+        "the reason was erased without the tier being restored — the row can "
+        "no longer be found by any later restore"
+    )
+
+
+def test_a_normal_restore_still_clears_the_stamp():
+    """The narrowing must not strand the rows it was never about."""
+    harness = _Harness()
+    sqlite_mirror = sqlite3.connect(":memory:")
+    sqlite_mirror.executescript(
+        "CREATE TABLE users (stripe_customer_id TEXT, invoices_paid_count INTEGER,"
+        " payment_failed_count INTEGER, subscription_status TEXT);")
+    handler = _load_handler({
+        "STRIPE_AVAILABLE": False, "stripe": None,
+        "_pg_execute": harness.pg_execute,
+        "get_db": lambda: sqlite_mirror,
+        "_sync_tables_bg": lambda *a, **k: None,
+        "note_swallowed_write": lambda *a, **k: None,
+    })
+    harness.add_user(1, reason="dunning_prior_payer", tier="free", plan="pro")
+    handler(_invoice())
+    assert harness.key(1)["rate_limit_tier"] == "pro"
+    assert harness.user(1) == {"demoted_at": None, "demoted_reason": None}
