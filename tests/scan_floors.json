@@ -97,6 +97,9 @@
     "test_cron_selftraffic_ua.py": {
       "glob": 140
     },
+    "test_curated_openapi_contract.py": {
+      "pglob": 2290
+    },
     "test_cursor_doubles_match_the_wrapper.py": {
       "pglob": 950
     },
