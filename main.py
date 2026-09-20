@@ -5931,6 +5931,66 @@ def phase14c_health_aggregate():
                     out['checks']['user_acquisition'] = check
         except Exception as e:
             out['checks']['user_acquisition'] = {'status': 'unknown', 'error': str(e)[:200]}
+        # crm_export — 2026-09-20. THE 105-DAY SILENCE.
+        # /api/v1/admin/crm/health already computes this exactly and correctly:
+        # `stalled: true`, with the reason spelled out ("31 lead(s) queued but no
+        # CRM destination is configured"). Measured 2026-09-20: NOTHING READ IT.
+        # 31 rows had been sitting in crm_outbound_queue since 2026-06-07 —
+        # 2,512 hours — and 24 of them were paid_conversion. Three of the four
+        # payers found with no MCP access that day were IN this queue, at
+        # intent_score 100, captured seconds after they paid. The follow-up path
+        # for paying customers was stalled for three and a half months and the
+        # only surface that knew said so to nobody.
+        # ★ Deliberately reads the TABLE, not /api/v1/admin/crm/health — a health
+        #   endpoint that calls another admin endpoint adds an auth hop and a
+        #   timeout inside the one probe that must always answer.
+        try:
+            cur.execute("""
+                SELECT COUNT(*) AS n,
+                       MIN(captured_at) AS oldest,
+                       COUNT(*) FILTER (WHERE event_type = 'paid_conversion') AS paid
+                  FROM crm_outbound_queue
+                 WHERE status IN ('queued', 'queued_export')
+            """)
+            row = cur.fetchone() or {}
+            n = int(row.get('n') or 0)
+            oldest = row.get('oldest')
+            age_h = None
+            if oldest is not None:
+                if isinstance(oldest, str):
+                    try: oldest = _dt.datetime.fromisoformat(oldest.replace('Z', '+00:00'))
+                    except Exception: oldest = None
+                if oldest is not None and hasattr(oldest, 'replace'):
+                    # Aware-to-aware. The lanes above this one compare against a
+                    # naive utcnow(); those lines are grandfathered and this one
+                    # is not, and matching their style is how a NEW naive-utcnow
+                    # violation gets introduced by looking consistent.
+                    if oldest.tzinfo is None:
+                        oldest = oldest.replace(tzinfo=_dt.timezone.utc)
+                    _now = _dt.datetime.now(_dt.timezone.utc)
+                    age_h = round((_now - oldest).total_seconds() / 3600.0, 1)
+            check = {'queued': n, 'paid_conversions_queued': int(row.get('paid') or 0),
+                     'oldest_age_hours': age_h}
+            # A queue is only healthy when it DRAINS. Age is the signal, not depth:
+            # a destination that works keeps the oldest row young no matter how
+            # many arrive. 48h is generous for a path whose rows are paying
+            # customers; 7 days means nobody is coming.
+            if age_h is None:
+                check['status'] = 'green'
+            elif age_h >= 168:
+                check['status'] = 'red'
+            elif age_h >= 48:
+                check['status'] = 'yellow'
+            else:
+                check['status'] = 'green'
+            if check['status'] == 'red':
+                out['status'] = 'red'
+            elif check['status'] == 'yellow' and out['status'] == 'green':
+                out['status'] = 'yellow'
+            out['checks']['crm_export'] = check
+        except Exception as e:
+            # Unknown, never green — an unreadable queue is not an empty one.
+            out['checks']['crm_export'] = {'status': 'unknown', 'error': str(e)[:200]}
         out['checks']['database'] = {'status': 'green', 'note': 'connection ok'}
         # Check 4: funnel leak — many signals, zero conversions = yellow
         try:
