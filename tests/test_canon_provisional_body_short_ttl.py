@@ -11,11 +11,12 @@ MEASURED 2026-09-09: cf-cache-status HIT, age 1741, serving facilities "20,700+"
 while this origin was already warm at "21,200+". The floors resolver itself warms
 in 7.6-15.5s; the 300s memo was turning that ~10s condition into a 5-minute one.
 
-★ The discriminator reads ONLY the floor keys. substations / fiber_routes /
-transmission_lines / assets are "pinned" on a perfectly WARM bundle by design —
-they are not in _PUBLIC_FLOOR_KEYS, so the overlay can never mark them live.
-Treating them as evidence would make EVERY body look provisional and pin the
-short TTL on forever, which is why the warm case below is as load-bearing as the
+★ The discriminator reads ONLY the floor keys, and since 2026-09-19 that is a
+deliberate narrowing rather than the overlay's reach. The overlay now heals every
+key in PINNED['public'], so assets / substations / fiber_routes /
+transmission_lines DO go live once measured; this predicate still ignores them
+because a warm asset layer must not certify a bundle whose citation-critical
+floors are all still pinned. The warm case below stays as load-bearing as the
 cold ones.
 """
 import routes.canon_phrases as cp
