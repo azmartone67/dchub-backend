@@ -311,7 +311,22 @@ PINNED = {
         #    served 21,900+; the repo's own static artifacts and every cold
         #    window still published 21,500+ — a 531-building under-claim on
         #    exactly the reads that land on a cold process.
-        "facilities": "21,900+",
+        # ★2026-09-20: 21,900+ -> 24,400+. #4924 rebased the published floor off
+        #  the keeper count onto facilities_distinct, so canon serves 24,400+
+        #  while this COLD-START pin still said 21,900+ — a 2,500 under-claim on
+        #  every freshly booted worker, and observed live: one probe that hour
+        #  caught a cold worker serving 21,900+ between reads of 24,400+.
+        #  Floors round DOWN and must never exceed reality: live
+        #  facilities_distinct measured 24,449, so 24,400 <= 24,449.
+        #  ★ "24,400+" is NOT on stale_markers below (checked against the loaded
+        #  module, 42 entries), so this bump does not denylist the phrase canon
+        #  now resolves to — the self-poisoning the 09-02 note records.
+        #  ★ brain_consistency_radar's comparison MOVED WITH THIS. It convicted
+        #  the pin against canonical_stats.facilities_verified, which #4917
+        #  renamed to the KEEPER count (~22,949): 24,400 > 22,949 would have
+        #  fired canonical_floor_above_live_reality ~1,451 times and told a
+        #  human to undo this walk. Same population, or no verdict.
+        "facilities": "24,400+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every

@@ -256,10 +256,10 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     #   every walk above: neither new value collides with them
     #   (test_retired_lists_do_not_contain_the_current_canon), and 21,500+/2,100+
     #   were canon until today, not the live-wrong floors those lists ban.
-    # ★ RISEN_FACILITIES in tests/test_agents_md_live_floors.py WAS re-based in
-    #   the same commit: it was "21,900+", which this pin now equals, and that
-    #   file asserts it rises ABOVE the pin.
-    assert CANON_FACILITIES == "21,900+", (
+    # ★ RISEN_FACILITIES in tests/test_agents_md_live_floors.py IS re-based in
+    #   the same commit, every time. 2026-09-20: 22,400+ -> 24,900+, because
+    #   this pin walked to 24,400+ and that file asserts RISEN sits ABOVE it.
+    assert CANON_FACILITIES == "24,400+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
     assert CANON_DEALS == "2,200+", (

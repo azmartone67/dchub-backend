@@ -12265,7 +12265,16 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
                     # the fence cannot drift away from the floor a second time.
                     # `live` is already the fresh canonical read from the top of
                     # this function, so this costs no extra round trip.
-                    _fv, _fv_fb = live.get("facilities_verified"), fb.get("facilities_verified")
+                    # ★2026-09-20: facilities_DISTINCT, not facilities_verified.
+                    # #4924 rebased canon's published floor onto
+                    # facilities_distinct; #4917 left facilities_verified naming
+                    # the KEEPER count. Comparing a distinct-basis floor against a
+                    # keeper-basis measurement is the SAME defect the 2026-08-09
+                    # note above records — the fence measuring a different
+                    # population than the floor it fences, which fired 1,436 times.
+                    # With the pin at 24,400+ and the keeper count ~22,949 it would
+                    # have convicted an honest floor ~1,451 times over.
+                    _fv, _fv_fb = live.get("facilities_distinct"), fb.get("facilities_distinct")
                     if _fv is not None and int(_fv) != int(_fv_fb or -1):
                         # differs from the fallback => the canonical query really
                         # answered. If it did NOT, omit the key: an unanswered
