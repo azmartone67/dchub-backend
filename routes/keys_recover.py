@@ -227,18 +227,48 @@ def _lookup_and_send(email: str, connect=None) -> str:
         with connect() as conn:
             with conn.cursor() as cur:
                 # 1) Paid account? Send the dashboard sign-in link, not a key.
+                #
+                # ★2026-09-19 — THIS DECIDES PAID-VS-FREE ON `plan` ALONE, and
+                # it FAILS CLOSED. Both properties are load-bearing and neither
+                # was true before.
+                #
+                # This branch exists to withhold the key from a paid account
+                # ("For security we don't email paid keys", module docstring).
+                # It previously also required subscription_status = 'active',
+                # which made the WITHHOLDING narrower than the set of accounts
+                # it is meant to protect: billing state is not entitlement.
+                # api_tier_gating.resolve_effective_plan keeps a customer paid
+                # through a dunning window while subscription_status reads
+                # something other than 'active', so an account the platform
+                # still serves as paid did not match here, and the branches
+                # below — whose whole job is to mail a key in the clear —
+                # decided the outcome instead. A guard whose predicate is
+                # STRICTER than the population it guards is not a guard.
+                #
+                # `plan` is the right predicate precisely because it does not
+                # track billing: it names what the account IS. A lapsed payer
+                # keeps their plan name, so they keep the protection, which is
+                # the safe direction. The cost is that an account whose plan
+                # was never reset after a genuine downgrade gets the sign-in
+                # route rather than its free key — a worse email, not a
+                # disclosure.
+                paid_undetermined = False
                 try:
                     cur.execute(
                         "SELECT plan FROM users "
                         "WHERE LOWER(email) = %s "
                         "  AND COALESCE(plan,'free') IN ('pro','founding','enterprise','starter','developer') "
-                        "  AND COALESCE(subscription_status,'') = 'active' "
                         "LIMIT 1",
                         (email,),
                     )
                     prow = cur.fetchone()
                 except Exception:
+                    # ★ FAIL CLOSED. This used to set prow = None and carry on,
+                    # so a transient failure of the question "is this account
+                    # paid?" was answered as "no" — and the fallthrough mailed
+                    # a key. Unknown is not free: stop here instead.
                     prow = None
+                    paid_undetermined = True
                     unread = True
                 if prow:
                     # r-onboarding-fix (2026-07-03, defect #14): email the paid
@@ -267,6 +297,11 @@ def _lookup_and_send(email: str, connect=None) -> str:
                         _send(email, "Recover your DC Hub access",
                               _recover_html_signin(email))
                     return "sent"
+
+                # ★ An unanswerable paid check must not fall through to the
+                # branches below, which send a key in the clear.
+                if paid_undetermined:
+                    return "unknown"
 
                 # 2) Pure free key bound to this email.
                 try:
