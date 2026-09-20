@@ -137,20 +137,33 @@ def test_resolver_escapes_the_literal_percent():
 
 
 def test_resolver_fails_open_never_raises():
-    """A telemetry classifier must never break the signal write."""
+    """A telemetry classifier must never break the signal write.
+
+    ★2026-09-20: this test used to require the handler to `return False`, on
+    the stated grounds that "an unclassified row is one the backfill picks
+    up". It is not. The backfill fires `WHERE self_traffic IS NULL`, so a False
+    written here is PERMANENT and the row is published as real demand forever.
+
+    The intent is kept and tightened. Failing OPEN means never asserting TRUE
+    on an error — that is what would silently delete real demand. None is the
+    honest open state: mcp_funnel_canonical treats NULL as not-self, so the row
+    publishes exactly as a False would, and it stays healable."""
     _, tree = _tree(SIGNAL_SRC)
     fn = _func(tree, "_resolve_self_traffic")
     handlers = [h for n in ast.walk(fn) if isinstance(n, ast.Try) for h in n.handlers]
     assert handlers, "_resolve_self_traffic has no except handler — a DB blip " \
                      "would propagate into record_signal and lose the signal"
-    returns_false = any(
-        isinstance(st, ast.Return) and isinstance(st.value, ast.Constant)
-        and st.value.value is False
-        for h in handlers for st in ast.walk(h))
-    assert returns_false, (
-        "the except handler must `return False` (fail OPEN — an unclassified "
-        "row is one the backfill picks up; failing closed would silently "
-        "exclude real demand)")
+    returned = [st.value.value for h in handlers for st in ast.walk(h)
+                if isinstance(st, ast.Return) and isinstance(st.value, ast.Constant)]
+    assert returned, "the except handler must return a value, not fall through"
+    assert True not in returned, (
+        "the except handler must never return True — a DB blip would mark a "
+        "real caller as our own traffic and delete them from the funnel")
+    assert False not in returned, (
+        "the except handler must return None, not False: the backfill only "
+        "revisits NULL rows, so a False written on a transient DB error is "
+        "permanent and publishes our own traffic as demand")
+    assert None in returned
 
 
 def _ddl_statements():

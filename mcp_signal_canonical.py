@@ -61,7 +61,7 @@ def _compute_caller_id(*, user_email=None, session_id=None, mcp_client=None,
     return 'anon:' + hashlib.md5(seed.encode('utf-8')).hexdigest()[:24]
 
 
-def _resolve_self_traffic(session_id, mcp_client) -> bool:
+def _resolve_self_traffic(session_id, mcp_client):
     """Is this signal OUR OWN traffic? Written at INSERT time so the flag does
     not depend on someone remembering to POST /api/v1/admin/schema/repair.
 
@@ -86,9 +86,29 @@ def _resolve_self_traffic(session_id, mcp_client) -> bool:
     'dchub-internal' rows. "Any call in this session resolved to ours" is the
     correct semantic and catches 106 of the 112 CI callers.
 
-    Fails OPEN (returns False). A telemetry classifier must never block or
-    corrupt the signal write — an unclassified row is a row the periodic
-    backfill in routes/schema_repair.py will pick up.
+    ★★★ THREE-STATE, and the third state is the whole point (2026-09-20).
+    Returns True / False / None, where None means UNKNOWN — not external.
+
+    This used to return False both when the session's calls were provably not
+    ours AND when there was no evidence yet, and the write stored that False.
+    Two things then made it permanent:
+
+      * the backfill in routes/schema_repair.py only touches
+        `WHERE self_traffic IS NULL`, so a False row is never revisited, and
+      * mcp_call_log is written by a separate fire-and-forget /track request,
+        so on the FIRST signal of a session the evidence routinely has not
+        landed yet.
+
+    Net effect: the first signal of every self-traffic session could be latched
+    as real demand forever, on the board that sets priorities. The docstring
+    here promised "the periodic backfill will pick it up"; the backfill only
+    picks up NULLs, and nothing schedules it.
+
+    A telemetry classifier must still never block or corrupt the signal write,
+    so failure is non-fatal — it just records "unknown" honestly instead of
+    asserting "external". NULL is treated as not-self by mcp_funnel_canonical,
+    so an unresolved row publishes exactly as it did before; the difference is
+    that it stays HEALABLE.
     """
     # A client name that already self-identifies needs no lookup.
     c = (str(mcp_client or '')).strip().lower()
@@ -99,14 +119,20 @@ def _resolve_self_traffic(session_id, mcp_client) -> bool:
         return False
     try:
         with _conn() as conn, conn.cursor() as cur:
+            # bool_or over ZERO rows is NULL, which is exactly the third state
+            # we need: TRUE = a call in this session resolved to ours, FALSE =
+            # calls exist and none did, NULL = no call_log row for this session
+            # YET. One expression, one round trip, no second query to
+            # distinguish "no evidence" from "evidence says no".
             cur.execute(
-                """SELECT 1 FROM mcp_call_log
-                    WHERE session_id = %s
-                      AND LOWER(COALESCE(platform,'')) LIKE 'dchub-%%'
-                    LIMIT 1""", (sid,))
-            return cur.fetchone() is not None
+                """SELECT bool_or(LOWER(COALESCE(platform,'')) LIKE 'dchub-%%')
+                     FROM mcp_call_log
+                    WHERE session_id = %s""", (sid,))
+            row = cur.fetchone()
+            return row[0] if row else None
     except Exception:  # noqa: BLE001
-        return False
+        # Unknown, NOT external. See the docstring: a False here is permanent.
+        return None
 
 
 # ── SIGNAL CLASSES (2026-09-20) ──────────────────────────────────────────────

@@ -373,10 +373,18 @@ SCHEMA_STATEMENTS = [
               AND EXISTS (SELECT 1 FROM mcp_call_log l
                            WHERE l.session_id = s.session_id
                              AND LOWER(COALESCE(l.platform,'')) LIKE 'dchub-%')""",
-        # Everything else is explicitly NOT self-traffic, so the flag is
-        # three-state only for rows awaiting the next backfill.
+        # ★2026-09-20: this latch is PERMANENT — the TRUE backfill above only
+        # fires `WHERE self_traffic IS NULL`, so whatever this sets to FALSE can
+        # never be reconsidered. Unbounded, it raced the evidence: mcp_call_log
+        # is written by a separate fire-and-forget /track request, so a signal
+        # written seconds ago may have no call_log row yet, and this statement
+        # would freeze it as real demand for good.
+        # The grace window is the fix. Rows younger than it stay NULL — which
+        # mcp_funnel_canonical already treats as not-self, so nothing publishes
+        # differently — and get another chance on the next pass.
         """UPDATE mcp_upgrade_signals SET self_traffic = FALSE
-            WHERE self_traffic IS NULL""",
+            WHERE self_traffic IS NULL
+              AND created_at < NOW() - INTERVAL '1 hour'""",
         # The CANONICAL view: every reader queries this, not the raw table.
         "DROP VIEW IF EXISTS mcp_funnel_demand CASCADE",
         "DROP VIEW IF EXISTS mcp_funnel_callers CASCADE",
@@ -1467,6 +1475,52 @@ def funnel_leakage():
     out = {"days": days, "stages": {}, "top_leak_tools": []}
     try:
         with c.cursor() as cur:
+            # ★ HEAL BEFORE READING (2026-09-20, r-self-traffic-heal).
+            #
+            # self_traffic is resolved at INSERT time, but mcp_call_log is
+            # written by a SEPARATE fire-and-forget /track request, so the
+            # first signal of a session routinely has no evidence yet and is
+            # stored NULL (unknown). The only thing that ever promoted those
+            # NULLs was POST /api/v1/admin/schema/repair — a MANUAL admin route
+            # with no scheduler and no boot hook. Measured 2026-09-20: one
+            # manual POST moved 2_paywall_signals 1,280 -> 1,033 on its own,
+            # i.e. 247 signals of our own traffic had been published as demand
+            # simply because nobody had run it.
+            #
+            # A board that decays between manual invocations is a board whose
+            # every number is a function of when somebody last remembered. So
+            # the board heals itself, here, before it reads anything.
+            #
+            # ONLY promotes NULL -> TRUE. It never writes FALSE, so it cannot
+            # latch anything the way the repair's own statement once did, and a
+            # row it does not reach stays NULL — which mcp_funnel_canonical
+            # already treats as not-self. Bounded by an explicit LIMIT rather
+            # than a statement_timeout, because the pooler does not reliably
+            # honour a SET on a borrowed connection.
+            try:
+                cur.execute("""
+                    UPDATE mcp_upgrade_signals s
+                       SET self_traffic = TRUE
+                     WHERE s.id IN (
+                             SELECT s2.id FROM mcp_upgrade_signals s2
+                              WHERE s2.self_traffic IS NULL
+                                AND COALESCE(s2.session_id,'') <> ''
+                                AND s2.created_at >= NOW() - INTERVAL %s
+                              ORDER BY s2.created_at DESC
+                              LIMIT 5000)
+                       AND EXISTS (SELECT 1 FROM mcp_call_log l
+                                    WHERE l.session_id = s.session_id
+                                      AND LOWER(COALESCE(l.platform,''))
+                                          LIKE 'dchub-%%')
+                """, (f"{days} days",))
+                out["self_traffic_healed"] = cur.rowcount
+                c.commit()
+            except Exception:
+                # A heal that fails must never take the board down with it.
+                out["self_traffic_healed"] = None
+                try: c.rollback()
+                except Exception: pass
+
             # Stage 1: total tool calls
             try:
                 cur.execute(
@@ -1804,6 +1858,12 @@ def funnel_leakage():
                                                "(is_synthetic = FALSE)",
                                      "real_callers_only": True},
             }
+            out["self_traffic_heal_note"] = (
+                "self_traffic_healed = rows promoted NULL -> TRUE on THIS read. "
+                "None means the heal failed and the numbers below may include "
+                "our own traffic. A large value means the board had been "
+                "decaying; it is not new demand disappearing."
+            )
             out["composition_note"] = (
                 "top_leak_tools[].excluded_synthetic / generic_client_pct / "
                 "signals_per_session describe the POPULATION behind a rank, "
