@@ -189,3 +189,77 @@ def test_no_previously_published_key_was_dropped():
         "would have caught it")
     missing_sub = UPGRADE_SUBKEYS - set(r['_upgrade'])
     assert not missing_sub, f"_upgrade lost subkeys: {sorted(missing_sub)}"
+
+
+# ── the rung, not just the ladder ───────────────────────────────────────────
+
+def _resolve():
+    """Import the pure resolver out of main.py without importing main.py."""
+    import ast, types
+    src = (REPO / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_resolve_record_tier")
+    mod = types.ModuleType("_rt")
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "<rt>", "exec"), mod.__dict__)
+    return mod._resolve_record_tier
+
+
+def test_a_credential_less_caller_lands_on_anon_not_free():
+    """#4881 unified the ENVELOPE and left the tier resolution split. Measured
+    live after it deployed, same caller, same second:
+
+        /api/v1/facilities/8484   tier=free  3dp
+        /api/v1/facilities/8484/  tier=anon  2dp
+
+    get_facility_by_id seeded 'free' and accepted the canonical resolver only
+    when it said something other than 'anon', so a request with no credential
+    kept the seed. That handed the signup rung away to callers who had not
+    signed up.
+    """
+    r = _resolve()
+    assert r('free', 'anon', False) == 'anon', (
+        "a request carrying NO credential must land on the anon rung — "
+        "seeding 'free' and refusing to accept 'anon' gives it away")
+
+
+def test_the_resolver_may_not_downgrade_a_credentialed_caller():
+    """What r-corpusgate protected, and what must survive the fix: a paying
+    caller on a key the canonical resolver does not recognise keeps the plan
+    the local api_keys lookup found."""
+    r = _resolve()
+    assert r('pro', 'anon', True) == 'pro', "an internal/API-key caller was downgraded to anon"
+    assert r('developer', 'anon', True) == 'developer'
+
+
+def test_the_canonical_resolver_still_wins_when_it_knows_better():
+    r = _resolve()
+    assert r('free', 'pro', True) == 'pro', "the canonical resolver must be able to UPgrade"
+    assert r('free', 'developer', False) == 'developer'
+
+
+def test_no_resolution_falls_back_rather_than_inventing_a_tier():
+    r = _resolve()
+    assert r('free', '', True) == 'free'
+    assert r(None, '', False) == 'anon', "an unresolvable caller must fail to anon, not to free"
+
+
+def test_the_route_actually_assigns_the_resolver_result():
+    """The resolver is pure and unit-tested above, which proves nothing about
+    whether the handler uses it. Mutation-testing showed exactly that: changing
+    `caller_plan = _resolve_record_tier(...)` to `_unused = ...` left every
+    test in this file green while the route went back to serving the seed.
+    """
+    node = _func("get_facility_by_id")
+    assigns = [
+        n for n in ast.walk(node)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "caller_plan" for t in n.targets)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+        and n.value.func.id == "_resolve_record_tier"
+    ]
+    assert assigns, (
+        "get_facility_by_id does not assign _resolve_record_tier's result to "
+        "caller_plan — the tier it serves is whatever the local seed said, and "
+        "the unit tests above are measuring a function nothing calls")

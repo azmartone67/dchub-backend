@@ -23968,6 +23968,33 @@ def _fg_tier_of_request():
         return 'anon'
 
 
+def _resolve_record_tier(local_plan, resolved, has_credential):
+    """Which tier a single-record route serves. Pure, so it can be tested.
+
+    r-anonrung (2026-09-20): get_facility_by_id seeded `caller_plan = "free"`
+    and then accepted the canonical resolver only when it said something OTHER
+    than 'anon'. That one-way door was right when this route served no
+    coordinates — 'anon' and 'free' were indistinguishable here, and the guard's
+    job was to stop a paying caller being downgraded (r-corpusgate). Once
+    #4881 put the coordinate ladder on this route, 'anon' became a real rung,
+    and the door meant a caller with NO credential was served the free one:
+
+        /api/v1/facilities/8484   tier=free  3dp (~110 m)
+        /api/v1/facilities/8484/  tier=anon  2dp (~1.1 km)
+
+    same caller, same second, measured live after #4881 deployed.
+
+    So 'anon' is now accepted — but only from a request that carried no
+    credential at all. A request bearing an internal key or an API key is never
+    downgraded by the resolver, which is what r-corpusgate protected.
+    """
+    if not resolved:
+        return local_plan or 'anon'
+    if resolved == 'anon' and has_credential:
+        return local_plan or 'anon'
+    return resolved
+
+
 def _apply_record_gate(resp, tier):
     """Delegates to util.facility_tier_gate.apply_record_gate.
 
@@ -38636,8 +38663,12 @@ def get_facility_by_id(facility_id):
         try:
             from api_tier_gating import get_request_tier as _fid_tier
             _resolved = (_fid_tier() or '').lower()
-            if _resolved and _resolved != 'anon':
-                caller_plan = _resolved
+            # r-anonrung (2026-09-20): 'anon' is a REAL rung on this route now
+            # that the ladder is here, so the resolver is authoritative in both
+            # directions — except it may not downgrade a request that actually
+            # carried a credential. See _resolve_record_tier.
+            caller_plan = _resolve_record_tier(
+                caller_plan, _resolved, bool(is_internal or api_key))
         except Exception:
             pass
         # r-slashparity (2026-09-20): was a paid/free if-else with a hardcoded
