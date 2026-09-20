@@ -23951,6 +23951,47 @@ def facilities_state_status_counts():
 # ─── Aggregate endpoints for dashboard charts ────────────────────────────
 
 
+# r-slashparity (2026-09-20): one tier resolution and one envelope for every
+# single-facility route. Both imports stay LAZY inside the call — api_tier_gating
+# imports app config, and hoisting them to module scope reintroduces the import
+# cycle that made an earlier attempt fail closed on every request.
+def _fg_tier_of_request():
+    """The caller's tier for a single-record response, lowercased.
+
+    Fails to 'anon' rather than raising: a tier-resolution error must narrow
+    what is served, never widen it.
+    """
+    try:
+        from api_tier_gating import get_request_tier
+        return (get_request_tier() or 'anon').lower()
+    except Exception:
+        return 'anon'
+
+
+def _apply_record_gate(resp, tier):
+    """Delegates to util.facility_tier_gate.apply_record_gate.
+
+    Kept as a one-line indirection so every call site in this file names the
+    same symbol; the policy itself lives in the util module, not here. An import
+    failure fails CLOSED to the minimal anonymous record.
+    """
+    try:
+        from util.facility_tier_gate import apply_record_gate
+        return apply_record_gate(resp, tier)
+    except Exception:
+        # PULL, never ITERATE — same note as the util module's fallback.
+        from util.facility_tier_gate import MINIMAL_ANON_FIELDS
+        rec = resp.get('data') if isinstance(resp, dict) else None
+        safe = {}
+        for _k in MINIMAL_ANON_FIELDS:
+            try:
+                if rec is not None and _k in rec:
+                    safe[_k] = rec[_k]
+            except Exception:
+                continue
+        return {'success': True, 'data': safe, '_gated': True}
+
+
 @app.route('/api/v1/facility/<path:slug>', methods=['GET'])  # singular alias — frontend uses this
 @app.route('/api/v1/facilities/<path:slug>', methods=['GET'])
 def facility_by_slug(slug):
@@ -24101,29 +24142,7 @@ def facility_by_slug(slug):
                 # vocabulary, gated LAST for the same reason — normalize_
                 # coordinates must see raw values and verified_flag() reads
                 # is_duplicate, which the allow-list drops.
-                try:
-                    from util.facility_tier_gate import (
-                        gate_record as _fg_rec, coord_dp_for_tier as _fg_dp)
-                    from api_tier_gating import get_request_tier as _fg_tier
-                    _g_tier_id = (_fg_tier() or 'anon').lower()
-                    _g_data_id, _g_n_id = _fg_rec(_data_id, _g_tier_id)
-                    _resp_id['data'] = _g_data_id
-                    _g_prec_id = _fg_dp(_g_tier_id)
-                    if _g_prec_id is not None:
-                        _resp_id['_gated'] = True
-                        _resp_id['_coord_precision_dp'] = _g_prec_id
-                        _resp_id['_redacted_values'] = _g_n_id
-                        _resp_id['_upgrade_cta'] = (
-                            'Power capacity, operator, on-site fiber and exact '
-                            'coordinates require a Developer key — dchub.cloud/pricing')
-                        _resp_id['_pricing_url'] = 'https://dchub.cloud/pricing'
-                except Exception:
-                    # Fail CLOSED. An import error or a tier-resolution raise
-                    # must not be the thing that serves the full record.
-                    from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _fg_min
-                    _resp_id['data'] = {k: v for k, v in _data_id.items()
-                                        if k in _fg_min}
-                    _resp_id['_gated'] = True
+                _apply_record_gate(_resp_id, _fg_tier_of_request())
                 return jsonify(_resp_id)
             return jsonify({'success': False, 'error': 'Facility not found', 'id': slug}), 404
         except Exception as _e_id:
@@ -24378,31 +24397,7 @@ def facility_by_slug(slug):
         # see the raw values, and verified_flag() reads `is_duplicate`, which
         # the allow-list drops. Gating earlier would silently turn every
         # verified row into 'tracked'.
-        try:
-            from util.facility_tier_gate import (
-                gate_record as _fg_rec, coord_dp_for_tier as _fg_dp)
-            from api_tier_gating import get_request_tier as _fg_tier
-            _g_tier = (_fg_tier() or 'anon').lower()
-            _g_data, _g_n = _fg_rec(data, _g_tier)
-            _resp_slug['data'] = _g_data
-            _g_prec = _fg_dp(_g_tier)
-            if _g_prec is not None:
-                # Same vocabulary the /api/v1/map response already publishes,
-                # so a caller reading one surface can read both.
-                _resp_slug['_gated'] = True
-                _resp_slug['_coord_precision_dp'] = _g_prec
-                _resp_slug['_redacted_values'] = _g_n
-                _resp_slug['_upgrade_cta'] = (
-                    'Power capacity, operator, on-site fiber and exact '
-                    'coordinates require a Developer key — dchub.cloud/pricing')
-                _resp_slug['_pricing_url'] = 'https://dchub.cloud/pricing'
-        except Exception:
-            # Fail CLOSED. An import error or a tier-resolution raise must not
-            # be the thing that serves the full record.
-            from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _fg_min
-            _resp_slug['data'] = {k: v for k, v in data.items()
-                                  if k in _fg_min}
-            _resp_slug['_gated'] = True
+        _apply_record_gate(_resp_slug, _fg_tier_of_request())
         return jsonify(_resp_slug)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -38626,33 +38621,15 @@ def get_facility_by_id(facility_id):
                 caller_plan = _resolved
         except Exception:
             pass
-        if caller_plan in ("pro", "enterprise", "developer", "admin", "starter"):
-            # Full data for paid users
-            return jsonify({"success": True, "data": full_data})
-        else:
-            # Free tier: strip sensitive fields, show upgrade CTA.
-            # ★ The allow-list was a hardcoded tuple here — a THIRD copy of the
-            # field policy, and the one that omitted the coordinate ladder. It
-            # happened to withhold lat/lon entirely, which is tighter than the
-            # shared mask, so the shared mask is applied and then the local
-            # tuple intersected: this route does not loosen as a side effect of
-            # being unified.
-            from util.facility_tier_gate import gate_record as _fid_gate
-            _gated_data, _fid_n = _fid_gate(full_data, caller_plan or 'anon')
-            free_data = {k: v for k, v in _gated_data.items() if k in ("id", "name", "provider", "city", "state", "country", "status", "region", "permit_date", "permit_source")}
-            return jsonify({
-                "success": True,
-                "data": free_data,
-                "_user_facing_note": "\U0001f4a1 This is a free preview from DC Hub \u2014 showing basic fields only. Full data with coordinates, power capacity, and connectivity specs is available at dchub.cloud/developers",
-                "_upgrade": {
-                    "tier": "free",
-                    "message": "Developer plan ($49/mo) unlocks coordinates, power capacity, source, address, and nearby infrastructure.",
-                    "url": "https://dchub.cloud/pricing#developer",
-                    "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-                    "price": "$49/mo",
-                },
-
-            })
+        # r-slashparity (2026-09-20): was a paid/free if-else with a hardcoded
+        # allow-list tuple — the THIRD copy of the field policy, and the one the
+        # comment here already called out for omitting the coordinate ladder.
+        # Withholding lat/lon entirely looked tighter, but it is why this route
+        # and /api/v1/facilities/<id>/ served different free surfaces from the
+        # same row, and it gave a free claimed key nothing to buy. One envelope
+        # now, in util.facility_tier_gate, shared with facility_by_slug.
+        return jsonify(_apply_record_gate(
+            {'success': True, 'data': full_data}, caller_plan or 'anon'))
     except Exception as e:
         import traceback
         return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-300:]}), 500

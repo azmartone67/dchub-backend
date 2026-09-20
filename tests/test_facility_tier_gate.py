@@ -247,11 +247,32 @@ def _func(tree, name):
 @pytest.mark.parametrize('fn', GATED_HANDLERS)
 def test_handler_actually_imports_the_gate(fn):
     """An ImportFrom NODE, so prose in a comment cannot satisfy this."""
-    node = _func(_main_tree(), fn)
-    mods = {n.module for n in ast.walk(node) if isinstance(n, ast.ImportFrom)}
+    tree = _main_tree()
+    node = _func(tree, fn)
+
+    def _imports(n):
+        return {i.module for i in ast.walk(n) if isinstance(i, ast.ImportFrom)}
+
+    mods = _imports(node)
+    # r-slashparity (2026-09-20): follow ONE level of indirection. The
+    # single-record routes now import nothing themselves — they call
+    # _apply_record_gate, a module-level helper in main.py that does the
+    # import. The property this guard means ("the gate is in the handler's
+    # path") still holds; requiring the ImportFrom node to sit literally inside
+    # the handler would have forced the policy back into the routes, which is
+    # what produced three copies of it.
+    if 'util.facility_tier_gate' not in mods:
+        called = {c.func.id for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        for helper in called:
+            try:
+                h = _func(tree, helper)
+            except AssertionError:
+                continue
+            mods |= _imports(h)
     assert 'util.facility_tier_gate' in mods, (
-        f"{fn}() does not import util.facility_tier_gate — the gate is not in "
-        f"its path, whatever the comments say")
+        f"{fn}() does not reach util.facility_tier_gate, directly or through a "
+        f"main.py helper — the gate is not in its path, whatever the comments say")
 
 
 @pytest.mark.parametrize('fn', GATED_HANDLERS)
@@ -265,8 +286,14 @@ def test_handler_calls_the_gate(fn):
                 called.add(f.id)
             elif isinstance(f, ast.Attribute):
                 called.add(f.attr)
+    # r-slashparity (2026-09-20): the single-record routes no longer call
+    # gate_record directly — they call _apply_record_gate, the one envelope in
+    # main.py that delegates to util.facility_tier_gate.apply_record_gate.
+    # Naming both spellings keeps this guard measuring "the gate is in the
+    # path" rather than "this exact symbol appears".
     gate_calls = {'gate_record', 'gate_records', 'coarsen_coords_deep',
-                  '_fg_rec', '_fg_rows', '_sc_deep', '_fid_gate', '_sl_gate'}
+                  '_fg_rec', '_fg_rows', '_sc_deep', '_fid_gate', '_sl_gate',
+                  '_apply_record_gate', 'apply_record_gate'}
     assert called & gate_calls, f"{fn}() imports the gate but never calls it"
 
 
@@ -363,8 +390,16 @@ def test_no_handler_in_the_class_is_left_ungated():
                       'get_request_tier', 'caller_is_privileged',
                       'detect_tier_for_data_gate',
                       '_fg_rec', '_fg_rows', '_sc_deep', '_fid_gate', '_sl_gate',
-                      '_grt_fac', '_sl_tier', '_fg_tier', '_fid_tier'}
-        gated = bool(
+                      '_grt_fac', '_sl_tier', '_fg_tier', '_fid_tier',
+                      # r-slashparity (2026-09-20): the shared single-record
+                      # envelope. Calling it IS the gate.
+                      '_apply_record_gate', 'apply_record_gate',
+                      '_fg_tier_of_request'}
+        # A handler that calls the shared envelope reaches the module through
+        # it and need not import the module itself — requiring the import
+        # inside the handler is what would push the policy back into the routes.
+        _via_shared = bool(calls & {'_apply_record_gate', 'apply_record_gate'})
+        gated = _via_shared or bool(
             (mods & {'util.facility_tier_gate', 'api_tier_gating',
                      'routes.tier_gate'})
             and (calls & GATE_CALLS))
@@ -402,7 +437,13 @@ def test_every_returned_record_in_a_class_handler_is_gated():
     # particular response object as having been through the gate.
     GATE_MARKS = {'_gated', 'data'}
     GATE_CALLS = {'gate_record', 'gate_records', '_fg_rec', '_fg_rows',
-                  'coarsen_coords_deep', '_sc_deep', '_fid_gate', '_sl_gate'}
+                  'coarsen_coords_deep', '_sc_deep', '_fid_gate', '_sl_gate',
+                  '_apply_record_gate', 'apply_record_gate'}
+    # r-slashparity (2026-09-20): a response can now be gated IN PLACE —
+    # `_apply_record_gate(_resp_id, tier)` mutates and returns nothing. That is
+    # a bare Expr, not an Assign, so the re-keying rule below cannot see it.
+    # Passing the response INTO a gate call marks it gated too.
+    IN_PLACE_GATES = {'_apply_record_gate', 'apply_record_gate'}
 
     offenders = []
     for node in ast.walk(tree):
@@ -439,6 +480,12 @@ def test_every_returned_record_in_a_class_handler_is_gated():
                         and t.slice.value in GATE_MARKS):
                     if t.slice.value == '_gated' or (called & GATE_CALLS):
                         gated.add(t.value.id)
+        for n in ast.walk(node):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id in IN_PLACE_GATES):
+                for a in n.args:
+                    if isinstance(a, ast.Name):
+                        gated.add(a.id)
 
         for var in sorted(returned - gated):
             offenders.append(f"{node.name}:{var}")

@@ -230,3 +230,106 @@ def coarsen_coords_deep(obj, tier) -> int:
         elif isinstance(cur, list):
             stack.extend(cur)
     return n
+
+
+# ── the single-record response envelope ──────────────────────────────────────
+# r-slashparity (2026-09-20): three routes answered "one facility" and each
+# assembled its own envelope, so they served three different free surfaces from
+# the same row. Measured anonymous, cache-busted, the same minute:
+#
+#   /api/v1/facilities/8484    8 fields, NO coordinates, _upgrade
+#   /api/v1/facilities/8484/  10 fields, lat 39.02 (2dp),  _gated
+#   /api/v1/facility/<slug>   11 fields, lat 33.38 (2dp),  _gated
+#
+# The 8-field one was `get_facility_by_id`'s hardcoded tuple — the THIRD copy of
+# the field policy, the one its own comment called out for omitting the
+# coordinate ladder. Withholding coordinates entirely reads as "tighter", but it
+# collapses the anon->free rung this module exists to create: under the ladder a
+# free key sharpens 2dp (~1.1km) to 3dp (~110m), and a route that serves no
+# coordinates at all gives a claimed key nothing to buy.
+#
+# So the envelope lives HERE, once, and the routes call it. A route that builds
+# its own is how the drift happened; there is no second copy to keep in step.
+
+UPGRADE_CHECKOUT_URL = 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c'
+UPGRADE_PRICING_URL = 'https://dchub.cloud/pricing'
+UPGRADE_PRICE = '$49/mo'
+
+
+def apply_record_gate(resp, tier) -> dict:
+    """Gate resp['data'] IN PLACE and attach the tier markers. Returns resp.
+
+    Takes the response the route already built rather than returning a fresh
+    one, because both facility_by_slug branches attach a provenance block
+    (routes.provenance.attach_provenance) to the response BEFORE gating —
+    normalize_coordinates has to see raw values and verified_flag() reads
+    `is_duplicate`, which the mask drops. An earlier version of this returned a
+    new dict and the call sites assigned over theirs, silently discarding that
+    provenance block; the per-branch guard in
+    tests/test_facility_record_envelope_is_shared.py caught it.
+
+    Two marker vocabularies are emitted on purpose, and both are load-bearing:
+
+      _gated / _coord_precision_dp / _redacted_values / _upgrade_cta / _pricing_url
+          what the /api/v1/map surface already publishes, so a caller reading
+          one surface can read the other.
+      _upgrade
+          what the curated OpenAPI spec tells third-party catalogues to branch
+          on. Dropping it would break every generated connector.
+
+    Paid tiers get the full record and NO markers — `_upgrade` being absent is
+    the documented signal that nothing was withheld.
+    """
+    if not isinstance(resp, dict):
+        return resp
+    rec = resp.get('data')
+    if not isinstance(rec, dict):
+        return resp
+    tier_s = (tier or 'anon').lower()
+    try:
+        data, n = gate_record(rec, tier_s)
+        dp = coord_dp_for_tier(tier_s)
+    except Exception:
+        # Fail CLOSED. An import or tier-resolution raise must never be the
+        # thing that serves the full record.
+        #
+        # PULL the allowed keys; do not ITERATE rec. The first version of this
+        # block was `{k: v for k, v in rec.items() if k in allowed}`, which
+        # re-enters the very call that just raised — a fail-closed path that
+        # can itself raise is not one. tests/test_facility_record_envelope_is_
+        # shared.py::test_the_gate_fails_closed_on_a_hostile_record caught it.
+        data = {}
+        for _k in (set(MINIMAL_ANON_FIELDS) | set(PASSTHROUGH_KEYS)):
+            try:
+                if _k in rec:
+                    data[_k] = rec[_k]
+            except Exception:
+                continue
+        resp['data'] = data
+        resp['_gated'] = True
+        resp['_redacted_values'] = max(1, len(data))
+        resp['_pricing_url'] = UPGRADE_PRICING_URL
+        return resp
+    resp['data'] = data
+    if dp is None and not n:
+        return resp                      # paid: full record, no markers
+    resp['_gated'] = True
+    resp['_coord_precision_dp'] = dp
+    resp['_redacted_values'] = n
+    resp['_upgrade_cta'] = (
+        'Power capacity, operator, on-site fiber and exact coordinates '
+        'require a Developer key — dchub.cloud/pricing')
+    resp['_pricing_url'] = UPGRADE_PRICING_URL
+    resp['_upgrade'] = {
+        'tier': tier_s,
+        'message': (
+            'Developer plan ($49/mo) unlocks exact coordinates, power capacity, '
+            'source, address, and nearby infrastructure.'
+            + ('' if tier_s != 'anon' else
+               ' A free key first sharpens coordinates from ~1.1 km to ~110 m '
+               'and adds provider, operator, market and region.')),
+        'url': UPGRADE_PRICING_URL + '#developer',
+        'checkout': UPGRADE_CHECKOUT_URL,
+        'price': UPGRADE_PRICE,
+    }
+    return resp
