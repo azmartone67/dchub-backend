@@ -91,7 +91,7 @@ def test_it_mirrors_dispatch_exactly(m):
     reaches something other than the stub'."""
     seen_true = seen_false = False
     for provider in ("stub", "hubspot", "salesforce", "garbage"):
-        for hs in ("", "k"):
+        for hs in ("", "pat-na1-real"):  # a shape-valid token, not a placeholder
             for sf in ((), ("u", "t")):
                 _set(m, provider, hs=hs,
                      sf_url=(sf[0] if sf else ""), sf_tok=(sf[1] if sf else ""))
