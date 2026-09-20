@@ -192,6 +192,48 @@ def test_restoring_twice_is_idempotent(harness):
     assert harness.user(1) == {"demoted_at": None, "demoted_reason": None}
 
 
+def test_a_stamp_with_no_demoted_at_is_left_intact_not_erased(harness):
+    """Both restore statements carry `demoted_at IS NOT NULL`, so a row whose
+    reason is stamped with a NULL demoted_at is selected by NEITHER.
+
+    This was a CHARACTERISATION until #4932. The users UPDATE lacked the clause
+    while the api_keys UPDATE had it, so the reason was erased while the key was
+    left on 'free' — and the reason is exactly what a later invoice.paid selects
+    on, so that combination was unrecoverable. The requirement is that a stamp
+    OUTLIVE a restore that did not happen."""
+    harness.add_user(1, reason="dunning_prior_payer", demoted_at=None,
+                     tier="free", plan="pro")
+    harness.handler(_invoice())
+    assert harness.key(1)["rate_limit_tier"] == "free", (
+        "no demoted_at means no demote to reverse — the tier is not raised"
+    )
+    assert harness.user(1)["demoted_reason"] == "dunning_prior_payer", (
+        "the stamp must survive; it is what a later restore matches on"
+    )
+
+
+def test_a_stamp_that_survives_is_still_restorable_once_dated(harness):
+    """The point of leaving the stamp alone: recovery stays possible.
+
+    Proves the whole path end to end — a NULL-dated stamp survives one
+    invoice.paid, and once the missing demoted_at is supplied the NEXT
+    invoice.paid restores the tier normally. Without the fix the first call
+    erases the reason and this second call has nothing to match."""
+    harness.add_user(1, reason="dunning_prior_payer", demoted_at=None,
+                     tier="free", plan="pro")
+    harness.handler(_invoice())
+
+    harness.db.execute(
+        "UPDATE users SET demoted_at = ? WHERE id = 1", ("2026-09-01 00:00:00",))
+    harness.db.commit()
+
+    harness.handler(_invoice())
+    assert harness.key(1)["rate_limit_tier"] == "pro", (
+        "the surviving stamp let the dated row restore on the next payment"
+    )
+    assert harness.user(1)["demoted_reason"] is None
+
+
 # ── characterisations: recorded hazards, NOT requirements ────────────────
 
 def test_restore_follows_api_keys_plan_even_when_plan_was_lowered(harness):
@@ -213,21 +255,3 @@ def test_restore_follows_api_keys_plan_even_when_plan_was_lowered(harness):
         "the stamp is cleared regardless, so the pro-ness is unrecoverable"
     )
 
-
-def test_a_stamp_with_no_demoted_at_is_cleared_without_restoring(harness):
-    """★ CHARACTERISATION — an asymmetry between the two statements.
-
-    The api_keys UPDATE requires `demoted_at IS NOT NULL`; the users UPDATE does
-    NOT. So a row carrying demoted_reason='dunning_prior_payer' with a NULL
-    demoted_at has its REASON erased while its tier is left on free — and with
-    the reason gone, no later invoice.paid can restore it.
-
-    The demote writes both fields together, so this needs a partial write or a
-    manual edit to occur. Recorded because the guard that would notice it does
-    not exist, not because the shape is intended. If the two WHERE clauses are
-    brought into agreement, CHANGE THIS TEST."""
-    harness.add_user(1, reason="dunning_prior_payer", demoted_at=None,
-                     tier="free", plan="pro")
-    harness.handler(_invoice())
-    assert harness.key(1)["rate_limit_tier"] == "free"
-    assert harness.user(1)["demoted_reason"] is None
