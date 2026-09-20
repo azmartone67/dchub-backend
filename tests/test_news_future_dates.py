@@ -354,12 +354,30 @@ class TestIngestRejectsImplausiblyFutureDates:
         assert rej("2999-01-01T00:00:00+00:00") is True
 
     def test_drop_helper_actually_filters(self):
+        """★2026-09-20 THE FIXTURE ROTTED, THE CODE DID NOT.
+
+        The dropped row was the literal "2026-09-21T11:00:00" — implausibly
+        future when this was written, and under 24h away on 2026-09-20. The
+        helper then correctly STOPPED rejecting it, the row was kept, and this
+        failed with no diff anywhere near it. It broke at midnight and blocked
+        every PR in the repo until this commit.
+
+        Every sibling test here pins the clock (`rej(..., now=datetime(...))`),
+        but _drop_implausibly_future(articles, source_label) takes no `now` and
+        reads the real one, so pinning is not available to this one. The fix is
+        therefore a RELATIVE fixture: derived from the clock the helper actually
+        uses, so it cannot rot again. A literal future date must never come
+        back here — it is a time bomb with a commit date on it."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
         drop = self._h()["_drop_implausibly_future"]
-        rows = [{"published_at": "2026-09-21T11:00:00", "url": "https://x/events/a"},
+        far_future = (_dt.now(_tz.utc) + _td(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+        rows = [{"published_at": far_future, "url": "https://x/events/a"},
                 {"published_at": "2026-08-21T23:35:55", "url": "https://x/b"},
                 {"published_at": None, "url": "https://x/c"}]
         kept = drop(rows, "t")
-        assert [r["url"] for r in kept] == ["https://x/b", "https://x/c"]
+        assert [r["url"] for r in kept] == ["https://x/b", "https://x/c"], (
+            f"the far-future row {far_future} was not dropped — if this fails "
+            f"again, check the helper, NOT the fixture: it is now relative")
 
     def test_both_fetchers_drop_before_returning(self):
         # fetch_all_rss_feeds is called DIRECTLY by main.daily_cron,
