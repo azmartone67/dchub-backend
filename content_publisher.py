@@ -3146,9 +3146,13 @@ def _editor_review(content_text: str):
         '{"publish": true|false, "reason": "<=12 words"}.'
     )
     try:
-        import requests as _rq
+        import requests as _rq  # noqa: F401 — kept for the module's other posts
         import json as _json
-        r = _rq.post(
+        # 2026-09-20: through the spend ledger. Same response object, same
+        # exceptions; the http!=200 branch below is unchanged.
+        from routes.brain_llm_spend import instrumented_post as _llm_post
+        r = _llm_post(
+            "content_publisher_editor",
             anthropic_messages_url(),
             headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},

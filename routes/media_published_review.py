@@ -374,7 +374,13 @@ def _call_model(posts: list, model: str) -> list:
         "messages": [{"role": "user", "content":
                       f"Review these {len(posts)} published posts.\n\n{numbered}"}],
     }
-    r = requests.post(
+    # 2026-09-20: through the spend ledger. instrumented_post returns the SAME
+    # response object and re-raises requests' own exceptions, so nothing below
+    # this line changes — it only stops the call being invisible to
+    # /api/v1/admin/brain/llm-spend.
+    from routes.brain_llm_spend import instrumented_post as _llm_post
+    r = _llm_post(
+        "media_published_review",
         anthropic_messages_url(), json=body, timeout=60,
         headers={"Content-Type": "application/json",
                  "X-API-Key": key,
