@@ -644,6 +644,53 @@ def push_to_stub(lead: dict) -> dict:
     return {"ok": True, "external_id": None, "stub": True}
 
 
+def _destination_state() -> tuple:
+    """(configured, gap) — is there a destination that _dispatch_push will
+    ACTUALLY reach, and if not, what is missing?
+
+    ★ 2026-09-20. This used to be one line:
+
+        configured = bool((SF_INSTANCE_URL and SF_ACCESS_TOKEN) or HUBSPOT_API_KEY)
+
+    It never looked at CRM_PROVIDER, and _dispatch_push switches on nothing
+    else. So setting HUBSPOT_API_KEY alone flipped `destination_configured` to
+    True and `stalled` to False — alarm off — while every lead still went to
+    push_to_stub. Observed live the day it happened: hs_configured=True,
+    provider='stub', stalled=False, 31 rows still queued. The old
+    stalled_reason set the trap in words: "nothing will ever be pushed until
+    HUBSPOT_API_KEY or the Salesforce pair is set". The key is necessary and it
+    is not sufficient, and a half-configured destination is the one state where
+    going quiet is worse than never having alarmed.
+
+    Mirrors _dispatch_push exactly: DRY_RUN and the stub provider reach no
+    destination, whatever credentials are lying around.
+    """
+    if DRY_RUN:
+        return False, "DRY_RUN is on — pushes are simulated and nothing reaches a CRM"
+    if CRM_PROVIDER == "hubspot":
+        if HUBSPOT_API_KEY:
+            return True, ""
+        return False, "CRM_PROVIDER='hubspot' but HUBSPOT_API_KEY is empty"
+    if CRM_PROVIDER == "salesforce":
+        if SF_INSTANCE_URL and SF_ACCESS_TOKEN:
+            return True, ""
+        return False, ("CRM_PROVIDER='salesforce' but SF_INSTANCE_URL/"
+                       "SF_ACCESS_TOKEN are not both set")
+    # provider is stub: say which credential is already sitting there unused,
+    # because that is the state a reader is most likely to misread as done.
+    have = []
+    if HUBSPOT_API_KEY:
+        have.append("HUBSPOT_API_KEY is set")
+    if SF_INSTANCE_URL and SF_ACCESS_TOKEN:
+        have.append("the Salesforce pair is set")
+    if have:
+        return False, (f"{' and '.join(have)}, but CRM_PROVIDER={CRM_PROVIDER!r} "
+                       f"— _dispatch_push still routes to push_to_stub. Set "
+                       f"CRM_PROVIDER=hubspot (or salesforce) to actually send.")
+    return False, (f"CRM_PROVIDER={CRM_PROVIDER!r} and no credential is set — "
+                   f"set BOTH CRM_PROVIDER and the matching credential")
+
+
 def _dispatch_push(lead: dict) -> dict:
     if DRY_RUN:
         return {"ok": True, "external_id": None, "dry_run": True}
@@ -903,7 +950,7 @@ def admin_health():
             logger.warning("[crm_etl] health failed: %s", e)
         finally:
             _return(c)
-    configured = bool((SF_INSTANCE_URL and SF_ACCESS_TOKEN) or HUBSPOT_API_KEY)
+    configured, config_gap = _destination_state()
     queued = sum(v for k, v in counts.items() if str(k).startswith("queued"))
     return jsonify(
         ok=True,
@@ -923,10 +970,9 @@ def admin_health():
         destination_configured=configured,
         stalled=bool(queued > 0 and not configured),
         stalled_reason=(None if configured or not queued else
-                        f"{queued} lead(s) queued but no CRM destination is "
-                        f"configured (provider={CRM_PROVIDER!r}); nothing will "
-                        f"ever be pushed until HUBSPOT_API_KEY or the "
-                        f"Salesforce pair is set"),
+                        f"{queued} lead(s) queued and nothing will push them: "
+                        f"{config_gap}"),
+        config_gap=config_gap,
     )
 
 
