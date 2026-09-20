@@ -53,6 +53,25 @@ def _claim_fn():
     raise AssertionError("claim_key not found in flask_mcp_endpoints.py")
 
 
+def _module_fn(name):
+    """Pull a module-level helper out of the SAME tree and exec it alongside the
+    handler.
+
+    This harness execs claim_key against an explicit `ns`, so every free name the
+    handler reaches for has to be supplied. A helper added to the module is a NEW
+    free name and the handler raises NameError on it — which is how
+    `_advertised_daily` broke all four tests here.
+
+    Extracted rather than stubbed on purpose: a stub would answer whatever the
+    test wanted and drift from the real helper the moment either changed. The
+    point of this file is that it runs the REAL function.
+    """
+    for node in TREE.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} not found in flask_mcp_endpoints.py")
+
+
 # ── the removed SELECT's signature, in one place ─────────────────────────────
 def _escape_query_issued(cur):
     """The RE-MINT ESCAPE SELECT returned a gated key by ip. Its signature is the
@@ -189,7 +208,9 @@ def _run(*, body, cur):
         "_inherit_paid_tier": lambda *a, **k: 0,
         "_streak_ladder_text": lambda: "",
     }
-    mod = ast.Module(body=[_claim_fn()], type_ignores=[])
+    mod = ast.Module(
+        body=[_module_fn("_advertised_daily"), _claim_fn()],
+        type_ignores=[])
     exec(compile(mod, str(SRC), "exec"), ns)      # noqa: S102 — the point
     try:
         out = ns["claim_key"]()
