@@ -46,6 +46,14 @@ RESTORED = (
     "/hyperscalers", "/listings", "/mcp-standing", "/partners/feedback",
     "/premium", "/product", "/radar", "/receipts", "/reports/quarterly",
     "/state-of-2026", "/system-status", "/what-ais-say",
+    # round 4 (2026-09-19) — found from the OTHER side. Rounds 1-3 all asked
+    # "what does our own chrome link that we never listed". This one was found
+    # by asking what BING CITES: /state-of-the-data-center is the third
+    # most-cited DC Hub page in Copilot (82 of 581 citations over 6 months,
+    # 14%) and was in none of the four shards. An answer engine discovered a
+    # page our index never submitted — a nav-derived check could not have found
+    # it, because the miss was not a nav link.
+    "/state-of-the-data-center",
     # round 3 (2026-09-06) — the FOOTER half. Rounds 1 and 2 both derived from
     # the NAV, so pages linked only from dchub-frontend/index.html's footer were
     # never candidates: "every page the chrome links" was really "every page the
