@@ -43,7 +43,7 @@ class _Cur:
 
     def __init__(self, n, oldest, paid):
         self._n, self._oldest, self._paid = n, oldest, paid
-        self._fresh = _dt.datetime.utcnow()
+        self._fresh = _dt.datetime.now(_dt.timezone.utc)
         self._what = None
 
     def execute(self, sql, *a, **k):
@@ -79,7 +79,7 @@ def _run(n, age_hours, paid=0):
     fn = copy.deepcopy(fn)
     fn.decorator_list = []
     oldest = (None if age_hours is None
-              else _dt.datetime.utcnow() - _dt.timedelta(hours=age_hours))
+              else _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=age_hours))
 
     class _Conn:
         def cursor(self, **kw):

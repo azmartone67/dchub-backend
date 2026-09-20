@@ -81,6 +81,14 @@ _DOMAINS = [
      ["computed_at", "updated_at"],                                      48),
     ("news",         ["news"],
      ["published_date", "fetched_at", "created_at"],                     24),    # was 18h, +6h matches one cron miss
+    # ★2026-09-20: /api/v1/health's crm_export lane publishes this queue's
+    # currency, and contracts/dataset_inventory flagged it NEW_TIER1_UNWATCHED —
+    # correctly. Publishing "this dataset is current" while no registry watches
+    # it is the same defect the lane itself was written to fix, one level up.
+    # 48h matches the lane's own yellow threshold: a queue that drains keeps its
+    # newest row young, and one that has stopped shows here and there together.
+    ("crm_outbound", ["crm_outbound_queue"],
+     ["captured_at", "created_at", "updated_at"],                        48),
     # 2026-09-02: the candidate columns were all fiction for `announcements` —
     # it has NONE of created_at / announced_date / date / updated_at. Measured
     # columns: published_at, published_date, discovered_at, processed_at. It has

@@ -5961,8 +5961,14 @@ def phase14c_health_aggregate():
                     try: oldest = _dt.datetime.fromisoformat(oldest.replace('Z', '+00:00'))
                     except Exception: oldest = None
                 if oldest is not None and hasattr(oldest, 'replace'):
-                    oldest = oldest.replace(tzinfo=None) if oldest.tzinfo else oldest
-                    age_h = round((_dt.datetime.utcnow() - oldest).total_seconds() / 3600.0, 1)
+                    # Aware-to-aware. The lanes above this one compare against a
+                    # naive utcnow(); those lines are grandfathered and this one
+                    # is not, and matching their style is how a NEW naive-utcnow
+                    # violation gets introduced by looking consistent.
+                    if oldest.tzinfo is None:
+                        oldest = oldest.replace(tzinfo=_dt.timezone.utc)
+                    _now = _dt.datetime.now(_dt.timezone.utc)
+                    age_h = round((_now - oldest).total_seconds() / 3600.0, 1)
             check = {'queued': n, 'paid_conversions_queued': int(row.get('paid') or 0),
                      'oldest_age_hours': age_h}
             # A queue is only healthy when it DRAINS. Age is the signal, not depth:
