@@ -663,7 +663,14 @@ def _get_transactions_free():
 # =============================================================================
 
 @deals_bp.route('/api/v1/pipeline', methods=['GET'])
-@_lazy_require_plan('pro')
+# ★2026-09-20: gate OPENED by owner decision. /llms.txt advertised this
+# endpoint as keyless for months while it answered 403 plan_required —
+# an agent following our own no-MCP policy hit a wall (see be #4905,
+# surface-truth lane 5). The copy was corrected first; this opens the
+# door the copy now promises. Anon rate limiting (20rpm) still applies.
+# ★ _lazy_protect_data STAYS. It is not a plan gate — it defers to the
+# injected protect_data, which SHAPES the payload by tier and fails CLOSED
+# if unwired. Opening the door is not the same as handing over paid depth.
 @_lazy_protect_data
 def get_pipeline():
     """Get construction pipeline data"""

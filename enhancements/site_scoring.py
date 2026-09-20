@@ -798,7 +798,11 @@ def register_scoring_routes(app):
             return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-500:]}), 500
     
     @app.route('/api/energy/prices/<state>', methods=['GET'])
-    @require_plan('pro')
+    # ★2026-09-20: gate OPENED by owner decision. /llms.txt advertised this
+    # endpoint as keyless for months while it answered 403 plan_required —
+    # an agent following our own no-MCP policy hit a wall (see be #4905,
+    # surface-truth lane 5). The copy was corrected first; this opens the
+    # door the copy now promises. Anon rate limiting (20rpm) still applies.
     def get_energy_prices(state):
         """Get energy prices for a state"""
         result = energy_service.get_state_electricity_prices(state)

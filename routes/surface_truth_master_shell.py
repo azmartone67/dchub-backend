@@ -182,9 +182,17 @@ _MIN_KEYLESS_URLS = 6
 # we also probe endpoints we KNOW are gated. If any of them opens from this
 # vantage we cannot distinguish "the gate opened" from "we are privileged", and
 # the whole lane renders '?' saying so. Measured 2026-09-20.
+# ★2026-09-20 ROTATED. The canary was /api/grid/fuel-mix and /api/v1/pipeline
+# until both were OPENED by owner decision — at which point they would have
+# answered 200 and suspended this lane permanently on a true condition, the
+# self-inflicted version of the very trap the canary exists for. A canary must
+# be an endpoint the product intends to KEEP gated, so it is now one from each
+# gate family: substations from GATED_PREFIXES (401) and grid/intelligence from
+# METERED_MAP_PREFIXES (402), both measured 2026-09-20. If either is ever opened
+# too, rotate again rather than deleting the check.
 _TIER_CANARY = (
-    ("/api/grid/fuel-mix?iso=ERCOT", "Pro"),
-    ("/api/v1/pipeline", "Identified"),
+    ("/api/v1/substations?limit=3", "key"),
+    ("/api/v1/grid/intelligence", "metered"),
 )
 
 _EMITTER_SOURCES = ("ai_discovery_routes.py",)

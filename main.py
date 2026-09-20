@@ -38789,11 +38789,13 @@ def api_site_score():
                     _authed = True
             except Exception as _ke:
                 logger.warning(f"site-score key lookup failed: {_ke}")
-        if not _authed:
-            user = getattr(request, "current_user", None)
-            plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
-            if plan not in ("pro", "enterprise", "developer"):
-                return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan. Upgrade at dchub.cloud/pricing", "upgrade_url": "https://dchub.cloud/pricing", "success": False}), 403
+        # ★2026-09-20: the plan check here is REMOVED by owner decision — the
+        # second of site-score's two gates (the first was free_tier_gate's
+        # map-session meter). /llms.txt advertised this endpoint as keyless for
+        # months while it answered 402/403; the copy was corrected in be #4905
+        # and this opens the door that copy now promises. `_authed` above is
+        # left in place: it is still the signal an internal/keyed caller is
+        # present, and removing it would touch the key-lookup path too.
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()

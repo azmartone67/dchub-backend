@@ -53,12 +53,10 @@ GATED_PREFIXES = [
     '/api/v1/transmission',
 
     '/api/v1/fiber',
-    '/api/v1/site-score',
     '/api/v1/layers',
     '/api/v1/capacity-headroom',
     '/api/v1/energy-discovery',
     '/api/v1/competitive-intel',
-    '/api/site-score',
     '/api/risk',
     '/api/v1/site-planner',
     '/api/v1/competitor',
@@ -98,8 +96,6 @@ METERED_MAP_PREFIXES = [
     '/api/energy-discovery',
     '/api/v1/competitive-intel',
     '/api/v1/competitor',
-    '/api/v1/site-score',
-    '/api/site-score',
     '/api/v1/site-planner',
 ]
 
@@ -107,6 +103,13 @@ _PAID_PLANS = ('pro', 'enterprise', 'founding')
 
 # Never gated
 ALWAYS_OPEN_PREFIXES = [
+    # ★2026-09-20: OPENED by owner decision. /llms.txt advertised site-score
+    # as keyless while the map-session meter answered 402 (1 free session /30
+    # days). Only these two prefixes move — the map product's own meter
+    # (/api/v1/land-power/data, fiber, grid intelligence …) is untouched.
+    '/api/v1/site-score',
+    '/api/site-score',
+
     '/api/v1/fiber/metro',
     '/api/v1/auth',
     '/api/v1/usage-status',

@@ -430,7 +430,11 @@ def register_iso_routes(app):
     iso_service = ISOService()
     
     @app.route('/api/grid/fuel-mix', methods=['GET'])
-    @require_plan('pro')
+    # ★2026-09-20: gate OPENED by owner decision. /llms.txt advertised this
+    # endpoint as keyless for months while it answered 403 plan_required —
+    # an agent following our own no-MCP policy hit a wall (see be #4905,
+    # surface-truth lane 5). The copy was corrected first; this opens the
+    # door the copy now promises. Anon rate limiting (20rpm) still applies.
     def get_fuel_mix():
         """
         Get fuel mix for an ISO
