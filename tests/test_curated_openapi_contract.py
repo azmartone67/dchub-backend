@@ -131,24 +131,44 @@ def test_ungated_endpoints_do_not_claim_a_gate(spec, path):
     assert "401" not in op.get("responses", {}), f"{path} documents a 401 it never sends"
 
 
-def test_facility_detail_stays_out_until_its_gate_is_settled(spec):
-    """getFacilityDetail is deliberately ABSENT from the curated spec.
+def test_facility_detail_is_published_with_optional_auth(spec):
+    """Republished after #4862 gated the branch that leaked it.
 
-    Two handlers answer facility detail and they disagree about tiering:
-    `get_facility_by_id` (main.py:38254) splits free from keyed, and the
-    `<path:slug>` route (main.py:23923) registers first, shadows it, and does
-    not. Which behaviour is correct is a product decision, not a documentation
-    one, so the operation is not published while the two disagree — a spec that
-    third parties generate connectors from bakes whatever it says into
-    catalogues we cannot edit afterwards.
+    Measured live 2026-09-20, cache-busted:
 
-    Re-add this operation in the same change that reconciles the two handlers,
-    and delete this test with it.
+        anonymous   -> 200, 8 basic fields, _upgrade present
+        unknown id  -> 404
+
+    Two things this pins. The BARE path, because OpenAPI templating never
+    appends a trailing slash and the bare form is what a generated client
+    calls. And OPTIONAL auth — `security` must offer the empty alternative
+    alongside apiKey, or a generated client refuses to call without
+    credentials and the endpoint's whole free preview becomes unreachable
+    from the catalogue.
     """
-    assert "/api/v1/facilities/{facility_id}" not in spec["paths"]
-    assert "/api/v1/facilities/{facility_id}/" not in spec["paths"]
-    ops = [o.get("operationId") for p in spec["paths"].values() for o in p.values()]
-    assert "getFacilityDetail" not in ops
+    p = "/api/v1/facilities/{facility_id}"
+    assert p in spec["paths"], "getFacilityDetail is not published"
+    assert p + "/" not in spec["paths"], "publish the bare path, not the slashed one"
+    op = spec["paths"][p]["get"]
+    sec = op.get("security")
+    assert sec is not None, "optional auth must be explicit, not inherited"
+    assert {} in sec, (
+        "security must include the empty alternative — without it the "
+        "generated client treats a key as required and never makes the "
+        "anonymous call the endpoint supports"
+    )
+    assert any("apiKey" in alt for alt in sec if alt), "the keyed alternative is missing"
+    assert "404" in op["responses"], "the unknown-id 404 is undocumented"
+    desc = op["description"].lower()
+    # The fact an integrator loses a day to: claiming the free key advertised
+    # everywhere else does NOT widen this endpoint.
+    assert "free claimed key does not lift" in desc, (
+        "the description must say a free key does not lift this endpoint — "
+        "otherwise an integrator claims one and cannot explain the preview"
+    )
+    assert "branch on `_upgrade`" in desc, (
+        "the description must name the field to branch on, not just mention it"
+    )
 
 
 def test_claim_describes_the_ip_metered_bind_gate(spec):
