@@ -387,9 +387,11 @@ class TestIngestRejectsImplausiblyFutureDates:
     def test_drop_helper_default_clock_still_works(self):
         """`now=None` must keep meaning "real clock" — production passes no
         clock at all, and a required parameter would break every call site."""
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         drop = self._h()["_drop_implausibly_future"]
-        far = (datetime.utcnow() + timedelta(days=400)).isoformat()
+        # aware, not utcnow(): the repo bans naive utcnow() and the helper
+        # handles aware input on the same contract as the clamp.
+        far = (datetime.now(timezone.utc) + timedelta(days=400)).isoformat()
         kept = drop([{"published_at": far, "url": "https://x/far"},
                      {"published_at": None, "url": "https://x/c"}], "t")
         assert [r["url"] for r in kept] == ["https://x/c"]
