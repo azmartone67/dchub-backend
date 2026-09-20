@@ -43840,6 +43840,18 @@ try:
 except Exception as _med_e:
     print(f"[main] media_editorial_bp register failed: {_med_e}", flush=True)
 
+# 2026-09-20: Jev shadow lane for the editorial desk. Asks TypeSafe's decision
+# model the same publish/draft question the editor was just asked and records
+# both answers; changes nothing. Buys the agreement + latency + token
+# measurement BEFORE anyone argues about swapping the desk over. Ships inert:
+# needs JEV_SHADOW_ENABLED=1 and TYPESAFE_API_KEY. Read surface is admin-gated.
+try:
+    from routes.media_editorial_jev_shadow import media_jev_shadow_bp
+    app.register_blueprint(media_jev_shadow_bp)
+    print("[main] media_jev_shadow_bp registered: GET /api/v1/admin/media/jev-shadow", flush=True)
+except Exception as _jvs_e:
+    print(f"[main] media_jev_shadow_bp register failed: {_jvs_e}", flush=True)
+
 # 2026-08-07: the analyst's pre-flight — analyst_review() gates a release
 # before it goes out (complete body, no future date, no placeholder, claims
 # verify), and heal_published() quarantines any already-live release that

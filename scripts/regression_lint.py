@@ -51,6 +51,15 @@ WHITELIST_TABLES = {
     # today and actively wrong the day anyone adds a unique key: it would
     # silently drop the resubmission history the row exists to record.
     'gsc_sitemap_submissions',
+    # 2026-09-20: media_editorial_jev_shadow is the editorial desk's shadow
+    # measurement log (serial PK, no natural key) — one row per attempt to ask
+    # the Jev decision model the question the editor was just asked. The same
+    # slug judged twice is two distinct measurements, and the FAILURE rows are
+    # the point of the table: an armed lane that silently never answers must
+    # not look like a lane that answered and agreed. Deduplicating by slug
+    # would erase exactly the rows that distinguish those two cases, and there
+    # is no column set to conflict on regardless.
+    'media_editorial_jev_shadow',
     # media_story_queue is the operator review queue (serial PK, no natural
     # key): each detection run writes a distinct draft row, queued OR rejected
     # -with-reason, and re-queue suppression is the lane's own cooldown query

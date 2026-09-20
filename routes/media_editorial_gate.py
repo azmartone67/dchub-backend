@@ -223,6 +223,18 @@ def press_blocked_by_linkedin(market_slug: str, title: str = "") -> str | None:
         return None
 
 
+def _recent_lines(recent: list[dict]) -> str:
+    """The published-headline context block.
+
+    Extracted from _ask_editor (2026-09-20) so the Jev shadow lane judges
+    against the BYTE-IDENTICAL context the incumbent saw. Two copies of this
+    format string would drift on the first edit, and the shadow's whole purpose
+    is that the only difference between the two desks is the model.
+    """
+    return "\n".join(
+        f"- [{r['date']}] ({r['category']}) {r['title']}" for r in recent) or "(none)"
+
+
 def _ask_editor(title: str, body: str, category: str, recent: list[dict]) -> dict | None:
     """One LLM call. Returns parsed {score, verdict, reasons} or None on any
     failure (caller fails closed to draft)."""
@@ -235,8 +247,7 @@ def _ask_editor(title: str, body: str, category: str, recent: list[dict]) -> dic
     except Exception:
         return None
 
-    recent_lines = "\n".join(
-        f"- [{r['date']}] ({r['category']}) {r['title']}" for r in recent) or "(none)"
+    recent_lines = _recent_lines(recent)
     prompt = f"""You are the editorial desk for DC Hub's automated newsroom
 (data-center infrastructure intelligence). Judge ONE candidate press release
 for novelty and newsworthiness against what we already published.
@@ -338,6 +349,25 @@ def editorial_gate(title: str, body: str, category: str,
         verdict = "publish" if publish else "draft"
         _record_review(slug_for_log, category, verdict, score, reasons, _model(),
                        title=title)
+
+        # ── Jev shadow lane (2026-09-20) — SHADOW ONLY, OFF by default ──
+        # Placed AFTER the verdict is decided and recorded, and its return
+        # value is discarded, so there is no path on which a Jev answer, error
+        # or timeout can move a publish decision. It fires only here, on the
+        # LLM branch: layers 1 and 1b are deterministic code, and a decision
+        # model is not a candidate to replace a rule. Off unless
+        # JEV_SHADOW_ENABLED=1 and a key is set. Read the agreement rate at
+        # GET /api/v1/admin/media/jev-shadow — and read its coverage first.
+        try:
+            from routes.media_editorial_jev_shadow import record_shadow
+            record_shadow(title or "", body or "", category or "",
+                          _recent_lines(recent),
+                          incumbent_verdict=verdict, incumbent_score=score,
+                          incumbent_model=_model(), press_slug=slug_for_log)
+        except Exception as _jev_e:
+            # record_shadow does not raise; this catches an import failure only.
+            logger.warning("[editorial_gate] jev shadow skipped: %s", str(_jev_e)[:120])
+
         return {"action": verdict, "score": score, "model": _model(),
                 "reasons": reasons}
     except Exception as e:
