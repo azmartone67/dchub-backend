@@ -408,6 +408,18 @@ SCHEMA_STATEMENTS = [
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%validator%' THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%catalog-sync%' THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'mcphub%' THEN TRUE
+                -- 2026-09-20 (r-persona-sync): mcp_calls_deloop's curated
+                -- INTERNAL_PLATFORM_VALUES already names these as third-party
+                -- catalog crawlers / indexers / scorers. They reached THIS
+                -- view as real demand because the flag was never taught the
+                -- names. Registry probes stay REPORTED, not subtracted:
+                -- mcp_funnel_real still contains them by design, so nothing
+                -- the leakage board publishes shrinks here.
+                WHEN COALESCE(LOWER(s.mcp_client),'') IN (
+                  'mcp-gateway-registry','manifest-mirror','watchdog',
+                  'mcpqueen-grader','mcpexplorerbot','mcpindex-trust',
+                  'mcp-rugpull-research'
+                ) THEN TRUE
                 ELSE FALSE
               END AS is_registry_probe,
               CASE
@@ -426,6 +438,22 @@ SCHEMA_STATEMENTS = [
                   'curl','python-script','node-script','postman','insomnia','verify',
                   'sweep','diag','audit','gating-audit','devin',
                   't','p','v','fv','test','internal-dchub'
+                ) THEN TRUE
+                -- 2026-09-20 r-persona-sync: the QA judge fleet's own synthetic
+                -- personas. mcp_calls_deloop has called these ours since
+                -- 2026-08-15 -- "no real platform carries these names" -- but
+                -- THIS list never learned them, so the same traffic was
+                -- self-traffic to one layer and unconverted demand to the
+                -- other, on the board that sets priorities.
+                -- server.mjs _INTERNAL_SELF_TAG does not catch them either:
+                -- neither name contains dchub/verify/probe/test/harness, so
+                -- detectPlatformFromInit MINTS the raw name as a platform and
+                -- it lands in mcp_client verbatim.
+                -- Kept as its own WHEN, with the comment ABOVE the clause: a
+                -- SQL comment inside an IN(...) list breaks every naive reader
+                -- of this vocabulary, including the drift test that guards it.
+                WHEN COALESCE(LOWER(s.mcp_client),'') IN (
+                  'reviewer-sim','acme-siting-agent'
                 ) THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'loop%' THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'dchub-%' THEN TRUE
