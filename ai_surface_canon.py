@@ -408,7 +408,27 @@ PINNED = {
         #  ★2026-09-13 fiber 66,000+ -> 58,000+: the 66,699 seed counted 9,695
         #  HIFLD power transmission lines. See canonical_stats._FALLBACK.
         "fiber_routes": "58,000+",
-        "transmission_lines": "94,000+",
+        # ★2026-09-20 WALKED 94,000+ -> 95,000+, same reason and same method as
+        # `assets` above: this is a COLD-START floor and _live_keys is
+        # process-local, so every freshly-deployed worker served 94,000+ against
+        # a live 95,569 until its own cache warmed. Measured directly after
+        # #4892 deployed -- probes alternated pinned/live across the fleet as it
+        # warmed one worker at a time.
+        #
+        # THE INDEPENDENT NUMBER: /api/v1/infrastructure/stats
+        # stats.transmission_lines = 95,569 (complete=true, members_unmeasured=[]).
+        # routes/infrastructure_data_routes.py imports NEITHER canonical_stats
+        # NOR ai_surface_canon, so it queries the DB directly and cannot certify
+        # this pin with this pin. ★NOT stats.transmission_lines_geocoded_snapshot
+        # (56,108) -- the endpoint excludes it as a stale snapshot of the SAME
+        # population, and that confusion is exactly how "52,000" got typed here.
+        # ★Do NOT re-derive from /api/v1/canon/phrases: it publishes
+        # canonical_stats' own measurement and would agree with anything typed.
+        #
+        # Floors DOWN at step=1000 per _PUBLIC_FLOOR_SPECS: 95,000 <= 95,569.
+        # _FALLBACK["transmission_lines"] walked to 95,569 in the same commit so
+        # the seed still sits at or above the floor it seeds.
+        "transmission_lines": "95,000+",
         # ── DCPI scoring-universe span (r-dcpi-regions, 2026-09-03) ──
         # Cold-start floors ONLY; canonical_stats' derivation publishes.
         # ★ Verified against

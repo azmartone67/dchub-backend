@@ -107,7 +107,18 @@ _FALLBACK = {
     # COUNT(*) below counts the same basis. Until then this seed is below live, so
     # a cold start under-claims rather than publishing power lines as fiber.
     "fiber_routes": 58141,
-    "transmission_lines": 94633,    # COUNT(*) FROM transmission_lines (EIA population)
+    # ★2026-09-20 94,633 -> 95,569. COUNT(*) FROM transmission_lines (EIA
+    # population). Walked WITH the "95,000+" pin in ai_surface_canon, and it had
+    # to move first: the pin floors to 95,000 and this seed is what a cold start
+    # believes it has, so leaving it at 94,633 would have published a floor
+    # ABOVE the module's own fallback -- the invariant
+    # test_every_asset_seed_sits_at_or_above_the_pin_it_seeds now states over
+    # every asset key, having previously covered `assets` alone.
+    # NOT transmission_lines_geocoded_snapshot (56,108): the stats endpoint
+    # EXCLUDES it as a stale geocoded snapshot of the SAME population, and
+    # mistaking a superseded layer for the live one is how "52,000 transmission
+    # lines" was typed against a live 94,633 (see _PUBLIC_FLOOR_SPECS).
+    "transmission_lines": 95569,
     # ★2026-09-19 cold-start seed for {canon_assets}. Raw measured int, same
     # convention as the three above; _floor_phrase(step=10000) publishes it
     # ("330,961 -> 330,000+"), the SAME step mcp_facts_export._floor() applies

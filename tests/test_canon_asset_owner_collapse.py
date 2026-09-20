@@ -255,12 +255,28 @@ def test_assets_floor_step_matches_mcp_facts_export():
         assert floor(n) == mcp_facts_export._floor(n, 10000)
 
 
-def test_the_assets_seed_does_not_sit_below_the_pin_it_seeds():
+@pytest.mark.parametrize("key", sorted(
+    k for k in cstats._PUBLIC_FLOOR_SPECS
+    if k not in ("facilities", "deals", "markets", "countries", "news_sources")))
+def test_every_asset_seed_sits_at_or_above_the_pin_it_seeds(key):
     """Same invariant substations failed on 2026-09-07: a cold start must not
-    claim more than the module itself believes it has."""
-    seed = cstats._FALLBACK["assets"]
-    pin = canon._floor_int((canon.PINNED.get("public") or {}).get("assets"))
-    assert seed >= pin, "seed %s < pin %s" % (seed, pin)
+    claim more than the module itself believes it has.
+
+    ★2026-09-20 — STATED OVER EVERY ASSET KEY. It covered `assets` alone, and
+    that gap was nearly shipped: walking the transmission_lines pin to
+    "95,000+" against a seed of 94,633 violates this, and nothing would have
+    failed. The four keys are read from _PUBLIC_FLOOR_SPECS rather than typed
+    here, so a key added to the specs is covered without editing this test —
+    the tuple-shaped omission that caused the original incident."""
+    stat_key = cstats._PUBLIC_FLOOR_SPECS[key][0]
+    seed = cstats._FALLBACK.get(stat_key)
+    pin = canon._floor_int((canon.PINNED.get("public") or {}).get(key))
+    if seed is None or pin is None:
+        pytest.skip("%s has no seed/pin pair to compare" % key)
+    assert seed >= pin, (
+        "%s seed %s < pin %s — a DB-DOWN cold start would publish a floor "
+        "above the count this module believes it has" % (key, seed, pin)
+    )
 
 
 # ── the label must be earned ─────────────────────────────────────────────
