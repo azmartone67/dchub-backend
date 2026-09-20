@@ -15455,7 +15455,7 @@
    ]
   },
   "GET /api/v1/keys/confirm": {
-   "source": "routes/mcp_key_email_verification.py:439",
+   "source": "routes/mcp_key_email_verification.py:480",
    "handler": "confirm_binding",
    "resolution": "opaque",
    "open_at": [],
@@ -29744,7 +29744,7 @@
    ]
   },
   "POST /api/v1/keys/confirm": {
-   "source": "routes/mcp_key_email_verification.py:439",
+   "source": "routes/mcp_key_email_verification.py:480",
    "handler": "confirm_binding",
    "resolution": "opaque",
    "open_at": [],
