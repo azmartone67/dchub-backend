@@ -1,0 +1,198 @@
+# REFRESH THE API RESPONSE BASELINE — the automation the "do not hand-edit"
+# header in contracts/api_response_surface.json always implied.
+# ════════════════════════════════════════════════════════════════════════════
+# 2026-09-20: the committed baseline had drifted 525 entries behind main. The
+# drift was DETECTED the whole time — api-response-contract.yml regenerates the
+# baseline on every run and prints "::notice::Baseline is behind: N added
+# key(s)". A notice blocks nothing and nobody reads it, so the file sat stale
+# and 63 keys plus 2 endpoints that exist on main were not protected by the
+# guard. Detection without a durable action is not a control.
+#
+# WHY A PR AND NOT A DIRECT PUSH
+# ------------------------------
+# main carries 6 required status checks with enforce_admins: true. A direct
+# push of a fresh commit can never satisfy them, so it is rejected. This
+# follows the pattern refresh-architecture-map.yml already proves in this repo:
+# regenerate, open a PR with PR_SUBMIT_TOKEN, arm auto-merge. PR_SUBMIT_TOKEN
+# and not GITHUB_TOKEN because a PR opened with GITHUB_TOKEN triggers NO
+# workflow run — its required checks would never report and it would sit open
+# forever. api-response-contract.yml carries the scar of that same rule.
+#
+# ★ THE SAFETY GATE — why this cannot launder a key deletion
+# ----------------------------------------------------------
+# `check` runs FIRST and the refresh only happens on exit 0. That matters more
+# than it looks: the guard's own check context is `contract`, and `contract` is
+# NOT one of main's required checks (substance-gate, syntax-check, unit-tests,
+# regression-lint, db-parity, app-contract-gate). Auto-merge lands on required
+# checks only, so a PR that removes a public key CAN reach main with this guard
+# red. If this job regenerated unconditionally it would then rewrite the
+# baseline around that removal and erase the only remaining evidence.
+#
+#   exit 0  no key removed        -> regenerate, open the PR
+#   exit 1  a key was removed     -> REFUSE. Leave the baseline as the record.
+#   exit 2  UNMEASURED            -> REFUSE. "Could not measure" is never a pass.
+#
+# Removals that are deliberate are not blocked by this — they go in
+# contracts/api_response_exceptions.json, which makes `check` exit 0 and lets
+# the refresh proceed. Audited removals flow; silent ones jam the lane.
+
+name: refresh-api-response-baseline
+
+on:
+  push:
+    branches: [main]
+  # Belt, and it is load-bearing: a push made with GITHUB_TOKEN creates NO
+  # workflow run, so bot merges can land without the push trigger ever firing.
+  # api-response-contract.yml recorded 17 of 24 commits landing that way.
+  schedule:
+    - cron: '52 */6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-api-response-baseline
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the extractor uses `git ls-files`
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # No pip install. The extractor is stdlib-only BY DESIGN — see the
+      # comment in api-response-contract.yml. A missing wheel must never be
+      # able to decide whether the baseline gets refreshed.
+
+      # The guard must be able to FAIL before its verdict is worth acting on.
+      # If the self-test is broken, `check` returning 0 means nothing and the
+      # safety gate below is decorative.
+      - name: Self-test — the guard must be able to FAIL and to say UNMEASURED
+        run: python3 scripts/api_response_contract_selftest.py
+
+      - name: Check the contract BEFORE touching the baseline
+        id: contract
+        env:
+          GATE: ${{ vars.API_BASELINE_AUTOHEAL_DISABLE }}
+        run: |
+          set -uo pipefail
+          if [ "${GATE:-0}" = "1" ]; then
+            echo "disabled via API_BASELINE_AUTOHEAL_DISABLE"
+            echo "code=disabled" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/api_response_contract.py check
+          CODE=$?
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          case "$CODE" in
+            0) echo "::notice::contract PASS — safe to refresh the baseline" ;;
+            1) echo "::error::contract FAIL on main — a public key was removed. REFUSING to refresh the baseline: regenerating now would rewrite the record around the removal. Fix the handler or add an audited entry to contracts/api_response_exceptions.json." ;;
+            2) echo "::error::contract UNMEASURED on main — the key surface could not be computed. REFUSING to refresh. This is NOT a pass." ;;
+            *) echo "::error::contract exited $CODE (unexpected). REFUSING to refresh." ;;
+          esac
+          exit "$CODE"
+
+      - name: Regenerate, and open an auto-merge PR if the baseline drifted
+        if: steps.contract.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp contracts/api_response_surface.json /tmp/committed.json
+          python3 scripts/api_response_contract.py baseline >/dev/null
+
+          if git diff --quiet -- contracts/api_response_surface.json; then
+            echo "baseline matches the tree — nothing to refresh"
+            exit 0
+          fi
+
+          # Report the ACTUAL key/endpoint delta. Counting '+' lines in the
+          # diff also counts stat fields, which once reported "~1 added key" on
+          # a run where zero keys changed. A guard must not invent numbers
+          # about itself.
+          python3 - <<'PY' > /tmp/delta.md
+          import json
+          old = json.load(open("/tmp/committed.json"))
+          new = json.load(open("contracts/api_response_surface.json"))
+          ks = lambda s: {(e, k) for e, r in s["endpoints"].items() for k in r["keys"]}
+          added, dropped = ks(new) - ks(old), ks(old) - ks(new)
+          new_eps = sorted(set(new["endpoints"]) - set(old["endpoints"]))
+          gone_eps = sorted(set(old["endpoints"]) - set(new["endpoints"]))
+          RANK = {"resolved": 2, "partial": 1, "opaque": 0}
+          downgrades = [
+              e for e in set(old["endpoints"]) & set(new["endpoints"])
+              if RANK.get(new["endpoints"][e]["resolution"], 9)
+                 < RANK.get(old["endpoints"][e]["resolution"], 9)
+          ]
+          print("Regenerated by `scripts/api_response_contract.py baseline`, "
+                "opened by `.github/workflows/refresh-api-response-baseline.yml`.")
+          print()
+          print(f"- keys: **{old['stats']['keys_total']} -> {new['stats']['keys_total']}** "
+                f"({len(added)} added, {len(dropped)} dropped)")
+          print(f"- strictly protected: **{old['stats']['keys_strictly_protected']} -> "
+                f"{new['stats']['keys_strictly_protected']}**")
+          print(f"- endpoints added: {len(new_eps)}; removed: {len(gone_eps)}")
+          print(f"- resolution downgrades (resolved/partial -> opaque): **{len(downgrades)}**")
+          print()
+          # These are NOT always zero, and the difference matters. `check`
+          # exiting 0 means "nothing left the surface WITHOUT an audited
+          # entry in contracts/api_response_exceptions.json" — not "nothing
+          # left the surface". An audited removal drops a key and still
+          # exits 0, which is precisely the case worth printing: it names
+          # which approved removals this refresh is absorbing into the
+          # baseline. (Measured 2026-09-20 on the 525-entry drift: one
+          # dropped key, `public_listings`, audited in #4654.) A non-empty
+          # list here is expected and fine; it is the reviewer's cue to
+          # confirm each one against the exceptions file.
+          for label, items in (("keys dropped", sorted(dropped)),
+                               ("endpoints removed", gone_eps),
+                               ("resolution downgrades", sorted(downgrades))):
+              if items:
+                  print(f"**{label}:**")
+                  for it in items:
+                      print(f"- `{it}`")
+                  print()
+          if new_eps:
+              print("**new endpoints:**")
+              for e in new_eps:
+                  print(f"- `{e}` ({new['endpoints'][e]['resolution']}, "
+                        f"{len(new['endpoints'][e]['keys'])} keys)")
+          PY
+
+          # One healing PR at a time. A second one would carry the same drift
+          # and race the first to merge.
+          OPEN=$(gh pr list --state open --limit 100 --json headRefName \
+                   --jq '[.[] | select(.headRefName | startswith("chore/api-baseline-"))] | length')
+          if [ "${OPEN:-0}" != "0" ]; then
+            echo "a refresh PR is already open — it will carry this drift too"
+            exit 0
+          fi
+
+          BR="chore/api-baseline-$(git rev-parse --short HEAD)"
+          git config user.name "dchub-api-baseline"
+          git config user.email "api@dchub.cloud"
+          git switch -c "$BR"
+          git add contracts/api_response_surface.json
+          git commit -F - <<EOF
+          contracts: refresh the API response baseline — handlers moved under it
+
+          $(cat /tmp/delta.md)
+
+          The contract check passed on main before this was regenerated, so no
+          public response key left the surface except any listed above under
+          "keys dropped" — those are removals already audited in
+          contracts/api_response_exceptions.json. Everything else here is
+          additive and line-shift churn.
+          EOF
+          git push -u origin HEAD
+          gh pr create --fill
+          gh pr merge --auto --squash
