@@ -23501,6 +23501,20 @@ def get_stats():
             'version': 'v92',
             'build': '93',
             'facilities': stats.get('total_facilities', 0),
+            # ★2026-09-20 — the TOP-LEVEL count states its basis too.
+            # data.facilities_count_basis has named it for months, but the
+            # headline `facilities` did not, and a reader of the headline saw
+            # 24,449 against canon's "22,900+" and read a 1,549 discrepancy.
+            # There is none: 24,449 is COUNT(DISTINCT canonical_slug) and canon
+            # publishes a narrower basis. Naming the population beside the
+            # number is what stops that reconciliation being attempted at all
+            # — `transmission_lines_source` two keys below is the same move.
+            # ★ DERIVED from data.facilities_count_basis, never a literal. A
+            # hardcoded string silently re-describes the FALLBACK as the
+            # primary the moment the canonical read fails: the ★★★2026-08-25
+            # drift recorded beside _facility_count_notes, where the prose
+            # named the basis the response did not use.
+            'facilities_basis': stats.get('facilities_count_basis'),
             # 0 only when canon AND its pin are both unreadable. Omitted
             # below rather than published — "0 markets" is a confident lie; a
             # missing key is visible and a client can tell it apart.
