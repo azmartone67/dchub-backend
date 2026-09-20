@@ -56,8 +56,16 @@ paywall_ab_admin_bp = Blueprint("paywall_ab_admin", __name__)
 _HINT_BASE = {
     "claim_key":       "POST https://dchub.cloud/api/v1/keys/claim",
     "signup_url":      "https://dchub.cloud/signup",
-    "starter_url":     "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
-    "developer_url":   "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
+    # ★ r-anonattrib-hint (2026-09-20): these were bare buy.stripe.com URLs.
+    # An agent that surfaces _upgrade_hint.starter_url then sent its human
+    # straight to Stripe with no client_reference_id — the same unattributable
+    # sale #4872 and #4886 closed on the other two emitters, and measured live
+    # after both shipped these two were the ONLY unreferenced Stripe links left
+    # in a gated payload. /checkout/start is attributable by the session it
+    # creates on arrival, so even this static default can be traced; the
+    # per-response override below does better still.
+    "starter_url":     "https://dchub.cloud/checkout/start?tier=starter",
+    "developer_url":   "https://dchub.cloud/checkout/start?tier=developer",
     "preview_url":     "https://dchub.cloud/api/v1/mcp/preview/<tool>",
     "upgrade_hint":    "https://dchub.cloud/api/v1/upgrade-hint",
     # r47.37.2 (2026-05-26): expose the enterprise data-licensing surface
@@ -544,8 +552,20 @@ def register_paywall_hint_middleware(app):
             if platform_cta:
                 agent_q = f"{agent_q}\n\n{platform_cta}"
 
+            # The paywall builder already minted a pair code for THIS caller and
+            # wrote it into the body's upgrade URLs. Inherit those rather than
+            # mint again, so the hint names the same destination the rest of the
+            # response does and carries the same client_reference_id. The
+            # _HINT_BASE defaults stay as the fallback for bodies that have none.
+            _hint_over = {}
+            for _hint_key, _body_key in (("starter_url", "recommended_upgrade_url"),
+                                         ("developer_url", "one_click_upgrade_url")):
+                _v = body.get(_body_key)
+                if isinstance(_v, str) and _v.startswith("https://dchub.cloud/"):
+                    _hint_over[_hint_key] = _v
             body["_upgrade_hint"] = {
                 **_HINT_BASE,
+                **_hint_over,
                 "agent_quotable": agent_q,
                 "variant":        variant,
                 "for_status":     response.status_code,
