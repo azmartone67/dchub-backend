@@ -33438,6 +33438,16 @@ def _build_sitemap_sections():
         ('/ai-deals', '0.8', 'daily'),
         ('/ai-agents', '0.7', 'weekly'),
         ('/ai-inventory', '0.7', 'daily'),
+        # 2026-09-19 (r-platform-restore): /platform is a real page again. It
+        # 301'd to /ai from 2026-06-05 (dchub-frontend r70) and was rebuilt as
+        # the data-layer inventory because it is the SECOND most-cited DC Hub
+        # page in Bing Copilot — 100 of 581 citations over six months (17%),
+        # behind /ecosystem (119) and ahead of /state-of-the-data-center (82).
+        # ★ Listed only AFTER the restore was live: this list's own rule is that
+        # a sitemapped URL must be the final 200, never a 3xx, and /platform
+        # served a 301 until dchub-frontend#1525 deployed. Verified as Googlebot
+        # before this line was added.
+        ('/platform', '0.8', 'monthly'),
         # r-seo-redirect (2026-06-27): /assets REMOVED — it 301s to /database
         # (listed below). A sitemap URL that 3xx's is filed by Google as
         # "Redirect error"; list only the final 200 canonical. (Verified live
