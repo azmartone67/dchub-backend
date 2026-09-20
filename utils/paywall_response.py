@@ -561,6 +561,35 @@ def build_paywall_response(
                 base['recommended_upgrade_url'] = _ec_starter['checkout_start_url']
             except Exception:
                 pass  # keep the direct link rather than lose the CTA
+        # ★ r-anonattrib-prose (2026-09-20) — THE OTHER HALF, and the half that
+        # reaches more humans. #4872 attributed the STRUCTURED fields; measured
+        # live straight after it deployed, an anonymous gated call still carried
+        # four unreferenced buy.stripe.com links — every one of them inside
+        # `human_message`, written as [URL](URL) by _one_click_starter_line and
+        # _one_click_upgrade_line, which are module-level and never see
+        # _pair_code.
+        #
+        # That is the field text-relay clients actually show: the FF+16 note
+        # above says so in as many words — "a client that drops structuredContent
+        # still relays the sentence", and MCP servers that echo only `message`
+        # never render the structured URLs at all. So the prose was still
+        # sending humans straight to Stripe with nothing to bridge, while the
+        # structured field beside it pointed at an attributed checkout. The two
+        # also simply disagreed.
+        #
+        # Rewritten by exact constant, not by regex over the markdown: only the
+        # two links we put there are touched, and any other URL in the prose is
+        # left alone.
+        if isinstance(base.get('human_message'), str):
+            _swaps = []
+            if STRIPE_STARTER_LINK and base.get('recommended_upgrade_url'):
+                _swaps.append((STRIPE_STARTER_LINK, base['recommended_upgrade_url']))
+            if STRIPE_DEVELOPER_LINK and base.get('one_click_upgrade_url'):
+                _swaps.append((STRIPE_DEVELOPER_LINK, base['one_click_upgrade_url']))
+            for _bare, _attributed in _swaps:
+                if _bare and _attributed and _bare != _attributed:
+                    base['human_message'] = base['human_message'].replace(
+                        _bare, _attributed)
         # ALSO inject the URLs into human_message so AI agents that only
         # relay text (don't render structured fields) still surface them
         # to the human. Most agents do at least one of these — making
