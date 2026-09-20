@@ -72,3 +72,23 @@ def test_connect_names_the_remedy_not_just_the_trap():
         "the IP-metering warning does not name passing `email` on the same "
         "POST as the fix"
     )
+
+
+def test_no_placeholder_href_ships_on_the_connect_page():
+    """A staged card must not reach main with its URL unfilled.
+
+    connect/anythingmcp-card is prepared and deliberately unmerged: its href is
+    a placeholder because the correspondence agreeing that integration never
+    gave a catalogue URL, and guessing one would ship a broken link on the page
+    we point partners at. This fails the moment such a branch is proposed,
+    which is the point — the forcing function lives on main so the staged
+    branch cannot merge past it.
+
+    Passes today: no placeholder is on main.
+    """
+    html = _html()
+    bad = re.findall(r'href="([^"]*(?:_TBD|TBD_|PLACEHOLDER|FIXME|XXX)[^"]*)"', html)
+    assert not bad, (
+        f"placeholder href(s) on the connect page: {bad} — fill in the real "
+        f"URL before merging"
+    )
