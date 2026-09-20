@@ -765,6 +765,24 @@ def well_known_ai_agents():
 @mcp_tool_catalog_bp.route("/mcp/tools", methods=["GET"])
 @mcp_tool_catalog_bp.route("/mcp/tools/", methods=["GET"])
 def html_tool_catalog():
+    # ★2026-09-20: this example published daily_calls 100 for the free tier.
+    # Nothing enforces 100 — 10 is the advertised figure (ai_surface_canon
+    # PINNED, tier_registry TIER_LIMITS['free'], edge worker MCP_TIERS), and
+    # a worked example is the line a reader copies. Resolved, not typed: this
+    # page does NOT go through canon_text(), so a {canon_*} token would ship
+    # as literal braces.
+    try:
+        import tier_registry as _tr
+        _free_calls = int(_tr.calls_per_day("free") or 0) or None
+    except Exception:
+        _free_calls = None
+    if not _free_calls:
+        try:
+            from ai_surface_canon import PINNED as _CP
+            _free_calls = int(_CP["free_tier_calls_per_day"])
+        except Exception:
+            _free_calls = 10
+
     """Human-readable catalog page. Designed to be linkable from "best
     MCP servers" directories and indexable by Google/Perplexity/Gemini."""
     manifest = _build_manifest()
@@ -839,7 +857,7 @@ def html_tool_catalog():
   <pre>curl -X POST https://dchub.cloud/api/v1/keys/claim \\
   -H 'Content-Type: application/json' \\
   -d '{{"client_name":"your-agent-name"}}'</pre>
-  Returns: <code>{{"ok":true,"api_key":"dch_live_...","tier":"free","daily_calls":100}}</code>
+  Returns: <code>{{"ok":true,"api_key":"dch_live_...","tier":"free","daily_calls":{_free_calls}}}</code>
 </div>
 
 {"".join(cat_blocks)}
