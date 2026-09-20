@@ -3,9 +3,13 @@ multiplatform_amplifier.py — Multi-platform amplifier for DC Hub Media
 (2026-06-07).
 
 Monday's State of 2026 is the seed: ONE LinkedIn post fans out to
-Bluesky + Twitter/X + Hacker News (semi-auto) + Mastodon in parallel,
-each with platform-tuned framing so each channel's response can drive
-more traffic back to dchub.cloud than LinkedIn alone.
+Bluesky + Twitter/X + Hacker News (semi-auto) + Mastodon + Substack in
+parallel, each with platform-tuned framing so each channel's response can
+drive more traffic back to dchub.cloud than LinkedIn alone.
+
+2026-09-20 — Substack joined as the long-form mirror: every LinkedIn post
+is published to https://dchubcloud.substack.com, web-only by default (see
+post_to_substack for why `send=False` is not the same as "not published").
 
 Architecture
 ------------
@@ -64,7 +68,17 @@ Env vars
                             https://<instance>/settings/applications)
   MULTIPLATFORM_AMPLIFIER_DISABLE=1   kill switch
   MULTIPLATFORM_AMPLIFIER_DRY_RUN=1   generates but does not post
-  MULTIPLATFORM_AMPLIFIER_DAILY_CAP=5 max amplifications/day (default 5)
+  MULTIPLATFORM_AMPLIFIER_DAILY_CAP=8 max amplifications/day (default 8)
+
+  SUBSTACK_SID             (NEW — the `substack.sid` cookie from a browser
+                            logged in to dchubcloud.substack.com. Accepts the
+                            bare value, `substack.sid=...`, or a whole Cookie
+                            header.)
+  SUBSTACK_PUBLICATION_URL (default: https://dchubcloud.substack.com)
+  SUBSTACK_SEND_EMAIL=1    also EMAIL the list (default: web-only publish)
+  SUBSTACK_DRAFT_ONLY=1    stop at the draft, do not publish
+  SUBSTACK_USER_ID         skip the byline lookup
+  SUBSTACK_AMPLIFY_DISABLE=1  Substack-only kill switch
 
 Safety
 ------
@@ -102,15 +116,32 @@ multiplatform_amplifier_bp = Blueprint("multiplatform_amplifier", __name__)
 
 # ── Tunables ──────────────────────────────────────────────────────────
 
-PLATFORMS_DEFAULT = ("bluesky", "twitter", "mastodon", "hn")
+PLATFORMS_DEFAULT = ("bluesky", "twitter", "mastodon", "hn", "substack")
 PLATFORM_CHAR_LIMITS = {
     "bluesky":  300,
     "twitter":  280,
     "mastodon": 500,
     "hn":       80,        # title-only limit
+    "substack": 0,         # 0 = no cap; long-form, carries the post verbatim
 }
-DEFAULT_DAILY_CAP = 5
+# 2026-09-20: was 5, which is BELOW the load once Substack mirrors every
+# LinkedIn post. The cap counts DISTINCT source posts, and LinkedIn already
+# publishes 4/day from linkedin_quad_daily alone (08/12/16/20 UTC) before
+# linkedin_partnership_weekly, linkedin_best_of_day or an operator repost —
+# so 5 put the day's last post one ad-hoc amplification away from being
+# dropped, silently, with no log row to say so.
+DEFAULT_DAILY_CAP = 8
 MASTODON_DEFAULT_INSTANCE = "mastodon.social"
+
+# Substack — the DC Hub publication and the private endpoints its own web
+# app drives (there is no official write API; see post_to_substack).
+SUBSTACK_DEFAULT_PUBLICATION = "https://dchubcloud.substack.com"
+SUBSTACK_BASE = "https://substack.com/api/v1"
+SUBSTACK_FALLBACK_TITLE = "DC Hub · Data Center Intelligence"
+SUBSTACK_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36")
+_SUBSTACK_USER_ID_CACHE: dict[str, int] = {}
 
 # State of 2026 — the specific seed campaign this module was built for.
 STATE_OF_2026_URL = "https://dchub.cloud/state-of-2026"
@@ -178,7 +209,7 @@ def init_amplifier_tables() -> None:
     multiplatform_amplifier_log captures EVERY cross-post attempt:
       id, source_post_id (linkedin_posts.id OR raw 0),
       source_platform (almost always 'linkedin'),
-      target_platform ('bluesky'|'twitter'|'mastodon'|'hn'),
+      target_platform ('bluesky'|'twitter'|'mastodon'|'hn'|'substack'),
       content_text (the platform-shaped string we sent),
       target_post_url (best-effort — Bluesky returns at:// URI which we
         translate to https://bsky.app/profile/...; Mastodon returns URL;
@@ -356,6 +387,36 @@ def frame_hn_title(source_text: str, source_link: str) -> str:
     return text[:80]
 
 
+def frame_substack(source_text: str, source_link: str) -> str:
+    """Substack body. No character cap — LinkedIn commentary tops out around
+    3,000 chars, so the post carries over verbatim and the source link is
+    appended as its own line when the body does not already carry it.
+
+    Returns the BODY only. The dispatcher hands every platform ONE string,
+    so the headline is derived downstream in _substack_compose()."""
+    text = (source_text or "").strip()
+    link = (source_link or "").strip()
+    if link and link not in text:
+        return (text + "\n\n" + link).strip()
+    return text
+
+
+def build_framings(text: str, link: str) -> dict[str, str]:
+    """platform → the exact string that platform gets.
+
+    ★ A platform named in PLATFORMS_DEFAULT but MISSING a key here is dropped
+    in silence: amplify_to_all does `if plat not in framings: continue`, so it
+    would look configured, log nothing and post nothing. Keep the two in step —
+    tests/test_substack_mirror.py asserts the containment both ways."""
+    return {
+        "bluesky":  frame_bluesky(text, link),
+        "twitter":  frame_twitter(text, link),
+        "mastodon": frame_mastodon(text, link),
+        "hn":       frame_hn_title(text, link),
+        "substack": frame_substack(text, link),
+    }
+
+
 def build_hn_submit_url(title: str, link: str) -> str:
     """HN's 1-click submit URL. User opens in logged-in browser and
     clicks Submit. https://news.ycombinator.com/submitlink?u=...&t=..."""
@@ -456,6 +517,242 @@ def post_to_hn(title: str, link: str, image_url: str = "") -> dict:
     # We tag a short hash so we can route clicks through /r/hn-submit/<short>
     # for tracking.
     return {"ok": True, "url": submit_url, "error": "semi_auto"}
+
+
+# ── Substack (long-form mirror) ───────────────────────────────────────
+# 2026-09-20 — every LinkedIn post is mirrored to the DC Hub Substack.
+#
+# Substack has NO official write API. The working path is the private
+# endpoint set their own web app drives, authenticated by a logged-in
+# session cookie:
+#
+#   POST {pub}/api/v1/drafts                 → create the draft
+#   GET  {pub}/api/v1/drafts/{id}/prepublish → Substack's own validation
+#   POST {pub}/api/v1/drafts/{id}/publish    → {"send", "share_automatically"}
+#
+# ★ `send` is the EMAIL switch, not the publish switch. send=False publishes
+# to the web, the archive, the app and the Substack network WITHOUT emailing
+# subscribers — which is the default here on purpose. LinkedIn publishes FOUR
+# times a day (routes/linkedin_quad_daily.SLOTS = 08/12/16/20 UTC); mirroring
+# each one as a newsletter send would cost more list than the reach is worth.
+# SUBSTACK_SEND_EMAIL=1 turns the email on.
+
+
+def _substack_publication_url() -> str:
+    """Publication origin, no trailing slash. Default is the DC Hub pub."""
+    url = (os.environ.get("SUBSTACK_PUBLICATION_URL",
+                          SUBSTACK_DEFAULT_PUBLICATION) or "").strip()
+    if not url:
+        url = SUBSTACK_DEFAULT_PUBLICATION
+    if not url.startswith("http"):
+        url = "https://" + url
+    return url.rstrip("/")
+
+
+def _substack_cookies() -> dict:
+    """Parse SUBSTACK_SID into a cookie jar.
+
+    Accepts all three shapes a browser copy produces:
+      * the bare value            →  s%3AabcDEF...
+      * one name=value pair       →  substack.sid=s%3AabcDEF...
+      * a whole Cookie: header    →  ajs_anonymous_id=..; substack.sid=..
+
+    The bare value can itself contain '=' (it is a URL-encoded signed
+    cookie), so a lone '=' is NOT the discriminator — the presence of
+    'substack.sid=' or a ';' separator is.
+    """
+    raw = (os.environ.get("SUBSTACK_SID", "") or "").strip()
+    if not raw:
+        return {}
+    if "substack.sid=" not in raw and ";" not in raw:
+        return {"substack.sid": raw}
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name:
+            out[name] = value.strip()
+    return out
+
+
+def _substack_session():
+    """requests.Session carrying the publication cookie, or None when
+    SUBSTACK_SID is unset. A browser User-Agent is required — Substack is
+    behind Cloudflare and a default python-requests UA draws the browser
+    check instead of the API."""
+    cookies = _substack_cookies()
+    if not cookies:
+        return None
+    pub = _substack_publication_url()
+    sess = requests.Session()
+    sess.headers.update({
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "User-Agent":   SUBSTACK_USER_AGENT,
+        "Origin":       pub,
+        "Referer":      pub + "/publish/post",
+    })
+    for name, value in cookies.items():
+        sess.cookies.set(name, value, domain=".substack.com")
+    return sess
+
+
+def _substack_user_id(sess) -> int:
+    """Byline id for the draft. SUBSTACK_USER_ID short-circuits the lookup;
+    otherwise resolve once per process from /user/profile/self.
+
+    0 means the session did not authenticate — which is what an expired
+    SUBSTACK_SID looks like, so the caller reports it as such rather than
+    letting the draft POST fail with a less obvious 403."""
+    env_id = (os.environ.get("SUBSTACK_USER_ID", "") or "").strip()
+    if env_id.isdigit():
+        return int(env_id)
+    if _SUBSTACK_USER_ID_CACHE.get("id"):
+        return int(_SUBSTACK_USER_ID_CACHE["id"])
+    try:
+        resp = sess.get(f"{SUBSTACK_BASE}/user/profile/self", timeout=15)
+        if resp.status_code == 200:
+            uid = int((resp.json() or {}).get("id") or 0)
+            if uid:
+                _SUBSTACK_USER_ID_CACHE["id"] = uid
+            return uid
+        _log(f"substack_user_id_http_{resp.status_code}")
+    except Exception as e:
+        _log(f"substack_user_id_failed: {e}")
+    return 0
+
+
+def _substack_body_doc(paragraphs: list[str]) -> dict:
+    """LinkedIn plain text → the ProseMirror document Substack stores.
+
+    An empty paragraph node carries NO 'content' key; an empty content
+    array is rejected by their schema."""
+    content: list[dict] = []
+    for para in paragraphs:
+        para = (para or "").strip()
+        if not para:
+            continue
+        content.append({"type": "paragraph",
+                        "content": [{"type": "text", "text": para}]})
+    if not content:
+        content = [{"type": "paragraph"}]
+    return {"type": "doc", "content": content}
+
+
+def _substack_compose(body: str) -> tuple[str, str, list[str]]:
+    """(title, subtitle, body_paragraphs) from the framed body string.
+
+    The dispatcher hands every platform ONE string, so the title is derived
+    here rather than passed: the first line is the headline (LinkedIn posts
+    open with one — "DCPI Mover · 24h", "Hyperscaler AI Deal"). A first line
+    too short to be a headline borrows the next one, and a subtitle is only
+    taken when doing so still leaves a body behind."""
+    lines = [ln.strip() for ln in (body or "").splitlines() if ln.strip()]
+    if not lines:
+        return (SUBSTACK_FALLBACK_TITLE, "", [])
+    idx = 0
+    title = lines[idx]
+    idx += 1
+    if len(title) < 15 and idx < len(lines):
+        title = (title + " — " + lines[idx]).strip()
+        idx += 1
+    title = title.lstrip("#").strip() or SUBSTACK_FALLBACK_TITLE
+    if len(title) > 120:
+        title = title[:119].rstrip() + "…"
+    subtitle = ""
+    if idx < len(lines) and len(lines[idx]) <= 140 and (len(lines) - idx) >= 3:
+        subtitle = lines[idx]
+        idx += 1
+    return (title, subtitle, lines[idx:])
+
+
+def post_to_substack(content: str, link: str = "", image_url: str = "") -> dict:
+    """Publish the mirrored post to the DC Hub Substack.
+
+    Returns {ok, url, error} like every other poster here. Never raises —
+    a Substack failure must not take the other four platforms down with it.
+    """
+    if (os.environ.get("SUBSTACK_AMPLIFY_DISABLE", "") or "").strip() == "1":
+        return {"ok": False, "url": "", "error": "substack_disabled"}
+    sess = _substack_session()
+    if sess is None:
+        return {"ok": False, "url": "", "error": "no_substack_session"}
+
+    pub = _substack_publication_url()
+    title, subtitle, paragraphs = _substack_compose(content)
+    uid = _substack_user_id(sess)
+    if not uid:
+        return {"ok": False, "url": "",
+                "error": "substack_unauthenticated: no user id — SUBSTACK_SID "
+                         "is missing, wrong or expired (re-paste it), or set "
+                         "SUBSTACK_USER_ID"}
+
+    audience = (os.environ.get("SUBSTACK_AUDIENCE", "everyone")
+                or "everyone").strip() or "everyone"
+    payload = {
+        "draft_title":     title,
+        "draft_subtitle":  subtitle,
+        "draft_body":      json.dumps(_substack_body_doc(paragraphs)),
+        "draft_bylines":   [{"id": int(uid), "is_guest": False}],
+        "audience":        audience,
+        "type":            "newsletter",
+        "draft_section_id": None,
+        "section_chosen":  True,
+        "write_comment_permissions": audience,
+    }
+
+    try:
+        resp = sess.post(f"{pub}/api/v1/drafts", json=payload, timeout=25)
+    except Exception as e:
+        return {"ok": False, "url": "", "error": f"substack_draft_error: {e}"}
+    if resp.status_code not in (200, 201):
+        return {"ok": False, "url": "",
+                "error": f"substack_draft_{resp.status_code}: {resp.text[:200]}"}
+    try:
+        draft = resp.json() or {}
+    except Exception:
+        draft = {}
+    draft_id = draft.get("id")
+    if not draft_id:
+        return {"ok": False, "url": "", "error": "substack_draft_no_id"}
+    draft_url = f"{pub}/publish/post/{draft_id}"
+
+    if (os.environ.get("SUBSTACK_DRAFT_ONLY", "") or "").strip() == "1":
+        return {"ok": True, "url": draft_url, "error": "draft_only"}
+
+    # Substack's own validation pass. Not fatal on its own, but its body is
+    # the only useful diagnostic when the publish below then refuses.
+    prepub = ""
+    try:
+        pre = sess.get(f"{pub}/api/v1/drafts/{draft_id}/prepublish", timeout=20)
+        if pre.status_code not in (200, 201):
+            prepub = f" | prepublish {pre.status_code}: {pre.text[:120]}"
+    except Exception as e:
+        prepub = f" | prepublish error: {e}"
+
+    send_email = (os.environ.get("SUBSTACK_SEND_EMAIL", "") or "").strip() == "1"
+    try:
+        done = sess.post(f"{pub}/api/v1/drafts/{draft_id}/publish",
+                         json={"send": send_email,
+                               "share_automatically": False},
+                         timeout=30)
+    except Exception as e:
+        return {"ok": False, "url": draft_url,
+                "error": f"substack_publish_error: {e}{prepub}"}
+    if done.status_code not in (200, 201):
+        return {"ok": False, "url": draft_url,
+                "error": f"substack_publish_{done.status_code}: "
+                         f"{done.text[:200]}{prepub}"}
+    slug = ""
+    try:
+        slug = ((done.json() or {}).get("slug") or "")
+    except Exception:
+        pass
+    return {"ok": True, "url": (f"{pub}/p/{slug}" if slug else draft_url),
+            "error": ""}
 
 
 # ── Daily cap check ──────────────────────────────────────────────────
@@ -632,12 +929,7 @@ def amplify_to_all(source_post_id: int = 0,
             return result
 
         # Build framings.
-        framings = {
-            "bluesky":  frame_bluesky(text, link),
-            "twitter":  frame_twitter(text, link),
-            "mastodon": frame_mastodon(text, link),
-            "hn":       frame_hn_title(text, link),
-        }
+        framings = build_framings(text, link)
         result["framings"] = framings
 
         # Filter to requested + new (unless force).
@@ -649,7 +941,7 @@ def amplify_to_all(source_post_id: int = 0,
                     and _already_amplified(cur, source_post_id, plat)):
                 result["results"][plat] = {
                     "ok": True, "url": "", "error": "already_amplified",
-                    "status": "skipped_cap",
+                    "status": "skipped_cap", "already": True,
                 }
                 continue
             targets.append((plat, framings[plat]))
@@ -673,6 +965,8 @@ def amplify_to_all(source_post_id: int = 0,
                     r = post_to_mastodon(payload, link)
                 elif plat == "hn":
                     r = post_to_hn(payload, link)
+                elif plat == "substack":
+                    r = post_to_substack(payload, link)
                 else:
                     r = {"ok": False, "url": "", "error": "unknown_platform"}
                 # HN is semi-auto — the URL is the submitlink, not a
@@ -704,6 +998,18 @@ def amplify_to_all(source_post_id: int = 0,
         try:
             cur2 = conn.cursor()
             for plat, r in result["results"].items():
+                # ★ Never re-log a platform skipped BECAUSE it was already
+                # amplified. _record upserts ON CONFLICT (source_post_id,
+                # target_platform) DO UPDATE SET status = EXCLUDED.status, so
+                # this row would overwrite the real 'posted' row with
+                # 'skipped_cap' and blank its target_post_url. That inverts
+                # _already_amplified() and the sweep's NOT EXISTS (both count
+                # only posted/dry_run), so the NEXT sweep reads a published
+                # post as unpublished and sends it a SECOND time. Latent until
+                # something amplified one source twice — which the Substack
+                # backfill clause in auto_sweep_recent() now does by design.
+                if r.get("already"):
+                    continue
                 _record(cur2, source_post_id or 0, "linkedin",
                         plat, r.get("content", framings.get(plat, "")),
                         r.get("url", ""),
@@ -779,11 +1085,34 @@ def auto_sweep_recent() -> dict:
                     SELECT lp.id
                       FROM linkedin_posts lp
                      WHERE lp.posted_at > NOW() - (%s * INTERVAL '1 minute')
-                       AND NOT EXISTS (
-                             SELECT 1
-                               FROM multiplatform_amplifier_log a
-                              WHERE a.source_post_id = lp.id
-                                AND a.status IN ('posted','dry_run','semi_auto_url_ready')
+                       -- linkedin_posts logs FAILURES too (linkedin_poster
+                       -- inserts status='failed' with posted_at defaulting to
+                       -- NOW()), so an unfiltered window amplifies posts that
+                       -- LinkedIn refused. COALESCE keeps rows whose writer
+                       -- left status unset — the column DEFAULT is 'success'.
+                       AND COALESCE(lp.status, 'success') = 'success'
+                       AND (
+                             NOT EXISTS (
+                                   SELECT 1
+                                     FROM multiplatform_amplifier_log a
+                                    WHERE a.source_post_id = lp.id
+                                      AND a.status IN ('posted','dry_run','semi_auto_url_ready')
+                             )
+                             -- Substack backfill: a post whose OTHER platforms
+                             -- already went out still needs its mirror. Without
+                             -- this, the row above hides every post from the
+                             -- Substack target forever — including a mirror that
+                             -- failed on an expired SUBSTACK_SID, which would
+                             -- then never retry. Re-entry is safe: per-platform
+                             -- _already_amplified() suppresses the platforms
+                             -- that did post.
+                          OR NOT EXISTS (
+                                   SELECT 1
+                                     FROM multiplatform_amplifier_log s
+                                    WHERE s.source_post_id = lp.id
+                                      AND s.target_platform = 'substack'
+                                      AND s.status IN ('posted','dry_run')
+                             )
                        )
                      ORDER BY lp.posted_at DESC
                      LIMIT 10
@@ -1010,6 +1339,22 @@ def _platform_status_chips() -> str:
     # HN
     chips.append(("Hacker News", "SEMI_AUTO_WIRED",
                   "no API — uses 1-click submitlink"))
+    # Substack
+    if (os.environ.get("SUBSTACK_AMPLIFY_DISABLE", "") or "").strip() == "1":
+        chips.append(("Substack", "DISABLED", "unset SUBSTACK_AMPLIFY_DISABLE"))
+    elif _substack_cookies():
+        _mode = ("DRAFTS_ONLY"
+                 if (os.environ.get("SUBSTACK_DRAFT_ONLY", "") or "").strip() == "1"
+                 else "WIRED")
+        _email = ("emails subscribers"
+                  if (os.environ.get("SUBSTACK_SEND_EMAIL", "") or "").strip() == "1"
+                  else "web-only, no email")
+        chips.append(("Substack", _mode,
+                      f"{_substack_publication_url()} — {_email}"))
+    else:
+        chips.append(("Substack", "NOT_WIRED",
+                      "set SUBSTACK_SID (the substack.sid cookie from a "
+                      "logged-in browser)"))
     out = []
     for name, status, hint in chips:
         color = ("#2bd97a" if status in ("WIRED", "SEMI_AUTO_WIRED",

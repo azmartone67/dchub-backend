@@ -825,7 +825,7 @@ def _lane_unauth_trigger(c, ctx) -> list[dict]:
 # tests/test_route_auth_shell_transitive_reach.py holds the set to that rule.
 _OUTBOUND_SINKS = {
     "post_to_linkedin", "create_text_post", "create_article_post",
-    "post_to_twitter", "post_to_x",
+    "post_to_twitter", "post_to_x", "post_to_substack",
     "_send_email", "_p99_send_email", "send_email",
     "submit_to_indexnow", "ping_indexnow", "ping_new_facilities",
 }
