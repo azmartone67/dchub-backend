@@ -354,12 +354,45 @@ class TestIngestRejectsImplausiblyFutureDates:
         assert rej("2999-01-01T00:00:00+00:00") is True
 
     def test_drop_helper_actually_filters(self):
+        """★2026-09-20: this pinned the literal "2026-09-21T11:00:00" as its
+        future row. FUTURE_REJECT_HOURS is 24, so the literal stopped being
+        more than 24h ahead at exactly 2026-09-20T11:00:00Z, and main's
+        unit-tests went red on a CLOCK, not on a commit — which presents as the
+        fault of whichever PR happens to be running.
+
+        Every sibling test in this class already pins `now`. This one could not,
+        because _drop_implausibly_future took no clock; it does now. Pinned to
+        the same instant the siblings use."""
+        from datetime import datetime, timedelta
         drop = self._h()["_drop_implausibly_future"]
-        rows = [{"published_at": "2026-09-21T11:00:00", "url": "https://x/events/a"},
+        now = datetime(2026, 8, 22)
+        beyond = (now + timedelta(hours=48)).isoformat()
+        inside = (now + timedelta(hours=12)).isoformat()
+        rows = [{"published_at": beyond, "url": "https://x/events/a"},
+                {"published_at": inside, "url": "https://x/inside"},
                 {"published_at": "2026-08-21T23:35:55", "url": "https://x/b"},
                 {"published_at": None, "url": "https://x/c"}]
-        kept = drop(rows, "t")
-        assert [r["url"] for r in kept] == ["https://x/b", "https://x/c"]
+        kept = drop(rows, "t", now=now)
+        assert [r["url"] for r in kept] == [
+            "https://x/inside", "https://x/b", "https://x/c"]
+
+    def test_drop_helper_accepts_an_injectable_clock(self):
+        """The asymmetry that caused it: _is_implausibly_future took `now` and
+        _drop_implausibly_future did not, so the only test of the drop path had
+        to hardcode a date. Losing the parameter re-arms the bomb."""
+        import inspect
+        drop = self._h()["_drop_implausibly_future"]
+        assert "now" in inspect.signature(drop).parameters
+
+    def test_drop_helper_default_clock_still_works(self):
+        """`now=None` must keep meaning "real clock" — production passes no
+        clock at all, and a required parameter would break every call site."""
+        from datetime import datetime, timedelta
+        drop = self._h()["_drop_implausibly_future"]
+        far = (datetime.utcnow() + timedelta(days=400)).isoformat()
+        kept = drop([{"published_at": far, "url": "https://x/far"},
+                     {"published_at": None, "url": "https://x/c"}], "t")
+        assert [r["url"] for r in kept] == ["https://x/c"]
 
     def test_both_fetchers_drop_before_returning(self):
         # fetch_all_rss_feeds is called DIRECTLY by main.daily_cron,

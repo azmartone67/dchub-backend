@@ -584,11 +584,19 @@ def _is_implausibly_future(pub, now=None, hours=FUTURE_REJECT_HOURS):
     return dt > ref + timedelta(hours=hours)
 
 
-def _drop_implausibly_future(articles, source_label):
-    """Filter out rows _is_implausibly_future flags; log what was dropped."""
+def _drop_implausibly_future(articles, source_label, now=None):
+    """Filter out rows _is_implausibly_future flags; log what was dropped.
+
+    ★ `now` is injectable for the same reason _is_implausibly_future's is: a
+    test with no clock to pin has to hardcode a future date, and a hardcoded
+    future date stops being future. One did — "2026-09-21T11:00:00" against a
+    24h threshold went stale at exactly 2026-09-20T11:00:00Z and took main's
+    unit-tests red on a clock rather than on a commit, which reads as the fault
+    of whichever PR was running at the time. Default None keeps every call site
+    and all production behaviour unchanged."""
     kept, dropped = [], []
     for a in articles:
-        if _is_implausibly_future(a.get('published_at')):
+        if _is_implausibly_future(a.get('published_at'), now=now):
             dropped.append(a)
             continue
         kept.append(a)
