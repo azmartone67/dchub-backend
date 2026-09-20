@@ -190,3 +190,69 @@ def test_basis_strings_describe_their_own_query():
     assert "legacy" in LEGACY_BASIS.lower()
     # the legacy basis must warn, not merely describe
     assert "never publish" in LEGACY_BASIS.lower()
+
+
+# ── the HEADLINE count must state its basis, not only the nested one ────────
+#
+# ★2026-09-20. /api/v1/stats has published data.facilities_count_basis and a
+# full _facility_count_notes basis_map for months — but the TOP-LEVEL
+# `facilities` key carried no basis, and that is the key a casual reader takes.
+# Measured live that day: top-level facilities 24,449 against canon's published
+# "22,900+", read as a 1,549 discrepancy. It is not one. 24,449 is
+# COUNT(DISTINCT canonical_slug); canon publishes a narrower basis. The count
+# was right, its basis was simply not stated WHERE the count was read — the
+# same failure class as the 2026-08-25 basis drift beside _facility_count_notes
+# and the 2026-08-03 per-state bug, both of which this file already guards.
+
+def _result_dict_of(fname, relpath="main.py"):
+    """The response-literal dict inside `fname` that carries 'facilities'."""
+    node, _src = _handler_node(relpath, fname)
+    assert node is not None, f"{relpath}:{fname} is gone — re-point this guard"
+    found = [
+        d for d in ast.walk(node)
+        if isinstance(d, ast.Dict)
+        and any(isinstance(k, ast.Constant) and k.value == "facilities"
+                for k in d.keys)
+    ]
+    assert found, (
+        f"no response dict with a 'facilities' key inside {fname} — this guard "
+        f"located nothing and would have passed vacuously")
+    return found
+
+
+def test_the_top_level_facility_count_states_its_basis():
+    """The headline `facilities` must ship a basis label beside it."""
+    dicts = _result_dict_of("get_stats")
+    labelled = [
+        d for d in dicts
+        if any(isinstance(k, ast.Constant) and k.value == "facilities_basis"
+               for k in d.keys)
+    ]
+    assert labelled, (
+        "/api/v1/stats publishes a top-level `facilities` with no "
+        "`facilities_basis` beside it. data.facilities_count_basis is not "
+        "enough: the headline key is the one read, and an unlabelled count "
+        "gets reconciled against canon's narrower basis as a discrepancy.")
+
+
+def test_that_basis_is_DERIVED_and_not_a_hardcoded_string():
+    """★ A literal basis re-describes the FALLBACK as the primary.
+
+    This is not hypothetical: ★★★2026-08-25, `_facility_count_notes.primary`
+    named `duplicate_of_id IS NULL` while the same response reported
+    COUNT(DISTINCT canonical_slug), because the prose was fixed text and the
+    number was conditional. The fix then, and the requirement now, is that the
+    label be computed from the same source as the number."""
+    for d in _result_dict_of("get_stats"):
+        for key, val in zip(d.keys, d.values):
+            if isinstance(key, ast.Constant) and key.value == "facilities_basis":
+                assert not isinstance(val, ast.Constant), (
+                    "facilities_basis is a hardcoded literal "
+                    f"({getattr(val, 'value', val)!r}). It must be derived from "
+                    "data.facilities_count_basis, or it will keep claiming the "
+                    "canonical basis after the canonical read has fallen back.")
+                src = ast.unparse(val)
+                assert "facilities_count_basis" in src, (
+                    f"facilities_basis is derived from {src!r}, not from "
+                    f"data.facilities_count_basis — two labels for one number "
+                    f"is how they drift apart.")
