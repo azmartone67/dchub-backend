@@ -182,9 +182,27 @@ _MIN_KEYLESS_URLS = 6
 # we also probe endpoints we KNOW are gated. If any of them opens from this
 # vantage we cannot distinguish "the gate opened" from "we are privileged", and
 # the whole lane renders '?' saying so. Measured 2026-09-20.
+# ★2026-09-20 ROTATED — a canary must not be an endpoint anyone is considering
+# opening. These controls were /api/grid/fuel-mix and /api/v1/pipeline, two of
+# the four whose gates were proposed for opening in be #4928. That PR was CLOSED
+# and the four remain gated, so the old controls still WORK today — this is not
+# a bug fix. It removes a latent coupling: had they opened, both would have
+# answered 200, fired the privileged-vantage branch and suspended this lane
+# permanently on a TRUE condition. The lane would have gone quiet at exactly the
+# moment the list it audits changed, which is the self-inflicted form of the
+# trap the canary exists to catch.
+#
+# The replacements are core paid depth — substations and grid intelligence are
+# the surface be #4928 measured raising ~1,400 upgrade signals/month, so they
+# are the least likely of any gated endpoint to be opened. One from each gate
+# family, so the canary detects privilege against BOTH mechanisms:
+#   /api/v1/substations      401 authentication_required  (GATED_PREFIXES)
+#   /api/v1/grid/intelligence 402 upgrade_required         (METERED_MAP_PREFIXES)
+# Both measured anonymously, cache-busted, 2026-09-20. If either is ever opened,
+# rotate again — never delete the check.
 _TIER_CANARY = (
-    ("/api/grid/fuel-mix?iso=ERCOT", "Pro"),
-    ("/api/v1/pipeline", "Identified"),
+    ("/api/v1/substations?limit=3", "key"),
+    ("/api/v1/grid/intelligence", "metered"),
 )
 
 _EMITTER_SOURCES = ("ai_discovery_routes.py",)

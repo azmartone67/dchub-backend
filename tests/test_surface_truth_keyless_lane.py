@@ -143,3 +143,42 @@ def test_the_lane_is_registered_in_the_tick():
         "lane 5 is defined but not in the tick's lane table — it would never run")
     assert "_safe_lane(_lane_keyless_is_keyless, canon)" in src, (
         "lane 5 is registered without _safe_lane; a crash would 500 the tick")
+
+
+def test_a_canary_is_never_an_endpoint_we_advertise_as_keyless(monkeypatch):
+    """★ The coupling that be #4928 exposed, now a guard.
+
+    The canary's controls were /api/grid/fuel-mix and /api/v1/pipeline — two of
+    the four endpoints that PR proposed opening. Had they opened, both would
+    have answered 200, fired the privileged-vantage branch, and suspended this
+    lane permanently on a TRUE condition: the lane goes quiet at exactly the
+    moment the list it audits changes.
+
+    The invariant is not "these two specific paths". It is that a control and
+    its subject may not be the same endpoint — a canary drawn from the keyless
+    list cannot distinguish "we are privileged" from "this is simply free".
+    """
+    _wire(monkeypatch)
+    body = _BODY
+    free_block = body[body.find("## FREE API"):body.find("## KEY REQUIRED")]
+    for path, _tier in stm._TIER_CANARY:
+        bare = path.split("?")[0]
+        assert bare not in free_block, (
+            "canary control %r is advertised in the keyless block. A control "
+            "drawn from the subject cannot detect privilege — when it answers "
+            "200 the lane cannot tell 'our egress is privileged' from 'this "
+            "endpoint is simply free', and suspends itself forever." % bare)
+
+
+def test_the_canary_has_at_least_two_controls_from_different_gates():
+    """One control is a single point of failure; two cover both gate families.
+
+    free_tier_gate has two independent mechanisms — GATED_PREFIXES (401,
+    key-based) and METERED_MAP_PREFIXES (402, session-metered). A canary drawn
+    only from one cannot see privilege granted by the other.
+    """
+    assert len(stm._TIER_CANARY) >= 2, (
+        "the canary is down to %d control(s); a single control makes the "
+        "privileged-vantage check a coin flip." % len(stm._TIER_CANARY))
+    paths = [p.split("?")[0] for p, _ in stm._TIER_CANARY]
+    assert len(set(paths)) == len(paths), "duplicate canary controls: %s" % paths
