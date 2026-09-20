@@ -1370,10 +1370,30 @@ def resolve_canon() -> dict:
     # that gap is exactly the "21.7k dropped to 13k" confusion. Public copy must
     # lead with buildings, never rows. floors round DOWN, so the phrase can never
     # exceed reality.
+    # ★2026-09-20 REBASED onto facilities_distinct_phrase(). The note above is
+    # still right that rows are an over-claim — but the keeper count it chose
+    # instead is an UNDER-claim, and a silent one: an is_duplicate-based count
+    # suppresses any facility with no is_duplicate=0 row, which
+    # brain_consistency_radar measured at 9,318 of 14,686 distinct facilities,
+    # including Meta Hyperion, Stargate Abilene, CoreWeave Project Horizon and
+    # Microsoft Wisconsin. Distinct canonical_slug is unambiguous by
+    # construction, and it is the field /api/v1/stats/canonical's `purpose` and
+    # /api/v1/stats' _facility_count_notes.primary each name as THE one to cite.
+    #
+    #   facilities_phrase()                     COUNT(*) rows       OVER-claim
+    #   facilities_with_keeper_distinct_phrase() DISTINCT, keeper   UNDER-claim
+    #   facilities_distinct_phrase()            DISTINCT slug       citeable
+    #
+    # ★ BOTH WITNESS TOKENS ARE WRITTEN. _LIVE_WITNESS maps public.facilities to
+    # one of them and an UNMAPPED witness reads NOT live and fails closed, so a
+    # half-done rename here would silently un-live the headline floor — the
+    # exact label regression #4868 landed to end. The old token keeps its name
+    # and its value for readers that still look for it.
     try:
-        from canonical_stats import facilities_verified_phrase as _fac_phrase
+        from canonical_stats import facilities_distinct_phrase as _fac_phrase
         _fp = _fac_phrase()
-        c["facilities_verified_live"] = _fp
+        c["facilities_distinct_live"] = _fp
+        c["facilities_verified_live"] = _fp      # historical token, same value
         c["public"]["facilities"] = _fp
     except Exception as e:
         c["_facilities_error"] = str(e)[:120]
@@ -1566,7 +1586,7 @@ def resolve_canon() -> dict:
 # from the deep copy of PINNED. Keep an entry here whenever an override is
 # added below — an unmapped key reads as NOT live, which fails closed.
 _LIVE_WITNESS = {
-    "public.facilities": "facilities_verified_live",
+    "public.facilities": "facilities_distinct_live",
     "public.deals": "deals_live",
     "public.markets": "markets_phrase_live",
     "public.countries": "countries_phrase_live",
