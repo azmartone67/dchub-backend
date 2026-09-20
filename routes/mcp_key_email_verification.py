@@ -73,7 +73,26 @@ _MAX_AGE_SECONDS = 14 * 24 * 3600
 # The MCP plans an inherited tier can come from. Same list _inherit_paid_tier
 # matches on — kept here only to decide whether a confirmation email is worth
 # sending; the grant itself re-checks in SQL.
-_PAID_PLANS = ("developer", "pro", "founding", "enterprise")
+def _paid_plans():
+    """Paid `users.plan` values, from tier_registry — see keys_recover._paid_plans.
+
+    ★2026-09-20. The tuple this replaces omitted `starter`, `team` and
+    `research_seed`. keys_recover's own list omitted a different two, so a
+    `starter` customer could recover their key and could NOT confirm a binding
+    to apply the plan they were paying for. Two typed sets, two populations,
+    one customer falling between them.
+
+    Fails CLOSED to the old tuple, so a broken import protects the same people
+    it protected before rather than nobody."""
+    try:
+        from tier_registry import paid_plan_names
+        got = paid_plan_names()
+        return got if got else ("developer", "pro", "founding", "enterprise")
+    except Exception:
+        return ("developer", "pro", "founding", "enterprise")
+
+
+_PAID_PLANS = _paid_plans()
 
 
 def _still_entitled(plan, status, role, demoted_at) -> bool:
