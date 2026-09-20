@@ -1586,6 +1586,17 @@ def funnel_leakage():
             if _cr:
                 out["drop_conversions_to_paid_pct"] = round(100 * (1 - _pk / max(1, _cr)), 2)
 
+            # ★2026-09-20: this assignment sat BELOW the stage_sources block
+            # that reads it, so stage_sources["4_conversions"]["source"] was
+            # always None on a board whose whole job is naming sources — the
+            # one row that could not say where its number came from was on the
+            # only other stage that IS real-callers-only. Verified live after
+            # be#4890 deployed: top-level stage_4_source correct, nested copy
+            # None. Hoisted; test_stage_sources_reads_a_set_stage_4_source
+            # pins the order.
+            out["stage_4_source"] = ("mcp_conversions (canonical ledger, non-test)"
+                                     if _cr is not None else "UNMEASURED — ledger unreadable")
+
             # Only mcp_upgrade_signals has a canonical real-caller view, so
             # stages 1 and 3 stay unfiltered and every rate that spans a
             # filtered and an unfiltered stage compares two populations. Say so
@@ -1608,8 +1619,6 @@ def funnel_leakage():
                 "drop_codes_to_conversions_pct",  # unfiltered codes vs real conversions
                 "drop_conversions_to_paid_pct",   # real conversions vs unfiltered keys
             ]
-            out["stage_4_source"] = ("mcp_conversions (canonical ledger, non-test)"
-                                     if _cr is not None else "UNMEASURED — ledger unreadable")
 
         return jsonify(ok=True, **out)
     finally:
