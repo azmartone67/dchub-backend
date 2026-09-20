@@ -57,8 +57,14 @@ def paywall(monkeypatch):
     # vacuously in CI — while production, which HAS the link configured, is the
     # case that matters. STRIPE_STARTER_LINK has a hardcoded fallback and needs
     # no help.
+    #
+    # Taken from the canon rather than invented: a made-up buy.stripe.com URL
+    # here fails tests/test_stripe_link_canonical.py, and rightly — a bare
+    # Stripe URL pasted anywhere in this repo is how a wrong price ships. Using
+    # the real one also makes this fixture exercise the shape production has.
+    from routes._stripe_links import STRIPE_LINKS
     monkeypatch.setattr(pr, "STRIPE_DEVELOPER_LINK",
-                        "https://buy.stripe.com/DEVLINKTEST", raising=False)
+                        STRIPE_LINKS["developer"], raising=False)
     return pr, minted
 
 
