@@ -357,7 +357,37 @@ PINNED = {
         # substations + 94k transmission + 55k fiber + 30k gas + 13k plants +
         # 690 subsea + 1.9k landings). An unpinned number cannot be swept,
         # cannot be sentinel-checked, and cannot be healed — pin it.
-        "assets": "320,000+",
+        # ★2026-09-20 WALKED 320,000+ -> 330,000+. This is a COLD-START floor,
+        # not a published number: live_public_floors() overrides it as soon as a
+        # worker measures. But _live_keys is process-local and empty on a fresh
+        # process, so every worker served 320,000+ for the first minutes after
+        # each deploy while the truth was 330,963 — a ~10k under-claim on a
+        # window that reopens on every restart. Measured immediately after
+        # #4879 deployed: all four asset keys read `pinned` for ~1 minute, then
+        # healed. Walking the pin shrinks that window; it does not replace the
+        # derivation.
+        #
+        # THE INDEPENDENT NUMBER: /api/v1/infrastructure/stats
+        # infrastructure_assets_total = 330,963, complete=true,
+        # members_unmeasured=[]. routes/infrastructure_data_routes.py imports
+        # NEITHER canonical_stats NOR ai_surface_canon (grep: 0 hits), so it
+        # queries the DB directly and cannot certify this pin with this pin —
+        # the failure mode the `deals` note below records, where /api/v1/stats
+        # was used as a ceiling and reverted because that field reads
+        # canonical_stats, the same source this module publishes.
+        #
+        # ★Do NOT re-derive this from /api/v1/canon/phrases: since #4879 that
+        # endpoint publishes canonical_stats' own measurement, so it agrees with
+        # this pin by construction and would certify any value typed here.
+        #
+        # Floors DOWN at step=10000 to match _PUBLIC_FLOOR_SPECS["assets"] and
+        # mcp_facts_export._floor(.., 10000): 330,000 <= 330,963, so it cannot
+        # over-claim. canonical_stats._FALLBACK["assets"] is 330,961, so the
+        # seed still sits at or above the floor it seeds
+        # (test_the_assets_seed_does_not_sit_below_the_pin_it_seeds).
+        # Reproduce: curl -s "https://dchub.cloud/api/v1/infrastructure/stats" \
+        #   | python3 -c "import json,sys;print(json.load(sys.stdin)['infrastructure_assets_total'])"
+        "assets": "330,000+",
         # ★2026-09-02 cold-start floor for {canon_substations}. Like every other
         # entry here this is the DB-DOWN fallback only — live_public_floors()
         # overrides it from the snapshot. Floored DOWN from a measured 127,269,

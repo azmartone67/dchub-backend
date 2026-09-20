@@ -35,6 +35,20 @@ def _pin(key):
     return (canon.PINNED.get("public") or {}).get(key)
 
 
+def _above(key, step=1000):
+    """A floor phrase that outranks `key`'s pin, DERIVED from that pin.
+
+    ★2026-09-20 — do not type one. These pins are COLD-START floors and are
+    designed to be walked as the measurement moves; a fixture with the next
+    floor typed into it passes until exactly that walk lands, and then fails
+    for a reason that has nothing to do with the behaviour under test. Walking
+    assets 320,000+ -> 330,000+ broke two fixtures carrying a literal
+    "330,000+", each via its own "fixture must RAISE the floor or it proves
+    nothing" assertion — which is the guard working, and the reason it is worth
+    removing the literal rather than re-typing it."""
+    return f"{canon._floor_int(_pin(key)) + step:,}+"
+
+
 def _measured(monkeypatch, **vals):
     """Declare `vals` as the floors a real query measured, key -> phrase.
 
@@ -59,7 +73,7 @@ def test_overlay_heals_a_key_outside_the_governance_four(monkeypatch):
     wrong in production when this was written."""
     pinned = _pin("transmission_lines")
     assert pinned, "transmission_lines must still be a pinned public key"
-    raised = "95,000+"
+    raised = _above("transmission_lines")
     assert canon._floor_int(raised) > canon._floor_int(pinned), (
         "fixture must RAISE the floor or it proves nothing about the overlay"
     )
@@ -78,7 +92,7 @@ def test_overlay_heals_a_key_outside_the_governance_four(monkeypatch):
 def test_overlay_heals_assets(monkeypatch):
     pinned = _pin("assets")
     assert pinned, "assets must still be a pinned public key"
-    raised = "330,000+"
+    raised = _above("assets", step=10000)
     assert canon._floor_int(raised) > canon._floor_int(pinned)
     _measured(monkeypatch, assets=raised)
     monkeypatch.setattr(
@@ -281,7 +295,7 @@ def test_a_degraded_key_is_not_relabelled_live(monkeypatch):
 def test_a_measured_key_still_heals_after_the_narrowing(monkeypatch):
     """The fix must not pin the keys it was written to free."""
     pinned = _pin("transmission_lines")
-    raised = "95,000+"
+    raised = _above("transmission_lines")
     assert canon._floor_int(raised) > canon._floor_int(pinned)
     _measured(monkeypatch, transmission_lines=raised)
     monkeypatch.setattr(
@@ -333,7 +347,8 @@ def test_a_measured_key_publishes_the_measurement_not_the_resolver_echo(monkeypa
 
     The fixture is the production shape: measured, and resolve_canon echoing the
     pin. Publishing the pin here must not be reachable."""
-    for key, measured in (("assets", "330,000+"), ("transmission_lines", "95,000+")):
+    for key, measured in (("assets", _above("assets", step=10000)),
+                          ("transmission_lines", _above("transmission_lines"))):
         pinned = _pin(key)
         assert canon._floor_int(measured) > canon._floor_int(pinned), (
             "%s fixture must outrank its pin or it proves nothing" % key
@@ -371,7 +386,7 @@ def test_a_measurement_publishes_even_when_the_resolver_blows_up(monkeypatch):
     """The peek does not run through resolve_canon(), so a resolver that raises
     must not strand a floor that canonical_stats already measured. This is the
     direction the pin-as-cold-start contract promises and nothing else pins."""
-    measured = "330,000+"
+    measured = _above("assets", step=10000)
     def boom():
         raise RuntimeError("no DATABASE_URL")
     _measured(monkeypatch, assets=measured)

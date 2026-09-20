@@ -47,13 +47,19 @@ def distinct_floors():
     ★ A fixture whose value EQUALS the pin cannot tell a working writer from a
     no-op — the first probe of this fix used 127,000+ for substations, which is
     exactly its pin, and read as a failure when nothing was wrong. Assert the
-    difference rather than trusting the literals to stay unequal."""
-    floors = {
-        "substations": "128,000+",
-        "fiber_routes": "59,000+",
-        "transmission_lines": "95,000+",
-        "assets": "330,000+",
-    }
+    difference rather than trusting the literals to stay unequal.
+
+    ★2026-09-20 — the literals are gone. These pins are COLD-START floors and
+    are DESIGNED to be walked as the measurement moves, so a fixture with the
+    next floor typed into it is a scheduled failure: walking assets
+    320,000+ -> 330,000+ made the "330,000+" below equal its pin, and the
+    assertion this docstring describes fired on all three tests in this file at
+    once. Deriving from the pin keeps the property the assertion is protecting
+    and makes it unbreakable by the next walk. The assertion stays — it is what
+    caught this."""
+    steps = {"substations": 1000, "fiber_routes": 1000,
+             "transmission_lines": 1000, "assets": 10000}
+    floors = {k: f"{canon._floor_int(_pin(k)) + step:,}+" for k, step in steps.items()}
     for key, value in floors.items():
         assert value != _pin(key), (
             "%s fixture equals its pin (%s) — this test would pass on a no-op"
