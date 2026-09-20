@@ -461,7 +461,7 @@ def subscribe_lead():
     
     c.execute("""
         INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, (
         lead_id,
         email,
@@ -477,7 +477,7 @@ def subscribe_lead():
     # Log activity
     c.execute("""
         INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (%s, 'subscribed', %s, %s)
+        VALUES (%s, 'subscribed', %s, %s) ON CONFLICT DO NOTHING
     """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), utc_iso_z()))
     
     conn.commit()
@@ -536,7 +536,7 @@ def capture_lead():
         
         c.execute("""
             INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             lead_id,
             email,
@@ -553,7 +553,7 @@ def capture_lead():
     # Log activity
     c.execute("""
         INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (%s, 'content_access', %s, %s)
+        VALUES (%s, 'content_access', %s, %s) ON CONFLICT DO NOTHING
     """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), utc_iso_z()))
     
     conn.commit()
@@ -647,7 +647,7 @@ def register_user():
     
     c.execute("""
         INSERT INTO users (id, email, password_hash, name, company, created_at, last_login)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, (user_id, email, password_hash, name, company, utc_iso_z(), utc_iso_z()))
     
     conn.commit()
@@ -691,7 +691,7 @@ def capture_lead_internal(email, name, company, source):
         lead_id = secrets.token_hex(8)
         c.execute("""
             INSERT INTO leads (id, email, name, company, source, lead_score, created_at, last_activity)
-            VALUES (%s, %s, %s, %s, %s, 30, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 30, %s, %s) ON CONFLICT DO NOTHING
         """, (lead_id, email, name, company, source, utc_iso_z(), utc_iso_z()))
         conn.commit()
     conn.close()
@@ -815,7 +815,7 @@ def google_auth():
         # New user - create account
         c.execute("""
             INSERT INTO users (email, password_hash, name, company, role, plan, created_at, last_login)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             email,
             'google_oauth',  # No password for Google users
@@ -834,7 +834,7 @@ def google_auth():
         try:
             c.execute("""
                 INSERT INTO leads (email, name, source, source_detail, lead_score, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (email, name, 'google_signup', 'google_oauth_registration', 30, utc_iso_z()))
             conn.commit()
         except:
@@ -1526,7 +1526,7 @@ def generate_report():
                 lead_id = secrets.token_hex(8)
                 c.execute("""
                     INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
-                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
+                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s) ON CONFLICT DO NOTHING
                 """, (lead_id, email, json.dumps(markets), utc_iso_z(), utc_iso_z()))
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
@@ -1548,7 +1548,7 @@ def generate_report():
         c = conn.cursor()
         c.execute("""
             INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
-            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s) ON CONFLICT DO NOTHING
         """, (
             report_id,
             request.user['user_id'] if request.user else None,
@@ -1975,7 +1975,7 @@ def enrichment_submit():
     submission_id = secrets.token_hex(8)
     c.execute("""
         INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
-        VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
+        VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s) ON CONFLICT DO NOTHING
     """, (submission_id, json.dumps(data), utc_iso_z()))
     
     conn.commit()
@@ -2002,6 +2002,7 @@ def sales_chat():
 # HEALTH & INFO
 # =============================================================================
 
+# AUTO-REPAIR: duplicate route '/' also in diag_app.py:45 — review and remove one
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
@@ -2010,6 +2011,7 @@ def index():
         'status': 'healthy',
         'features': ['leads', 'auth', 'markets', 'reports', 'agents', 'discovery']
     })
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -2687,7 +2689,7 @@ def run_operator_discovery():
                         INSERT INTO discovered_facilities 
                         (source, source_id, name, provider, market, city, state, country, 
                          power_mw, status, facility_type, discovered_at, is_duplicate)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0) ON CONFLICT DO NOTHING
                     """, (
                         disc.get('source'), disc.get('source_id'), disc['name'],
                         disc.get('provider'), disc.get('market'), disc.get('city'),
@@ -2733,7 +2735,7 @@ def run_peeringdb_discovery():
                         INSERT INTO discovered_facilities 
                         (source, source_id, name, provider, market, city, state, country,
                          latitude, longitude, status, facility_type, discovered_at, is_duplicate)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0) ON CONFLICT DO NOTHING
                     """, (
                         disc.get('source'), disc.get('source_id'), disc['name'],
                         disc.get('provider'), disc.get('market'), disc.get('city'),
@@ -2762,7 +2764,7 @@ def process_discovery_source(source_name, discovery_func, conn):
     try:
         c.execute("""
             INSERT INTO discovery_runs (source, started_at, status)
-            VALUES (%s, %s, 'running')
+            VALUES (%s, %s, 'running') ON CONFLICT DO NOTHING
         """, (source_name, utc_iso_z()))
         run_id = c.lastrowid
         conn.commit()
@@ -2801,7 +2803,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                         (source, source_id, name, provider, market, city, state, country, 
                          latitude, longitude, power_mw, status, facility_type, source_url, 
                          raw_data, discovered_at, is_duplicate)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0) ON CONFLICT DO NOTHING
                     """, (
                         disc.get('source'), disc.get('source_id'), disc['name'],
                         disc.get('provider'), disc.get('market'), disc.get('city'),
