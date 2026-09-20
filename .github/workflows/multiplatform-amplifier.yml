@@ -45,12 +45,16 @@ name: Substack mirror (sweep after each LinkedIn slot)
 on:
   schedule:
     # LinkedIn publishes at :05 of 08/12/16/20 UTC (linkedin-quad-daily.yml).
-    # :20 leaves 15 minutes for that post to land and write its linkedin_posts
+    # :21 leaves 16 minutes for that post to land and write its linkedin_posts
     # row before we look for it.
-    - cron: '20 8 * * *'
-    - cron: '20 12 * * *'
-    - cron: '20 16 * * *'
-    - cron: '20 20 * * *'
+    # ★ The minute is :21, not :20, because '20 8 * * *' already belongs to
+    # brain-stuck-drain.yml and tests/test_ops_cron_stagger_0902.py refuses two
+    # backend workflows sharing one cron expression. :21 is free at all four
+    # hours (checked against all 197 cron expressions in .github/workflows).
+    - cron: '21 8 * * *'
+    - cron: '21 12 * * *'
+    - cron: '21 16 * * *'
+    - cron: '21 20 * * *'
   workflow_dispatch:
     inputs:
       platforms:
