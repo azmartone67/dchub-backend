@@ -194,39 +194,66 @@ def test_no_unresolved_placeholder_reaches_the_wire(body: str):
     )
 
 
-def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(block: str):
+def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(
+        block: str, monkeypatch):
     """/api/v1/canon/phrases publishes no price, so the policy may not say it does.
 
     Shipped in #4885 as: "The current counts - facilities, live tools, and the
     Pro price - are served at https://dchub.cloud/api/v1/canon/phrases." Measured
     on the live endpoint the same hour: 17 keys, not one of them a price. An
     agent following that sentence fetches, finds nothing, and either drops the
-    price or invents one — on the surface whose whole point is "never invent".
+    price or invents one — on the surface whose own rule 2 is "never invent".
 
-    ★ BOUND TO THE ENDPOINT'S OWN BUILDER, not to a word list. If canon/phrases
-    ever does start publishing a price, the claim becomes true and this guard
-    stops firing by itself — no edit here. A guard that pins today's key set
-    would have to be remembered instead.
+    ★ BOUND TO THE REAL BUILDER, RUN OFFLINE. _build_canon_body() is called for
+    its KEY SET, which is structural: six fixed keys plus `**pub`, i.e. whatever
+    resolve_public_floors_cached() publishes. So the resolvers are stubbed — the
+    values are irrelevant here and reaching for real ones costs a network call
+    the unit-tests step forbids (this guard did exactly that on its first CI
+    run: 3 DNS attempts, suite green, job red). The stub returns PINNED["public"]
+    because the live overlay is raise-only over those same names, so that dict
+    is the authoritative set of publishable floor keys.
+
+    ★ If canon/phrases ever does start publishing a price, the claim becomes
+    true and this guard skips itself — no edit here. A guard pinning today's
+    key set would have to be remembered instead.
     """
+    import ai_surface_canon as _asc
     from routes.canon_phrases import _build_canon_body
 
-    keys = set(_build_canon_body().keys())
+    pinned_public = dict(_asc.PINNED.get("public") or {})
+    assert pinned_public, "PINNED['public'] is empty — cannot judge the key set"
+    monkeypatch.setattr(
+        _asc, "resolve_public_floors_cached",
+        lambda *a, **k: {**pinned_public, "_source": {}, "_rejected": [], "_cold": True},
+        raising=False)
+    monkeypatch.setattr(
+        _asc, "resolve_canon",
+        lambda *a, **k: {"tools_advertised": _asc.PINNED.get("tools_advertised")},
+        raising=False)
+
+    body = _build_canon_body()
+    assert body, "_build_canon_body() returned nothing under the stub"
+    keys = set(body)
+    assert "facilities" in keys, (
+        "the stub fell through to the PINNED fallback branch (keys=%s) — this "
+        "guard would then be reading a different, smaller body than the "
+        "endpoint serves." % sorted(keys))
+
     priced = {k for k in keys
               if any(w in k.lower() for w in ("price", "cost", "usd", "pricing"))}
     if priced:
-        pytest.skip("canon/phrases now publishes %s — the claim would be true" % sorted(priced))
+        pytest.skip("canon/phrases now publishes %s — the claim would be true"
+                    % sorted(priced))
 
     flat = " ".join(block.split())
     i = flat.find("api/v1/canon/phrases")
     assert i != -1, "the policy no longer names canon/phrases — this guard anchors to it"
-    # the claim sentence: from the start of its rule up to the URL
     start = max((flat.rfind(". %d." % n, 0, i) for n in range(1, 10)), default=-1)
     claim = flat[start + 1 if start != -1 else 0:i]
-    for word in ("price", "Pro price", "pricing"):
-        assert word.lower() not in claim.lower(), (
-            "ai_discovery_routes.py: /llms.txt tells an agent the %r is served at "
+    for word in ("price", "pricing"):
+        assert word not in claim.lower(), (
+            "ai_discovery_routes.py: /llms.txt tells an agent the %s is served at "
             "/api/v1/canon/phrases, but that endpoint has no price key — it "
             "returns %d fields and none of them price anything. Point at "
             "/pricing instead. Claim as written: %r"
-            % (word, len(keys), claim.strip())
-        )
+            % (word, len(keys), claim.strip()))
