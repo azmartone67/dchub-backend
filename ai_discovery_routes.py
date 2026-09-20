@@ -359,6 +359,57 @@ def register_discovery_routes(app):
                 {"url": BASE_URL, "description": "Production"}
             ],
             "paths": {
+                "/api/v1/keys/claim": {
+                    "post": {
+                        "operationId": "claimFreeKey",
+                        "summary": "Mint a free DC Hub API key (no email, no account)",
+                        "description": (
+                            "Returns a working API key in one POST — no email, no browser, "
+                            "no signup. Pass it as the X-API-Key header on any keyed "
+                            "endpoint. Call this FIRST when a keyed endpoint answers 402 or "
+                            "403; those responses carry the same instruction inline.\n\n"
+                            "Idempotent per (client_name, source IP) inside the reuse "
+                            "window: the same client_name from the same IP gets the SAME key "
+                            "back with reused=true, and a different client_name mints a new "
+                            "one. Send a client_name that is distinct per agent or per end "
+                            "user — a single constant sent from a shared egress IP collapses "
+                            "every caller onto one key and one quota.\n\n"
+                            "★ The free unbound-call allowance is metered per SOURCE IP, not per "
+                            "client_name or per key, and it carries across re-mints — a fresh "
+                            "client_name does NOT reset it. So callers sharing one egress IP share "
+                            "one allowance, and every key minted after it is spent arrives already "
+                            "gated with bind_email_required. Binding an operator email (free, via "
+                            "the bind_email tool or POST /api/v1/keys/identify) lifts that gate and "
+                            "keeps the free tier. Hosted integrations that proxy many end users "
+                            "through one IP should bind an email per end user rather than rely on "
+                            "the unbound allowance."
+                        ),
+                        "requestBody": {
+                            "required": False,
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "properties": {
+                                    "client_name": {"type": "string", "maxLength": 80, "description": "Who is calling — distinct per agent or end user, e.g. 'acme-corp/workspace-42'. Also the idempotency key."},
+                                    "intended_use": {"type": "string", "maxLength": 400, "description": "Optional free text; telemetry only, never gates the key."},
+                                    "email": {"type": "string", "description": "Optional. Makes the key recoverable later via recover_my_key; omit and you still get a key instantly."}
+                                }
+                            }}}
+                        },
+                        "responses": {
+                            "200": {"description": (
+                                "Key issued. Always carries ok, api_key, tier, usage_instructions, "
+                                "upgrade_url and free_tier_summary. When the source IP has already "
+                                "spent its unbound calls the body ALSO carries bind_required=true, "
+                                "gate='bind_email_required', free_calls_unbound and a note — the key "
+                                "is real but the next validate refuses it until an email is bound. "
+                                "Check for `gate` before assuming the key is unrestricted."
+                            )},
+                            "429": {"description": "This source IP is inside the claim rate limit"},
+                            "503": {"description": "Minting unavailable; the body names the email-verified fallback"}
+                        },
+                        "tags": ["Public"]
+                    }
+                },
                 "/api/v1/stats": {
                     "get": {
                         "operationId": "getStats",
@@ -445,7 +496,7 @@ def register_discovery_routes(app):
                         "summary": "Compare data center markets",
                         "description": "Side-by-side comparison of two or more markets",
                         "parameters": [
-                            {"name": "markets", "in": "query", "schema": {"type": "string"}, "description": "Comma-separated market names"}
+                            {"name": "markets", "in": "query", "required": True, "schema": {"type": "string"}, "description": "Comma-separated market slugs, e.g. phoenix,dallas. Required — the endpoint answers 400 without it."}
                         ],
                         "responses": {"200": {"description": "Market comparison"}},
                         "tags": ["Public"]
@@ -504,63 +555,88 @@ def register_discovery_routes(app):
                     "get": {
                         "operationId": "getPipeline",
                         "summary": "Construction pipeline",
-                        "description": "Data centers under construction or announced",
-                        "responses": {"200": {"description": "Pipeline data"}},
-                        "tags": ["Public"]
+                        "description": (
+                            "Data centers under construction, announced or in planning, "
+                            "with operator, market and capacity where disclosed. Use for "
+                            "supply coming into a market rather than what is already "
+                            "operating. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                        ),
+                        "security": [{"apiKey": []}],
+                        "responses": {
+                            "200": {"description": "Pipeline data"},
+                            "403": {"description": "Key required; the body carries the one-POST claim instruction"}
+                        },
+                        "tags": ["Pro"]
                     }
                 },
                 "/api/site-score": {
                     "get": {
                         "operationId": "getSiteScore",
                         "summary": "Site suitability score",
-                        "description": "Score (0-100) for data center development at a location",
+                        "description": (
+                            "Composite 0-100 suitability score for data center development "
+                            "at one coordinate, with the component sub-scores behind it. "
+                            "A first-pass screen for a specific location, not a substitute "
+                            "for the per-layer power, fiber and risk calls. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                        ),
                         "parameters": [
                             {"name": "lat", "in": "query", "schema": {"type": "number"}, "required": True},
                             {"name": "lon", "in": "query", "schema": {"type": "number"}, "required": True},
                             {"name": "state", "in": "query", "schema": {"type": "string"}, "description": "US state abbreviation"}
                         ],
-                        "responses": {"200": {"description": "Site score"}},
-                        "tags": ["Public"]
+                        "security": [{"apiKey": []}],
+                        "responses": {
+                            "200": {"description": "Site score"},
+                            "402": {"description": "Key required; the body carries the one-POST claim instruction"}
+                        },
+                        "tags": ["Pro"]
                     }
                 },
                 "/api/grid/fuel-mix": {
                     "get": {
                         "operationId": "getGridFuelMix",
                         "summary": "Real-time power grid fuel mix",
+                        "description": (
+                            "What a US grid is generating from RIGHT NOW — MW and share by "
+                            "fuel (gas, nuclear, coal, wind, solar, hydro, storage) with the "
+                            "reading's own timestamp. Use this instead of quoting an annual "
+                            "average when the question is about current conditions. Covers "
+                            "the seven US ISOs/RTOs only — not utility-level or non-US "
+                            "grids. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                        ),
                         "parameters": [
                             {"name": "iso", "in": "query", "schema": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "SPP", "NYISO", "ISONE"]}}
                         ],
-                        "responses": {"200": {"description": "Grid fuel mix data"}},
-                        "tags": ["Public"]
+                        "security": [{"apiKey": []}],
+                        "responses": {
+                            "200": {"description": "Grid fuel mix data"},
+                            "403": {"description": "Key required; the body carries the one-POST claim instruction"}
+                        },
+                        "tags": ["Pro"]
                     }
                 },
                 "/api/energy/prices/{state}": {
                     "get": {
                         "operationId": "getEnergyPrices",
                         "summary": "Electricity pricing by US state",
+                        "description": (
+                            "Industrial, commercial and residential electricity pricing for "
+                            "one US state from the latest EIA release, with the period it "
+                            "covers. Use for a first-pass cost comparison between states. "
+                            "These are state-level averages — not a utility tariff and not a "
+                            "negotiated large-load rate. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                        ),
                         "parameters": [
                             {"name": "state", "in": "path", "schema": {"type": "string"}, "required": True}
                         ],
-                        "responses": {"200": {"description": "Energy pricing"}},
-                        "tags": ["Public"]
-                    }
-                },
-                "/api/v1/facilities/{facility_id}": {
-                    "get": {
-                        "operationId": "getFacilityDetail",
-                        "summary": "Full facility record",
-                        "description": "Detailed info including contacts, capacity, certifications. Requires API key.",
-                        "parameters": [
-                            {"name": "facility_id", "in": "path", "schema": {"type": "integer"}, "required": True}
-                        ],
                         "security": [{"apiKey": []}],
                         "responses": {
-                            "200": {"description": "Facility detail"},
-                            "401": {"description": "API key required"}
+                            "200": {"description": "Energy pricing"},
+                            "403": {"description": "Key required; the body carries the one-POST claim instruction"}
                         },
                         "tags": ["Pro"]
                     }
-                }
+                },
             },
             "components": {
                 "securitySchemes": {
@@ -568,7 +644,12 @@ def register_discovery_routes(app):
                         "type": "apiKey",
                         "in": "header",
                         "name": "X-API-Key",
-                        "description": "API key from https://dchub.cloud/pricing"
+                        "description": (
+                            "X-API-Key header. Get one free in a single POST to "
+                            "https://dchub.cloud/api/v1/keys/claim — no email, no "
+                            "browser, no account. Paid plans at "
+                            "https://dchub.cloud/pricing raise the daily limits."
+                        )
                     }
                 },
                 "schemas": {
@@ -615,8 +696,8 @@ def register_discovery_routes(app):
                 }
             },
             "tags": [
-                {"name": "Public", "description": "Free endpoints — no auth required"},
-                {"name": "Pro", "description": "Requires API key ($49/mo)"}
+                {"name": "Public", "description": "No key required — these answer cold"},
+                {"name": "Pro", "description": "Needs an X-API-Key. A free dev key is one POST to /api/v1/keys/claim — no email, no account; paid plans raise the limits."}
             ]
         }
         # r-eval-fixwave (2026-07-11, Sonar's finding): serve COMPACT, not
