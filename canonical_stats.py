@@ -34,6 +34,13 @@ from util.dcpi_score_row import PUBLISHED_ONLY
 _FALLBACK = {
     "facilities": 21000,            # raw "tracked" floor (discovery pile, incl unmerged dupes)
     "facilities_verified": 400,    # deduped/active floor — citation-safe. 2026-06-23: re-floored 1800->1000 (live=1,066, so 1800 was a ~69% over-claim on DB-failure — the canonical_floor_above_live_reality finding). Trend kept dropping 3,141->2,848->1,903->1,066 as re-ingestion churns dedup flags. MUST stay <= reality — floors round DOWN; re-floor whenever live drops below it. [flag RESOLVED 2026-07-10 (issue #1539): the 'shrinking' 3,141->1,066->427->5 was the pending QUEUE draining (old filter included merged_at IS NULL); true fleet ~4,903 — dedup was never over-merging.] 2026-06-30: re-floored 1000->400 (live verified ~427 per brain L15; 1000 was again above reality).
+    # ★2026-09-20: the honest name for the line above — DISTINCT
+    # canonical_slug among rows that have a keeper. Same seed, same
+    # citation-safety argument; `facilities_verified` is retained above
+    # as a deprecated alias because ~30 call sites read it by name.
+    # Both must stay in step: a fallback that disagrees with its own
+    # alias publishes two floors for one number on a DB outage.
+    "facilities_with_keeper_distinct": 400,
     "countries": 170,
     "countries_verified": 170,      # ★2026-07-30 re-floored 30 -> 170: live = 178 distinct ISO codes over the deduped fleet (measured; incl. territories — the field is clean codes now, not the dirty mix the old "live ~33" note feared). The stale 30 meant a DB-down cold start published "30+ countries" via countries_verified_phrase — a 5.9x UNDER-claim, and resolve_canon() now serves this phrase on /api/v1/canon/phrases. Floors round DOWN; 170 <= 178. Re-floor downward if the fleet ever shrinks below it.
     "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
@@ -432,6 +439,29 @@ def _query_live() -> dict:
                         "  AND canonical_slug IS NOT NULL")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
+                # ★2026-09-20 RENAMED. This is DISTINCT canonical_slug among
+                # rows that have a keeper — it is not a source "verification"
+                # of anything, and publishing it under that word is what made
+                # canon serve the keeper count labelled "verified".
+                #
+                # ★ NOT the bare `facilities_with_keeper`: that name is TAKEN,
+                # by routes/facilities_by_dims.py:191, and it means
+                # COUNT(*) WHERE COALESCE(is_duplicate,0)=0 — ROWS (live
+                # 22,955) against this query's DISTINCT SLUGS (live 22,949).
+                # Same filter, different population. Reusing the bare name
+                # would move the rows-vs-distinct collision into a new word
+                # instead of ending it; the ★★2026-07-27 note above is this
+                # module refusing rows once already.
+                out["facilities_with_keeper_distinct"] = n
+                _live_keys.add("facilities_with_keeper_distinct")
+                # DEPRECATED ALIAS, load-bearing. ~30 call sites across 15
+                # modules read this name, including
+                # routes/provenance.py:313 (stat_is_live), the
+                # _LIVE_WITNESS entry in ai_surface_canon, and the
+                # setdefault at routes/facilities_by_dims.py:207 that
+                # backstops the PUBLIC /api/v1/stats/canonical response when
+                # its own query fails. Dropping it here does not rename them
+                # — it makes them read None while still looking wired.
                 out["facilities_verified"] = n
                 _live_keys.add("facilities_verified")
         except Exception:
@@ -727,11 +757,32 @@ def facilities_phrase() -> str:
     return _floor_phrase(get_canonical_stats().get("facilities", _FALLBACK["facilities"]))
 
 
+def facilities_with_keeper_distinct_phrase() -> str:
+    """Floor over DISTINCT canonical_slug among rows that have a keeper,
+    e.g. '22,900+'.
+
+    ★2026-09-20 this is the renamed facilities_verified_phrase(). Nothing here
+    is a source VERIFICATION — a keeper election is a de-duplication state —
+    and the old word is why canon published the keeper count as "verified"
+    while /api/v1/stats and /api/v1/stats/canonical both use
+    `facilities_verified` for a different predicate (duplicate_of_id IS NULL,
+    live 22,166). One name, two numbers, on three public surfaces."""
+    _v = _read_metric(get_canonical_stats(), "facilities_with_keeper_distinct")
+    if _v is None:
+        _v = _FALLBACK["facilities_with_keeper_distinct"]
+    return _floor_phrase(_v, step=100)
+
+
 def facilities_verified_phrase() -> str:
-    """Deduped/active floor, e.g. '2,800+' — what we've actually verified."""
-    return _floor_phrase(
-        get_canonical_stats().get("facilities_verified", _FALLBACK["facilities_verified"]),
-        step=100)
+    """DEPRECATED ALIAS of facilities_with_keeper_distinct_phrase().
+
+    Kept because ai_surface_canon.py:1374 imports it BY NAME to build
+    c["facilities_verified_live"], which is the _LIVE_WITNESS entry for
+    public.facilities — an unmapped witness reads as NOT live and fails
+    closed, so removing this would silently un-live the headline floor.
+    routes/linkedin_content_engine, routes/geo_autopublish and
+    mcp_facts_export import it by name too. Prefer the new name in new code."""
+    return facilities_with_keeper_distinct_phrase()
 
 
 def facilities_phrase_full() -> str:
@@ -910,8 +961,72 @@ def headline_blurb() -> str:
 # SAME ones the *_phrase() helpers above use, so a consumer reading this map
 # can never round a number differently from resolve_canon() — which would be a
 # new drift class inside the module that exists to kill drift.
+# ★2026-09-20 DEPRECATION ALIASES — READS accept either name.
+#
+# A rename that moves only the WRITE side is not a rename, it is a silent
+# miss. _query_live emits both names, but every OTHER producer of a stats
+# mapping — a caller building one by hand, a fallback path, a test fixture —
+# emits only the name it knew about. The new key is then absent and the read
+# falls through to the citation-safe _FALLBACK seed (400 against a live
+# ~22,900: a 57x under-claim, published as a floor).
+#
+# MEASURED on this branch before this map existed: 20 tests across
+# test_canon_floor_derivation, test_connect_install_pages_derive_canon,
+# test_agent_landing_derives_canon and test_media_standing_totals went red,
+# every one of them because its fixture set `facilities_verified` and the
+# floor spec had moved to the new name. Those fixtures are standing in for
+# real callers that do exactly the same thing.
+#
+# Reads resolve in order and take the FIRST name present, so the new name wins
+# once a producer emits it. Retire an entry only when nothing writes the alias.
+_METRIC_ALIASES = {
+    "facilities_with_keeper_distinct": ("facilities_verified",),
+}
+
+
+def _metric_names(stat_key: str) -> tuple:
+    """(canonical, *deprecated aliases) for one metric."""
+    return (stat_key,) + tuple(_METRIC_ALIASES.get(stat_key, ()))
+
+
+def _read_metric(snap, stat_key):
+    """The metric's value under whichever of its names carries it, or None.
+
+    ★ A MEASURED name beats a merely-PRESENT one, and that ordering is the
+    whole correctness of this helper. Snapshots in this codebase are built as
+    {**_FALLBACK, **measured}, so EVERY canonical name is present as a seed
+    whether or not anything measured it. Resolving canonical-name-first would
+    therefore return the 400 citation-safe seed and shadow a real ~22,900 that
+    arrived under the deprecated alias — a 57x under-claim, published as a
+    floor, on a code path whose entire job is to stop under-claims. Measured
+    on this branch: that ordering reddened 4 derivation tests before the
+    stat_is_live() pass below was added.
+
+    None means ABSENT, never zero: a present 0 is returned as 0, so callers
+    keep the `.get(key, default)` semantics this replaced."""
+    names = _metric_names(stat_key)
+    for name in names:
+        if stat_is_live(name) and (snap or {}).get(name) is not None:
+            return snap[name]
+    for name in names:
+        v = (snap or {}).get(name)
+        if v is not None:
+            return v
+    return None
+
+
+def _metric_is_live(stat_key: str) -> bool:
+    """True when a real query measured the metric under ANY of its names."""
+    return any(stat_is_live(n) for n in _metric_names(stat_key))
+
+
 _PUBLIC_FLOOR_SPECS = {
-    "facilities": ("facilities_verified", lambda n: _floor_phrase(n, step=100)),
+    # ★2026-09-20: reads facilities_with_keeper_distinct, not the deprecated
+    # facilities_verified alias. Same number; this map is what turns it into
+    # canon's published `facilities` phrase, so it is the one place the honest
+    # name has to win.
+    "facilities": ("facilities_with_keeper_distinct",
+                   lambda n: _floor_phrase(n, step=100)),
     "countries":  ("countries_verified",  _countries_floor),
     "markets":    ("markets",             _markets_floor),
     "deals":      ("deals",               _deals_floor),
@@ -994,10 +1109,12 @@ def live_public_floors() -> dict:
         return {}
     out = {}
     for pub_key, (stat_key, floor) in _PUBLIC_FLOOR_SPECS.items():
-        if not stat_is_live(stat_key):
+        # alias-aware: a snapshot written under a metric's DEPRECATED name is
+        # still a measurement, and suppressing it would republish the seed.
+        if not _metric_is_live(stat_key):
             continue
         try:
-            n = int(snap.get(stat_key) or 0)
+            n = int(_read_metric(snap, stat_key) or 0)
             if n > 0:
                 out[pub_key] = floor(n)
         except Exception:
