@@ -119,8 +119,12 @@ def fence(monkeypatch):
                 for k, v in fb.items()}
         live["facilities_verified"] = facilities_verified
         monkeypatch.setattr(cs, "_query_live", lambda: live, raising=False)
-        monkeypatch.setattr(hn, "as_dict",
-                            lambda *a, **k: {"facilities": floor}, raising=False)
+        # ★2026-09-19: the fence reads as_dict_pinned(), not as_dict(). as_dict()
+        # is now the RESOLVED floor (live overlay applied) and this detector
+        # convicts the PIN. Patching the wrong name here would leave the fixture
+        # inert and the fence silently reading the real canon.
+        monkeypatch.setattr(hn, "as_dict_pinned",
+                            lambda *a, **k: {"facilities": floor}, raising=True)
         return [f for f in check_canonical_floor_exceeds_live()
                 if f.get("url") == "ai_surface_canon.PINNED.public"]
 

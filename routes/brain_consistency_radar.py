@@ -12219,8 +12219,15 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
     # against a live 12,687 distinct sites (~1.7x over-claim), and a PARTNER
     # (Grok) caught it on our own pages before any detector did. Watch it now:
     # a floor above live reality here gets pasted into every downstream listing.
+    # ★2026-09-19: as_dict_pinned(), NOT as_dict(). as_dict() now returns the
+    # RESOLVED floors (PINNED with the live overlay applied), and this detector
+    # convicts the PIN: its finding names `PINNED['public'][key]` and tells a
+    # human to lower that literal. On a resolved floor the number in the
+    # remediation is not the number on the page. Worse, the overlay only ever
+    # RAISES, so reading it here would convict an innocent pin of an over-claim
+    # the overlay introduced. The pin is the operand; keep it unresolved.
     try:
-        from routes.mcp_honest_numbers import as_dict as _canon_public
+        from routes.mcp_honest_numbers import as_dict_pinned as _canon_public
         pinned = _canon_public() or {}
     except Exception:
         pinned = {}
