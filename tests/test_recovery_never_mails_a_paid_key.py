@@ -51,13 +51,22 @@ class _Cur:
             raise RuntimeError("simulated query failure")
         if "FROM users" in s:
             plan = (self.a.get("plan") or "free")
-            # ★ Read the plan set OUT OF THE SQL, not from the test's own
-            # constant. A fake that used its own list let a mutation dropping
-            # 'developer' from the query survive the whole suite — the fake
-            # answered for a query the module no longer sends.
-            m = re.search(r"IN \(([^)]*)\)", s)
-            assert m, "paid lookup lost its plan set: %r" % s
-            sql_plans = {p.strip().strip("'") for p in m.group(1).split(",")}
+            # ★ Read the plan set FROM THE STATEMENT, never from the test's own
+            # constant. A fake using its own list let a mutation dropping
+            # 'developer' survive the whole suite — it answered for a query the
+            # module no longer sends.
+            #
+            # Two forms, because the statement moved from an inline IN (...) to
+            # `= ANY(%s)` when the set became derived (2026-09-20). Both are
+            # handled so a revert to either shape is still measured, and a
+            # statement carrying NEITHER is an error rather than a pass.
+            if "= ANY(" in s:
+                sql_plans = {str(x) for x in (params[1] if params else [])}
+                assert sql_plans, "paid lookup passed an EMPTY plan set: %r" % (params,)
+            else:
+                m = re.search(r"IN \(([^)]*)\)", s)
+                assert m, "paid lookup lost its plan set: %r" % s
+                sql_plans = {p.strip().strip("'") for p in m.group(1).split(",")}
             ok = plan in sql_plans
             # Only apply the billing filter when the statement asks for it.
             if ok and "subscription_status" in s:

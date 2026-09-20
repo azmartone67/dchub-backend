@@ -198,6 +198,18 @@ def _send(to_email: str, subject: str, html: str) -> bool:
         return False
 
 
+def _paid_plans():
+    """Paid `users.plan` values, from tier_registry. Fails CLOSED to the literal
+    this module used to carry: if the registry cannot be imported, protect
+    exactly who was protected before rather than nobody."""
+    try:
+        from tier_registry import paid_plan_names
+        got = paid_plan_names()
+        return got if got else ('pro', 'founding', 'enterprise', 'starter', 'developer')
+    except Exception:
+        return ('pro', 'founding', 'enterprise', 'starter', 'developer')
+
+
 def _lookup_and_send(email: str, connect=None) -> str:
     """Resolve the email to a recovery action and send it. Best-effort, fully
     swallowed — NOTHING about success/failure reaches the HTTP caller. Order:
@@ -254,12 +266,18 @@ def _lookup_and_send(email: str, connect=None) -> str:
                 # disclosure.
                 paid_undetermined = False
                 try:
+                    # ★2026-09-20 — the plan set is DERIVED from tier_registry,
+                    # not typed here. The literal this replaces omitted `team`
+                    # and `research_seed`, which TIERS marks paid, so those
+                    # customers missed THIS branch and took the one below that
+                    # mails a key under the free-tier template — the same defect
+                    # #4877 fixed for the dunning window, still live for them.
                     cur.execute(
                         "SELECT plan FROM users "
                         "WHERE LOWER(email) = %s "
-                        "  AND COALESCE(plan,'free') IN ('pro','founding','enterprise','starter','developer') "
+                        "  AND COALESCE(plan,'free') = ANY(%s) "
                         "LIMIT 1",
-                        (email,),
+                        (email, list(_paid_plans())),
                     )
                     prow = cur.fetchone()
                 except Exception:

@@ -204,7 +204,26 @@ def repair():
             if not u:
                 return jsonify(ok=False, error="no users row for email"), 404
             uid, prev_plan = u
-            cur.execute("UPDATE users SET plan=%s WHERE id=%s", (plan, uid))
+            # ★2026-09-20 — CLEAR THE DUNNING MARKER, and only that.
+            #
+            # This wrote `plan` alone, and api_tier_gating.resolve_effective_plan
+            # reads plan AND subscription_status AND demoted_at. So a repair
+            # could set plan='pro' and leave the account resolving to 'free',
+            # which is a repair that silently did not repair: after #4877/#4903
+            # both self-serve restore paths follow the authority, so they stayed
+            # shut for an account an admin had just "fixed".
+            #
+            # demoted_at is the dunning guard's own marker and clearing it is
+            # exactly what a repair means. subscription_status is deliberately
+            # NOT touched: it is BILLING state owned by the Stripe webhooks, and
+            # writing 'active' over a 'canceled' account here would be this
+            # service asserting a payment it has no knowledge of. An admin who
+            # means to grant access to a canceled account should see that it did
+            # not take effect — which is what `effective_plan` below reports —
+            # rather than have a lie written under them.
+            cur.execute(
+                "UPDATE users SET plan=%s, demoted_at=NULL WHERE id=%s",
+                (plan, uid))
             cur.execute(
                 "UPDATE api_keys SET plan=%s, rate_limit_tier=%s"
                 " WHERE user_id=%s AND is_active IS TRUE", (plan, plan, uid))
@@ -214,9 +233,36 @@ def repair():
                 " (email, new_plan, prev_user_plan, keys_updated)"
                 " VALUES (%s,%s,%s,%s)",
                 (email, plan, prev_plan, keys_updated))
+            # ★ REPORT WHAT THE REPAIR ACTUALLY ACHIEVED, read back from the
+            # row rather than assumed from the write. `plan` is what we asked
+            # for; `effective_plan` is what the entitlement authority now says,
+            # and the two disagreeing is the only visible sign that a repair was
+            # a no-op.
+            effective_plan, sub_status = None, None
+            try:
+                cur.execute("SELECT plan, subscription_status, role, demoted_at"
+                            " FROM users WHERE id=%s LIMIT 1", (uid,))
+                _r = cur.fetchone()
+                if _r:
+                    sub_status = _r[1]
+                    from api_tier_gating import resolve_effective_plan
+                    effective_plan = resolve_effective_plan(_r[0], _r[1], _r[2], _r[3])
+            except Exception:
+                effective_plan = None      # unknown, never guessed
         c.commit()
-        return jsonify(ok=True, email=email, plan=plan,
-                       prev_user_plan=prev_plan, keys_updated=keys_updated)
+        took_effect = (effective_plan == plan) if effective_plan else None
+        out = dict(ok=True, email=email, plan=plan,
+                   prev_user_plan=prev_plan, keys_updated=keys_updated,
+                   effective_plan=effective_plan, took_effect=took_effect)
+        if took_effect is False:
+            out["warning"] = (
+                "plan was written but the account still resolves to '%s'"
+                % effective_plan
+                + (" because subscription_status is '%s'" % sub_status if sub_status else "")
+                + ". Self-serve key recovery and binding confirmation follow the"
+                  " resolved plan, so they remain closed for this account. This"
+                  " endpoint does not write billing state; fix it at the source.")
+        return jsonify(**out)
     except Exception as e:  # noqa: BLE001
         try:
             c.rollback()

@@ -249,6 +249,37 @@ def is_paid(tier):
     return TIERS.get(_norm(tier), {}).get('paid', False)
 
 
+# Plan names a `users.plan` column may hold that grant paid entitlement.
+#
+# ★2026-09-20 — DERIVED, because three modules had typed their own and all
+# three disagreed:
+#   activation_nudge.PAID_PLANS            starter developer pro paid enterprise founding
+#   routes/keys_recover.py (inline)        starter developer pro     enterprise founding
+#   mcp_key_email_verification._PAID_PLANS         developer pro     enterprise founding
+#
+# Every one of them omits `team` and `research_seed`, which TIERS marks paid.
+# That is not cosmetic: keys_recover routes a paid account away from the
+# mail that sends a key in the clear, so a `team` customer missed their own
+# branch and took the free-tier one — the same defect #4877 fixed for the
+# dunning window, still live for those two plans. mcp_key_email_verification
+# simply could not confirm their binding at all.
+#
+# `admin` is EXCLUDED. It is a role, not a purchased plan: resolve_effective_plan
+# reads `role == 'admin'` from its own column, and no account carries
+# plan='admin'. Including it would put a non-plan string into SQL that compares
+# against users.plan, which is how a set like this starts drifting again.
+_NOT_A_PURCHASABLE_PLAN = frozenset({'admin'})
+
+
+def paid_plan_names():
+    """The paid `users.plan` values, from TIERS. Sorted, so SQL that embeds it
+    is stable and a diff of it is readable."""
+    return tuple(sorted(
+        name for name, spec in TIERS.items()
+        if spec.get('paid') and name not in _NOT_A_PURCHASABLE_PLAN
+    ))
+
+
 def label(tier):
     return TIERS.get(_norm(tier), TIERS['free'])['label']
 
