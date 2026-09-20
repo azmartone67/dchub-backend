@@ -1446,6 +1446,11 @@ def _safe_ratio(num, den, digits=2):
 
 
 # ── Funnel leakage diagnostic ───────────────────────────────────────
+# The signal taxonomy is IMPORTED, never re-declared: a second copy is how
+# a reader and a writer come to disagree about what a signal means.
+from mcp_signal_canonical import SIGNAL_CLASSES, signal_class  # noqa: E402
+
+
 @schema_repair_bp.route("/api/v1/admin/funnel/leakage", methods=["GET"])
 def funnel_leakage():
     """Per-tool, per-stage drop-off in the MCP conversion funnel.
@@ -1644,9 +1649,11 @@ def funnel_leakage():
                      GROUP BY tool_requested
                     HAVING COUNT(*) FILTER (WHERE NOT is_synthetic) > 0
                      ORDER BY signals DESC
-                     LIMIT 15
+                     -- r-signal-class: window 50, OUTPUT still 15. The top
+                     -- 15 by BLOCKED is not a subset of the top 15 by total.
+                     LIMIT 50
                 """, (f"{days} days",))
-                out["top_leak_tools"] = [
+                _rows = [
                     {"tool": r[0], "signals": r[1], "sessions": r[2],
                      "excluded_synthetic": r[3],
                      "distinct_clients": r[4],
@@ -1659,6 +1666,62 @@ def funnel_leakage():
                      "signals_per_session": _safe_ratio(r[1], r[2], 2)}
                     for r in cur.fetchall()
                 ]
+                # ★2026-09-20 (r-signal-class): #4926 publishes the POPULATION
+                # behind each rank; this publishes what each signal MEANS.
+                # The board ranked on the signal TOTAL, and the dominant
+                # signal_type — `trial_preview` — is an ANSWER going back with
+                # an upsell riding along. mcp_signal_canonical's own header
+                # measured it: 5,255 of 6,267 signals in 30d. So the board
+                # ranked tools for ANSWERING people, and get_market_intel sat
+                # 4th on it for working correctly.
+                #
+                # #4926's query above is kept VERBATIM: its `sessions` is a
+                # TRUE distinct count at tool grain, and adding signal_type to
+                # its GROUP BY would silently turn that into a sum over
+                # buckets. The classes come from a SECOND, narrow query over
+                # the SAME population (NOT is_synthetic), so a row's class
+                # counts sum to that row's `signals`.
+                _by_tool = {r["tool"]: r for r in _rows}
+                for _r in _rows:
+                    for _cls in SIGNAL_CLASSES:
+                        _r[_cls] = 0
+                cur.execute("""
+                    SELECT tool_requested, signal_type, COUNT(*)
+                      FROM mcp_funnel_canonical
+                     WHERE created_at >= NOW() - INTERVAL %s
+                       AND NOT is_synthetic
+                     GROUP BY tool_requested, signal_type
+                """, (f"{days} days",))
+                _unknown = set()
+                for _tool, _st, _n in cur.fetchall():
+                    _cls = signal_class(_st)
+                    if _cls == "unclassified":
+                        _unknown.add(_st)
+                    _row = _by_tool.get(_tool)
+                    if _row is not None:
+                        _row[_cls] += int(_n or 0)
+                        if _cls == "unclassified":
+                            _row.setdefault("unclassified_types", [])
+                            if _st not in _row["unclassified_types"]:
+                                _row["unclassified_types"].append(_st)
+                out["top_leak_tools"] = sorted(
+                    _rows, key=lambda r: (r["blocked"], r["signals"]),
+                    reverse=True)[:15]
+                _tot = {_c: 0 for _c in SIGNAL_CLASSES}
+                for _r in _rows:
+                    for _c in SIGNAL_CLASSES:
+                        _tot[_c] += _r.get(_c, 0)
+                out["signal_class_totals"] = _tot
+                out["stages"]["2_paywall_signals_blocked"] = _tot["blocked"]
+                if _unknown:
+                    out["unclassified_signal_types"] = sorted(_unknown)
+                    out["unclassified_warning"] = (
+                        "signal_type(s) with no entry in mcp_signal_canonical."
+                        "SIGNAL_CLASS. Counted in `signals` and in "
+                        "`unclassified`, and in NEITHER blocked nor served - a "
+                        "default either way would corrupt the ranking, and the "
+                        "safe-looking one ('served') would hide a real wall. "
+                        "Add them to the map.")
             except Exception:
                 try: c.rollback()
                 except Exception: pass

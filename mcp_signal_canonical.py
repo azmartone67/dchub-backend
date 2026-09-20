@@ -109,6 +109,51 @@ def _resolve_self_traffic(session_id, mcp_client) -> bool:
         return False
 
 
+# ── SIGNAL CLASSES (2026-09-20) ──────────────────────────────────────────────
+# A "paywall signal" is not one thing, and reading the count as demand-denied is
+# how get_market_intel came to sit 4th on a leak board for ANSWERING people.
+#
+# Measured, and recorded in this file's own header since 2026-08-17: the
+# trial_preview path was 5,255 of 6,267 signals in 30d — 84% of everything
+# counted as a "paywall signal" was an ANSWER going back with an upsell riding
+# along. `/api/v1/admin/funnel/leakage` ranked tools on that total.
+#
+# Three classes, because two would still be wrong: checkout_link_issued and
+# redeem_url_viewed happen AFTER a code exists, so counting them in stage 2 and
+# dividing by stage 3 divides the funnel against itself.
+SIGNAL_CLASS = {
+    # DENIED — the caller asked and was refused. The only class that is a leak.
+    'paywall_hit':                 'blocked',
+    'paid_tool_blocked':           'blocked',
+    'trial_cap_exceeded':          'blocked',
+    'monthly_quota_exhausted':     'blocked',
+    'metered_grid_fiber_enforced': 'blocked',
+    # ★ Found by the drift test, not by the first enumeration: it is written
+    #   as a kwarg in mcp_upgrade_gate.py, not as a dict entry, so a grep
+    #   shaped for the other writers missed it. Fires at
+    #   `used >= FREE_DAILY_LIMIT` with allowed=False.
+    'daily_limit_hit':             'blocked',
+    # SERVED — an answer went back. An upsell rode along; nothing was withheld
+    # that the caller's tier entitled it to.
+    'trial_preview':               'served',
+    # DOWNSTREAM — already past the wall, later in the funnel than stage 3.
+    'checkout_link_issued':        'downstream',
+    'redeem_url_viewed':           'downstream',
+}
+
+# ★ 'unclassified' is deliberate and load-bearing. A signal_type added in
+# dchub-mcp-server (server.mjs `signal_type: '...'`) cannot update this map, so
+# an unknown type MUST surface as its own bucket rather than defaulting into
+# blocked or served — either default would silently corrupt the ranking, and the
+# safe-looking one ('served') would hide a real wall.
+SIGNAL_CLASSES = ('blocked', 'served', 'downstream', 'unclassified')
+
+
+def signal_class(signal_type):
+    """Class for one signal_type. Unknown -> 'unclassified', never a guess."""
+    return SIGNAL_CLASS.get((signal_type or '').strip(), 'unclassified')
+
+
 def record_signal(*, signal_type, tool_requested=None, tier_current='free',
                   tier_required='paid', message_shown=None, mcp_client=None,
                   user_agent=None, daily_usage=None, daily_limit=None,
