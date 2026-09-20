@@ -16,6 +16,7 @@ and update the map if a gate genuinely moves.
 """
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -220,3 +221,178 @@ def test_claim_describes_the_ip_metered_bind_gate(spec):
         "daily_calls is returned on the reuse path only — do not promise it "
         "on a fresh mint"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spec claim vs code enforcement.
+#
+# The GATED map above is a MEASUREMENT, taken by hand on a date. That was the
+# right call against a spec that vouched for itself, but it is blind in one
+# direction: change the CODE and the map keeps agreeing with the spec while
+# both drift away from reality. A PR proposing exactly that (#4928, opening
+# four gated endpoints) would have left every test here green and the published
+# spec quietly wrong — and an agent catalogue generates its connector from that
+# spec, so the lie ships into a product we cannot edit.
+#
+# This derives gating from the ENFORCEMENT SIDE and asserts the spec agrees. No
+# network: the unit-tests lane runs under a no-network hook, and a live probe
+# here would either be refused or add to the register of grandfathered
+# exceptions the project is trying to shrink.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GATE_DECORATORS = ("require_plan", "_lazy_require_plan", "require_tier",
+                    "require_paid", "_lazy_require_tier")
+
+
+def _norm_path(p):
+    """/api/x/{state} and /api/x/<int:sid> both collapse to /api/x/<>."""
+    p = re.sub(r"\{[^}]+\}", "<>", p)
+    p = re.sub(r"<[^>]+>", "<>", p)
+    return p.rstrip("/") or "/"
+
+
+_ROUTE_GATE_CACHE = {}
+
+
+def _route_gates():
+    """path -> True only if EVERY registration of it carries a plan-gate.
+
+    ★ ANY was wrong and a mutation proved it. `/api/v1/pipeline` is registered
+    in both deals_routes.py and routes/deals_routes.py; under ANY, stripping
+    the gate from one left the other vouching for it and the check stayed
+    green — the exact drift this test exists to catch, hidden by a stale
+    duplicate. ALL fails loudly instead, which is the safe direction: a
+    genuinely ungated duplicate is something a human should look at.
+
+    AST-based, so `"@app.route('/x')"` sitting inside a string literal in a
+    patch script is not mistaken for a real registration — several such decoys
+    exist in this repo.
+    """
+    if _ROUTE_GATE_CACHE:
+        return _ROUTE_GATE_CACHE
+    out = {}
+    for f in ROOT.rglob("*.py"):
+        rel = str(f.relative_to(ROOT))
+        if rel.startswith("tests/") or "/tests/" in rel:
+            continue
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            names = []
+            for d in node.decorator_list:
+                t = d.func if isinstance(d, ast.Call) else d
+                names.append(t.attr if isinstance(t, ast.Attribute)
+                             else getattr(t, "id", ""))
+            for d in node.decorator_list:
+                if not (isinstance(d, ast.Call)
+                        and isinstance(d.func, ast.Attribute)
+                        and d.func.attr == "route"
+                        and d.args
+                        and isinstance(d.args[0], ast.Constant)
+                        and isinstance(d.args[0].value, str)):
+                    continue
+                p = _norm_path(d.args[0].value)
+                gated = any(g in names for g in _GATE_DECORATORS)
+                out[p] = gated if p not in out else (out[p] and gated)
+    _ROUTE_GATE_CACHE.update(out)
+    return out
+
+
+def _prefix_gated(path):
+    """The other enforcement mechanism: central prefix registries."""
+    try:
+        import free_tier_gate as ftg
+    except Exception:
+        return False
+    pref = list(getattr(ftg, "GATED_PREFIXES", [])) + \
+        list(getattr(ftg, "METERED_MAP_PREFIXES", []))
+    return any(path.startswith(p) for p in pref)
+
+
+def _enforced(path, routes):
+    return bool(routes.get(_norm_path(path))) or _prefix_gated(path)
+
+
+def test_the_cross_check_actually_resolves_endpoints():
+    """A scan that can find nothing must not be able to pass silently.
+
+    If route detection breaks — a decorator renamed, a registration style
+    changed — every assertion below would vacuously hold. This is the floor.
+    """
+    routes = _route_gates()
+    assert len(routes) >= 50, (
+        f"route scan resolved only {len(routes)} paths; detection is broken and "
+        f"the cross-check below proves nothing"
+    )
+    spec_paths = [p for p in _spec_paths() if _norm_path(p) in routes
+                  or _prefix_gated(p)]
+    assert len(spec_paths) >= 4, (
+        f"only {len(spec_paths)} curated-spec paths resolve to a handler; "
+        f"the cross-check covers too little to be meaningful"
+    )
+
+
+@pytest.mark.parametrize("path", sorted(GATED))
+def test_spec_claims_a_gate_only_where_the_code_enforces_one(path, spec):
+    """If someone opens an endpoint, this fails until the spec moves with it.
+
+    That is the whole point: the spec ships to third parties who generate
+    connectors from it, so the gate change and the spec change have to land in
+    the SAME pull request.
+    """
+    routes = _route_gates()
+    assert _enforced(path, routes), (
+        f"{path} is declared key-required in the curated spec, but no "
+        f"@require_plan-family decorator and no GATED/METERED prefix enforces "
+        f"it. Either the gate was removed — in which case this spec entry now "
+        f"lies to every generated connector — or enforcement moved somewhere "
+        f"this check cannot see."
+    )
+
+
+def test_spec_calls_nothing_public_that_the_code_gates():
+    """The original defect, inverted and mechanised.
+
+    #4858 found four endpoints tagged Public while answering 402/403. A
+    generated tool for one of those fails on every call.
+    """
+    spec = _load_spec()
+    routes = _route_gates()
+    liars = []
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            if method not in ("get", "post"):
+                continue
+            sec = op.get("security")
+            requires_key = bool(sec) and {} not in sec
+            if requires_key:
+                continue          # covered by the test above
+            if _norm_path(path) not in routes and not _prefix_gated(path):
+                continue          # handler not resolvable — not this test's job
+            if _enforced(path, routes):
+                liars.append(f"{method.upper()} {path}")
+    assert not liars, (
+        f"the curated spec presents these as needing no key while the code "
+        f"gates them — a generated tool for each fails on every call: {liars}"
+    )
+
+
+def _load_spec():
+    """The spec dict, outside the pytest fixture, for helpers above."""
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name == "serve_openapi_json":
+            for st in ast.walk(fn):
+                if isinstance(st, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id == "spec" for t in st.targets):
+                    return ast.literal_eval(
+                        ast.fix_missing_locations(_Placeholder().visit(st.value)))
+    raise AssertionError("spec not found")
+
+
+def _spec_paths():
+    return list(_load_spec()["paths"])
