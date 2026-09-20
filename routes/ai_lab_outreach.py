@@ -706,13 +706,28 @@ def _canon_public() -> dict:
     """Canon floor phrases for outbound copy. Floors only — never a live count.
 
     A floor phrase ("18,500+") stays true as the real number grows, so copy
-    built from it cannot age into an over-claim. resolve_canon() is
+    built from it cannot age into an over-claim. resolve_canon() is still
     deliberately NOT used: it DEGRADES rather than raising (observed returning
     facilities=400 against a floor of 18,500), and a 45x under-claim in a
     partner email is not an improvement on a stale one.
+
+    ★2026-09-19: the floors are RESOLVED, through resolve_public_floors_cached().
+    That resolver is the opposite shape to resolve_canon(): its overlay ONLY
+    EVER RAISES, so it cannot produce the 45x under-claim above, and it never
+    blocks or raises. A dead resolver leaves the pin standing.
+
+    ★ _claim_gate() READS THE SAME FLOORS, and it has to. The gate refuses to
+    send any figure ABOVE its canon, so copy built here from a risen floor and
+    checked there against the pin would block every draft — the outreach lane
+    would go dark refusing its own correct numbers. The two must move together
+    or not at all.
     """
     import ai_surface_canon as _c
     pub = dict(_c.PINNED.get("public") or {})
+    try:
+        pub.update(_c.resolve_public_floors_cached() or {})
+    except Exception:          # documented never to raise; belt and braces
+        pass
     return {
         "facilities": pub.get("facilities", "20,100+"),
         "deals":      pub.get("deals", "2,000+"),
@@ -728,11 +743,31 @@ def _claim_gate(body: str) -> list:
     resolve_canon() is documented to DEGRADE rather than raise (observed
     returning facilities=400 against a floor of 18,500), so a resolver hiccup
     must never be read as "no violations found".
+
+    ★2026-09-19: canon is the RESOLVED floor, the same one _canon_public()
+    writes the copy from. Not a loosening of the gate and not optional: the
+    gate blocks any figure ABOVE canon, so a pinned ceiling under risen copy
+    would mark every draft `blocked_claims` and the lane would go dark
+    refusing its own correct numbers.
+
+    The ceiling still cannot fall below the pin — the overlay only RAISES —
+    so a dead resolver leaves the STRICTER pinned ceiling in place. That is
+    the fail-closed direction. The canon import failing is still a refusal.
+
+    ★ KNOWN, ACCEPTED: a body is built at draft time and checked at send time.
+    If the live floor falls back toward the pin between the two (a dedup pass
+    lowering a count past a rounding boundary), the stored copy now exceeds
+    canon and the draft is marked `blocked_claims` — which is exactly what the
+    gate is for. Regenerate the draft; do not widen the gate.
     """
     from routes.outreach_claim_gate import verify_claims
     try:
         import ai_surface_canon as _c
         canon = dict(_c.PINNED.get("public") or {})
+        try:
+            canon.update(_c.resolve_public_floors_cached() or {})
+        except Exception:      # documented never to raise; belt and braces
+            pass
         markers = _c.PINNED.get("stale_markers") or ()
     except Exception as e:
         return [{"kind": "unverifiable", "noun": "canon",
