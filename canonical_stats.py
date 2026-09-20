@@ -602,6 +602,46 @@ def _query_live() -> dict:
                     c.rollback()
                 except Exception:
                     pass
+
+        # ── the mapped-asset TOTAL ─────────────────────────────────────────
+        # ★2026-09-19. `assets` was the last public floor with NO live path at
+        #   all: PINNED['public']['assets'] said "320,000+" while the owner
+        #   measured 330,961 — a hand-typed literal drifting alone, which is the
+        #   exact shape this module exists to end.
+        #
+        # ★ THE MEMBER LIST IS IMPORTED, NEVER RETYPED. routes/
+        #   infrastructure_data_routes._STATS_MEMBERS already decides which
+        #   tables are an 'asset' (and which are a 'subset' that must never be
+        #   summed, or a 'facility' that is a different population entirely).
+        #   Copying those eight table names here would create a SECOND
+        #   definition of "asset" that drifts from the first — two owners again,
+        #   one level down. One list, two readers.
+        #
+        # ★ ALL-OR-NOTHING, unlike the per-layer counts above. A partial sum is
+        #   not a conservative floor, it is a wrong number that still rounds
+        #   down cleanly and therefore looks right: losing `substations` alone
+        #   would publish "200,000+" against a real 330,961 and nothing would
+        #   flag it. So one failed member drops the whole figure and the pin
+        #   stands.
+        try:
+            _tables = asset_member_tables()
+            if not _tables:
+                raise ValueError('no asset-role members')
+            _total = 0
+            for _tbl in _tables:
+                cur.execute(f"SELECT COUNT(*) FROM {_tbl}")
+                _n = int((cur.fetchone() or [0])[0] or 0)
+                if _n <= 0:
+                    raise ValueError(f'{_tbl} measured {_n}')
+                _total += _n
+            if _total > 0:
+                out["assets"] = _total
+                _live_keys.add("assets")
+        except Exception:
+            try:
+                c.rollback()
+            except Exception:
+                pass
     finally:
         try:
             c.close()
@@ -633,6 +673,22 @@ def get_canonical_stats(force: bool = False) -> dict:
         _cache = live
         _cache_ts = now
     return dict(live)
+
+
+def asset_member_tables() -> list:
+    """The tables that count as an infrastructure ASSET, from the ONE list that
+    decides it: routes/infrastructure_data_routes._STATS_MEMBERS.
+
+    'subset' members (a narrower or stale view of a population already counted)
+    and 'facility' members (data centres — a different population) must never be
+    summed into an asset total, so this filter is `== 'asset'` and never a
+    negation: a role added later must opt IN, not be swept in by `!= 'facility'`.
+
+    Raises rather than returning a partial list — the caller treats any failure
+    as "do not publish", and a short list would publish a plausible-looking
+    under-count instead."""
+    from routes.infrastructure_data_routes import _STATS_MEMBERS
+    return [t for _k, t, role in _STATS_MEMBERS if role == 'asset']
 
 
 def _floor_phrase(n: int, step: int = 1000) -> str:
@@ -879,6 +935,10 @@ _PUBLIC_FLOOR_SPECS = {
     # specs can actually fire.
     "fiber_routes":       ("fiber_routes",       lambda n: _floor_phrase(n, step=1000)),
     "transmission_lines": ("transmission_lines", lambda n: _floor_phrase(n, step=1000)),
+    # ★2026-09-19. step=10000 for the asset TOTAL, not 1000: it is an order of
+    # magnitude larger than its members, and a 1,000-step floor on a ~331k sum
+    # advertises a precision the member counts do not individually justify.
+    "assets":             ("assets",             lambda n: _floor_phrase(n, step=10000)),
 }
 
 

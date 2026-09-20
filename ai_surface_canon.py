@@ -1455,7 +1455,31 @@ def _floor_int(phrase) -> int | None:
 # The public floors AGENTS.md and friends render. Floors ROUND DOWN and are
 # documented as only ever re-floored downward by a deliberate human edit, so
 # "live is below the pin" is never a real shrink — it is a degraded resolver.
-_PUBLIC_FLOOR_KEYS = ("facilities", "deals", "markets", "countries")
+# ★2026-09-19. THIS TUPLE, NOT A FAILING QUERY, IS WHY THE ASSET LAYERS WERE PINNED.
+# resolve_public_floors() overlays live values ONLY for the keys named here, so a
+# number canonical_stats measures perfectly well can never reach a published
+# surface if its name is missing. Measured that day:
+#
+#   canon/phrases  transmission_lines "94,000+" (pinned)   owner measured 95,569
+#   canon/phrases  assets            "320,000+" (pinned)   owner measured 330,961
+#   canon/phrases  substations/fiber  pinned, and CORRECT BY COINCIDENCE — the
+#                                     pin happened to equal the live floor
+#
+# canonical_stats gained specs AND queries for substations (2026-09-02) and
+# fiber_routes + transmission_lines (2026-09-07), and both notes say the point
+# was to stop surfaces hardcoding. Neither fired, because neither added the name
+# here — the 09-02 note even records its own predecessor failing the same way
+# ("substations had a snapshot key but no FLOOR SPEC"). A spec, a query and a
+# publication key are three separate gates and this repo has now missed each of
+# them in turn for the same figure.
+#
+# ★ Widening this tuple is safe in the one direction that matters: the loop
+#   below REJECTS any live value below the pin and records it in `_rejected`,
+#   so a degraded resolver cannot lower a floor by being listed here. That is
+#   what makes adding names cheap and removing them expensive.
+_PUBLIC_FLOOR_KEYS = ("facilities", "deals", "markets", "countries",
+                      "substations", "fiber_routes", "transmission_lines",
+                      "assets")
 
 
 def resolve_public_floors() -> dict:
