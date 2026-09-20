@@ -43,6 +43,14 @@ def _code_only(text):
     return "\n".join(l for l in text.split("\n") if not l.lstrip().startswith("#"))
 
 
+def _norm(sql):
+    """Collapse whitespace. The SQL in this endpoint wraps across lines —
+    COUNT(DISTINCT session_id) and its FILTER sit on separate ones — so a
+    literal substring assertion would go vacuous the first time somebody
+    reflows the query rather than failing loudly."""
+    return " ".join(sql.split())
+
+
 @pytest.fixture(scope="module")
 def src():
     return _read(os.path.join("routes", "schema_repair.py"))
@@ -72,11 +80,44 @@ def test_stage2_reads_the_real_caller_view(stage2):
     assert "FROM mcp_funnel_real" in stage2
 
 
-def test_per_tool_leak_table_is_real_callers_only(per_tool):
-    """top_leak_tools is what names the tool a fix gets aimed at. Ranked over
-    self-traffic it points at whichever tool our own monitors call most."""
+def test_per_tool_leak_table_never_reads_the_raw_signals_table(per_tool):
     assert "FROM mcp_upgrade_signals" not in per_tool
-    assert "FROM mcp_funnel_real" in per_tool
+
+
+def test_per_tool_signals_and_sessions_are_real_callers_only(per_tool):
+    """top_leak_tools is what names the tool a fix gets aimed at. Ranked over
+    self-traffic it points at whichever tool our own monitors call most.
+
+    r-leak-composition (2026-09-20) moved this query from mcp_funnel_real to
+    mcp_funnel_canonical so it can ALSO report what the filter removed —
+    mcp_funnel_real has already thrown that away. Real-callers-only is now a
+    property of the FILTER clauses, not of the view name, so pin the clauses.
+    Dropping either FILTER reinstates be#4890's bug (2,051 contaminated
+    signals published where 1,248 real ones belong) while still reading a view
+    whose name looks canonical to a reviewer."""
+    q = _norm(per_tool)
+    assert "FROM mcp_funnel_canonical" in q
+    assert "COUNT(*) FILTER (WHERE NOT is_synthetic) AS signals" in q
+    assert ("COUNT(DISTINCT session_id) FILTER (WHERE NOT is_synthetic) "
+            "AS distinct_sessions") in q
+
+
+def test_per_tool_volume_is_never_an_unfiltered_count(per_tool):
+    """The exact shape of the reverted bug, asserted from the other side. Kept
+    separate from the positive test because a reformat or a partial revert can
+    satisfy one and not the other."""
+    q = _norm(per_tool)
+    assert "COUNT(*) AS signals" not in q
+    assert "COUNT(DISTINCT session_id) AS distinct_sessions" not in q
+
+
+def test_per_tool_reports_what_the_filter_removed(per_tool):
+    """A denylist cannot report its own misses. excluded_synthetic is how a
+    reader sees that a high-volume tool was barely touched by the filter —
+    which means the denylist may be missing that population, not that the
+    population is clean."""
+    q = _norm(per_tool)
+    assert "COUNT(*) FILTER (WHERE is_synthetic) AS excluded_synthetic" in q
 
 
 # ── unmeasured must never fall back to the contaminated number ───────
@@ -146,3 +187,56 @@ def test_every_declared_source_is_resolvable(src):
         if f'out.get("{key}")' in block:
             assert code.index(f'out["{key}"] =') < block_start, (
                 f"stage_sources reads {key} before it is assigned")
+
+
+# ── r-leak-composition: the board must describe its own population ───
+
+def test_board_names_the_clients_that_survived_the_filter(src):
+    """is_synthetic is a ~50-pattern denylist over mcp_client. Our OWN
+    hand-run verification procedures use plausible agent names
+    ('acme-siting-agent') that match none of them, so self-traffic can re-enter
+    the "real" population at any time under a new name. The denylist cannot
+    report that; the surviving client names can."""
+    code = _code_only(src)
+    assert 'out["real_top_clients"]' in code
+    q = _norm(code[code.index('out["real_top_clients"]') - 900:
+                   code.index('out["real_top_clients"]')])
+    assert "FROM mcp_funnel_real" in q
+
+
+def test_composition_fields_are_declared_on_the_board(src):
+    """A reader who does not know what generic_client_pct means will read a
+    rank as a verdict, which is the reading this whole endpoint was corrected
+    for once already."""
+    code = _code_only(src)
+    assert 'out["composition_note"]' in code
+    assert '"real_top_clients":' in code[code.index('out["stage_sources"]'):]
+
+
+# ── the published ratios must fail to None, never to 0.0 or a raise ──
+
+def test_safe_ratio_returns_none_not_zero_for_a_missing_denominator():
+    """0.0 is a MEASURED zero. A tool whose session count is 0 — every signal
+    carrying a NULL session_id — must publish "unmeasurable", not "1 signal per
+    session" and not "0% generic clients"."""
+    from routes.schema_repair import _safe_ratio
+    assert _safe_ratio(5, 0) is None
+    assert _safe_ratio(5, None) is None
+    assert _safe_ratio(0, 0) is None
+
+
+def test_safe_ratio_computes_the_published_values():
+    """The guard must not be a blanket None — these are the two live call
+    shapes: a percentage at 1dp and a per-session ratio at 2dp."""
+    from routes.schema_repair import _safe_ratio
+    assert _safe_ratio(100 * 822, 1000, 1) == 82.2
+    assert _safe_ratio(1248, 1248, 2) == 1.0
+    assert _safe_ratio(267, 170, 2) == 1.57
+
+
+def test_safe_ratio_never_raises_on_a_bad_row():
+    """Every field here sits inside one broad try that would swallow the entire
+    block, so a raise does not lose one number — it loses the board."""
+    from routes.schema_repair import _safe_ratio
+    assert _safe_ratio("x", 3) is None
+    assert _safe_ratio(3, "x") is None
