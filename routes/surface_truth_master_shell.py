@@ -32,6 +32,10 @@ LANES
                              (this lane is the one that would have caught today)
   4 · emitter sources        the python that BUILDS the served bytes is clean,
                              so a regression is visible before it deploys
+  5 · keyless is keyless     every endpoint /llms.txt advertises as free answers
+                             200 to an ANONYMOUS GET. A tier claim, which no
+                             other lane can see, because a tier is not a number
+                             in the body (2026-09-20: 4 of 12 were gated)
 
 HOUSE RULES
   · A lane never reads PASS when it could not check. An unreachable surface is
@@ -155,6 +159,34 @@ _FENCE_FILE_TO_URL = {
 }
 
 # Lane 4: server-side python that EMITS the served bytes inline.
+# ── Lane 5: "free, no key" is a claim about TIER, and nothing probed it ──────
+# 2026-09-20: /llms.txt published 12 endpoints under "FREE API — No Auth, No
+# Signup, Start Now". Probed anonymously, FOUR were gated (403 plan_required
+# x3, 402 upgrade_required x1) — including the one the no-MCP policy's rule 4
+# told an agent to GET. Every other lane here compares canon NUMBERS in a body;
+# none of them can see a tier, because a tier is not in the bytes.
+#
+# The keyless list is PARSED FROM THE SERVED FILE, never hardcoded here: the
+# claim under audit is whatever the file says today, so a line added to it is
+# probed on the next tick with no edit in this module.
+_KEYLESS_OPEN_MARK = "## FREE API"
+_KEYLESS_END_MARK = "## KEY REQUIRED"
+# A block parsing to fewer than this is a moved heading or an emptied list, not
+# a clean bill of health — the lane says '?' rather than PASS over nothing.
+_MIN_KEYLESS_URLS = 6
+
+# ★ THE PRIVILEGED-VANTAGE CANARY. This shell runs on our own infrastructure,
+# and the gate meters by IP as well as by key. If our egress were privileged, a
+# gated endpoint would answer 200 here and the lane would go GREEN on a
+# dishonest list — precisely the false-green this shell exists to prevent. So
+# we also probe endpoints we KNOW are gated. If any of them opens from this
+# vantage we cannot distinguish "the gate opened" from "we are privileged", and
+# the whole lane renders '?' saying so. Measured 2026-09-20.
+_TIER_CANARY = (
+    ("/api/grid/fuel-mix?iso=ERCOT", "Pro"),
+    ("/api/v1/pipeline", "Identified"),
+)
+
 _EMITTER_SOURCES = ("ai_discovery_routes.py",)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -219,6 +251,43 @@ def _fetch(path: str, base: str | None = None):
         return r.text, None
     except Exception as e:  # noqa: BLE001
         return None, "%s: %s" % (type(e).__name__, str(e)[:110])
+
+
+def _probe_status(path: str):
+    """GET a live path and return (status_code, error). Never raises.
+
+    ★ Deliberately NOT _fetch(). That helper treats any non-2xx as "could not
+    check", the right rule when you need a BODY — but this lane's whole subject
+    is the status code, and a 403 is its most important reading. Anonymous by
+    construction: no X-API-Key, no internal header, no cookie, so it sees what
+    an unkeyed agent sees. Cache-busted, because a cached 200 for a now-gated
+    path would read as honest.
+    """
+    try:
+        import time as _t
+
+        import requests as _rq
+        sep = "&" if "?" in path else "?"
+        r = _rq.get(ORIGIN + path + sep + "cb=%d" % int(_t.time()),
+                    headers={"User-Agent": _UA}, timeout=12,
+                    allow_redirects=False)
+        return r.status_code, None
+    except Exception as e:  # noqa: BLE001
+        return None, "%s: %s" % (type(e).__name__, str(e)[:110])
+
+
+def _keyless_urls(body: str) -> list[str]:
+    """Paths advertised as keyless, sliced out of the SERVED file."""
+    i, j = body.find(_KEYLESS_OPEN_MARK), body.find(_KEYLESS_END_MARK)
+    if i == -1 or j == -1 or i >= j:
+        return []
+    seen, out = set(), []
+    for m in re.finditer(r"https://dchub\.cloud(/[^\s)\]]+)", body[i:j]):
+        u = m.group(1)
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
 
 
 def _read_repo(rel: str):
@@ -364,6 +433,70 @@ def _lane_repo_vs_served(canon: str) -> list[dict]:
     return out
 
 
+def _lane_keyless_is_keyless(canon: str) -> list[dict]:
+    """Every endpoint /llms.txt advertises as free must answer 200 unkeyed.
+
+    `canon` is unused: this lane audits a TIER claim, not a number. It keeps the
+    parameter so the lane table stays uniform.
+    """
+    out: list[dict] = []
+
+    body, err = _fetch("/llms.txt")
+    if body is None:
+        return [_check("keyless_src", "/llms.txt reachable to read its free list",
+                       None, "could not fetch: %s" % err, critical=True)]
+
+    urls = _keyless_urls(body)
+    if len(urls) < _MIN_KEYLESS_URLS:
+        return [_check("keyless_floor", "free-API block parses to a real list",
+                       None,
+                       "only %d URL(s) between %r and %r — heading moved or list "
+                       "emptied; every probe below would be vacuous"
+                       % (len(urls), _KEYLESS_OPEN_MARK, _KEYLESS_END_MARK),
+                       critical=True)]
+    out.append(_check("keyless_floor", "free-API block parses to a real list",
+                      True, "%d advertised keyless" % len(urls), critical=False))
+
+    opened = []
+    for path, tier in _TIER_CANARY:
+        code, _perr = _probe_status(path)
+        if code == 200:
+            opened.append("%s (expected %s-gated)" % (path, tier))
+    if opened:
+        out.append(_check("keyless_vantage", "probe vantage is unprivileged",
+                          None,
+                          "known-gated path(s) answered 200 from this host: %s. "
+                          "Either the gate opened or this egress is privileged — "
+                          "indistinguishable from here, so the keyless probes are "
+                          "not judged this tick." % "; ".join(opened),
+                          critical=True))
+        return out
+    out.append(_check("keyless_vantage", "probe vantage is unprivileged", True,
+                      "known-gated paths still gated from this host",
+                      critical=False))
+
+    for u in urls:
+        cid = "keyless_" + re.sub(r"[^a-z0-9]+", "_", u.lower()).strip("_")[:48]
+        code, perr = _probe_status(u)
+        if code is None:
+            out.append(_check(cid, "%s is keyless" % u, None,
+                              "could not probe: %s" % perr, critical=True))
+        elif code == 200:
+            out.append(_check(cid, "%s is keyless" % u, True, "200 anonymous",
+                              critical=True))
+        elif code in (401, 402, 403):
+            out.append(_check(cid, "%s is keyless" % u, False,
+                              "HTTP %d anonymous — advertised under %r but it "
+                              "needs a key. Move it under %r, or open the gate."
+                              % (code, _KEYLESS_OPEN_MARK, _KEYLESS_END_MARK),
+                              critical=True))
+        else:
+            out.append(_check(cid, "%s is keyless" % u, None,
+                              "HTTP %d — not a tier verdict, cannot judge" % code,
+                              critical=True))
+    return out
+
+
 def _lane_emitter_sources(canon: str) -> list[dict]:
     """The python that builds the served bytes. Catches a regression at review
     time instead of after it deploys."""
@@ -453,6 +586,8 @@ def _run_tick(beat: bool = True) -> dict:
              "checks": _safe_lane(_lane_repo_vs_served, canon)},
             {"id": "emitter_sources", "name": "4 · emitter sources",
              "checks": _safe_lane(_lane_emitter_sources, canon)},
+            {"id": "keyless_is_keyless", "name": "5 · advertised-keyless is keyless",
+             "checks": _safe_lane(_lane_keyless_is_keyless, canon)},
         ]
     for ln in lanes:
         ln["verdict"] = _lane_verdict(ln["checks"])
