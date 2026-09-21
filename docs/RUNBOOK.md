@@ -61,7 +61,9 @@ Pre-commit hook blocks >20 file deletions. Override with GUARD_MASS_DELETE_OK=1 
 ## Branch Protection (GitHub Settings -> Rules)
 Recommended on main:
 - Require PR before merge
-- Require status checks: see the live list on main (6 today: app-contract-gate,
-  db-parity, regression-lint, substance-gate, syntax-check, unit-tests)
+- Require status checks: see the live list on main (7 measured 2026-09-21:
+  app-contract-gate, contract, db-parity, regression-lint, substance-gate,
+  syntax-check, unit-tests). Re-measure rather than trust this line:
+  `gh api repos/azmartone67/dchub-backend/branches/main/protection --jq .required_status_checks.contexts`
 - Prevent force-pushes
 - Restrict deletions

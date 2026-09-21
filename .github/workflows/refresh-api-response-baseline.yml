@@ -10,7 +10,7 @@
 #
 # WHY A PR AND NOT A DIRECT PUSH
 # ------------------------------
-# main carries 6 required status checks with enforce_admins: true. A direct
+# main carries 7 required status checks with enforce_admins: true. A direct
 # push of a fresh commit can never satisfy them, so it is rejected. This
 # follows the pattern refresh-architecture-map.yml already proves in this repo:
 # regenerate, open a PR with PR_SUBMIT_TOKEN, arm auto-merge. PR_SUBMIT_TOKEN
@@ -20,13 +20,29 @@
 #
 # ★ THE SAFETY GATE — why this cannot launder a key deletion
 # ----------------------------------------------------------
-# `check` runs FIRST and the refresh only happens on exit 0. That matters more
-# than it looks: the guard's own check context is `contract`, and `contract` is
-# NOT one of main's required checks (substance-gate, syntax-check, unit-tests,
-# regression-lint, db-parity, app-contract-gate). Auto-merge lands on required
-# checks only, so a PR that removes a public key CAN reach main with this guard
-# red. If this job regenerated unconditionally it would then rewrite the
-# baseline around that removal and erase the only remaining evidence.
+# `check` runs FIRST and the refresh only happens on exit 0. The guard's own
+# check context is `contract`, and `contract` IS one of main's required checks
+# (measured 2026-09-21: substance-gate, syntax-check, unit-tests,
+# regression-lint, db-parity, app-contract-gate, contract), with
+# enforce_admins: true. So a PR that removes a public key can no longer reach
+# main with this guard red: auto-merge waits on it and an admin merge is
+# refused. That is the first line of defence now. This step stays as the
+# belt, because the required check cannot see the case this job creates:
+#
+#   `contract` compares the code against the baseline in the SAME tree
+#   (BASELINE_PATH in scripts/api_response_contract.py), and the PR this job
+#   opens carries the regenerated baseline. If main ever holds a removal and
+#   this job regenerated unconditionally, `contract` on that PR would check
+#   the code against a baseline that no longer lists the key and pass. The
+#   required check would wave the rewrite through, auto-merge would land it,
+#   and the only remaining evidence of the removal would be erased.
+#
+# And main can hold one. The required list is repo settings, not code: it
+# listed six contexts without `contract` when this workflow landed (#4899,
+# 2026-09-20), it can shrink again, and a removal merged while `contract`
+# was not required stays on main until someone fixes it. main's committed
+# baseline, read BEFORE anything regenerates it, is the last place such a
+# removal is still visible, which is why `check` reads it first.
 #
 #   exit 0  no key removed        -> regenerate, open the PR
 #   exit 1  a key was removed     -> REFUSE. Leave the baseline as the record.
