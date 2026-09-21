@@ -295,33 +295,153 @@ def implement_spec(spec_name: str, kind: str = "spec", item_id: int = 0,
         return {**plan, "acted": False, "ok": False, "error": str(e)[:300]}
 
 
-def sweep(limit: int = 1, apply: bool = False) -> dict:
-    """Drive the oldest open obligations. Capped, dry-run by default."""
-    try:
-        from routes.brain_spec_debt import spec_debt_summary
-        summary = spec_debt_summary()
-    except Exception as e:  # pragma: no cover
-        return {"ok": False, "reason": f"debt summary unavailable: {e}"}
-    items = summary.get("open_obligations")
-    if not isinstance(items, list):
-        # ★ null/absent is UNMEASURED. An empty result here must never render
-        # as "no debt" — the debt book itself reports UNMEASURED rather than
-        # zero for exactly this reason.
-        return {"ok": False, "reason": "debt book returned no obligation list",
-                "state": summary.get("state")}
-    n = max(1, min(int(limit or 1), _MAX_PER_CALL))
-    results = []
-    for it in items[:n]:
-        # `doc` is the debt book's key (verified against the live payload
-        # 2026-09-21); `file` is accepted only so a rename there degrades to a
-        # skip rather than to a silent sweep over empty names.
-        name = (it or {}).get("doc") or (it or {}).get("file") or ""
-        if not name:
+#: Verdict precedence for choosing what to drive. ★ Only FIRING is evidence
+#: that work is needed. `quiet_*` means the finding stopped firing — measured
+#: 2026-09-21, 57 of the open specs were quiet, including all 29
+#: iso_metric_count_zero_24h specs whose cause was fixed on 2026-09-07 (#4097)
+#: four days AFTER they were filed. `unmeasured` is NOT quiet and NOT firing;
+#: it is ranked after firing so a driven spec is always one we can justify.
+_DRIVE_RANK = {"firing": 0, "unmeasured": 1, None: 2}
+
+
+def plan_sweep(docs: list, verdicts: dict) -> dict:
+    """Choose what to drive. PURE — no DB, no network, no clock.
+
+    docs      [{"doc": name, "target": {issue,url,url_prefix} | None}, ...]
+    verdicts  {(issue, url): verdict}  from brain_detector_ledger.read_evidence
+
+    ★ THREE FIXES, EACH MEASURED ON 2026-09-21:
+
+    1. EVERY open doc, not the debt book's preview. spec_debt_summary()'s
+       `open_obligations` is TRIMMED — 25 of 242. The old sweep iterated it,
+       so it could only ever consider the first 25.
+    2. FOLD THE FAN-OUT. One finding filed once per SITE — 29 x
+       iso_metric_count_zero_24h, one per ISO code — is one problem. Grouping
+       by the finding's `issue` takes 242 open specs to 165 units. The
+       representative CARRIES its sites: `facility_duplicates_unmarked x 7`
+       may be seven genuinely different duplicates, so they are handed on,
+       not discarded.
+    3. DRIVE ONLY WHAT IS STILL HAPPENING. A quiet finding is skipped. The old
+       order was the debt book's AGE order, whose oldest item is the single
+       spec BLOCKED on an owner decision — so a naive sweep hit it first.
+
+    Specs with no finding target (prose / agenda) are returned separately as
+    `needs_human` — nothing here can tell whether they are still wanted.
+    """
+    groups, needs_human = {}, []
+    for d in docs or []:
+        t = (d or {}).get("target")
+        if not t:
+            needs_human.append(d.get("doc"))
             continue
-        results.append(implement_spec(name, apply=apply))
+        groups.setdefault(t.get("issue") or "", []).append(d)
+
+    drive, skipped_quiet = [], []
+    for issue, members in groups.items():
+        vs = [verdicts.get((m["target"]["issue"], m["target"]["url"]))
+              for m in members]
+        # A class is quiet only if EVERY site is quiet. One live site is
+        # enough to keep it — the fan-out must not hide a real firing.
+        if vs and all(str(v or "").startswith("quiet") for v in vs):
+            skipped_quiet.append({"issue": issue, "sites": len(members)})
+            continue
+        # ★ ONLY LIVE SITES COUNT. The first version reported every member,
+        # so iso_metric_count_zero_24h ranked FIRST as "29 sites" — measured
+        # 2026-09-21, 26 of those 29 were quiet (fixed 09-07 by #4097), 1
+        # unmeasured, and only WACM and WAUW still firing. Sorting on the raw
+        # member count would put a 2-site problem at the top of the queue
+        # dressed as a 29-site one. Quiet sites are reported, never counted.
+        live_members = [(m, v) for m, v in zip(members, vs)
+                        if not str(v or "").startswith("quiet")]
+        best = min((_DRIVE_RANK.get(v, 2) for _m, v in live_members), default=2)
+        rep = live_members[0][0]
+        drive.append({"issue": issue, "doc": rep["doc"], "rank": best,
+                      "verdict": [k for k, r in _DRIVE_RANK.items()
+                                  if r == best][0],
+                      "sites": [m["target"]["url"] for m, _v in live_members],
+                      "site_count": len(live_members),
+                      "quiet_sites": len(members) - len(live_members)})
+    drive.sort(key=lambda x: (x["rank"], -x["site_count"], x["issue"]))
+    return {"drive": drive, "skipped_quiet": skipped_quiet,
+            "needs_human": needs_human,
+            "counts": {"open_docs": len(docs or []), "classes": len(groups),
+                       "drive": len(drive), "skipped_quiet": len(skipped_quiet),
+                       "needs_human": len(needs_human)}}
+
+
+def _load_spec_debt_issues():
+    """scripts/spec_debt_issues.py by path. It is pure (no network, no clock)
+    and owns spec_target(); loading it keeps one parser, not two. scripts/ is
+    not a package, hence the file-location load."""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), "scripts", "spec_debt_issues.py")
+    sp = importlib.util.spec_from_file_location("_spec_debt_issues", path)
+    mod = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(mod)
+    return mod
+
+
+def _open_docs_with_targets() -> list:
+    """Every OPEN doc in the corpus with its parsed finding target."""
+    from routes.brain_spec_debt import corpus_dir, classify_doc_text
+    sdi = _load_spec_debt_issues()
+    d = corpus_dir()
+    out = []
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".md"):
+            continue
+        try:
+            text = open(os.path.join(d, name), encoding="utf-8",
+                        errors="replace").read()
+        except Exception:
+            continue
+        if classify_doc_text(text) != "open" or is_blocked(text):
+            continue
+        h = next((ln[2:].strip() for ln in text.splitlines()
+                  if ln.startswith("# ")), "")
+        # The filer frames every heading as "Brain proposal — <finding>";
+        # spec_target() parses the finding, so strip the frame first.
+        if h.startswith("Brain proposal") and "\u2014" in h:
+            h = h.split("\u2014", 1)[1].strip()
+        out.append({"doc": name, "target": sdi.spec_target(h)})
+    return out
+
+
+def sweep(limit: int = 1, apply: bool = False) -> dict:
+    """Drive open specs whose finding is STILL FIRING, one per problem class.
+
+    Capped, dry-run by default. See plan_sweep() for why each rule exists.
+    """
+    try:
+        docs = _open_docs_with_targets()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "state": "UNMEASURED",
+                "reason": f"could not read the corpus: {str(e)[:160]}"}
+    targets = [d["target"] for d in docs if d["target"]]
+    try:
+        from routes.brain_detector_ledger import read_evidence
+        ev = read_evidence(targets) if targets else {"findings": []}
+    except Exception as e:  # noqa: BLE001
+        # ★ No evidence is NOT "everything is firing". Without verdicts the
+        # quiet filter cannot run, and driving blind is exactly how 29 PRs
+        # would be opened against a bug fixed two weeks earlier.
+        return {"ok": False, "state": "UNMEASURED",
+                "reason": f"finding evidence unavailable: {str(e)[:160]}"}
+    verdicts = {(f.get("issue"), f.get("url")): f.get("verdict")
+                for f in (ev.get("findings") or [])}
+    plan = plan_sweep(docs, verdicts)
+    n = max(1, min(int(limit or 1), _MAX_PER_CALL))
+    results = [dict(implement_spec(item["doc"], apply=apply),
+                    issue=item["issue"], verdict=item["verdict"],
+                    site_count=item["site_count"])
+               for item in plan["drive"][:n]]
     return {"ok": True, "apply": bool(apply), "armed": _armed(),
             "cap": _MAX_PER_CALL, "requested": limit, "ran": len(results),
-            "open_obligations_total": summary.get("open_obligations_total"),
+            "counts": plan["counts"],
+            "skipped_quiet": plan["skipped_quiet"][:20],
+            "next_up": [{k: v for k, v in x.items() if k != "sites"}
+                        for x in plan["drive"][:10]],
             "results": results}
 
 
