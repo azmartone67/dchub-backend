@@ -531,58 +531,16 @@ def route_a2a_query(query):
         return {"type": "error", "message": str(e)}
 
 
-# ----- shared live-vs-stale policy -----
-import datetime as _dt
-from agent_door_policy import POLICY_HEADING, policy_block
-
-
-def _prepend_policy(doc: str) -> str:
-    """Put the policy block under the door's header comment, above the body.
-
-    Idempotent: a document that already carries the heading is returned
-    untouched, so a static file that later gains the block inline does not
-    get a second copy.
-    """
-    if not doc:
-        return policy_block() + "\n"
-    if POLICY_HEADING in doc:
-        return doc
-    lines = doc.split("\n")
-    # Recency is a retrieval-ranking signal for crawlers, and the static file
-    # carried a hand-typed "# Last Updated: 2026-06-25". Render it server-side
-    # so the door stops advertising itself as three months stale.
-    for _n, _l in enumerate(lines[:12]):
-        if _l.lower().startswith("# last updated:"):
-            lines[_n] = "# Last-Updated: %s" % (
-                _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d"))
-            break
-    i = 0
-    while i < len(lines) and (lines[i].startswith("#") or not lines[i].strip()):
-        i += 1
-    head, rest = lines[:i], lines[i:]
-    return "\n".join(head + [policy_block(), ""] + rest)
-
-
 # ----- llms-full.txt -----
-@discovery_bp.route('/llms-full.txt')
-def serve_llms_full():
-    """Serve extended LLM documentation"""
-    log_ai_access('llms-full.txt')
-    content = load_file('llms-full.txt')
-    if not content:
-        content = "# DC Hub Full API Documentation\n# See https://dchub.cloud/llms.txt for summary\n# API Base: https://dchub.cloud/api/v1\n"
-    # ★ The policy block goes ABOVE the document, not at the end of it. A model
-    # that truncates a long fetch must still get the live-vs-stale rule; a
-    # policy below 118 lines of endpoint listing is a policy nothing reads.
-    # Rendered from agent_door_policy (canon-substituted there) rather than
-    # pasted into the static file, whose counts would then rot in place — that
-    # file was last hand-edited 2026-06-25.
-    content = _prepend_policy(content)
-    response = make_response(content)
-    response.headers['Content-Type'] = 'text/plain; charset=utf-8'
-    response.headers['Cache-Control'] = 'public, max-age=3600'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    return response
+# ★ Not served from here. /llms-full.txt has ONE registration:
+# ai_discovery_routes.register_discovery_routes, which main.py calls. The
+# handler that lived here was never reachable — main.py registers
+# routes.discovery_routes.discovery_bp, not this module's discovery_bp (same
+# blueprint name, 'discovery': Flask refuses to register both) — yet be#4996 wired
+# the policy block into it, and the guard graded it green while production
+# served the other one without the block. Deleted 2026-09-21; the guard now
+# fails on a second registration of the path anywhere in the codebase
+# (tests/test_llms_cite_without_mcp.py).
 
 
 # ----- security.txt -----

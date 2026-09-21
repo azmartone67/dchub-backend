@@ -26,7 +26,13 @@ Run:  python3 -m pytest tests/test_llms_cite_without_mcp.py -v
 """
 from __future__ import annotations
 
+import ast
+import functools
+import importlib
+import inspect
+import os
 import re
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
@@ -51,17 +57,12 @@ _DOORS = (
 
 @pytest.fixture(scope="module")
 def body() -> str:
-    """The REAL /llms.txt body, served through the real route.
+    """The REAL /llms.txt body, from the path's one registration.
 
-    Same technique as tests/test_capacity_source_ai_surfaces.py: register the
-    blueprint on a bare Flask app and GET the path, so these assertions read
-    what an agent receives rather than what the source says.
+    Resolved by _served(), never by naming a module here — see "WHICH
+    HANDLER THESE GUARDS GRADE" below for why a fixture may not pick.
     """
-    flask = pytest.importorskip("flask")
-    from ai_discovery_routes import register_discovery_routes
-
-    app = flask.Flask(__name__)
-    register_discovery_routes(app)
+    app = _served("/llms.txt")
     r = app.test_client().get("/llms.txt")
     assert r.status_code == 200, "/llms.txt -> %s" % r.status_code
     return r.get_data(as_text=True)
@@ -370,43 +371,210 @@ _FULL_DOOR = "/llms-full.txt"
 _AGENTS_DOOR = "/AGENTS.md"
 
 
-def _door_app():
-    """An app wired like main.py, in main.py's ORDER.
+# ───────────────────────────────────────────────────────────────────────────
+# WHICH HANDLER THESE GUARDS GRADE — read off the codebase, never picked here
+#
+# ★ 2026-09-21. This file graded the wrong /llms-full.txt handler TWICE. The
+# path had two registrations. #4996 put the policy block in
+# ai_agent_discovery's and a fixture registering that blueprint ALONE proved
+# it, while production served ai_discovery_routes' with no block. The next
+# fixture registered both and trusted main.py's ORDER — on the premise that
+# main.py registers ai_agent_discovery.discovery_bp. It never did: main.py's
+# `discovery_bp` is routes.discovery_routes'. A fixture that builds its own app
+# decides which handler it grades.
+#
+# So no fixture names a handler. _served(path) scans the codebase for EVERY
+# registration of the path, refuses unless there is exactly one, confirms
+# main.py wires that one in, builds a bare app from it, and checks that the
+# rule which answers is the def it scanned. Booting main.py would give the real
+# URL map and is not available to a unit test: `import main` opens Postgres at
+# import time (measured: "No database URL configured", 14.8s in).
+#
+# Blind spots, so nobody mistakes the scan for more than it is: it reads
+# literal rules, plus a same-module string constant. A rule assembled at
+# runtime or imported from another module, and a before_request hook that
+# answers the path ahead of routing, are invisible to it.
+# ───────────────────────────────────────────────────────────────────────────
 
-    ★ 2026-09-21 — THIS FIXTURE WAS THE BUG, the second time around. It
-    registered ai_agent_discovery.discovery_bp ALONE and read /llms-full.txt off
-    it. Production registers register_discovery_routes(app) FIRST (main.py:10302)
-    and discovery_bp only at main.py:28846, and BOTH declare /llms-full.txt — so
-    the rule that actually answers is ai_discovery_routes.serve_llms_full_txt,
-    which be#4996 never touched. Measured on the origin at 01:15Z on 2026-09-21,
-    after that commit deployed SUCCESS: the live door still had no policy block,
-    while this file was green. A guard that builds its own app decides which
-    handler it grades; build it the way production does, or it grades a handler
-    no request reaches.
+_ROOT = Path(__file__).resolve().parents[1]
+
+#: Not the application. ★ ".claude" is load-bearing: a checkout's
+#: .claude/worktrees/ holds whole copies of this repo, registrations included,
+#: and a walk that enters it reports every door as duplicated.
+_NOT_THE_APP = frozenset({".git", ".claude", "tests", "node_modules",
+                          "__pycache__", ".venv", "venv"})
+
+#: Rule-registering decorators. .get/.post/... count only AS decorators — as
+#: plain calls they are dict.get() and client.get().
+_ROUTE_DECORATORS = frozenset({"route", "get", "post", "put", "patch",
+                               "delete"})
+
+#: Floor on the walk: 1,490 application files on 2026-09-21. "Exactly one
+#: registration" is also what a walk that never left the repo root reports.
+_MIN_APP_FILES = 1000
+
+_Site = namedtuple("_Site", "rel line module owner_kind owner view")
+
+
+@functools.lru_cache(maxsize=None)
+def _app_files(root: Path) -> tuple:
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _NOT_THE_APP)
+        out += [Path(dirpath, f) for f in sorted(filenames) if f.endswith(".py")]
+    return tuple(out)
+
+
+def _sites_in(tree, rel: str, path: str) -> list:
+    """Every registration of `path` in one parsed module."""
+    consts = {t.id: n.value.value for n in tree.body
+              if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+              and isinstance(n.value.value, str)
+              for t in n.targets if isinstance(t, ast.Name)}
+
+    def rule(call):
+        arg = call.args[0] if call.args else next(
+            (k.value for k in call.keywords if k.arg == "rule"), None)
+        if isinstance(arg, ast.Name):
+            return consts.get(arg.id)
+        return arg.value if isinstance(arg, ast.Constant) else None
+
+    out = []
+    for top in tree.body:
+        # Registered INSIDE a top-level def: a register_x(app) function that
+        # main.py must call. Registered at import time: on a blueprint that
+        # main.py must register.
+        fn = top.name if isinstance(
+            top, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
+        own = {id(d) for d in getattr(top, "decorator_list", ())}
+        views = {id(d): n.name for n in ast.walk(top)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 for d in n.decorator_list}
+        for call in ast.walk(top):
+            if not (isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)):
+                continue
+            verb = call.func.attr
+            if not (verb in ("route", "add_url_rule")
+                    or (verb in _ROUTE_DECORATORS and id(call) in views)):
+                continue
+            if rule(call) != path:
+                continue
+            nested = fn is not None and id(call) not in own
+            view = views.get(id(call)) or next(
+                (k.value.id for k in call.keywords
+                 if k.arg == "view_func" and isinstance(k.value, ast.Name)),
+                None)
+            out.append(_Site(rel, call.lineno, rel[:-3].replace("/", "."),
+                             "function" if nested else "blueprint",
+                             fn if nested else ast.unparse(call.func.value),
+                             view))
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _registrations(path: str, root: Path = _ROOT) -> tuple:
+    """Every registration of `path` in the application, wherever it is."""
+    sites = []
+    for f in _app_files(root):
+        text = f.read_text(errors="replace")
+        if path not in text:
+            continue
+        rel = f.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as e:
+            raise AssertionError(
+                "%s mentions %s and does not parse (%s): the scan cannot tell "
+                "whether it registers the path, and will not guess."
+                % (rel, path, e))
+        sites += _sites_in(tree, rel, path)
+    return tuple(sites)
+
+
+def _describe(path: str, sites) -> str:
+    return (
+        "%s has %d registration(s); a public path gets exactly ONE:\n%s\n"
+        "With two, a guard that builds its own app picks which one it grades "
+        "and production picks by main.py's wiring — that is how #4996 shipped "
+        "a green guard over a door with no policy block. Delete the one "
+        "main.py does not reach." % (path, len(sites), "\n".join(
+            "  %s:%d  %s %s -> %s" % (s.rel, s.line, s.owner_kind, s.owner,
+                                      s.view) for s in sites) or "  (none)"))
+
+
+@functools.lru_cache(maxsize=None)
+def _main_index():
+    """(imports, called, registered), read off main.py's AST in one walk —
+    so a comment or a string that names the call does not count."""
+    imports, called, registered = {}, set(), set()
+    for n in ast.walk(ast.parse((_ROOT / "main.py").read_text())):
+        if isinstance(n, ast.ImportFrom) and n.module:
+            for a in n.names:
+                imports.setdefault((n.module, a.name), set()).add(
+                    a.asname or a.name)
+        elif isinstance(n, ast.Call):
+            if isinstance(n.func, ast.Name):
+                called.add(n.func.id)
+            elif (isinstance(n.func, ast.Attribute)
+                  and n.func.attr == "register_blueprint" and n.args
+                  and isinstance(n.args[0], ast.Name)):
+                registered.add(n.args[0].id)
+    return imports, called, registered
+
+
+def _main_wires(site) -> bool:
+    """Does main.py CALL this registration's function, or REGISTER its
+    blueprint, under a name it imported from that module?"""
+    if site.module == "main":
+        return True
+    imports, called, registered = _main_index()
+    names = imports.get((site.module, site.owner), set())
+    return bool(names & (called if site.owner_kind == "function"
+                         else registered))
+
+
+@functools.lru_cache(maxsize=None)
+def _served(path: str):
+    """A bare app built from `path`'s ONE registration — the one main.py wires.
+
+    Refuses rather than guesses: a second registration, one main.py never
+    reaches, or a rule answered by any def but the one scanned, fails here.
     """
     flask = pytest.importorskip("flask")
-    from ai_discovery_routes import register_discovery_routes
-    from ai_agent_discovery import discovery_bp
-
+    sites = _registrations(path)
+    assert len(sites) == 1, _describe(path, sites)
+    site = sites[0]
+    assert _main_wires(site), (
+        "%s's only registration (%s:%d, %s %s) is never reached by main.py — "
+        "a guard reading it grades a handler no request is routed to."
+        % (path, site.rel, site.line, site.owner_kind, site.owner))
+    mod = importlib.import_module(site.module)
     app = flask.Flask(__name__)
-    register_discovery_routes(app)        # main.py:10302 — wins the path
-    app.register_blueprint(discovery_bp)  # main.py:28846
+    if site.owner_kind == "function":
+        getattr(mod, site.owner)(app)
+    else:
+        app.register_blueprint(getattr(mod, site.owner))
+    endpoint, _args = app.url_map.bind("dchub.cloud").match(path)
+    view = inspect.unwrap(app.view_functions[endpoint])
+    where = Path(inspect.getsourcefile(view)).resolve()
+    assert (where, view.__name__) == ((_ROOT / site.rel).resolve(), site.view), (
+        "%s was answered by %s() in %s, not by the registration the scan found "
+        "(%s() at %s:%d) — this would grade a handler the codebase does not "
+        "route to." % (path, view.__name__, where, site.view, site.rel,
+                       site.line))
     return app
 
 
 @pytest.fixture(scope="module")
 def full_body() -> str:
-    """The REAL /llms-full.txt body, from the handler production serves."""
-    app = _door_app()
-    # load_file() resolves 'llms-full.txt' relative to CWD first, then to the
-    # module's own directory — the latter is what makes this work off-repo-root.
-    r = app.test_client().get(_FULL_DOOR)
+    """The REAL /llms-full.txt body, from the path's one registration."""
+    r = _served(_FULL_DOOR).test_client().get(_FULL_DOOR)
     assert r.status_code == 200, "%s -> %s" % (_FULL_DOOR, r.status_code)
     body = r.get_data(as_text=True)
     assert len(body) > 2000, (
-        "%s served only %d bytes — load_file() found no document, so every "
-        "assertion below would be reading the 3-line fallback and passing "
-        "vacuously." % (_FULL_DOOR, len(body))
+        "%s served only %d bytes — a stub, and every assertion below would be "
+        "reading it and passing vacuously." % (_FULL_DOOR, len(body))
     )
     return body
 
@@ -464,6 +632,10 @@ def test_every_door_serves_the_identical_block(
     for the canon placeholders. Equivalent is what decays; identical cannot.
     Extended here rather than as a second guard so a fourth door has one
     assertion to join, not two to keep in step.
+
+    ★ Both llms bodies come from _served(): each door's ONE registration,
+    the one main.py wires. Identity between two handlers this file picked
+    proved nothing about the two production routes to.
     """
     summary = _slice_policy(block, "/llms.txt")
     for door, served in ((_FULL_DOOR, full_block), (_AGENTS_DOOR, agents_block)):
@@ -522,46 +694,70 @@ def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
     )
 
 
-def test_every_registered_handler_for_the_full_door_renders_the_block():
-    """Not just the one that wins today.
+#: The doors ai_discovery_routes serves. /AGENTS.md is not here yet: it still
+#: has a dead second registration — see test_the_agents_door_duplicate_is_still_dead.
+_LLMS_PATHS = ("/llms.txt", _FULL_DOOR)
 
-    /llms-full.txt is declared twice — ai_discovery_routes.serve_llms_full_txt
-    (@app.route) and ai_agent_discovery.serve_llms_full (discovery_bp). Which one
-    answers depends on registration ORDER in main.py, which is not a thing this
-    file can see. So grade them all: then an order flip, a third copy, or a
-    deleted duplicate cannot quietly un-ship the policy.
+
+@pytest.mark.parametrize("door", _LLMS_PATHS)
+def test_each_door_has_exactly_one_registration(door: str):
+    """Two registrations of one public path IS the defect.
+
+    Whichever one loses is dead code that still passes every test that
+    registers it by hand — ai_agent_discovery.serve_llms_full did, for two PRs.
+    This fails on a second registration wherever in the codebase it is added.
     """
-    app = _door_app()
-    endpoints = [r.endpoint for r in app.url_map.iter_rules()
-                 if r.rule == _FULL_DOOR]
-    assert endpoints, (
-        "no handler at all is registered for %s — this guard is grading nothing"
-        % _FULL_DOOR
-    )
-    checked = []
-    for ep in endpoints:
-        view = app.view_functions[ep]
-        with app.test_request_context(_FULL_DOOR):
-            rv = view()
-        body = rv.get_data(as_text=True) if hasattr(rv, "get_data") else str(rv)
-        assert len(body) > 2000, (
-            "%s served only %d bytes — it found no document, so an assertion on "
-            "its body would pass vacuously" % (ep, len(body))
-        )
-        assert _HEADING in body, (
-            "%s answers %s without the policy block. If it is the rule that wins "
-            "in main.py, the live door ships without the rule — which is exactly "
-            "what happened after be#4996." % (ep, _FULL_DOOR)
-        )
-        assert _slice_policy(body, ep) == _slice_policy(
-            _door_app().test_client().get("/llms.txt").get_data(as_text=True),
-            "/llms.txt"), (
-            "%s renders a DIFFERENT policy block than /llms.txt — the two are "
-            "supposed to be one rendering of agent_door_policy.policy_block()"
-            % ep
-        )
-        checked.append(ep)
-    assert len(checked) == len(endpoints)
+    sites = _registrations(door)
+    assert len(sites) == 1, _describe(door, sites)
+
+
+@pytest.mark.parametrize("door", _LLMS_PATHS)
+def test_main_wires_the_registration(door: str):
+    """Unique is not enough: it must also be REACHABLE from main.py.
+
+    ai_agent_discovery's /llms-full.txt sat on a blueprint main.py never
+    registers. Had it been the only copy, a uniqueness check alone would have
+    passed over a door that 404s.
+    """
+    sites = _registrations(door)
+    assert sites, _describe(door, sites)
+    dead = [s for s in sites if not _main_wires(s)]
+    assert not dead, "main.py never reaches: %s" % ", ".join(
+        "%s:%d (%s %s)" % (s.rel, s.line, s.owner_kind, s.owner) for s in dead)
+
+
+def test_the_scan_can_see_what_it_exists_to_refuse(tmp_path):
+    """The scan's own known positives. A scan that finds nothing reports
+    "no duplicate" too, and the first answer above would be green on it.
+
+    A scratch tree, not a duplicate the repo happens to carry, so deleting a
+    real duplicate cannot break the control. It proves: a def nested in a
+    register function, a module-level blueprint decorator in a subdirectory,
+    .get() as a decorator, a rule held in a module constant — and that
+    tests/ and a .claude/worktrees checkout are NOT counted.
+    """
+    door = ("def register(app):\n"
+            "    @app.route('/llms-full.txt')\n"
+            "    def a():\n        pass\n")
+    (tmp_path / "routes").mkdir()
+    (tmp_path / "door.py").write_text(door)
+    (tmp_path / "routes" / "copy.py").write_text(
+        "P = '/llms-full.txt'\n\n\n@bp.get(P)\ndef b():\n    pass\n")
+    for skipped in (".claude/worktrees/wt", "tests"):
+        (tmp_path / skipped).mkdir(parents=True)
+        (tmp_path / skipped / "door.py").write_text(door)
+    found = sorted((s.rel, s.owner_kind, s.owner, s.view)
+                   for s in _registrations(_FULL_DOOR, tmp_path))
+    assert found == [("door.py", "function", "register", "a"),
+                     ("routes/copy.py", "blueprint", "bp", "b")], found
+
+    walked = _app_files(_ROOT)
+    assert len(walked) >= _MIN_APP_FILES, (
+        "the scan walked only %d application files (floor %d) — a door "
+        "registered in a file it skipped would never be counted"
+        % (len(walked), _MIN_APP_FILES))
+    assert any(p.parent.name == "routes" for p in walked), (
+        "the scan never entered routes/, where most blueprints live")
 
 
 
@@ -576,23 +772,19 @@ def test_every_registered_handler_for_the_full_door_renders_the_block():
 
 
 def _agents_app():
-    """An app wired the way main.py wires THIS door — which is not _door_app().
+    """An app wired the way main.py wires THIS door.
 
-    ★ READ THIS BEFORE "fixing" it to reuse _door_app(). /AGENTS.md is declared
-    twice, like /llms-full.txt was: ai_agent_discovery.py:358 (discovery_bp) and
-    routes/agents_md_fallback.py. The difference is WHICH duplicate main.py
-    registers. main.py's `discovery_bp` is imported `from routes.discovery_routes
-    import (discovery_bp, init_discovery_routes, ...)` — the data-discovery
-    blueprint. ai_agent_discovery is never register_blueprint()'d there at all;
-    main.py imports exactly one name from it, identify_ai_platform.
-
-    So _door_app() registers a blueprint production does not have. For
-    /llms-full.txt that changes nothing — register_discovery_routes() runs first
-    and wins the path either way — but for /AGENTS.md it would REVERSE the
-    result: ai_agent_discovery's rule would be registered before this one, win,
-    and hand the guard its 1.1 KB AGENTS_MD_FALLBACK constant, which carries no
-    policy block. The guard would fail while the live door was fine — the same
-    class of error as #5016, pointed the other way.
+    ★ Not _served(): /AGENTS.md is still declared twice, as /llms-full.txt
+    was — ai_agent_discovery.py:358 (discovery_bp) and
+    routes/agents_md_fallback.py — so _served() refuses it. main.py's
+    `discovery_bp` is imported `from routes.discovery_routes import
+    (discovery_bp, init_discovery_routes, ...)` — the data-discovery
+    blueprint. ai_agent_discovery is never register_blueprint()'d there at
+    all; main.py imports exactly one name from it, identify_ai_platform.
+    Registering ai_agent_discovery's blueprint here would hand the guard its
+    1.1 KB AGENTS_MD_FALLBACK constant, which carries no policy block, and
+    fail while the live door was fine. Deleting that duplicate, as
+    /llms-full.txt's was, lets this become _served(_AGENTS_DOOR).
 
     Confirmed from the outside rather than argued: live https://dchub.cloud/
     AGENTS.md served 11,168 bytes on 2026-09-20 and named
@@ -617,8 +809,9 @@ def test_the_agents_door_duplicate_is_still_dead():
     register one blueprint without being a fixture that grades a door nobody
     serves.
 
-    Deliberately NOT fixed here by patching that constant: it is a third
-    module, and #5016 left the same duplicate in place for the same reason.
+    Deliberately NOT fixed here by patching that constant. The fix is to
+    delete the duplicate, as 2026-09-21 did for /llms-full.txt's; then this
+    door can join _LLMS_PATHS and test_each_door_has_exactly_one_registration.
     """
     main = Path(__file__).resolve().parents[1] / "main.py"
     src = main.read_text()
