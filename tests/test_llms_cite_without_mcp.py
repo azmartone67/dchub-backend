@@ -356,8 +356,8 @@ def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(
 # /llms-full.txt — the OTHER door this policy is published through
 #
 # ★ Everything above this line reads /llms.txt. That was the bug: measured
-# 2026-09-20 against live production, /llms-full.txt served 118 lines last
-# hand-edited 2026-06-25 with NO policy block at all — no live-vs-stale rule,
+# 2026-09-20 against live production, /llms-full.txt served 405 lines /
+# 23,152 bytes with NO policy block at all — no live-vs-stale rule,
 # not one of the directory names, no citation pattern. The guard could not
 # have caught it, because the guard read one of the two doors it publishes.
 #
@@ -643,7 +643,7 @@ def test_every_door_serves_the_identical_block(
 
 
 def test_the_policy_precedes_the_body_on_the_full_door(full_body: str):
-    """A policy below 118 lines of endpoint listing is a policy nothing reads."""
+    """A policy below 400 lines of endpoint listing is a policy nothing reads."""
     i = full_body.find(_HEADING)
     assert i != -1 and i < 1200, (
         "%s puts the policy block %d bytes in; a model that truncates a long "
