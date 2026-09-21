@@ -2562,6 +2562,11 @@ def claim_key():
         except Exception:
             pass
 
+    # r-partner-meter: which meter this caller is on — a verified partner
+    # WORKSPACE, or the source IP. Read before the unused-key cap, which must
+    # not merge one workspace into another (see below).
+    _meter_scope = _partner_meter_scope(client_name, ip)
+
     # ── r-unused-key-cap (2026-09-04): CAP UNUSED KEYS PER IP ──────────────
     # This endpoint PUBLISHES, in its own `rate_limit_note`, that it is
     # "rate-limited to 1 key per IP per 24h". It was not. Reuse is keyed on
@@ -2588,25 +2593,57 @@ def claim_key():
     # just stops being free. Binding an email (free) lifts it, which keeps the
     # cheapest path the one that also identifies the user.
     #
+    # ★ USED ON ANY CHANNEL (2026-09-21). "Used" was `last_used_at IS NOT NULL`,
+    # and only the MCP path writes that column: validate_key, the track
+    # callback's session bind, the OAuth resolve and the mcp_call_log backfill.
+    # REST resolves a dch_live_ key with a plain SELECT, so a key used only over
+    # REST counted as unused for good, and REST-only agents sharing an address
+    # (office NAT, CI runners, a hosted catalogue) were merged onto one key —
+    # one allowance, one identity, whoever bound an email or bought a plan.
+    # The REST tracker records dch_live_ keys in api_endpoint_log (since
+    # 2026-09-21, routes/api_usage_tracker.py), so a key with a row there is used
+    # too. It is read here rather than written into last_used_at: that column's
+    # other readers define it as MCP evidence (mcp_mint_cliff files a key with
+    # last_used_at and no tool-call row as `presented_never_logged`).
+    #
+    # ★ NOT APPLIED TO VERIFIED PARTNER TRAFFIC (r-partner-meter). Its workspaces
+    # are separate tenants behind one egress, so the newest unused key from that
+    # address belongs to another workspace. Scoping the count to the workspace's
+    # own client_name instead would count nothing the (client_name, ip) dedupe
+    # above has not already returned — that dedupe is what keeps a workspace's
+    # re-claim idempotent, and its allowance is carried per workspace below.
+    # The other direction holds too: the count takes only IP-metered keys, so a
+    # workspace's key is never handed to some other name from that egress.
+    #
     # FAIL-OPEN, like the dedup check above: a failed count claims through.
     # Better to issue an extra key than to break a real agent.
     _UNUSED_KEY_CAP = max(1, int(os.environ.get("DCHUB_CLAIM_UNUSED_CAP", "3")))
     try:
-        with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """SELECT api_key, tier, COUNT(*) OVER () AS unused_n,
-                          metadata->>'client_name'
-                     FROM mcp_dev_keys
-                    WHERE metadata->>'source' = 'claim_api'
-                      AND metadata->>'ip' = %s
-                      AND (email IS NULL OR email = '')
-                      AND status = 'active'
-                      AND last_used_at IS NULL
-                      AND created_at > NOW() - make_interval(hours => %s)
-                    ORDER BY created_at DESC""",
-                (ip, _reuse_hours),
-            )
-            _unused = cur.fetchall()
+        _unused = []
+        if not _meter_scope:
+            # The tracker's own prefix length, so the join cannot drift from
+            # what it stores.
+            from routes.api_usage_tracker import STORED_PREFIX_LEN as _REST_PREFIX_LEN
+            with _pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """SELECT api_key, tier, COUNT(*) OVER () AS unused_n,
+                              metadata->>'client_name'
+                         FROM mcp_dev_keys
+                        WHERE metadata->>'source' = 'claim_api'
+                          AND metadata->>'ip' = %s
+                          AND (email IS NULL OR email = '')
+                          AND status = 'active'
+                          AND last_used_at IS NULL
+                          AND created_at > NOW() - make_interval(hours => %s)
+                          AND COALESCE(metadata->>'meter_scope', 'ip') = 'ip'
+                          AND NOT EXISTS (
+                                SELECT 1 FROM api_endpoint_log e
+                                 WHERE e.api_key_prefix
+                                       = LEFT(mcp_dev_keys.api_key, %s))
+                        ORDER BY created_at DESC""",
+                    (ip, _reuse_hours, _REST_PREFIX_LEN),
+                )
+                _unused = cur.fetchall()
         if _unused and len(_unused) >= _UNUSED_KEY_CAP:
             _u_key, _u_tier = _unused[0][0], (_unused[0][1] or "free")
             _restamp_claim_session(_u_key)
@@ -2646,8 +2683,8 @@ def claim_key():
     # an email (free) is now strictly cheaper than re-minting. FAIL-OPEN → 0.
     _carry_calls = 0
     # r-partner-meter: verified partner traffic carries the WORKSPACE's own
-    # count, not the shared egress's. Anything else is metered by IP as before.
-    _meter_scope = _partner_meter_scope(client_name, ip)
+    # count, not the shared egress's (`_meter_scope`, read above the unused-key
+    # cap). Anything else is metered by IP as before.
     try:
         import hashlib as _cf_hl
         # auto_trial_keys stores sha256(ip)[:16] (routes/auto_trial.py mint).
