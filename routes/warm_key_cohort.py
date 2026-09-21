@@ -64,6 +64,8 @@ import os
 
 from flask import Blueprint, Response, jsonify, request
 
+from routes._audience_identity import is_operator_email
+
 logger = logging.getLogger(__name__)
 warm_key_cohort_bp = Blueprint("warm_key_cohort", __name__)
 
@@ -114,6 +116,11 @@ _CONSUMER_DOMAINS = {
 # Ours. An address here is the operator, a probe, or a reviewer comp — never a
 # prospect, and counting one as a lead is the failure this file's own history
 # is full of. `example.` / `test@` catch hand-typed fixtures.
+# ★ SUBSTRINGS CANNOT SEE A CONSUMER MAILBOX. This list matched none of the
+# operator's own address, `azmartone@gmail.com` — no dchub marker in it — so it
+# entered the cohort as a prospect. The named-address half of the rule lives in
+# routes/_audience_identity and is IMPORTED by both exports, not copied: a copy
+# is how the two lists drift.
 # `dchubmail.com` and the `+qa`/`+test` plus-tags were both found in the live
 # cohort on the first read — ours, and counted as leads until they were named.
 _INTERNAL_MARKERS = ("dchub.cloud", "dchub.io", "dchubmail.com", "@example.",
@@ -170,6 +177,8 @@ def _domain(email: str) -> str:
 
 def _is_internal(email: str) -> bool:
     e = (email or "").strip().lower()
+    if is_operator_email(e):
+        return True
     return any(m in e for m in _INTERNAL_MARKERS)
 
 
@@ -472,6 +481,9 @@ def summarize(rows: list) -> dict:
             "bind endpoint defaults it false and the paywall opt-in CTA never "
             "sets it, so a sendable count of 0 beside a large mailable count "
             "is the correct reading and names consent as the blocker. "
+            "removed_ours covers _INTERNAL_MARKERS AND the named operator "
+            "addresses in routes/_audience_identity, because a consumer "
+            "mailbox carries no marker to match. "
             "top_tool_wall is the most frequent mcp_upgrade_signals."
             "tool_requested for the address, joined on user_email, which only "
             "exists where a bind wrote it back — a blank means unknown, never "
