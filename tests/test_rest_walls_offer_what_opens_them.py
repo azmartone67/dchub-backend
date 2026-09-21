@@ -48,40 +48,31 @@ def _secret(monkeypatch):
 
 # ── capacity require_plan, driven through the real decorator ─────────────
 
-@pytest.mark.parametrize("min_plan", ["developer", "pro"])
-def test_require_plan_wall_offers_the_plan_it_requires(monkeypatch, min_plan):
+def _call_gated(monkeypatch, plan_on_key, min_plan):
+    """Run the real require_plan wrapper inside a request context. No route is
+    registered on any app: a test route is one the route-table ratchet would
+    (rightly) count as an uncovered Flask route."""
     flask = pytest.importorskip("flask")
     import api_tier_gating
     import capacity_headroom_api as cap
-    monkeypatch.setattr(api_tier_gating, "validate_api_key", lambda k: (True, {"plan": "free"}))
-    app = flask.Flask("rest-walls-test")
+    monkeypatch.setattr(api_tier_gating, "validate_api_key", lambda k: (True, {"plan": plan_on_key}))
+    wrapped = cap.require_plan(min_plan)(lambda: "opened")
+    with flask.Flask("rest-walls-test").test_request_context(headers={"X-API-Key": "k"}):
+        return wrapped()
 
-    @app.route("/gated-wall")
-    @cap.require_plan(min_plan)
-    def gated():
-        return "opened"
 
-    r = app.test_client().get("/gated-wall", headers={"X-API-Key": "k"})
-    body = r.get_json()
-    assert r.status_code == 403 and body["error"] == "plan_upgrade_required", body
+@pytest.mark.parametrize("min_plan", ["developer", "pro"])
+def test_require_plan_wall_offers_the_plan_it_requires(monkeypatch, min_plan):
+    resp, status = _call_gated(monkeypatch, "free", min_plan)
+    body = resp.get_json()
+    assert status == 403 and body["error"] == "plan_upgrade_required", body
     assert _plan_of(body["upgrade_url"]) == min_plan
     assert body["upgrade_options"][0]["plan"] == min_plan
     assert body["upgrade_options"][0]["opens"] == "rest"
 
 
 def test_require_plan_still_opens_for_a_plan_that_qualifies(monkeypatch):
-    flask = pytest.importorskip("flask")
-    import api_tier_gating
-    import capacity_headroom_api as cap
-    monkeypatch.setattr(api_tier_gating, "validate_api_key", lambda k: (True, {"plan": "pro"}))
-    app = flask.Flask("rest-walls-test-open")
-
-    @app.route("/gated-open")
-    @cap.require_plan("developer")
-    def gated():
-        return "opened"
-
-    assert app.test_client().get("/gated-open", headers={"X-API-Key": "k"}).data == b"opened"
+    assert _call_gated(monkeypatch, "pro", "developer") == "opened"
 
 
 # ── main.py's helpers, run as written ────────────────────────────────────
