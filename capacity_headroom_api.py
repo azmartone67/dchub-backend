@@ -31,6 +31,18 @@ from utc_clock import utc_now
 logger = logging.getLogger(__name__)
 
 
+def _plan_wall(min_plan):
+    """The upgrade fields for a require_plan wall: the measured /go/c checkout of
+    the plan it requires (frontend#1534, 2026-09-21), else the pricing page."""
+    if min_plan in ('developer', 'pro'):
+        try:
+            from routes.checkout_click_tracker import rest_wall_ladder
+            return rest_wall_ladder(opens_on_rest=min_plan)
+        except Exception:  # noqa: BLE001
+            pass
+    return {'upgrade_url': 'https://dchub.cloud/pricing'}
+
+
 def require_plan(min_plan='pro'):
     def decorator(f):
         @wraps(f)
@@ -58,7 +70,8 @@ def require_plan(min_plan='pro'):
                         'success': False,
                         'error': 'plan_upgrade_required',
                         'message': f'This endpoint requires {min_plan.title()} plan. You are on {user_plan.title()}.',
-                        'upgrade_url': 'https://dchub.cloud/pricing',
+                        'upgrade_url': _plan_wall(min_plan)['upgrade_url'],
+                        'upgrade_options': _plan_wall(min_plan).get('upgrade_options'),
                     }), 403
                 return f(*args, **kwargs)
             except ImportError:

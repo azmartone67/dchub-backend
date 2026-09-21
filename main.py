@@ -25177,6 +25177,28 @@ def _list_facilities_full():
     return jsonify(_full_payload)
 
 
+def _honest_rest_wall(opens_on_rest='pro', mcp_tool=''):
+    """A REST wall's upgrade fields: the measured /go/c checkout of the plan that
+    ACTUALLY opens the endpoint, plus the ladder (checkout_click_tracker.
+    rest_wall_ladder). Pass the cheapest plan the endpoint's own gate admits,
+    read from that gate, never assumed. Falls back to the pricing page, never
+    to nothing (frontend#1534, 2026-09-21)."""
+    try:
+        from routes.checkout_click_tracker import rest_wall_ladder
+        return rest_wall_ladder(opens_on_rest=opens_on_rest, mcp_tool=mcp_tool)
+    except Exception:  # noqa: BLE001
+        return {'upgrade_url': 'https://dchub.cloud/pricing'}
+
+
+def _plan_price_display(plan):
+    """'$49/mo' for `plan`, from tier_registry. None when unreadable."""
+    try:
+        import tier_registry as _tr
+        return _tr.price_display(plan) or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _list_facilities_free():
     """Freemium facility listing -- max 5 results, basic fields only."""
     from util.country_codes import country_filter
@@ -32123,7 +32145,8 @@ def ai_query():
                 'message': f'Showing 2 of {total_count} results. Upgrade to Pro for full access.',
                 'data': preview_data,
                 'total_available': total_count,
-                'upgrade_url': 'https://dchub.cloud/pricing',
+                'upgrade_url': _honest_rest_wall('pro')['upgrade_url'],
+                'upgrade_options': _honest_rest_wall('pro').get('upgrade_options'),
                 'source': 'DC Hub',
                 'citation': 'According to DC Hub (dchub.cloud)',
             }), 200
@@ -39057,7 +39080,9 @@ def api_site_score():
             user = getattr(request, "current_user", None)
             plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
             if plan not in ("pro", "enterprise", "developer"):
-                return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan. Upgrade at dchub.cloud/pricing", "upgrade_url": "https://dchub.cloud/pricing", "success": False}), 403
+                # frontend#1534: the gate above admits developer, so the wall offers
+                # the Developer checkout (it said "requires Pro" and linked /pricing).
+                return jsonify({"error": "plan_required", "message": "Site scoring requires the Developer or Pro plan.", "upgrade_url": _honest_rest_wall('developer')["upgrade_url"], "upgrade_options": _honest_rest_wall('developer').get("upgrade_options"), "success": False}), 403
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()
@@ -39985,9 +40010,12 @@ def api_site_forecast():
             }
         else:
             forecast = {
-                'message': 'Full 2030-2050 deployment forecast (reference + high-DC scenarios) available on Pro plan.',
-                'upgrade_url': 'https://dchub.cloud/pricing#pro',
-                'price': '$99/mo',
+                # frontend#1534: is_pro admits developer, so the cheapest plan that
+                # opens this is Developer; the price is read, not typed ($99 was).
+                'message': 'Full 2030-2050 deployment forecast (reference + high-DC scenarios) available on the Developer and Pro plans.',
+                'upgrade_url': _honest_rest_wall('developer')['upgrade_url'],
+                'upgrade_options': _honest_rest_wall('developer').get('upgrade_options'),
+                'price': _plan_price_display('developer'),
             }
 
         return jsonify({
@@ -40014,7 +40042,7 @@ def api_site_forecast():
                 'EER ADP 2024 regional projections',
             ],
             'tier': plan,
-            'upgrade_url': None if is_pro else 'https://dchub.cloud/pricing#pro',
+            'upgrade_url': None if is_pro else _honest_rest_wall('developer')['upgrade_url'],
         })
 
     except Exception as e:
