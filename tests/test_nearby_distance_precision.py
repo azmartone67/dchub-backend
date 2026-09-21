@@ -158,7 +158,11 @@ def _ctx(internal=False):
 
 @pytest.mark.parametrize("tier,expected", [
     ("pro", (None, False)), ("developer", (None, False)), ("enterprise", (None, False)),
-    ("free", (3, False)), ("identified", (3, False)), ("anon", (2, False)),
+    # Free and identified sit on the anonymous rung since the 2026-09-21
+    # exact-location policy (their exact view is the monthly allowance, which
+    # is per facility, not per distance list); starter is metered the same way.
+    ("free", (2, False)), ("identified", (2, False)), ("starter", (2, False)),
+    ("anon", (2, False)),
     ("no-such-tier", (2, False)),
 ])
 def test_rest_rung_is_the_facility_record_rung(tier_env, tier, expected):
@@ -234,7 +238,10 @@ def test_portfolio_snapshot_serves_the_callers_rung(tier_env, monkeypatch, tier,
         pf = lp_sites.portfolio_snapshot("k_test", max_sites=5)
     row = pf["sites"][0]["new_facilities_nearby"][0]
     exact = round(_haversine_km(lat, lon, A["latitude"], A["longitude"]), 1)
-    dp = 3 if tier == "free" else 2
+    # Every non-exact rung is 2 dp at default knobs since the 2026-09-21
+    # exact-location policy (free included); pinned per tier by
+    # test_rest_rung_is_the_facility_record_rung above.
+    dp = 2
     approx = _served_km(_haversine_km(lat, lon, round(A["latitude"], dp),
                                       round(A["longitude"], dp)))
     if shape == "rounded":

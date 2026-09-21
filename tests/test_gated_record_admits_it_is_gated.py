@@ -40,8 +40,12 @@ RAW = {
 }
 
 
-@pytest.mark.parametrize("tier,expected_dp", [("anon", 2), ("identified", 3)])
-def test_a_coarsened_coordinate_is_not_still_called_known(tier, expected_dp):
+# identified rounds like anon since 2026-09-21 (2 dp by default); its exact
+# location comes from the monthly allowance, not from a sharper default.
+@pytest.mark.parametrize("tier,expected_dp", [("anon", 2), ("identified", 2)])
+def test_a_coarsened_coordinate_is_not_still_called_known(tier, expected_dp, monkeypatch):
+    monkeypatch.delenv("MAP_ANON_COORD_DP", raising=False)
+    monkeypatch.delenv("MAP_FREE_COORD_DP", raising=False)
     out, _ = gate_record(dict(RAW), tier)
     assert out["latitude"] != RAW["latitude"], "precondition: it should coarsen"
     assert out["coordinates_status"] == f"approximate_{expected_dp}dp", (
@@ -51,14 +55,27 @@ def test_a_coarsened_coordinate_is_not_still_called_known(tier, expected_dp):
     )
 
 
-def test_the_marker_names_the_precision_actually_applied():
-    """A fixed string could drift from the dp the gate used."""
+def test_the_marker_names_the_precision_actually_applied(monkeypatch):
+    """A fixed string could drift from the dp the gate used. The two rungs share
+    a default now, so the knob is moved to make them differ — the marker must
+    follow the dp each one actually got."""
+    monkeypatch.delenv("MAP_ANON_COORD_DP", raising=False)
+    monkeypatch.setenv("MAP_FREE_COORD_DP", "3")
     anon, _ = gate_record(dict(RAW), "anon")
     ident, _ = gate_record(dict(RAW), "identified")
-    assert anon["coordinates_status"] != ident["coordinates_status"], (
-        "both tiers report the same coordinate quality despite different "
-        "rounding — the marker is not derived from the dp applied"
+    assert anon["coordinates_status"] == "approximate_2dp"
+    assert ident["coordinates_status"] == "approximate_3dp", (
+        "the tiers were rounded differently but report the same coordinate "
+        "quality — the marker is not derived from the dp applied"
     )
+
+
+def test_an_allowance_exact_record_keeps_its_known_status():
+    """Spending the monthly allowance makes the coordinate exact, so the record
+    must NOT be relabelled approximate."""
+    out, _ = gate_record(dict(RAW), "identified", exact_location=True)
+    assert out["latitude"] == RAW["latitude"]
+    assert out["coordinates_status"] == "known"
 
 
 def test_a_paid_record_is_untouched():

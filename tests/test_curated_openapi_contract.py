@@ -165,13 +165,19 @@ def test_facility_detail_is_published_with_optional_auth(spec):
     # free key "does not lift" the endpoint. That was true only of
     # get_facility_by_id's legacy hardcoded tuple, which withheld coordinates
     # entirely. Now every single-facility route shares util.facility_tier_gate,
-    # where a free key IS a rung: 2dp -> 3dp plus provider/operator/market/
-    # region. The assertion moved with the behaviour rather than pinning the
-    # old sentence.
-    assert "3 dp" in desc and "2 decimal places" in desc, (
-        "the description must state BOTH unpaid precisions — an integrator who "
-        "cannot see the rung does not know a free key buys anything"
-    )
+    # where a free key IS a rung. The assertion moved with the behaviour rather
+    # than pinning the old sentence — and moved again on 2026-09-21, when the
+    # rung stopped being a sharper blur (2dp -> 3dp) and became a monthly
+    # EXACT-location allowance reported per call in `_location_allowance`.
+    assert "2 decimal places" in desc, "the anonymous precision must be stated"
+    assert "3 dp" not in desc and "110 m" not in desc, (
+        "the description still promises the retired 3 dp free rung — a free "
+        "record now rounds exactly like an anonymous one")
+    assert "exact coordinates" in desc and "a month" in desc, (
+        "the description must state the free rung — exact location for a few "
+        "facilities a month — or an integrator does not know a key buys anything")
+    assert "_location_allowance" in desc, (
+        "the description must name the field that reports the allowance")
     assert "_coord_precision_dp" in desc, (
         "the description must name the field that reports the rounding, or a "
         "caller treats a 2dp coordinate as an exact one"

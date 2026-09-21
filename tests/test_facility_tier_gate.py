@@ -98,17 +98,31 @@ def test_anon_coordinates_are_coarsened_to_the_map_ladder():
 
 
 def test_free_is_a_real_rung_between_anon_and_paid():
-    """Signing up must buy something visible, and not everything."""
+    """Signing up must buy something visible, and not everything.
+
+    Since 2026-09-21 (owner decision) the visible thing is NOT a sharper blur:
+    a free record rounds exactly like an anonymous one, and what the account
+    buys is EXACT location for a few facilities a month — exact_location=True,
+    spent through util/location_meter.py — which anonymous can never spend.
+    """
     anon, _ = gate_record(dict(RICH), 'anon')
     free, _ = gate_record(dict(RICH), 'free')
+    free_exact, _ = gate_record(dict(RICH), 'free', exact_location=True)
+    anon_exact, _ = gate_record(dict(RICH), 'anon', exact_location=True)
     paid, _ = gate_record(dict(RICH), 'developer')
 
-    # Free buys the operator name and finer coordinates...
+    # Free buys the operator name...
     assert 'provider' not in anon
     assert free.get('provider') == 'Microsoft'
-    assert coord_dp_for_tier('free') > coord_dp_for_tier('anon')
-    # ...and does NOT buy the field people pay $49 for.
-    assert 'power_mw' not in free
+    # ...the same precision as anonymous by default...
+    assert coord_dp_for_tier('free') == coord_dp_for_tier('anon')
+    assert free['latitude'] == anon['latitude'] != RICH['latitude']
+    # ...and the exact location + street address once its allowance is spent.
+    assert free_exact['latitude'] == RICH['latitude']
+    assert free_exact['address'] == RICH['address']
+    assert anon_exact['latitude'] != RICH['latitude'] and 'address' not in anon_exact
+    # It does NOT buy the field people pay $49 for, allowance or not.
+    assert 'power_mw' not in free and 'power_mw' not in free_exact
     # Paid gets the record whole, coordinates untouched.
     assert paid['power_mw'] == 2300.0
     assert paid['latitude'] == RICH['latitude']
@@ -344,24 +358,42 @@ def test_module_reads_the_maps_own_env_knobs(monkeypatch, knob, tier, probe):
 def test_main_still_reads_the_same_two_knobs():
     """The map half of the contract. If main.py renames its knob, the corpus
     and the map can disagree about what 'anonymous' means again — which is the
-    entire defect this module was extracted to remove."""
+    entire defect this module was extracted to remove.
+
+    Since 2026-09-21 the map reads MAP_ANON_COORD_DP itself (its anonymous rung
+    keeps the map's own 3dp default) and takes every other rung from
+    coord_dp_for_tier — so MAP_FREE_COORD_DP has exactly ONE reader, this
+    module, and the map cannot drift from the records on the free rung."""
     main_src = (ROOT / 'main.py').read_text(encoding='utf-8')
-    for knob in ('MAP_ANON_COORD_DP', 'MAP_FREE_COORD_DP'):
-        assert f"environ.get('{knob}'" in main_src, (
-            f"main.py no longer reads {knob} from the environment")
+    assert "environ.get('MAP_ANON_COORD_DP'" in main_src, (
+        "main.py no longer reads MAP_ANON_COORD_DP from the environment")
+    fn = _func(_main_tree(), 'api_v1_map')
+    imported = {(n.module, a.name) for n in ast.walk(fn)
+                if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert ('util.facility_tier_gate', 'coord_dp_for_tier') in imported, (
+        "the map no longer takes its rungs from coord_dp_for_tier")
+    assert "environ.get('MAP_FREE_COORD_DP'" not in (ast.get_source_segment(main_src, fn) or ''), (
+        "the map reads its own copy of the free rung again")
 
 
 def test_the_free_rung_survives_an_unset_environment(monkeypatch):
     """The ladder must not depend on a Railway variable being present.
 
     Both defaults used to be 3, so with no env vars set anon and free were
-    IDENTICAL and signing up bought nothing on the crown-jewel surface. The
-    2dp anon tier was real only because the dashboard said so.
+    IDENTICAL by accident and signing up bought nothing. Since 2026-09-21 they
+    are identical ON PURPOSE — 2 dp, ~1.1 km, for a record — and the rung a
+    free account climbs is the monthly exact-location allowance. Its default
+    lives in code too, so with nothing set: free rounds exactly like
+    anonymous, never sharper, and still has an allowance to spend.
     """
     monkeypatch.delenv('MAP_ANON_COORD_DP', raising=False)
     monkeypatch.delenv('MAP_FREE_COORD_DP', raising=False)
-    assert coord_dp_for_tier('anon') < coord_dp_for_tier('free'), (
-        "with no environment set, a free account buys no extra precision")
+    monkeypatch.delenv('FREE_EXACT_LOCATIONS_PER_MONTH', raising=False)
+    assert coord_dp_for_tier('anon') == coord_dp_for_tier('free') == 2, (
+        "with no environment set, a free record must round like an anonymous one")
+    from util.location_meter import monthly_limit
+    assert monthly_limit() == 10, (
+        "with no environment set, a free account must still have an allowance")
 
 
 def test_no_handler_in_the_class_is_left_ungated():
@@ -373,8 +405,10 @@ def test_no_handler_in_the_class_is_left_ungated():
     # Verified live 2026-09-19, anonymous, no key and no cookie. An exemption
     # here is a MEASUREMENT, not an opinion: re-probe before adding to it.
     EXEMPT = {
-        # Self-gated: carries its own tier resolution AND its own copy of the
-        # coordinate ladder (the original of the one in facility_tier_gate).
+        # Self-gated: carries its own tier resolution and field mask; since
+        # 2026-09-21 its coordinate rungs come from coord_dp_for_tier (pinned by
+        # test_main_still_reads_the_same_two_knobs and
+        # tests/test_location_policy_every_surface.py).
         # Probed: tier=anonymous, _coord_precision_dp=2, no power_mw, no provider.
         'api_v1_map',
         # Probed: HTTP 402 for anonymous callers.
@@ -529,3 +563,39 @@ def test_every_returned_record_in_a_class_handler_is_gated():
         "passing through the tier gate — a sibling branch being gated does "
         f"not cover them: {sorted(offenders)}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NUMERIC coordinates. psycopg2 returns a NUMERIC column as decimal.Decimal,
+# and _round_coords used to round only int/float — so a Decimal latitude
+# passed every gate at full precision and reported nothing rounded.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_decimal_coordinates_are_rounded_like_floats():
+    from decimal import Decimal
+    rec = dict(RICH, latitude=Decimal('12.345678'), longitude=Decimal('-45.678912'))
+    out, n = gate_record(rec, 'anon')
+    dp = coord_dp_for_tier('anon')
+    assert out['latitude'] == round(12.345678, dp) and isinstance(out['latitude'], float)
+    assert out['longitude'] == round(-45.678912, dp) and isinstance(out['longitude'], float)
+    assert out['coordinates_status'] == f'approximate_{dp}dp'
+    assert n > 0
+
+
+def test_an_already_coarse_decimal_is_not_counted_as_a_redaction():
+    """Decimal('12.35') != 12.35 exactly; comparing that way would inflate the
+    tally and relabel an untouched coordinate as approximate."""
+    from decimal import Decimal
+    thin = {'name': 'X', 'city': 'Y', 'state': 'Z', 'country': 'XX',
+            'status': 'Operational', 'slug': 's',
+            'latitude': Decimal('12.35'), 'longitude': Decimal('-45.68')}
+    out, n = gate_record(thin, 'anon')
+    assert n == 0 and 'coordinates_status' not in out
+    assert out['latitude'] == 12.35 and isinstance(out['latitude'], float)
+
+
+def test_decimal_coordinates_are_reached_by_the_deep_coarsener_too():
+    from decimal import Decimal
+    payload = {'data': [{'lat': Decimal('1.234567'), 'lng': Decimal('2.345678')}]}
+    assert coarsen_coords_deep(payload, 'anon') == 2
+    assert payload['data'][0]['lat'] == round(1.234567, coord_dp_for_tier('anon'))

@@ -1061,13 +1061,82 @@ FACILITY_VISIBLE_FIELDS = {
 for _ft in ('identified', 'trial', 'trial_taste'):
     FACILITY_VISIBLE_FIELDS[_ft] = FACILITY_VISIBLE_FIELDS['free']
 
-def get_request_tier():
-    """Non-blocking tier detection from JWT/API key/cookie. Returns plan or 'anon'."""
+def _api_key_fingerprint(api_key):
+    """First 16 hex chars of sha256(key): names a key in a ledger without being
+    one. Never raises — a key that cannot be fingerprinted has no key account."""
+    try:
+        return hashlib.sha256(str(api_key).encode('utf-8')).hexdigest()[:16]
+    except Exception:
+        return None
+
+
+def _principal_email(value):
+    """A stripped, lower-cased email, or None. Never raises: a malformed claim
+    must cost the caller their account, not change the tier they resolve to."""
+    try:
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    except Exception:
+        pass
+    return None
+
+
+def request_api_key(req=None):
+    """The API key a request presents: X-API-Key, then ?api_key=, then
+    `Authorization: Bearer dchub_...`. None when there is none.
+
+    The ONE extraction rule. get_request_principal() reads the key through
+    this, and so does any caller that needs the raw key for a lookup the
+    principal deliberately does not carry (it holds only a fingerprint)."""
+    if req is None:
+        from flask import request as req
+    api_key = req.headers.get('X-API-Key') or req.args.get('api_key')
+    # Also accept Authorization: Bearer dchub_... (a JWT decode is tried first)
+    if not api_key:
+        _auth_h2 = req.headers.get('Authorization', '')
+        if _auth_h2.startswith('Bearer ') and _auth_h2[7:].startswith('dchub_'):
+            api_key = _auth_h2[7:].strip()
+    return api_key
+
+
+def get_request_principal(honor_internal_key=True):
+    """WHO is asking — the credential parse behind get_request_tier().
+
+    Returns a dict:
+        tier                 exactly what get_request_tier() returns
+        email                lower-cased, from the JWT claim or the key's
+                             validate_api_key() row; None when neither has one
+        api_key_fingerprint  sha256(key)[:16] when an API key AUTHENTICATED
+                             the caller; never the key itself
+        credential           'internal_key' | 'jwt' | 'api_key' |
+                             'mcp_dev_key' | 'cookie' | None (anonymous)
+        internal_key         True when a valid X-Internal-Key was presented
+
+    ★ ONE COPY OF THE RULE. get_request_tier() is a projection of this, so the
+    tier and the identity cannot drift apart: tests/test_request_principal_
+    parity.py pins every credential shape to the tier the pre-refactor
+    function returned, and asserts get_request_tier() parses nothing itself.
+
+    honor_internal_key=False: the internal key is treated as TRANSPORT, not as
+    identity. The MCP worker sends X-Internal-Key on every backend call and
+    forwards the end caller's key as X-API-Key; a surface that meters the end
+    caller must resolve THAT key, or every MCP caller is 'admin'. With it
+    False the internal key only sets `internal_key`; the forwarded credential
+    (or its absence) decides the rest.
+
+    Fails to anonymous — no email, no fingerprint — on any error, exactly as
+    get_request_tier() always failed to 'anon'.
+    """
+    principal = {'tier': 'anon', 'email': None, 'api_key_fingerprint': None,
+                 'credential': None, 'internal_key': False}
     try:
         from flask import request
         internal_key = request.headers.get('X-Internal-Key', '')
         if is_valid_internal_key(internal_key):
-            return 'admin'
+            principal['internal_key'] = True
+            if honor_internal_key:
+                principal.update(tier='admin', credential='internal_key')
+                return principal
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             decode_jwt = _get_decode_jwt()
@@ -1075,20 +1144,23 @@ def get_request_tier():
                 payload = decode_jwt(auth_header.split(' ', 1)[1])
                 if payload:
                     uid = payload.get('user_id') or payload.get('sub') or payload.get('email')
-                    return get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
-        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-        # Also accept Authorization: Bearer dchub_... (JWT decode already failed above)
-        if not api_key:
-            _auth_h2 = request.headers.get('Authorization', '')
-            if _auth_h2.startswith('Bearer ') and _auth_h2[7:].startswith('dchub_'):
-                api_key = _auth_h2[7:].strip()
+                    tier = get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
+                    principal.update(tier=tier, credential='jwt',
+                                     email=_principal_email(payload.get('email')))
+                    return principal
+        api_key = request_api_key(request)
         if api_key:
             info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
             if info and isinstance(info, dict):
                 role = info.get('role', '')
-                if role == 'admin':
-                    return 'admin'
-                return info.get('plan', 'free')
+                # .get('plan', 'free') and NOT `or 'free'`: a row whose plan
+                # is NULL has always resolved to None here, and callers
+                # (`get_request_tier() or 'anon'`) depend on that. Pinned.
+                tier = 'admin' if role == 'admin' else info.get('plan', 'free')
+                principal.update(tier=tier, credential='api_key',
+                                 email=_principal_email(info.get('email')),
+                                 api_key_fingerprint=_api_key_fingerprint(api_key))
+                return principal
             # r-fix10 (2026-06-27): api_keys does NOT hold mcp_dev_keys (dch_* keys),
             # so a paying Developer/Pro/Enterprise on an MCP key fell through to 'anon'
             # and got thin facility data on the REST API. Resolve via the canonical
@@ -1096,11 +1168,15 @@ def get_request_tier():
             # →None so they stay preview). Full facility DATA is developer-class, so this
             # delivers the advertised "full DB via API" without over-granting pro-only
             # deliverables (those gate on mcp_gatekeeper separately).
+            # The mapper exposes no bound email, so this principal is keyed by
+            # fingerprint alone — and it only ever resolves PAID tiers.
             try:
                 from api_data_protection import _resolve_key_tier as _rkt
                 _mt = _rkt(api_key)
                 if _mt:
-                    return _mt
+                    principal.update(tier=_mt, credential='mcp_dev_key',
+                                     api_key_fingerprint=_api_key_fingerprint(api_key))
+                    return principal
             except Exception:
                 pass
         # ★ 2026-09-07 — `dchub_session` removed: same shadowing defect as the
@@ -1117,10 +1193,25 @@ def get_request_tier():
                 payload = decode_jwt(session_token)
                 if payload:
                     uid = payload.get('user_id') or payload.get('sub') or payload.get('email')
-                    return get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
+                    tier = get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
+                    principal.update(tier=tier, credential='cookie',
+                                     email=_principal_email(payload.get('email')))
+                    return principal
     except Exception:
         pass
-    return 'anon'
+    # A fresh dict, not `principal`: a raise part-way through must not leave a
+    # half-resolved email or fingerprint behind on an anonymous result.
+    return {'tier': 'anon', 'email': None, 'api_key_fingerprint': None,
+            'credential': None, 'internal_key': bool(principal.get('internal_key'))}
+
+
+def get_request_tier():
+    """Non-blocking tier detection from JWT/API key/cookie. Returns plan or 'anon'.
+
+    A projection of get_request_principal(): the credential parse lives there,
+    once. Do not add parsing here — a second copy is how the tier and the
+    identity a meter charges would start to disagree."""
+    return get_request_principal()['tier']
 
 def gate_facilities_response(facilities, plan, total_in_db=None):
     """Shape facility response based on plan: row limits + field stripping + upgrade CTA."""

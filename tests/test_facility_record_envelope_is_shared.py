@@ -16,8 +16,10 @@ The 8-field one looked like the strictest and was actually the accident:
 get_facility_by_id intersected the shared mask with a hardcoded tuple its own
 comment called the THIRD copy of the field policy. Serving no coordinates at
 all reads as "tighter", but it collapses the rung the ladder exists to create —
-under util.facility_tier_gate a free key sharpens 2dp (~1.1 km) to 3dp (~110 m),
-and a route that serves no coordinates gives a claimed key nothing to buy.
+then a free key sharpened 2dp (~1.1 km) to 3dp (~110 m); since 2026-09-21 a
+free account rounds like anonymous and buys EXACT location for a few
+facilities a month instead — and a route that serves no coordinates gives a
+claimed key nothing to buy.
 
 So these tests pin the LADDER and the SINGLE WRITER, not the field counts: a
 count changes whenever the mask does, while "no route builds its own envelope"
@@ -43,9 +45,12 @@ ROW = {
 
 # ── the ladder ──────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("tier,dp", [('anon', 2), ('free', 3)])
-def test_each_unpaid_rung_gets_its_own_coordinate_precision(tier, dp):
-    """anon and free must NOT be identical, or the signup rung buys nothing."""
+@pytest.mark.parametrize("tier,dp", [('anon', 2), ('free', 2)])
+def test_each_unpaid_rung_gets_its_ladder_precision(tier, dp, monkeypatch):
+    """A record rounds to 2 dp for anonymous AND free callers by default (owner
+    decision 2026-09-21); what a free account buys is the allowance below."""
+    monkeypatch.delenv('MAP_ANON_COORD_DP', raising=False)
+    monkeypatch.delenv('MAP_FREE_COORD_DP', raising=False)
     r = apply_record_gate({'success': True, 'data': dict(ROW)}, tier)
     assert r['_coord_precision_dp'] == dp
     lat = r['data']['latitude']
@@ -53,16 +58,23 @@ def test_each_unpaid_rung_gets_its_own_coordinate_precision(tier, dp):
         f"{tier} served {lat}, expected {ROW['latitude']} at {dp}dp")
 
 
-def test_free_is_strictly_sharper_than_anon():
-    """The property the ladder exists for, stated as a comparison rather than
-    two hardcoded numbers that could drift together."""
+def test_free_widens_the_fields_and_its_allowance_makes_the_location_exact():
+    """The rung, stated as comparisons rather than hardcoded numbers: free
+    widens the field set at anonymous precision, and a spent allowance moves
+    the caller to the TRUE coordinate — which anonymous can never do."""
     a = apply_record_gate({'success': True, 'data': dict(ROW)}, 'anon')
     f = apply_record_gate({'success': True, 'data': dict(ROW)}, 'free')
-    assert f['_coord_precision_dp'] > a['_coord_precision_dp']
-    assert abs(f['data']['latitude'] - ROW['latitude']) < abs(
+    fx = apply_record_gate({'success': True, 'data': dict(ROW)}, 'free', exact_location=True)
+    ax = apply_record_gate({'success': True, 'data': dict(ROW)}, 'anon', exact_location=True)
+    assert f['_coord_precision_dp'] == a['_coord_precision_dp']
+    assert set(f['data']) > set(a['data']), "free must widen the field set"
+    assert fx['_coord_precision_dp'] is None
+    assert fx['data']['latitude'] == ROW['latitude'] and fx['data']['address'] == ROW['address']
+    assert abs(fx['data']['latitude'] - ROW['latitude']) < abs(
         a['data']['latitude'] - ROW['latitude']), (
-        "a free key must move the caller closer to the true coordinate")
-    assert set(f['data']) > set(a['data']), "free must also widen the field set"
+        "a spent allowance must move the caller to the true coordinate")
+    assert ax['data'] == a['data'], "anonymous cannot spend an allowance"
+    assert 'power_mw' not in fx['data'], "the allowance buys the location only"
 
 
 def test_paid_is_the_full_record_with_no_markers():
