@@ -19,6 +19,19 @@
  * historical entry should name the version it shipped in. Only the title line,
  * which claims to describe the file as it stands, was the lie.
  * ================================================================================
+ * v4.9.72 CHANGES (Sep 21 2026) — Phase agent-json-serves-the-a2a-card:
+ *   - /.well-known/agent.json returns what the public
+ *          /.well-known/agent-card.json returns: the A2A card from
+ *          routes/agent_a2a.py (skills, OAuth2 scheme), not an MCP server card
+ *          built here from MCP_SERVER_INFO. That MCP card sat at the path A2A
+ *          0.2.x clients read an AgentCard from, so it gave a second answer to
+ *          the same question. MCP clients still find the MCP card at
+ *          /.well-known/mcp.json and /.well-known/mcp/server-card.json.
+ *          On failure: 503 JSON pointing at agent-card.json, never a cached error.
+ *   ★ This worker deploys by DASHBOARD PASTE, not by merge (dchub-backend#5050).
+ *          Verify: curl -sI "https://dchub.cloud/mcp?_=$(date +%s)" | grep -i
+ *          x-dc-worker-version  -> 4.9.72-agent-json-serves-the-a2a-card
+ * ================================================================================
  * v4.9.71 CHANGES (Sep 16 2026) — Phase capacity-source-on-mcp-get:
  *   - GET /mcp `product` now NAMES Capacity Source. This payload is the first
  *          thing an agent reads — before tools/list — and it described the
