@@ -177,6 +177,10 @@ def clean_operator(v):
 def site_ref(name, lat, lon):
     """Stable, opaque reference for a candidate.
 
+    Pass the coordinates the caller is SHOWN, never finer ones: the ref is
+    published next to the anchor name, so it must not encode a position more
+    precise than the published lat/lon (see assemble_candidates).
+
     Deliberately NOT called candidate_id: ``rank_sites`` resolves a
     ``candidate_id`` against get_refined_queue's mint, and feeding it one of
     these would look valid and silently resolve to nothing. Pass the returned
@@ -363,7 +367,10 @@ def assemble_candidates(anchors, gas_pts, fiber_segs, moratoria,
             out_lon = round(float(alon), 1) if alon is not None else None
 
         candidates.append({
-            "site_ref": site_ref(a.get("name"), alat, alon),
+            # From the published coordinates: a coarsened preview's ref must
+            # not carry the exact anchor position. Unchanged for full callers,
+            # whose published coordinates ARE the exact ones.
+            "site_ref": site_ref(a.get("name"), out_lat, out_lon),
             "lat": out_lat,
             "lon": out_lon,
             "coordinate_precision_km": 0.1 if full else 11.0,

@@ -258,16 +258,53 @@ def test_paid_tier_returns_exact_coordinates_and_detail():
     assert c["anchor"]["operator"] == "Dominion"
 
 
-def test_site_ref_is_stable_across_tiers_and_distinct_per_site():
+def _ref(anchor, full):
+    return assemble_candidates([anchor], [], [], {}, full=full)[0]["site_ref"]
+
+
+# Three exact positions that all publish as (39.0, -77.5) to a free caller.
+_ONE_FREE_CELL = ((39.0437, -77.4874), (38.9612, -77.5391), (39.0388, -77.4602))
+
+
+def test_free_site_ref_is_identical_anywhere_inside_the_published_cell():
+    # The ref is published next to the anchor name. If it moved with the
+    # exact position inside the ~11 km cell, it would be carrying the
+    # precision the coarsening withholds.
+    for lat, lon in _ONE_FREE_CELL:
+        c = assemble_candidates([_anchor("A", lat, lon)], [], [], {}, full=False)[0]
+        assert (c["lat"], c["lon"]) == (39.0, -77.5)
+    refs = {_ref(_anchor("A", lat, lon), full=False) for lat, lon in _ONE_FREE_CELL}
+    assert len(refs) == 1
+
+
+def test_free_site_ref_is_not_derived_from_the_exact_anchor():
+    for lat, lon in _ONE_FREE_CELL:
+        free = _ref(_anchor("A", lat, lon), full=False)
+        assert free != site_ref("A", lat, lon)
+        assert free == site_ref("A", 39.0, -77.5)
+
+
+def test_paid_site_ref_is_unchanged_and_exact():
+    # Full callers see the exact coordinates, so their ref keeps them — the
+    # refs they already hold do not change.
+    refs = [_ref(_anchor("A", lat, lon), full=True) for lat, lon in _ONE_FREE_CELL]
+    assert refs == [site_ref("A", lat, lon) for lat, lon in _ONE_FREE_CELL]
+    assert len(set(refs)) == 3
+
+
+def test_site_ref_is_stable_per_caller_class_and_distinct_per_site():
     a = _anchor("A", 39.0437, -77.4874)
-    free = assemble_candidates([a], [], [], {}, full=False)[0]["site_ref"]
-    paid = assemble_candidates([a], [], [], {}, full=True)[0]["site_ref"]
-    # computed from the EXACT anchor, so coarsening does not fork the identity
-    assert free == paid
-    other = assemble_candidates([_anchor("B", 41.0, -79.0)], [], [], {},
-                                full=True)[0]["site_ref"]
-    assert other != paid
-    assert paid.startswith("site_")
+    free, paid = _ref(a, full=False), _ref(a, full=True)
+    assert _ref(dict(a), full=False) == free
+    assert _ref(dict(a), full=True) == paid
+    # the tiers deliberately get different refs for the same anchor
+    assert free != paid
+    other_name_same_cell = _ref(_anchor("B", 39.0437, -77.4874), full=False)
+    same_name_next_cell = _ref(_anchor("A", 39.1437, -77.4874), full=False)
+    assert len({free, other_name_same_cell, same_name_next_cell}) == 3
+    assert _ref(_anchor("B", 41.0, -79.0), full=True) != paid
+    assert all(r.startswith("site_") for r in
+               (free, paid, other_name_same_cell, same_name_next_cell))
 
 
 # ── shape contract ──────────────────────────────────────────────────────────
