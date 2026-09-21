@@ -20761,8 +20761,16 @@ def get_market_stats(market):
         # market whose rows are re-verified without a new discovery reads
         # older than it is - which is the safe direction for a stamp an agent
         # is told to cite with the number.
-        _as_of = stats.get('newest_discovered_at')
-        _as_of = str(_as_of)[:19] if _as_of else None
+        #
+        # ★ NOT truncated. An earlier revision sliced this to [:19] to tidy a
+        # microsecond tail, which also cuts the trailing 'Z' or '+00:00' off an
+        # ISO stamp — and the MCP server's parser (lib/attribution.mjs
+        # parseStamp -> Date.parse) reads a zoneless datetime as LOCAL time.
+        # Measured on that parser: '2026-09-08T14:22:31' resolves to
+        # 2026-09-08T21:22:31Z, a 7-hour invented drift on a field agents are
+        # told to cite. The stored string is the source's own stamp; pass it
+        # through, and let an unparseable one fail soft to UNMEASURED.
+        _as_of = str(stats.get('newest_discovered_at') or '').strip() or None
 
         resp = jsonify({
             'success': True,

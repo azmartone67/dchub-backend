@@ -126,3 +126,23 @@ def test_as_of_is_published_and_does_not_overclaim():
         "as_of_basis must say what it does NOT prove")
     assert "UNMEASURED" in basis_txt, (
         "a cut with no dated row must still say so rather than omit the field")
+
+
+def test_as_of_is_not_truncated():
+    """Slicing the stamp cuts its ZONE off, and the consumer reads a zoneless
+    datetime as local time.
+
+    Measured against dchub-mcp-server lib/attribution.mjs (parseStamp ->
+    Date.parse), which is what turns this field into the envelope's `as_of`:
+
+        '2026-09-08'             -> 2026-09-08T00:00:00.000Z
+        '2026-09-08T14:22:31'    -> 2026-09-08T21:22:31.000Z   <- 7h invented
+        '2026-09-08T14:22:31Z'   -> 2026-09-08T14:22:31.000Z
+
+    So a [:19] tidy-up on an ISO stamp with a zone silently moves the date an
+    agent is instructed to cite beside the number.
+    """
+    seg = BODY[BODY.index("newest_discovered_at')"):BODY.index("'as_of': _as_of")]
+    assert "[:19]" not in seg and "[:10]" not in seg, (
+        "as_of is sliced — a truncated ISO stamp loses its zone and the "
+        "consumer reads it as local time")
