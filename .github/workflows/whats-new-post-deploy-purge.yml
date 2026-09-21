@@ -54,6 +54,7 @@ on:
       - 'routes/dcpi.py'
       - 'routes/infra_growth.py'
       - 'routes/infrastructure_data_routes.py'
+      - 'routes/mcp_conversion_plays.py'
       - 'routes/platform_updates.py'
       - 'scripts/purge_whats_new_after_deploy.py'
       - 'scripts/workflow_trigger_modules.py'

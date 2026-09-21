@@ -1116,12 +1116,44 @@ def _pro_mcp_calls() -> str:
     wrong count, and canon_text() renders the empty string when a surface asks
     for a number we cannot stand behind.
     """
+    return _tier_mcp_calls('pro')
+
+
+def _tier_mcp_calls(tier) -> str:
+    """A tier's MCP daily quota (tier_registry.calls_per_day, the mcp_daily
+    lane), thousands-separated; '' when it cannot be read. Same fail-open and
+    same lane rule as _pro_mcp_calls: every surface must label it "MCP
+    calls/day", never a bare "calls/day"."""
     try:
         from tier_registry import calls_per_day
-        n = int(calls_per_day('pro') or 0)
+        n = int(calls_per_day(tier) or 0)
         return f"{n:,}" if n > 0 else ''
     except Exception:
         return ''
+
+
+def _tier_price(tier) -> str:
+    """'$49/mo' from tier_registry.price_display (the one place a displayed
+    price is formatted); '' for a custom-priced, unknown or unreadable tier."""
+    try:
+        from tier_registry import price_display
+        return price_display(tier) or ''
+    except Exception:
+        return ''
+
+
+def _pack_offer() -> str:
+    """'$10 one-time = 1,000 API calls', from the constants the webhook grants
+    on (routes.mcp_conversion_plays). '' when they cannot be read — a surface
+    then names no pack rather than a stale one."""
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+        if PACK10_PRICE_CENTS and PACK10_CREDITS:
+            return "$%d one-time = %s API calls" % (
+                int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ","))
+    except Exception:
+        pass
+    return ''
 
 
 def canon_nums() -> dict:
@@ -1253,6 +1285,17 @@ def canon_nums() -> dict:
         # (100,000) that were both correct. Derived here so it cannot drift
         # again; formatted with a thousands separator to match the card.
         '{canon_pro_mcp_calls}': _pro_mcp_calls(),
+        # ★2026-09-21 (P0-B, r-dev-rung). /connect's tier strip read Free / Pro /
+        # Enterprise, so the plan agents are meant to buy was missing from the
+        # page that tells agents what they get. Developer's card uses the same
+        # lane-named quota rule as Pro's (mcp_daily, labelled "MCP calls/day"),
+        # and every price is read, never typed: tier_registry.price_display for
+        # the subscriptions, the webhook's own pack constants for the $10 pack.
+        '{canon_developer_mcp_calls}': _tier_mcp_calls('developer'),
+        '{canon_enterprise_mcp_calls}': _tier_mcp_calls('enterprise'),
+        '{canon_price_developer}': _tier_price('developer'),
+        '{canon_price_pro}': _tier_price('pro'),
+        '{canon_pack_offer}': _pack_offer(),
     }
 
 

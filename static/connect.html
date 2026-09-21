@@ -124,7 +124,7 @@
         }
         .tier-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 16px;
             margin: 15px 0;
         }
@@ -135,6 +135,7 @@
             padding: 20px;
             text-align: center;
         }
+        .tier-card.developer { border-color: #4ade80; }
         .tier-card.pro { border-color: #00d4ff; }
         .tier-card.enterprise { border-color: #ff9500; }
         .tier-name {
@@ -143,6 +144,7 @@
             margin-bottom: 8px;
         }
         .tier-card.free .tier-name { color: #8899aa; }
+        .tier-card.developer .tier-name { color: #4ade80; }
         .tier-card.pro .tier-name { color: #00d4ff; }
         .tier-card.enterprise .tier-name { color: #ff9500; }
         .tier-limit {
@@ -620,10 +622,18 @@ the as-of date they carry.</code><button class="copy-btn" onclick="copyCode(this
                 <div class="tier-limit">{canon_free_calls}</div>
                 <div class="tier-desc">MCP calls/day<br>Basic search, news, facility list</div>
             </div>
+            <!-- ★2026-09-21 (P0-B): Developer is the plan agents buy, and this
+                 strip skipped it. Quota and price are read from tier_registry
+                 like the Pro card's; see ai_surface_canon.canon_nums. -->
+            <div class="tier-card developer">
+                <div class="tier-name">Developer</div>
+                <div class="tier-limit">{canon_developer_mcp_calls}</div>
+                <div class="tier-desc">MCP calls/day &middot; {canon_price_developer}<br>Every tool except the Pro-only ones, at full depth &mdash; the plan for agents and apps</div>
+            </div>
             <div class="tier-card pro">
                 <div class="tier-name">Pro</div>
                 <div class="tier-limit">{canon_pro_mcp_calls}</div>
-                <div class="tier-desc">MCP calls/day<br>Energy endpoints, site analysis</div>
+                <div class="tier-desc">MCP calls/day &middot; {canon_price_pro}<br>Adds the Pro-only tools (grid, fiber, analyze &amp; compare sites) and site-grade coordinates</div>
             </div>
             <div class="tier-card enterprise">
                 <div class="tier-name">Enterprise</div>
@@ -633,7 +643,8 @@ the as-of date they carry.</code><button class="copy-btn" onclick="copyCode(this
         </div>
 
         <div class="note">
-            Pass your API key via the <strong>X-API-Key</strong> header or <strong>api_key</strong> query parameter for Pro/Enterprise access.
+            Past the free tier, agents buy one of two things: <strong>{canon_pack_offer}</strong> (credits don't expire, no subscription) or <strong>Developer {canon_price_developer}</strong>. Pro is for a person screening real sites. Every price is on <a href="/pricing" style="color:#00d4ff;">/pricing</a>, and a gated tool result carries a checkout link already bound to your session.<br>
+            Pass your API key via the <strong>X-API-Key</strong> header or <strong>api_key</strong> query parameter for paid access.
             Don't have a key? <a href="#free-key" style="color:#00d4ff;">Claim a free one in a single message</a> with <code>claim_free_key</code> — no email needed.
         </div>
 
