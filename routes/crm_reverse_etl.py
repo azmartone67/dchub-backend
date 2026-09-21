@@ -47,6 +47,7 @@ import json
 import logging
 import datetime
 import hashlib
+import re
 from typing import Any, Callable
 
 try:
@@ -638,7 +639,8 @@ def push_to_salesforce(lead: dict) -> dict:
             return {"ok": True, "external_id": j.get("id"),
                     "raw": j, "status_code": r.status_code}
         return {"ok": False, "error": f"sf {r.status_code}",
-                "raw": (r.text or "")[:500], "status_code": r.status_code}
+                "raw": (r.text or "")[:500], "status_code": r.status_code,
+                "codes": _provider_error_codes(r.text)}
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
 
@@ -686,7 +688,8 @@ def push_to_hubspot(lead: dict) -> dict:
             return {"ok": True, "external_id": None, "dup": True,
                     "raw": (r.text or "")[:500], "status_code": r.status_code}
         return {"ok": False, "error": f"hs {r.status_code}",
-                "raw": (r.text or "")[:500], "status_code": r.status_code}
+                "raw": (r.text or "")[:500], "status_code": r.status_code,
+                "codes": _provider_error_codes(r.text)}
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
 
@@ -760,6 +763,99 @@ def _dispatch_push(lead: dict) -> dict:
     return push_to_stub(lead)
 
 
+# ── whose fault is a failed push? ────────────────────────────────────
+#
+# ★2026-09-21. The flush charged EVERY failure to the row — push_attempts + 1,
+# and 'failed' (terminal: the SELECT never picks it again) at 5. But a 401
+# (bad / legacy / quoted token), a 403 (missing scope) or a 400
+# PROPERTY_DOESNT_EXIST (the portal never created dchub_event_type /
+# dchub_intent_score / dchub_attribution) is the SAME answer for every row: it
+# describes the destination, not the lead. The flush runs once a day (every
+# crm_pushed_at is 07:0x UTC), so five days of a bad key fails the whole queue
+# permanently, and nothing says so. Measured live 2026-09-21: 31 rows, 24 of
+# them paid_conversion, one already at 3 of 5 on 'hs 401'.
+#
+# Only a failure that is the ROW's fault may spend the row's budget.
+PUSH_FAIL_CONFIG = "config"        # the destination refused the request itself
+PUSH_FAIL_TRANSIENT = "transient"  # no answer about this lead: 429, 5xx, network
+PUSH_FAIL_LEAD = "lead"            # this row's data was refused — spends 1 attempt
+
+# push_* results that name a missing prerequisite, never a lead.
+_CONFIG_SENTINELS = frozenset({"requests_missing", "hs_creds_missing",
+                               "sf_creds_missing"})
+# Provider codes that describe the portal/org — its auth or its property schema.
+# The payload shape is the same for every row, so these fail every row alike.
+_CONFIG_ERROR_CODES = frozenset({
+    # HubSpot
+    "PROPERTY_DOESNT_EXIST", "INVALID_OPTION", "READ_ONLY_VALUE",
+    "INVALID_AUTHENTICATION", "EXPIRED_AUTHENTICATION", "MISSING_SCOPES",
+    # Salesforce
+    "INVALID_FIELD", "INVALID_FIELD_FOR_INSERT_UPDATE", "INVALID_TYPE",
+    "INVALID_SESSION_ID", "API_DISABLED_FOR_ORG",
+})
+_ERROR_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+_STATUS_IN_ERROR_RE = re.compile(r"^(?:hs|sf) (\d{3})$")
+
+
+def _provider_error_codes(text) -> list:
+    """Every UPPER_SNAKE code in a provider error body, read from the FULL body.
+    `raw` keeps 500 chars, and a HubSpot 400 lists one entry per bad property —
+    a long INVALID_EMAIL entry can push PROPERTY_DOESNT_EXIST past the cut."""
+    return sorted(set(_ERROR_CODE_RE.findall(text or "")))[:25]
+
+
+def _push_failure_class(result) -> str:
+    """PUSH_FAIL_CONFIG / _TRANSIENT / _LEAD for a failed push result.
+
+    The ONE classifier: the flush calls it on the live result, and /crm/health
+    and the requeue call it on the same dict as stored in crm_response (or on
+    last_error alone, for rows written before crm_response was kept). So a row
+    is judged on the same evidence wherever it is read.
+
+    Anything unrecognised is LEAD — the pre-2026-09-21 behaviour — so this can
+    only ever spend FEWER attempts than the old flush did, never more.
+    """
+    result = result if isinstance(result, dict) else {}
+    err = str(result.get("error") or "").strip()
+    if err in _CONFIG_SENTINELS:
+        return PUSH_FAIL_CONFIG
+    status = result.get("status_code")
+    if status is None:
+        m = _STATUS_IN_ERROR_RE.match(err)
+        status = m.group(1) if m else None
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    codes = set(result.get("codes") or ())
+    codes |= set(_ERROR_CODE_RE.findall(str(result.get("raw") or "")))
+    # 404: a create POSTs to one fixed URL, so "not found" is the endpoint.
+    if status in (401, 403, 404) or codes & _CONFIG_ERROR_CODES:
+        return PUSH_FAIL_CONFIG
+    if status == 429 or (status is not None and status >= 500):
+        return PUSH_FAIL_TRANSIENT
+    if status is None and err != "no_email_for_hubspot":
+        # push_* caught an exception (timeout, DNS, reset): no answer came back
+        # about this lead at all.
+        return PUSH_FAIL_TRANSIENT
+    return PUSH_FAIL_LEAD
+
+
+def _stored_push_result(last_error, crm_response) -> dict:
+    """The dict the flush stored for a row's last failed push, in the shape
+    _push_failure_class reads. Legacy rows may have last_error and nothing else."""
+    resp = crm_response
+    if isinstance(resp, str):
+        try:
+            resp = json.loads(resp)
+        except ValueError:
+            resp = None
+    out = dict(resp) if isinstance(resp, dict) else {}
+    if not out.get("error"):
+        out["error"] = last_error or ""
+    return out
+
+
 # ── queue flush ──────────────────────────────────────────────────────
 
 # ★2026-09-20: ONE definition of "not yet delivered".
@@ -785,16 +881,33 @@ UNSENT_STATUSES = ("queued", "queued_export")
 def flush_outbound_queue(limit: int = 100) -> dict:
     """Push undelivered rows to the configured CRM. Returns a summary.
 
-    Idempotent: picks rows in UNSENT_STATUSES and bumps push_attempts.
-    Rows with push_attempts >= 5 are skipped (marked status='failed')."""
+    Picks rows in UNSENT_STATUSES. Only a PUSH_FAIL_LEAD failure spends one of
+    a row's 5 attempts (status='failed' at 5). A config or transient failure is
+    recorded in last_error / crm_response and spends nothing.
+
+    Runs only when _destination_state() — the predicate /crm/health publishes
+    as destination_configured — says a real destination will be reached."""
     if DISABLE:
         return {"ok": True, "skipped": "disabled"}
+    # ★2026-09-21: the flush used to check DISABLE and the DB, then push every
+    # row. With HUBSPOT_API_KEY in a shape health already called unusable
+    # ("does not start with 'pat-'"), each daily run spent one attempt on every
+    # row. Same predicate as health — called, not restated — so the two cannot
+    # disagree about whether pushing is worth an attempt. Not configured means
+    # zero rows touched and a result that says why, never a green `pushed: 0`.
+    configured, gap = _destination_state()
+    if not configured:
+        return {"ok": False, "skipped": "destination_not_configured",
+                "reason": gap, "rows_touched": 0,
+                "provider": CRM_PROVIDER, "dry_run": DRY_RUN}
     c = _conn()
     if c is None:
         return {"ok": False, "error": "no_db"}
     pushed = 0
     failed = 0
     skipped = 0
+    not_charged = {PUSH_FAIL_CONFIG: 0, PUSH_FAIL_TRANSIENT: 0}
+    first_error = {}                       # class -> first error seen
     try:
         _ensure_schema(c)
         with c.cursor() as cur:
@@ -824,6 +937,7 @@ def flush_outbound_queue(limit: int = 100) -> dict:
                 "intent_score":     int(r[9] or 0),
             }
             result = _dispatch_push(lead)
+            cls = None if result.get("ok") else _push_failure_class(result)
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             try:
                 with c.cursor() as cur:
@@ -844,7 +958,7 @@ def flush_outbound_queue(limit: int = 100) -> dict:
                              json.dumps(result, default=str),
                              new_status, qid))
                         pushed += 1
-                    else:
+                    elif cls == PUSH_FAIL_LEAD:
                         attempts = int(r[10] or 0) + 1
                         new_status = "failed" if attempts >= 5 else "queued"
                         cur.execute(
@@ -857,15 +971,100 @@ def flush_outbound_queue(limit: int = 100) -> dict:
                             ((result.get("error") or "")[:300], new_status,
                              json.dumps(result, default=str), qid))
                         failed += 1
+                    else:
+                        # Not this row's fault: record why, spend nothing, and
+                        # leave status alone — it is still unsent.
+                        cur.execute(
+                            """UPDATE crm_outbound_queue SET
+                                   last_error    = %s,
+                                   crm_response  = %s::jsonb
+                                 WHERE id = %s""",
+                            ((result.get("error") or "")[:300],
+                             json.dumps(result, default=str), qid))
+                        not_charged[cls] += 1
+                        codes = ",".join(result.get("codes") or [])
+                        first_error.setdefault(
+                            cls, f"{cls}: {result.get('error')}"
+                                 + (f" [{codes}]" if codes else ""))
                 c.commit()
             except Exception as e:
                 try: c.rollback()
                 except Exception: pass
                 logger.warning("[crm_etl] update qid=%s failed: %s", qid, e)
                 failed += 1
-        return {"ok": True, "pushed": pushed, "failed": failed,
-                "skipped": skipped, "provider": CRM_PROVIDER,
-                "dry_run": DRY_RUN}
+        out = {"ok": not any(not_charged.values()),
+               "pushed": pushed, "failed": failed,
+               "config_errors": not_charged[PUSH_FAIL_CONFIG],
+               "transient_errors": not_charged[PUSH_FAIL_TRANSIENT],
+               "skipped": skipped, "provider": CRM_PROVIDER,
+               "dry_run": DRY_RUN}
+        reason = (first_error.get(PUSH_FAIL_CONFIG)
+                  or first_error.get(PUSH_FAIL_TRANSIENT))
+        if reason:
+            out["reason"] = (f"{reason} — not charged to any row; "
+                             f"see /api/v1/admin/crm/health")
+        return out
+    finally:
+        _return(c)
+
+
+def requeue_config_failures(apply: bool = False) -> dict:
+    """Give back the budget the old flush spent on configuration errors.
+
+    Before 2026-09-21 a 401/403/PROPERTY_DOESNT_EXIST charged the row, so a
+    status='failed' row may be failed for nothing it did. Selects every failed
+    row, classifies its stored last push with _push_failure_class, and resets
+    ONLY the PUSH_FAIL_CONFIG ones to status='queued', push_attempts=0
+    (last_error and crm_response are kept as the record of what happened).
+
+    Dry run unless apply=True. Either way the result names every row it
+    would reset / did reset, and every failed row it is leaving alone."""
+    c = _conn()
+    if c is None:
+        return {"ok": False, "error": "no_db"}
+    try:
+        _ensure_schema(c)
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT id, event_type, lead_email, push_attempts,
+                          last_error, crm_response
+                     FROM crm_outbound_queue
+                    WHERE status = 'failed'
+                    ORDER BY captured_at ASC""")
+            rows = cur.fetchall() or []
+        reset, kept = [], []
+        for r in rows:
+            cls = _push_failure_class(_stored_push_result(r[4], r[5]))
+            item = {"id": int(r[0]), "event_type": r[1], "lead_email": r[2],
+                    "push_attempts": int(r[3] or 0), "last_error": r[4],
+                    "failure_class": cls}
+            (reset if cls == PUSH_FAIL_CONFIG else kept).append(item)
+        out = {"ok": True, "dry_run": not apply,
+               "kept_failed": kept, "kept_failed_count": len(kept)}
+        if not apply:
+            out.update(would_requeue=reset, would_requeue_count=len(reset))
+            return out
+        n = 0
+        if reset:
+            with c.cursor() as cur:
+                cur.execute(
+                    """UPDATE crm_outbound_queue SET
+                           status        = 'queued',
+                           push_attempts = 0
+                         WHERE id = ANY(%s)
+                           AND status = 'failed'""",
+                    ([x["id"] for x in reset],))
+                n = int(cur.rowcount or 0)
+            c.commit()
+        out.update(requeued=reset, requeued_count=n)
+        if n != len(reset):
+            out["note"] = (f"{len(reset) - n} row(s) left status='failed' "
+                           f"between the read and the write; not reset")
+        return out
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        return {"ok": False, "error": str(e)[:200]}
     finally:
         _return(c)
 
@@ -1008,6 +1207,8 @@ def admin_health():
     c = _conn()
     counts = {}
     oldest_queued_age_h = None
+    refused = {}            # last_error -> unsent rows whose last push was a config refusal
+    failed_on_config = 0    # status='failed' rows requeue_config_failures would reset
     if c is not None:
         try:
             _ensure_schema(c)
@@ -1027,12 +1228,43 @@ def admin_health():
                 row = cur.fetchone()
                 if row and row[0] is not None:
                     oldest_queued_age_h = round(float(row[0]), 1)
+                # ★2026-09-21: destination_configured checks the credential's
+                # SHAPE. A pat- token that is revoked, or a portal missing the
+                # dchub_* properties, passes it and still refuses every push.
+                # The flush no longer charges those rows — so without this they
+                # would sit unsent with nothing to say why.
+                cur.execute(
+                    """SELECT status, last_error, crm_response
+                         FROM crm_outbound_queue
+                        WHERE last_error IS NOT NULL
+                          AND status = ANY(%s)""",
+                    (list(UNSENT_STATUSES) + ["failed"],))
+                for st, err, resp in cur.fetchall():
+                    if _push_failure_class(
+                            _stored_push_result(err, resp)) != PUSH_FAIL_CONFIG:
+                        continue
+                    if st == "failed":
+                        failed_on_config += 1
+                    else:
+                        refused[err] = refused.get(err, 0) + 1
         except Exception as e:
             logger.warning("[crm_etl] health failed: %s", e)
         finally:
             _return(c)
     configured, config_gap = _destination_state()
     queued = sum(v for k, v in counts.items() if k in UNSENT_STATUSES)
+    if queued and not configured:
+        stalled_reason = (f"{queued} lead(s) queued and nothing will push "
+                          f"them: {config_gap}")
+    elif refused:
+        stalled_reason = (
+            f"{queued} lead(s) queued; the destination refused the last push "
+            f"of {sum(refused.values())} for a configuration reason "
+            f"({', '.join(sorted(refused))}). Those rows spend no attempts "
+            f"while it lasts — fix the credential or the portal's properties "
+            f"and the next flush sends them.")
+    else:
+        stalled_reason = None
     return jsonify(
         ok=True,
         provider=CRM_PROVIDER,
@@ -1049,11 +1281,17 @@ def admin_health():
         # moment he paid. A health endpoint that reports ok:true while that is
         # true is not reporting health.
         destination_configured=configured,
-        stalled=bool(queued > 0 and not configured),
-        stalled_reason=(None if configured or not queued else
-                        f"{queued} lead(s) queued and nothing will push them: "
-                        f"{config_gap}"),
+        stalled=bool(stalled_reason),
+        stalled_reason=stalled_reason,
         config_gap=config_gap,
+        destination_refusing=bool(refused),
+        config_errors={
+            "unsent_rows": sum(refused.values()),
+            "by_error": refused,
+            "failed_rows_requeueable": failed_on_config,
+            "requeue": ("POST /api/v1/admin/crm/requeue-config-failures "
+                        "(dry run unless ?apply=1)") if failed_on_config else None,
+        },
     )
 
 
@@ -1074,6 +1312,18 @@ def admin_flush():
     limit = int(request.args.get("limit") or 100)
     limit = max(1, min(1000, limit))
     return jsonify(flush_outbound_queue(limit))
+
+
+@crm_reverse_etl_bp.route("/api/v1/admin/crm/requeue-config-failures",
+                          methods=["POST"])
+def admin_requeue_config_failures():
+    """Dry run by default: lists the failed rows whose last push failed for a
+    configuration reason. ?apply=1 resets exactly those to status='queued'."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    apply = (request.args.get("apply") or "").strip().lower() in ("1", "true", "yes")
+    out = requeue_config_failures(apply=apply)
+    return jsonify(out), (200 if out.get("ok") else 503)
 
 
 @crm_reverse_etl_bp.route("/api/v1/admin/crm/queue", methods=["GET"])
@@ -1328,7 +1578,9 @@ async function flush(){
   const r = await api("/api/v1/admin/crm/flush?limit=100", {method:"POST"});
   if (!r) return;
   const j = await r.json();
-  document.getElementById("msg").textContent = `Flush: pushed=${j.pushed||0} failed=${j.failed||0} provider=${j.provider}`;
+  document.getElementById("msg").textContent = (j.ok && typeof j.skipped !== "string")
+    ? `Flush: pushed=${j.pushed||0} failed=${j.failed||0} provider=${j.provider}`
+    : `Flush did NOT deliver (${j.skipped || j.error || "destination refused"}): ${j.reason || ""}`;
   reload();
 }
 function dlCsv(){
