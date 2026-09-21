@@ -394,6 +394,78 @@ def test_the_frontend_checkout_is_not_scanned_for_backend_routes(tmp_path, mod, 
     assert "/not-a-backend-route" not in mod.extract_flask_paths(tmp_path)
 
 
+def _served_app(tmp_path):
+    (tmp_path / "m.py").write_text(
+        'from flask import Blueprint\n'
+        'served_bp = Blueprint("m", __name__)\n'
+        '@served_bp.route("/x")\ndef x():\n    return "x"\n'
+        'dead_bp = Blueprint("dead", __name__)\n'
+        '@dead_bp.route("/never")\ndef never():\n    return "n"\n'
+    )
+    (tmp_path / "main.py").write_text(
+        'from m import served_bp\napp.register_blueprint(served_bp, url_prefix="/real")\n')
+    (tmp_path / "tests").mkdir()
+
+
+def test_a_route_registered_under_tests_is_a_fixture_not_a_served_route(tmp_path, mod):
+    """main went red on GET /dup — test_shadow_debt_is_exact.py's two-blueprint
+    fixture, read as an uncovered backend route. Same shape, both spellings."""
+    _served_app(tmp_path)
+    (tmp_path / "tests" / "test_fixture.py").write_text(
+        'import flask\n'
+        'app = flask.Flask("t")\n'
+        'for name in ("first", "second"):\n'
+        '    bp = flask.Blueprint(name, name)\n'
+        '    bp.add_url_rule("/dup", "dup", lambda: "x")\n'
+        '    app.register_blueprint(bp)\n'
+        '@app.route("/fixture-page")\ndef page():\n    return "p"\n'
+    )
+    paths = mod.extract_flask_paths(tmp_path)
+    assert "/real/x" in paths, paths  # control: the served route is still read
+    assert "/dup" not in paths, paths
+    assert "/fixture-page" not in paths, paths
+    # The shared walker still yields tests/ — check_credential_channel_coverage
+    # reads channels there, so the rule must not live in _python_files().
+    assert any(p.parent.name == "tests" for p in mod._python_files(tmp_path))
+    assert mod.extract_flask_paths.skipped_tests == 1  # counted, not silent
+
+
+def test_a_test_cannot_re_prefix_or_resurrect_a_served_blueprint(tmp_path, mod):
+    """Registration facts are keyed by variable NAME. A test that registers a
+    served blueprint under another prefix, or a dead blueprint at all, must not move
+    or revive a real route — so tests/ is dropped from the trees, not the output."""
+    _served_app(tmp_path)
+    (tmp_path / "tests" / "test_wiring.py").write_text(
+        'from m import served_bp, dead_bp\n'
+        'app.register_blueprint(served_bp, url_prefix="/fake")\n'
+        'app.register_blueprint(dead_bp)\n'
+    )
+    paths = mod.extract_flask_paths(tmp_path)
+    assert "/real/x" in paths and "/fake/x" not in paths, paths
+    assert "/never" not in paths, paths
+
+
+def test_a_served_module_named_like_a_test_is_still_scanned(tmp_path, mod):
+    """The rule is the tests/ DIRECTORY, not a filename pattern: main.py
+    registers smoke_test.py and routes/paywall_test.py, and they are served."""
+    _served_app(tmp_path)
+    (tmp_path / "routes").mkdir()
+    (tmp_path / "routes" / "paywall_test.py").write_text(
+        'from flask import Blueprint\n'
+        'paywall_test_bp = Blueprint("pt", __name__)\n'
+        '@paywall_test_bp.route("/paywall-test")\ndef pt():\n    return "p"\n'
+    )
+    (tmp_path / "smoke_test.py").write_text(
+        'def register_smoke_routes(app):\n'
+        '    app.add_url_rule("/smoke", "smoke", lambda: "ok")\n'
+    )
+    (tmp_path / "main.py").write_text(
+        'from routes.paywall_test import paywall_test_bp\n'
+        'app.register_blueprint(paywall_test_bp)\n')
+    paths = mod.extract_flask_paths(tmp_path)
+    assert "/paywall-test" in paths and "/smoke" in paths, paths
+
+
 # ── Cloudflare Pages glob semantics ──────────────────────────────────────────
 
 def test_a_slash_star_include_also_routes_the_bare_path(mod):
