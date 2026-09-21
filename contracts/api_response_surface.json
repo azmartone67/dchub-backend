@@ -250,7 +250,7 @@
    ]
   },
   "GET /api/agent/news": {
-   "source": "routes/deals_routes.py:1825",
+   "source": "routes/deals_routes.py:1829",
    "handler": "get_agent_news",
    "resolution": "resolved",
    "open_at": [
@@ -1540,7 +1540,7 @@
    ]
   },
   "GET /api/dc-markets": {
-   "source": "routes/deals_routes.py:1392",
+   "source": "routes/deals_routes.py:1396",
    "handler": "get_dc_markets",
    "resolution": "resolved",
    "open_at": [
@@ -4413,7 +4413,7 @@
    ]
   },
   "GET /api/markets": {
-   "source": "routes/deals_routes.py:1415",
+   "source": "routes/deals_routes.py:1419",
    "handler": "get_markets",
    "resolution": "resolved",
    "open_at": [
@@ -4619,7 +4619,7 @@
    ]
   },
   "GET /api/news-feed": {
-   "source": "routes/deals_routes.py:1911",
+   "source": "routes/deals_routes.py:1915",
    "handler": "get_news_feed",
    "resolution": "opaque",
    "open_at": [],
@@ -4708,7 +4708,7 @@
    ]
   },
   "GET /api/news/live": {
-   "source": "routes/deals_routes.py:1916",
+   "source": "routes/deals_routes.py:1920",
    "handler": "get_live_news",
    "resolution": "resolved",
    "open_at": [
@@ -5039,7 +5039,7 @@
    ]
   },
   "GET /api/pipeline": {
-   "source": "routes/deals_routes.py:1610",
+   "source": "routes/deals_routes.py:1614",
    "handler": "get_public_pipeline",
    "resolution": "opaque",
    "open_at": [],
@@ -7423,7 +7423,7 @@
    "keys": []
   },
   "GET /api/v1/analytics": {
-   "source": "routes/deals_routes.py:1754",
+   "source": "routes/deals_routes.py:1758",
    "handler": "get_analytics",
    "resolution": "resolved",
    "open_at": [
@@ -7447,7 +7447,7 @@
    ]
   },
   "GET /api/v1/announcements": {
-   "source": "routes/deals_routes.py:2003",
+   "source": "routes/deals_routes.py:2007",
    "handler": "get_announcements",
    "resolution": "resolved",
    "open_at": [
@@ -11987,7 +11987,7 @@
    ]
   },
   "GET /api/v1/deals": {
-   "source": "routes/deals_routes.py:1355",
+   "source": "routes/deals_routes.py:1359",
    "handler": "get_deals_v1",
    "resolution": "opaque",
    "open_at": [],
@@ -13540,7 +13540,7 @@
    ]
   },
   "GET /api/v1/gas-pipelines": {
-   "source": "routes/deals_routes.py:1137",
+   "source": "routes/deals_routes.py:1141",
    "handler": "get_gas_pipelines",
    "resolution": "resolved",
    "open_at": [
@@ -13580,7 +13580,7 @@
    ]
   },
   "GET /api/v1/gas-pipelines-test": {
-   "source": "routes/deals_routes.py:2088",
+   "source": "routes/deals_routes.py:2092",
    "handler": "get_gas_pipelines_test",
    "resolution": "resolved",
    "open_at": [
@@ -18414,7 +18414,7 @@
    ]
   },
   "GET /api/v1/news": {
-   "source": "routes/deals_routes.py:1998",
+   "source": "routes/deals_routes.py:2002",
    "handler": "get_v1_news",
    "resolution": "opaque",
    "open_at": [],
@@ -19447,7 +19447,7 @@
    ]
   },
   "GET /api/v1/pipeline": {
-   "source": "routes/deals_routes.py:959",
+   "source": "routes/deals_routes.py:963",
    "handler": "get_pipeline",
    "resolution": "resolved",
    "open_at": [
@@ -19494,7 +19494,7 @@
    ]
   },
   "GET /api/v1/pipeline/summary": {
-   "source": "routes/deals_routes.py:1640",
+   "source": "routes/deals_routes.py:1644",
    "handler": "get_pipeline_summary",
    "resolution": "resolved",
    "open_at": [
@@ -26591,7 +26591,7 @@
    ]
   },
   "POST /api/news/sync": {
-   "source": "routes/deals_routes.py:1981",
+   "source": "routes/deals_routes.py:1985",
    "handler": "trigger_news_sync",
    "resolution": "resolved",
    "open_at": [
