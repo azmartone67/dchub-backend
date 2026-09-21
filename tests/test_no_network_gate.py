@@ -105,10 +105,10 @@ def judge(tmp_path):
     register.write_text(json.dumps({"known": {"tests/test_old.py": ["dchub.cloud"]}}))
     log = tmp_path / "log.jsonl"
 
-    def run(lines):
+    def run(lines, **kw):
         if lines is not None:
             log.write_text("".join((line if isinstance(line, str) else json.dumps(line)) + "\n" for line in lines))
-        return verdict(str(log), str(register))
+        return verdict(str(log), str(register), **kw)
 
     return run
 
@@ -118,6 +118,34 @@ def test_the_verdict_passes_registered_debt_and_only_warns_when_an_entry_goes_qu
     code, lines = judge([PYTEST])
     assert code == 0
     assert any(line.startswith("::warning file=tests/test_old.py::") for line in lines)
+
+
+def test_a_shard_log_skips_the_quiet_warning_and_still_fails_a_new_host(judge):
+    """One `unit-tests shard N` log covers that shard's files only, so every
+    registered file that ran in another shard looks quiet in it. partial=True
+    drops that warning (the unit-tests job gives it once, over all shards' logs),
+    and must drop nothing else."""
+    code, lines = judge([PYTEST], partial=True)
+    assert code == 0
+    assert not [line for line in lines if line.startswith("::warning")]
+    assert any("partial run" in line for line in lines)
+    code, lines = judge([PYTEST, _dns("tests/test_new.py", "example.com")], partial=True)
+    assert code == 1 and any(line.startswith("::error file=tests/test_new.py::") for line in lines)
+    assert judge([OTHER], partial=True)[0] == 1  # no pytest process loaded the hook
+
+
+@pytest.mark.parametrize("flag, warns", [("1", False), ("0", True), (None, True)])
+def test_main_takes_partial_from_the_step_environment(tmp_path, monkeypatch, capsys, flag, warns):
+    register = tmp_path / "register.json"
+    register.write_text(json.dumps({"known": {"tests/test_old.py": ["dchub.cloud"]}}))
+    log = tmp_path / "log.jsonl"
+    log.write_text(json.dumps(PYTEST) + "\n")
+    if flag is None:
+        monkeypatch.delenv("DCHUB_NO_NETWORK_PARTIAL_RUN", raising=False)
+    else:
+        monkeypatch.setenv("DCHUB_NO_NETWORK_PARTIAL_RUN", flag)
+    assert _verdict_module().main(["no_network_verdict.py", str(log), str(register)]) == 0
+    assert ("::warning file=tests/test_old.py::" in capsys.readouterr().out) is warns
 
 
 def test_the_verdict_fails_a_new_file_and_a_new_host_for_a_registered_file(judge):

@@ -308,8 +308,24 @@ jobs:
   # toward a real safety net; today this covers brain v2 safety,
   # marketing topic picker, schema-aware feed query, MCP arg sanitizer,
   # and the system-loops classifier.
-  unit-tests:
+  #
+  # ★ 2026-09-21 — SHARDED. The one serial `pytest tests/` had grown to 27-42
+  #   min. main requires a PR to be up to date with it, and main moves about
+  #   every 20 min, so a PR rarely got a quiet window long enough to land.
+  #   `unit-tests-shard` runs the suite as parallel jobs. The `unit-tests` job
+  #   below (the required check, same name as before) judges them as one suite
+  #   and is the ledger's only writer. How files are split, and why every
+  #   shard still collects everything: tests/_shard.py. To change the shard
+  #   count, edit only the matrix list. The index and count the shards use
+  #   come from strategy.job-index / job-total, never from the matrix values.
+  unit-tests-shard:
+    name: unit-tests shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard runs to the end, so one shard's failure never hides another's.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -384,13 +400,85 @@ jobs:
         # refuses and logs each lookup or connect off loopback, and
         # scripts/no_network_verdict.py fails the step on a (file, host) that
         # tests/no_network_register.json does not list. See both docstrings.
+        # This shard's slice is chosen by `-p tests._shard`. PARTIAL_RUN: this
+        # log covers one shard's files, so the verdict skips its "registered
+        # host went quiet" warning. The unit-tests job gives that warning once,
+        # over every shard's log.
+        env:
+          DCHUB_TEST_SHARD_INDEX: ${{ strategy.job-index }}
+          DCHUB_TEST_SHARD_TOTAL: ${{ strategy.job-total }}
+          DCHUB_TEST_SHARD_REPORT: ${{ runner.temp }}/unit-tests-shard.json
+          DCHUB_NO_NETWORK_PARTIAL_RUN: "1"
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/unit-tests-no-network.jsonl"
           rm -f "$log"
           status=0
-          PYTHONPATH="$PWD/tests/_no_network${PYTHONPATH:+:$PYTHONPATH}" DCHUB_NO_NETWORK_LOG="$log" python3 -m pytest tests/ -v --tb=short | tee /tmp/unit-tests.log || status=$?
+          PYTHONPATH="$PWD/tests/_no_network${PYTHONPATH:+:$PYTHONPATH}" DCHUB_NO_NETWORK_LOG="$log" python3 -m pytest tests/ -v --tb=short -p tests._shard | tee /tmp/unit-tests.log || status=$?
           python3 scripts/no_network_verdict.py "$log" || status=1
+          exit $status
+      - name: Hand this shard's log and report to the unit-tests job
+        if: always()
+        run: |
+          d="$RUNNER_TEMP/unit-tests-shard"
+          mkdir -p "$d"
+          for f in /tmp/unit-tests.log "$RUNNER_TEMP/unit-tests-no-network.jsonl" "$RUNNER_TEMP/unit-tests-shard.json"; do
+            if [ -f "$f" ]; then cp "$f" "$d/"; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-tests-shard-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/unit-tests-shard/
+          # Nothing to upload means the shard died early. The unit-tests job
+          # reports that as UNMEASURED, so this step does not fail on it first.
+          if-no-files-found: ignore
+          retention-days: 3
+          # Re-running a failed shard replaces its artifact instead of erroring.
+          overwrite: true
+
+  # The required check `unit-tests`: every shard's result, judged as one suite.
+  # if: always() so a failed or missing shard is judged and beaten, not skipped.
+  unit-tests:
+    needs: unit-tests-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        # A shard that died before uploading leaves nothing to download. The
+        # next step reports that as UNMEASURED, so this step does not error first.
+        continue-on-error: true
+        with:
+          pattern: unit-tests-shard-*
+          path: ${{ runner.temp }}/shards
+      - name: Judge the shards as one suite
+        # Fails unless every shard passed, every test file ran in exactly one
+        # shard (scripts/unit_test_shards_verdict.py), and the whole run's
+        # no-network log passes. /tmp/unit-tests.log is rebuilt from every
+        # shard's log for the beat below, and ONLY if a shard wrote one: no log
+        # at all must stay "unknown", never zero. `awk 1` so a file missing its
+        # last newline cannot glue two lines together.
+        env:
+          SHARDS: ${{ needs.unit-tests-shard.result }}
+        run: |
+          status=0
+          d="$RUNNER_TEMP/shards"
+          if ls "$d"/*/unit-tests.log >/dev/null 2>&1; then
+            awk 1 "$d"/*/unit-tests.log > /tmp/unit-tests.log
+          fi
+          python3 scripts/unit_test_shards_verdict.py "$d" || status=1
+          if ls "$d"/*/unit-tests-no-network.jsonl >/dev/null 2>&1; then
+            awk 1 "$d"/*/unit-tests-no-network.jsonl > "$RUNNER_TEMP/unit-tests-no-network.jsonl"
+            python3 scripts/no_network_verdict.py "$RUNNER_TEMP/unit-tests-no-network.jsonl" || status=1
+          else
+            echo "::error::no unit-tests shard left a no-network log, so the rule judged nothing this run"
+            status=1
+          fi
+          if [ "$SHARDS" != success ]; then
+            echo "::error::unit-tests shards concluded '$SHARDS'; the failing 'unit-tests shard N' job has the pytest output"
+            status=1
+          fi
           exit $status
 
       # ── Gate liveness ledger ─────────────────────────────────────────────
@@ -399,11 +487,14 @@ jobs:
       # if: always() so a refusal reaches the board too; `fail` means the gate
       # REFUSED something and the ledger reads HEALTHY, not alarmed.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      # The shards never beat, so this job stays the gate's only writer. If the
+      # shards were cancelled, a newer run superseded this one: that is reported
+      # unmeasured, as the single job reported its own cancellation.
       - name: Beat the gate liveness ledger
         if: always()
         env:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          JOB_STATUS: ${{ job.status }}
+          JOB_STATUS: ${{ needs.unit-tests-shard.result == 'cancelled' && 'cancelled' || job.status }}
         run: |
           # N = tests that actually RAN.
           # ★ The distinction that makes G4 work: EMPTY means "unknown" and leaves

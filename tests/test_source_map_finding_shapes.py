@@ -25,7 +25,28 @@ import os, sys, textwrap
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import routes.brain_source_map as _source_map
 from routes.brain_source_map import resolve_finding_to_sources
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _index_starts_cold():
+    """Make this file's repo scan its own, whatever ran before it.
+
+    resolve_finding_to_sources indexes the repo with os.walk and caches the
+    index in brain_source_map._INDEX_CACHE. In a serial run an earlier caller
+    (tests/test_brain_investigator.py) had already built it, so this file
+    scanned nothing and could not be pinned. Alone, or in a unit-tests shard
+    without that file, it walked ~100 dirs unpinned and
+    test_scan_floors_are_pinned.py failed (unit-tests shard 4, run 35587527309).
+    Starting cold makes the walk happen here in every run, so its floor in
+    tests/scan_floors.json always applies. The cache is restored afterwards.
+    """
+    saved = dict(_source_map._INDEX_CACHE)
+    _source_map._INDEX_CACHE.clear()
+    yield
+    _source_map._INDEX_CACHE.clear()
+    _source_map._INDEX_CACHE.update(saved)
 
 
 @pytest.fixture
