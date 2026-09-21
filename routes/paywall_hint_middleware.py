@@ -81,13 +81,26 @@ _HINT_BASE = {
     # free tier is actually 10/day. Fixed copy + added direct Stripe links
     # so agents can pass a $9 quick-buy URL to the user rather than just
     # the signup form.
-    "what_you_get":    (f"Free dev key (email signup, no credit card) = 10 calls/day. "
-                        f"{_tr.price_display('starter')} Starter = 200/day. "
-                        f"{_tr.price_display('developer')} Developer = 500/day."),
+    # ★ r-noinstruct (2026-09-20): said "email signup". The free dev key needs
+    # NO email — one POST to /api/v1/keys/claim, which is the single property a
+    # catalogue partner featured us for. We were contradicting our own pitch in
+    # the block agents read most.
+    "what_you_get":    (f"Free dev key (one POST, no email, no card) = {_tr.calls_per_day('free')} calls/day. "
+                        f"{_tr.price_display('starter')} Starter = {_tr.calls_per_day('starter')}/day. "
+                        f"{_tr.price_display('developer')} Developer = {_tr.calls_per_day('developer')}/day."),
     # "$25K+/yr Enterprise" disagreed with ENTERPRISE_FROM_USD_YEAR ($12,000),
     # the anchor r-price-collapse set for the human-sold lane.
-    "pricing_quick":   (f"Anonymous 5/day · Free key 10/day · {_tr.price_display('starter', '')} Starter 200/day · "
-                        f"{_tr.price_display('developer', '')} Developer 500/day · "
+    # ★ r-noinstruct (2026-09-20): published "Anonymous 5/day · Free key 10/day"
+    # as two hand-typed literals. A partner put the 5 in their public catalogue
+    # copy. The effective anonymous allowance is the FREE one: get_request_tier
+    # returns 'anon', tier_registry.limits() has no entry for that alias and
+    # falls through to TIER_LIMITS['free'], so an anonymous caller is metered at
+    # the free number, not at TIER_LIMITS['anonymous']. Rather than publish a
+    # third literal, both now resolve from the registry — and the two being the
+    # same value is the honest answer while that alias gap stands.
+    "pricing_quick":   (f"Anonymous {_tr.calls_per_day('anon')}/day · "
+                        f"Free key {_tr.calls_per_day('free')}/day · {_tr.price_display('starter', '')} Starter {_tr.calls_per_day('starter')}/day · "
+                        f"{_tr.price_display('developer', '')} Developer {_tr.calls_per_day('developer')}/day · "
                         f"from ${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr Enterprise data licensing"),
 }
 
