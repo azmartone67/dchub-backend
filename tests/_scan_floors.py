@@ -106,9 +106,46 @@ _NOISE_RE = _re.compile(
     r"(?:^|/)(?:" + "|".join(_re.escape(seg) for seg in sorted(_NOISE_SEGMENTS))
     + r")(?:/|$)")
 
+# ★ 2026-09-21. The segments above are matched only BELOW the checkout root.
+# Matched against the whole absolute path, they also hit the checkout's own
+# ANCESTORS — and Claude Code puts worktrees at
+# ~/dchub-backend/.claude/worktrees/<name>/, so from there every item a scan
+# yielded carried `/.claude/`, every one was noise, and every pinned scanner
+# reported "performed NO repo scan at all this run": test_route_auth_criticals
+# (pglob 660) and test_canonical_counts_drift (walk 50) went red on a pristine
+# main. The same skip-list-vs-absolute-path class the scanners themselves were
+# fixed for on 2026-08-19 (tests/test_repo_scans_are_path_independent.py).
+#
+# Both spellings of the root: scanners build paths from abspath(__file__) AND
+# from Path.resolve(), and those differ wherever the checkout sits behind a
+# symlink (/tmp -> /private/tmp on macOS). Longest first.
+_ROOT = os.path.dirname(_HERE)
+_ROOT_PREFIXES = tuple(sorted(
+    {p.replace(os.sep, "/").rstrip("/") + "/"
+     for p in (_ROOT, os.path.realpath(_ROOT))},
+    key=len, reverse=True))
+
+
+def _below_root(s: str) -> str:
+    """The part of a '/'-separated path that lies inside this checkout.
+
+    A relative path is returned as-is: it carries no ancestors to strip. So is
+    an absolute path outside the checkout (a tmp_path fixture, the
+    interpreter's own site-packages) — it has no checkout-relative form, and
+    matching it whole is exactly what was done before, so those measurements
+    do not move.
+    """
+    for prefix in _ROOT_PREFIXES:
+        if s.startswith(prefix):
+            return s[len(prefix):]
+        if s == prefix[:-1]:
+            return ""
+    return s
+
 
 def _is_noise(item, kind: str) -> bool:
-    """True when this yielded item sits inside a vendored/ephemeral directory.
+    """True when this yielded item sits inside a vendored/ephemeral directory
+    of the checkout — never because of where the checkout itself lives.
 
     os.walk yields (dirpath, dirnames, filenames); the glob family yields a
     path. Anything unrecognised counts, so a new primitive fails OPEN into
@@ -124,7 +161,7 @@ def _is_noise(item, kind: str) -> bool:
             s = s.decode("utf-8", "surrogateescape")
         except Exception:
             return False
-    return _NOISE_RE.search(s.replace(os.sep, "/")) is not None
+    return _NOISE_RE.search(_below_root(s.replace(os.sep, "/"))) is not None
 
 
 _lock = threading.Lock()
