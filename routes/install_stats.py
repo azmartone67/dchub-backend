@@ -47,6 +47,38 @@ _INSTALL_PREFIX = "install-%"
 # never summed into any install figure.
 _CONTROL_PREFIX = "web-%"
 
+# ★★★ THE PROBE IS NOT AN INSTALL (2026-09-20). Measured on production the same
+# day: the install-% population was exactly ONE key, client_name
+# `install-verify-durability`, minted 2026-09-01, 0 calls, 0 returns — our OWN
+# end-to-end mint probe. This endpoint published it as `minted: 1` /
+# `clients_tracked: 1`, keyless and public, while the true count of keys any
+# human or agent ever claimed from an /install/<client> page was ZERO. The MCP
+# server's own workflow comments had already named that key as ours since
+# 2026-09-07 (registry-discover.yml and three siblings); only the surface other
+# people are asked to cite still counted it.
+#
+# `install-verify-` is therefore RESERVED: it is where our own probes mint, it is
+# never a page slug, and it is excluded from every install figure below and
+# reported in its own `probes` block instead — the same discipline the control
+# already gets. tests/test_sitemap_lists_install_pages.py holds the page roster
+# and asserts no page slug can enter this namespace, so the exclusion cannot
+# start swallowing a real install channel.
+_PROBE_PREFIX = "install-verify-%"
+
+# Excludes nothing. Used where a query needs the exclusion parameter bound but
+# must not exclude anything — reading the probes themselves. It carries NO LIKE
+# wildcard, so it can only drop a client_name equal to it character-for-
+# character, and nothing mints that name. ★ `_` is a wildcard too (any single
+# character): the first draft of this constant was `__never_matches...__` and
+# would have quietly excluded every 33-character client_name.
+_EXCLUDE_NOTHING = "never-matches-any-client-name"
+
+# ★ ONE exclusion clause, shared TEXTUALLY by the ledger and the windowed count.
+# Two hand-written copies of "who is a probe" is how the windowed mint count and
+# by_client would come to disagree on the same page; the windowed query aliases
+# mcp_dev_keys as `k` for no other reason than to let this one string serve both.
+_NOT_A_PROBE = "AND k.metadata->>'client_name' NOT LIKE %s"
+
 # Windows reported. Keep small — each is one indexed scan of a table that is
 # tiny by construction (one row per claimed key).
 _WINDOWS = (("7d", 7), ("30d", 30))
@@ -60,7 +92,7 @@ def _dsn():
     )
 
 
-_LEDGER_SQL = """
+_LEDGER_SQL = f"""
                 WITH ik AS (
                     SELECT k.api_key,
                            k.metadata->>'client_name' AS client,
@@ -69,6 +101,7 @@ _LEDGER_SQL = """
                            k.tier
                       FROM mcp_dev_keys k
                      WHERE k.metadata->>'client_name' LIKE %s
+                       {_NOT_A_PROBE}
                 ),
                 use AS (
                     SELECT l.api_key,
@@ -123,15 +156,20 @@ def _summarize(rows):
     return out, tot
 
 
-def _ledger(cur, prefix):
-    """Run the ledger for one client_name prefix.
+def _ledger(cur, prefix, exclude=_PROBE_PREFIX):
+    """Run the ledger for one client_name prefix, minus `exclude`.
 
     ★ The control MUST go through this same function. A separately-written
     control query would prove only that the control query works — a bug in the
     real one (wrong metadata key, wrong table, wrong join) would still read as
     "no installs". Same SQL, different bound parameter, or it is not a control.
+
+    The probes block goes through it too, with `exclude=_EXCLUDE_NOTHING`: the
+    rows this endpoint refuses to call installs are counted by the SAME SQL that
+    counts installs, so "1 probe, 0 calls" cannot be an artefact of a second,
+    laxer query written to display it.
     """
-    cur.execute(_LEDGER_SQL, (prefix,))
+    cur.execute(_LEDGER_SQL, (prefix, exclude))
     return cur.fetchall()
 
 
@@ -153,16 +191,19 @@ def install_stats():
             #            calls instead of days is how mature key-reuse got
             #            mis-read as 1.7% before (r-durable-key 2026-07-06).
             rows = _ledger(cur, _INSTALL_PREFIX)
+            # Our own probes, through the identical SQL, excluding nothing.
+            probe_rows = _ledger(cur, _PROBE_PREFIX, _EXCLUDE_NOTHING)
             control_rows = _ledger(cur, _CONTROL_PREFIX)
 
             # ── windowed mint counts ─────────────────────────────────────────
             windowed = {}
             for label, days in _WINDOWS:
                 cur.execute(
-                    """SELECT COUNT(*) FROM mcp_dev_keys
-                        WHERE metadata->>'client_name' LIKE %s
-                          AND created_at >= NOW() - (%s || ' days')::interval""",
-                    (_INSTALL_PREFIX, str(days)),
+                    f"""SELECT COUNT(*) FROM mcp_dev_keys k
+                        WHERE k.metadata->>'client_name' LIKE %s
+                          {_NOT_A_PROBE}
+                          AND k.created_at >= NOW() - (%s || ' days')::interval""",
+                    (_INSTALL_PREFIX, _PROBE_PREFIX, str(days)),
                 )
                 windowed[label] = int(cur.fetchone()[0] or 0)
     except Exception as e:  # noqa: BLE001
@@ -170,6 +211,7 @@ def install_stats():
         return jsonify(ok=False, error="query_failed", detail=str(e)[:200]), 503
 
     by_client, tot = _summarize(rows)
+    probe_clients, probe_tot = _summarize(probe_rows)
     control_clients, control_tot = _summarize(control_rows)
 
     # ★ The verdict is derived, never asserted. If the control is also empty we
@@ -192,13 +234,32 @@ def install_stats():
         "clients_tracked": len(control_clients),
         "instrument": "live" if _instrument_live else "unproven",
         "reading": (
-            "The ledger returns rows for a non-empty prefix, so an empty "
-            "install-% result is a real zero, not a broken query."
+            ("The ledger returns rows for a non-empty prefix, so the "
+             "install-% result above is a real count, not a broken query."
+             + (" It is empty: nobody has claimed a key from an install page."
+                if tot["minted"] == 0 else ""))
             if _instrument_live else
             "The control is ALSO empty. This endpoint cannot currently tell "
             "'nobody installed' from 'the query matches nothing'. Do not cite "
             "the install figures as evidence of absence until this reads 'live'."
         ),
+    }
+
+    probes = {
+        "prefix": _PROBE_PREFIX,
+        "why": (
+            "Our own end-to-end mint probes. They exercise the real POST "
+            "/api/v1/keys/claim so this ledger can be shown to count a mint at "
+            "all, which is why they live in the install- namespace — and why "
+            "they must never be reported as somebody's install."
+        ),
+        "is_not_an_install": (
+            "install-verify-% is RESERVED for us. These rows are excluded from "
+            ".totals, .by_client, .clients_tracked and .minted_by_window."
+        ),
+        "totals": probe_tot,
+        "clients": [r["client"] for r in probe_clients],
+        "was_counted_as_installs_until": "2026-09-20",
     }
 
     resp = jsonify(
@@ -223,6 +284,13 @@ def install_stats():
                 "key appears in mcp_call_log at least once. returned = it called "
                 "on 2 or more distinct UTC days. Registration is not function; "
                 "these are never summed into a single 'installs' figure."
+            ),
+            "self_declared": (
+                "client_name is supplied by the caller in the claim POST, so it "
+                "attests the claimer's stated surface, not verified provenance. "
+                "Our own probes are excluded by the reserved install-verify-% "
+                "namespace (see .probes); a forged install-<client> from any "
+                "other caller would still land in these counts."
             ),
             "known_gap": (
                 "a human who pastes the keyless connector URL and never clicks "
@@ -274,6 +342,7 @@ def install_stats():
         },
         totals=tot,
         minted_by_window=windowed,
+        probes=probes,
         by_client=by_client,
         clients_tracked=len(by_client),
         control=control,

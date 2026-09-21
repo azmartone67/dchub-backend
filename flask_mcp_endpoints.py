@@ -6269,6 +6269,8 @@ def mcp_funnel():
                                 metadata->>'client_name' AS cn
                            FROM mcp_dev_keys
                           WHERE metadata->>'client_name' LIKE 'install-%'
+                            AND metadata->>'client_name'
+                                NOT LIKE 'install-verify-%'
                             AND created_at >= NOW() - INTERVAL '30 days'
                        ),
                        act AS (
@@ -6311,8 +6313,23 @@ def mcp_funnel():
                     "keys_returned": _tot["keys_returned"],
                     "calls": _tot["calls"],
                     "by_client": _by_client,
-                    "pages": ["claude", "chatgpt", "grok", "perplexity",
-                              "cursor"],
+                    # ★ 2026-09-20: install-verify-% is OUR OWN probe namespace
+                    # and is subtracted above. Until today it was counted here
+                    # AND on /api/v1/ops/install-stats, and it was the ONLY row
+                    # either surface had: both published "1 key minted" for a
+                    # channel no human had ever used. Named, not silent — an
+                    # exclusion nobody can see is indistinguishable from a
+                    # query that found nothing.
+                    "excludes": "install-verify-% (our own mint probes)",
+                    # The canon is dchub-frontend/install/*.html, twelve pages
+                    # since 2026-09-07. This list read five of them for 13 days
+                    # (the same stale-roster bug tests/
+                    # test_sitemap_lists_install_pages.py was rewritten for);
+                    # that test now pins this literal to its CLIENTS tuple.
+                    "pages": ["claude", "chatgpt", "cursor", "grok",
+                              "perplexity", "gemini-cli", "claude-code",
+                              "claude-desktop", "cline", "vscode", "windsurf",
+                              "antigravity"],
                     "ladder": (
                         "keys_minted >= keys_that_called >= keys_returned. "
                         "MINTED IS NOT DISTRIBUTION — a key that never called "
@@ -6321,7 +6338,9 @@ def mcp_funnel():
                         "channel delivered someone who came back."),
                     "basis": (
                         "distinct mcp_dev_keys.api_key whose "
-                        "metadata->>'client_name' matches 'install-%' and was "
+                        "metadata->>'client_name' matches 'install-%' (minus "
+                        "the reserved 'install-verify-%' probe namespace — see "
+                        ".excludes) and was "
                         "created in the last 30 days, LEFT JOINed to "
                         "mcp_call_log on api_key (that table's time column is "
                         "`timestamp`, not created_at). Scored on KEYS, never "
