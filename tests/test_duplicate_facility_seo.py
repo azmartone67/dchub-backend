@@ -56,9 +56,18 @@ def test_duplicate_pages_canonicalise_to_their_twin():
     src = _code(PROFILE)
     assert "_canonical_twin_url" in src
     seg = src.split("canonical = f\"https://dchub.cloud/facilities/{_fslug}\"", 1)[1][:1200]
-    assert "duplicate_of_id" in seg and "canonical = _twin" in seg, (
+    # 2026-09-21: the arms moved, verbatim, into _twin_canonical_url(fac) so the
+    # legacy-alias 301 lands where this canonical points (one definition, two
+    # readers). The render still assigns the twin; the pointer arm is read in
+    # the helper. Both halves are asserted, so neither can drift away.
+    assert "_twin_canonical_url(fac)" in seg and "canonical = _twin" in seg, (
+        "the page canonical must still be assigned from the twin lookup")
+    helper = src.split("def _twin_canonical_url(fac):", 1)[1].split("\ndef ", 1)[0]
+    assert 'fac.get("duplicate_of_id")' in helper and "_canonical_twin_url(" in helper, (
         "a row with a duplicate_of_id must point its canonical at the surviving "
         "row, not at itself")
+    assert 'fac.get("is_duplicate")' not in helper, (
+        "consolidation must not be gated on the suppression flag")
     # ★ and it must NOT require is_duplicate. Gating on the visibility flag
     # forces a suppression to buy a canonical: is_duplicate=1 drops the row from
     # every filtered count and from the sitemap (how 9,318 facilities went

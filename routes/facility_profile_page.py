@@ -1583,32 +1583,9 @@ def _render_profile(fac: dict, slug: str) -> str:
     # serving 200, and Google consolidates the two URLs on its own. Suppression
     # deletes a page; a canonical MERGES it.
     try:
-        if fac.get("duplicate_of_id"):
-            _twin = _canonical_twin_url(fac.get("duplicate_of_id"))
-            if _twin and _twin != canonical:
-                canonical = _twin
-        elif fac.get("_src_table") == "facilities":
-            # r-drain-fork (2026-09-07): a page served from the legacy table
-            # canonicalises to the discovered row it was drained from. The
-            # legacy row has no usable pointer of its own — facilities.
-            # duplicate_of_id is TEXT and addresses facilities.id, a different
-            # id space from discovered_facilities.id (integer) — so the link is
-            # resolved from the drain's own merged_facility_id stamp instead.
-            # r-twin-pointer (2026-09-07): and where the drain never ran, from
-            # facilities.discovered_twin_id, the third id space, written by
-            # routes/facility_dedup_v4 only for pairs that render identically
-            # AND share a name.
-            # ★ ORDER IS THE CONTRACT. The drain fork is tried first because
-            # its link (merged_facility_id) is stamped by the drain itself,
-            # while discovered_twin_id is this house's own inference.
-            # r-selfcanon-unconditional (2026-09-12): main's side of this is now
-            # a SET (_drained_twin_slugs) fed by both arms, so the sitemap no
-            # longer names a keeper at all and cannot name a different one —
-            # this order is the only thing that picks, which is why it stays.
-            _twin = (_drained_twin_url(fac.get("id"))
-                     or _twin_pointer_url(fac.get("id")))
-            if _twin and _twin != canonical:
-                canonical = _twin
+        _twin = _twin_canonical_url(fac)
+        if _twin and _twin != canonical:
+            canonical = _twin
     except Exception:
         pass
 
@@ -2316,6 +2293,73 @@ def _canonical_twin_row(dup_of_id):
     return None
 
 
+def _twin_canonical_url(fac):
+    """The twin URL a facility page cross-canonicalises to, or None.
+
+    ONE definition, read by _render_profile (the page's <link rel=canonical>)
+    and by _alias_landing_slug (where a legacy-alias 301 lands), so a redirect
+    cannot land on a page that then names somewhere else as canonical. Moved
+    here verbatim from _render_profile on 2026-09-21; the arms and their order
+    are unchanged.
+    """
+    if fac.get("duplicate_of_id"):
+        return _canonical_twin_url(fac.get("duplicate_of_id"))
+    elif fac.get("_src_table") == "facilities":
+        # r-drain-fork (2026-09-07): a page served from the legacy table
+        # canonicalises to the discovered row it was drained from. The
+        # legacy row has no usable pointer of its own — facilities.
+        # duplicate_of_id is TEXT and addresses facilities.id, a different
+        # id space from discovered_facilities.id (integer) — so the link is
+        # resolved from the drain's own merged_facility_id stamp instead.
+        # r-twin-pointer (2026-09-07): and where the drain never ran, from
+        # facilities.discovered_twin_id, the third id space, written by
+        # routes/facility_dedup_v4 only for pairs that render identically
+        # AND share a name.
+        # ★ ORDER IS THE CONTRACT. The drain fork is tried first because
+        # its link (merged_facility_id) is stamped by the drain itself,
+        # while discovered_twin_id is this house's own inference.
+        # r-selfcanon-unconditional (2026-09-12): main's side of this is now
+        # a SET (_drained_twin_slugs) fed by both arms, so the sitemap no
+        # longer names a keeper at all and cannot name a different one —
+        # this order is the only thing that picks, which is why it stays.
+        return (_drained_twin_url(fac.get("id"))
+                or _twin_pointer_url(fac.get("id")))
+    return None
+
+
+def _alias_landing_slug(alias, requested):
+    """Where a legacy-alias 301 should land: the page the alias names, AS THAT
+    PAGE DECLARES ITSELF — its twin 301 target, else its canonical.
+
+    Measured live 2026-09-21: /facilities/equinix-inc-equinix-am11-amsterdam-
+    lemelerbergweg-5e2e2b38.html (cited 8 times by Copilot) 301'd to
+    ...-e78fce36, a 200 whose canonical is ...-e7d19e28. One hop, but onto a
+    page that points elsewhere, so the redirect never consolidated on the
+    canonical. Landing on the declared canonical makes the hop final.
+
+    Fail-soft to the stored alias (today's behaviour) on any error, and never
+    returns the requested slug itself, so it cannot mint a self-redirect.
+    """
+    land = alias
+    try:
+        afac = _fetch_facility_by_slug(alias)
+        if afac:
+            hop = _twin_redirect_target(afac, alias)
+            if hop:
+                land = hop
+            else:
+                land = afac.get("canonical_slug") or alias
+                twin = _twin_canonical_url(afac)
+                if twin and "/facilities/" in twin:
+                    land = twin.rsplit("/facilities/", 1)[-1]
+    except Exception:
+        return alias
+    land = (land or "").strip().strip("/")
+    if not land or land == requested:
+        return alias
+    return land
+
+
 def _canonical_twin_url(dup_of_id):
     """URL of the surviving facility a duplicate should canonicalise to.
 
@@ -2915,6 +2959,7 @@ def render_facility_profile(slug):
         except Exception:
             _alias = None
         if _alias and _alias != slug:
+            _alias = _alias_landing_slug(_alias, slug)
             return Response(status=301, headers={
                 "Location": f"/facilities/{_alias}",
                 "Cache-Control": "public, max-age=86400",
