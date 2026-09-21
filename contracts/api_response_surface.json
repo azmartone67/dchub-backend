@@ -16,8 +16,8 @@
   "endpoints_resolved": 1288,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 450,
-  "keys_total": 10711,
-  "keys_strictly_protected": 9749,
+  "keys_total": 10713,
+  "keys_strictly_protected": 9751,
   "keys_open_level_unmeasured_on_removal": 936,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -189,7 +189,7 @@
    ]
   },
   "GET /api/agent/capabilities": {
-   "source": "moltbook_integration.py:1377",
+   "source": "moltbook_integration.py:1389",
    "handler": "agent_capabilities",
    "resolution": "resolved",
    "open_at": [
@@ -275,7 +275,7 @@
    ]
   },
   "GET /api/agent/stats": {
-   "source": "moltbook_integration.py:1247",
+   "source": "moltbook_integration.py:1259",
    "handler": "agent_stats",
    "resolution": "resolved",
    "open_at": [
@@ -1143,7 +1143,7 @@
    ]
   },
   "GET /api/brain/config": {
-   "source": "routes/discovery_routes.py:1196",
+   "source": "routes/discovery_routes.py:1211",
    "handler": "brain_config",
    "resolution": "resolved",
    "open_at": [
@@ -1157,7 +1157,7 @@
    ]
   },
   "GET /api/brain/insights": {
-   "source": "routes/discovery_routes.py:1183",
+   "source": "routes/discovery_routes.py:1198",
    "handler": "brain_insights",
    "resolution": "resolved",
    "open_at": [
@@ -1169,7 +1169,7 @@
    ]
   },
   "GET /api/brain/status": {
-   "source": "routes/discovery_routes.py:1117",
+   "source": "routes/discovery_routes.py:1132",
    "handler": "brain_status",
    "resolution": "resolved",
    "open_at": [
@@ -1964,7 +1964,7 @@
    ]
   },
   "GET /api/discovery/sources": {
-   "source": "routes/discovery_routes.py:1011",
+   "source": "routes/discovery_routes.py:1026",
    "handler": "discovery_sources",
    "resolution": "resolved",
    "open_at": [
@@ -2324,7 +2324,7 @@
    ]
   },
   "GET /api/evolution/config": {
-   "source": "routes/discovery_routes.py:1091",
+   "source": "routes/discovery_routes.py:1106",
    "handler": "evolution_config",
    "resolution": "resolved",
    "open_at": [
@@ -2338,7 +2338,7 @@
    ]
   },
   "GET /api/evolution/history": {
-   "source": "routes/discovery_routes.py:1102",
+   "source": "routes/discovery_routes.py:1117",
    "handler": "evolution_history",
    "resolution": "resolved",
    "open_at": [
@@ -2350,7 +2350,7 @@
    ]
   },
   "GET /api/evolution/knowledge": {
-   "source": "routes/discovery_routes.py:1078",
+   "source": "routes/discovery_routes.py:1093",
    "handler": "evolution_knowledge",
    "resolution": "resolved",
    "open_at": [
@@ -2362,7 +2362,7 @@
    ]
   },
   "GET /api/evolution/status": {
-   "source": "routes/discovery_routes.py:1031",
+   "source": "routes/discovery_routes.py:1046",
    "handler": "evolution_status",
    "resolution": "resolved",
    "open_at": [
@@ -6352,7 +6352,7 @@
    ]
   },
   "GET /api/transactions/public": {
-   "source": "public_endpoints.py:374",
+   "source": "public_endpoints.py:395",
    "handler": "public_transactions",
    "resolution": "resolved",
    "open_at": [
@@ -12977,7 +12977,8 @@
     "dcpi_market_health.delta",
     "dcpi_market_health.direction",
     "dcpi_market_health.now",
-    "facility",
+    "facility.coordinates_status",
+    "facility.market",
     "moved",
     "static_dimensions",
     "summary",
@@ -12998,6 +12999,8 @@
     "dcpi_market_health.market",
     "dcpi_market_health.now",
     "facility",
+    "facility.coordinates_status",
+    "facility.market",
     "methodology",
     "moved",
     "source",
@@ -13008,7 +13011,7 @@
    ]
   },
   "GET /api/v1/facility/<int:facility_id>/carriers": {
-   "source": "carrier_facility_ingestion.py:818",
+   "source": "carrier_facility_ingestion.py:834",
    "handler": "facility_carriers_api",
    "resolution": "resolved",
    "open_at": [
@@ -13087,7 +13090,7 @@
    ]
   },
   "GET /api/v1/fiber/coverage": {
-   "source": "carrier_facility_ingestion.py:865",
+   "source": "carrier_facility_ingestion.py:881",
    "handler": "fiber_coverage_api",
    "resolution": "resolved",
    "open_at": [
@@ -13248,7 +13251,7 @@
    ]
   },
   "GET /api/v1/fiber/nearby": {
-   "source": "carrier_facility_ingestion.py:923",
+   "source": "carrier_facility_ingestion.py:939",
    "handler": "fiber_nearby_api",
    "resolution": "resolved",
    "open_at": [
@@ -13574,7 +13577,7 @@
    ]
   },
   "GET /api/v1/gas-pipelines-test": {
-   "source": "routes/deals_routes.py:2053",
+   "source": "routes/deals_routes.py:2066",
    "handler": "get_gas_pipelines_test",
    "resolution": "resolved",
    "open_at": [
@@ -14967,7 +14970,7 @@
    "keys": []
   },
   "GET /api/v1/intelligence/delivery-forecast": {
-   "source": "routes/intelligence_routes.py:530",
+   "source": "routes/intelligence_routes.py:541",
    "handler": "delivery_forecast",
    "resolution": "resolved",
    "open_at": [
@@ -15022,7 +15025,7 @@
    ]
   },
   "GET /api/v1/intelligence/market-velocity": {
-   "source": "routes/intelligence_routes.py:422",
+   "source": "routes/intelligence_routes.py:433",
    "handler": "market_velocity",
    "resolution": "opaque",
    "open_at": [],
@@ -15069,7 +15072,7 @@
    ]
   },
   "GET /api/v1/intelligence/top-operators": {
-   "source": "routes/intelligence_routes.py:645",
+   "source": "routes/intelligence_routes.py:656",
    "handler": "top_operators",
    "resolution": "resolved",
    "open_at": [
@@ -16167,7 +16170,7 @@
    ]
   },
   "GET /api/v1/market-growth": {
-   "source": "public_endpoints.py:523",
+   "source": "public_endpoints.py:544",
    "handler": "market_growth",
    "resolution": "resolved",
    "open_at": [
@@ -16230,7 +16233,7 @@
    ]
   },
   "GET /api/v1/market-report": {
-   "source": "public_endpoints.py:457",
+   "source": "public_endpoints.py:478",
    "handler": "market_report",
    "resolution": "resolved",
    "open_at": [
@@ -22438,7 +22441,7 @@
    ]
   },
   "GET /api/v1/sites/find": {
-   "source": "routes/find_sites.py:401",
+   "source": "routes/find_sites.py:408",
    "handler": "find_sites",
    "resolution": "opaque",
    "open_at": [],
@@ -25118,7 +25121,7 @@
    ]
   },
   "POST /api/brain/learn": {
-   "source": "routes/discovery_routes.py:1165",
+   "source": "routes/discovery_routes.py:1180",
    "handler": "brain_learn",
    "resolution": "resolved",
    "open_at": [
@@ -25130,7 +25133,7 @@
    ]
   },
   "POST /api/brain/run": {
-   "source": "routes/discovery_routes.py:1149",
+   "source": "routes/discovery_routes.py:1164",
    "handler": "brain_run",
    "resolution": "resolved",
    "open_at": [
@@ -25319,7 +25322,7 @@
    ]
   },
   "POST /api/discovery/refresh": {
-   "source": "routes/discovery_routes.py:1021",
+   "source": "routes/discovery_routes.py:1036",
    "handler": "discovery_refresh",
    "resolution": "opaque",
    "open_at": [],
@@ -25419,7 +25422,7 @@
    ]
   },
   "POST /api/evolution/run": {
-   "source": "routes/discovery_routes.py:1047",
+   "source": "routes/discovery_routes.py:1062",
    "handler": "evolution_run",
    "resolution": "resolved",
    "open_at": [
@@ -25431,7 +25434,7 @@
    ]
   },
   "POST /api/evolution/teach": {
-   "source": "routes/discovery_routes.py:1061",
+   "source": "routes/discovery_routes.py:1076",
    "handler": "evolution_teach",
    "resolution": "resolved",
    "open_at": [
