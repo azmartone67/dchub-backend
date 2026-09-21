@@ -107,6 +107,7 @@ jobs:
       # (1) Main as it is NOW. The triggering commit can be minutes old by the
       # time a queued run starts, and a refresh built on it is stale at birth.
       - name: Move to live main
+        id: live
         run: |
           set -euo pipefail
           git fetch -q origin +refs/heads/main:refs/remotes/origin/main
@@ -125,16 +126,23 @@ jobs:
       # If the self-test is broken, `check` returning 0 means nothing and the
       # safety gate below is decorative.
       - name: Self-test — the guard must be able to FAIL and to say UNMEASURED
+        id: selftest
         run: python3 scripts/api_response_contract_selftest.py
 
       # (2) A refresh PR that is no longer main's surface must not stay
       # mergeable. Closing is the one hold nothing in this repo re-arms:
       # disabling auto-merge is not (see auto-enable-automerge.yml, and PRs
       # here have merged after a verified disable). Runs even when the lane is
-      # disabled — it only ever removes a way to break main.
+      # disabled — it only ever removes a way to break main. It also runs when
+      # the self-test or the fetch of main failed, and then it FAILS CLOSED:
+      # a CURRENT verdict from a guard that just failed its self-test, or
+      # against a main we could not fetch, is not evidence.
       - name: Close refresh PRs whose baseline is no longer main's surface
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+          LIVE: ${{ steps.live.outcome }}
+          SELFTEST: ${{ steps.selftest.outcome }}
         run: |
           # `run:` is `bash -e` by default: without +e the first STALE verdict
           # would abort the loop instead of closing the PR.
@@ -146,23 +154,34 @@ jobs:
           }
           FAILED=0
           for N in $PRS; do
-            if ! git fetch -q origin "+refs/pull/$N/head:refs/remotes/pr/$N"; then
-              echo "::error::cannot fetch #$N — cannot verify it"; FAILED=1; continue
+            if [ "${LIVE:-}" != "success" ] || [ "${SELFTEST:-}" != "success" ]; then
+              echo "UNMEASURED — cannot verify #$N: fetch of live main=${LIVE:-absent}, guard self-test=${SELFTEST:-absent}" > "/tmp/verify-$N.txt"
+              RC=2
+            elif ! git fetch -q origin "+refs/pull/$N/head:refs/remotes/pr/$N"; then
+              echo "UNMEASURED — cannot fetch the head of #$N, so it cannot be verified" > "/tmp/verify-$N.txt"
+              RC=2
+            else
+              python3 scripts/api_response_contract.py verify-against \
+                --main origin/main --candidate "refs/remotes/pr/$N" > "/tmp/verify-$N.txt" 2>&1
+              RC=$?
             fi
-            python3 scripts/api_response_contract.py verify-against \
-              --main origin/main --candidate "refs/remotes/pr/$N" > "/tmp/verify-$N.txt" 2>&1
-            RC=$?
             cat "/tmp/verify-$N.txt"
             if [ "$RC" = "0" ]; then
               echo "#$N is still main's surface — leaving it open"
               continue
             fi
             {
-              echo "Closed by \`refresh-api-response-baseline\`: if this baseline landed on main"
-              echo "now ($(git rev-parse --short=9 origin/main)) it would not be main's surface"
-              echo "(\`verify-against\` exit $RC; 1 = stale, 2 = unmeasured or does not merge)."
-              echo "Main moved under it after it was generated. The next run regenerates"
-              echo "from current main."
+              echo "Closed by \`refresh-api-response-baseline\` (\`verify-against\` exit $RC)."
+              echo
+              if [ "$RC" = "1" ]; then
+                echo "If this baseline landed on main now ($(git rev-parse --short=9 origin/main)) it"
+                echo "would not be main's surface: main moved under it after it was generated."
+              else
+                echo "It could not be verified against current main (unmeasured, does not merge"
+                echo "cleanly, or the guard could not run — see below). An unverified baseline"
+                echo "is not left mergeable."
+              fi
+              echo "The next run regenerates from current main."
               echo
               echo '```'
               tail -n 60 "/tmp/verify-$N.txt"
