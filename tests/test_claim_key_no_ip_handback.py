@@ -27,14 +27,17 @@ import datetime as _dt
 import json as _json
 import pathlib
 import secrets as _secrets
+import os
 import sys
 import types
+from unittest import mock
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 SRC = ROOT / "flask_mcp_endpoints.py"
+import partner_egress as _partner_egress_mod  # noqa: E402
 TEXT = SRC.read_text()
 TREE = ast.parse(TEXT)
 
@@ -70,8 +73,8 @@ def _module_fn(name):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
         # r-partner-meter: a helper can read a module-level CONSTANT, which is an
-        # Assign, not a FunctionDef — _partner_egress reads
-        # _PARTNER_EGRESS_DEFAULT. Supply those the same way.
+        # Assign, not a FunctionDef. Supply those the same way. (The partner
+        # registry itself is imported from partner_egress.py now — see _run.)
         if isinstance(node, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == name for t in node.targets):
             return node
@@ -213,17 +216,22 @@ def _run(*, body, cur, ip="9.9.9.9"):
         "_restamp_claim_session": lambda *a, **k: None,
         "_inherit_paid_tier": lambda *a, **k: 0,
         "_streak_ladder_text": lambda: "",
+        # r-partner-egress: flask_mcp_endpoints imports the registry from
+        # partner_egress.py, so the REAL function is supplied, not a copy.
+        "_partner_egress": _partner_egress_mod.partner_egress,
     }
     mod = ast.Module(
         body=[_module_fn("_advertised_daily"),
-              _module_fn("_PARTNER_EGRESS_DEFAULT"),
-              _module_fn("_partner_egress"),
               _module_fn("_partner_meter_scope"),
               _claim_fn()],
         type_ignores=[])
     exec(compile(mod, str(SRC), "exec"), ns)      # noqa: S102 — the point
     try:
-        out = ns["claim_key"]()
+        # The registry reads the real environment; this harness used to hand it
+        # an empty one. Keep it hermetic: no override leaks in from the shell.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("DCHUB_PARTNER_EGRESS", None)
+            out = ns["claim_key"]()
     finally:
         if saved is not None:
             sys.modules["routes.mcp_key_email_verification"] = saved

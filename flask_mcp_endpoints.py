@@ -2363,23 +2363,9 @@ def _advertised_daily(tier: str) -> int:
 # "not them" — it falls back to IP metering rather than failing open.
 #
 # Env override (JSON {prefix: [ip, ...]}) so a declared host move is a config
-# change, not a deploy.
-_PARTNER_EGRESS_DEFAULT = {
-    "anythingmcp/": ("104.248.242.235",),
-}
-
-
-def _partner_egress():
-    raw = os.environ.get("DCHUB_PARTNER_EGRESS", "").strip()
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return {str(k): tuple(str(i) for i in (v or ()))
-                        for k, v in parsed.items()}
-        except Exception:
-            pass  # a malformed override must not widen anything
-    return _PARTNER_EGRESS_DEFAULT
+# change, not a deploy. The registry lives in partner_egress.py, which the two
+# rate limiters read as well, so one declaration moves all three.
+from partner_egress import partner_egress as _partner_egress  # noqa: E402
 
 
 def _partner_meter_scope(client_name, ip):

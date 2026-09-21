@@ -1,5 +1,6 @@
 from internal_auth import is_valid_internal_key
 from railway_egress import is_railway_egress
+from partner_egress import partner_for_ip
 # rate_limiter.py
 # DC Hub - Rate Limiting Middleware
 # Location: root level (alongside main.py)
@@ -145,6 +146,13 @@ LIMITS = {
     # Generous cap so a full-site crawl never 429s, but bounded so a spoofed
     # crawler UA can't hammer origin unbounded (content is public HTML anyway).
     'verified_bot':   {'rpm': 300, 'rph': 12000},
+    # r-partner-egress (2026-09-21): KEYLESS traffic from a partner's DECLARED
+    # egress (partner_egress.py). A hosted catalogue proxies all of its customers
+    # through one address, so the per-IP anonymous bucket gave every keyless
+    # customer of the partner one shared 20 rpm / 200 rph between them. Keyed
+    # calls from that address keep their own per-key buckets; an undeclared
+    # address stays anonymous. Rate only — no gate reads this tier.
+    'partner':        {'rpm': 120, 'rph': 5000},
 }
 
 # DC Hub internal key values (same as used in main.py route guards)
@@ -160,7 +168,8 @@ def _get_client_ip():
 def _get_key_and_tier():
     """
     Identify client and their rate limit tier.
-    Checks: X-Internal-Key → X-API-Key → request.user (JWT) → IP
+    Checks: X-Internal-Key → X-API-Key → request.user (JWT) → declared partner
+    egress → IP
 
     PATCH 2026-04-24 (jm): Added X-API-Key recognition. Customers calling
     any API route (not just /mcp) with a valid-looking API key were being
@@ -198,8 +207,16 @@ def _get_key_and_tier():
         uid = user.get('user_id') or user.get('email') or 'unknown'
         return f'user:{uid}', 'authenticated'
 
-    # 4. Anonymous - rate limit by IP
-    return f'ip:{_get_client_ip()}', 'anonymous'
+    # 4. Keyless from a partner's declared egress — one bucket per PARTNER,
+    #    not per customer (the partner sends no per-customer identity), sized
+    #    for the partner. Undeclared addresses fall through to step 5.
+    ip = _get_client_ip()
+    partner = partner_for_ip(ip)
+    if partner:
+        return f'partner:{partner}', 'partner'
+
+    # 5. Anonymous - rate limit by IP
+    return f'ip:{ip}', 'anonymous'
 
 
 # ---------------------------------------------------------------------------
