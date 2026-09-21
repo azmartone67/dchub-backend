@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import datetime
 from flask import Blueprint, jsonify, request, Response
 
@@ -342,9 +343,57 @@ def _extract_coords(d):
     return lat, lon, None
 
 
-def _match_new_facilities(sites, facilities, radius_km=50.0, cap_per_site=3):
+# Nearby-facility distances follow the caller's coordinate precision — the
+# rule util.facility_tier_gate.coord_dp_for_tier applies to the facility
+# record itself. A distance from a point the caller chose says where the
+# facility is, so for a caller whose facility coordinates are rounded, the
+# distance, the radius test and the nearest-first order are all measured from
+# the facility's ROUNDED point. Rounding the exact distance afterwards would
+# not do: every rounding boundary, and the radius edge, would still sit on the
+# exact point.
+#
+# The internal MCP key resolves to an exact tier, but the MCP server settles
+# location precision per call itself, so it gets both figures: the exact `km`
+# and `km_approx`, measured from the facility's 2 dp point (the MCP server's
+# coarse rung), with the radius and order taken from that point so either
+# figure can be served from the same list.
+NEARBY_MCP_APPROX_DP = 2
+DISTANCE_APPROX_STATUS = "approximate_1km"
+
+
+def _served_km(km):
+    """A distance measured from a rounded point, as served: whole km, never
+    below 1 — a rounded point cannot place a facility inside its own cell."""
+    return max(1, int(math.floor(float(km) + 0.5)))
+
+
+def _nearby_precision():
+    """(dp, mcp_twin) for the current request. dp is the number of decimal
+    places a facility's coordinates are rounded to before any distance is
+    measured (None = exact). Never raises; an error answers the coarse rung."""
+    try:
+        from internal_auth import is_valid_internal_key
+        if is_valid_internal_key(request.headers.get("X-Internal-Key", "")):
+            return NEARBY_MCP_APPROX_DP, True
+    except Exception:
+        pass
+    try:
+        from api_tier_gating import get_request_tier
+        from util.facility_tier_gate import coord_dp_for_tier
+        return coord_dp_for_tier((get_request_tier() or "anon").lower()), False
+    except Exception:
+        return NEARBY_MCP_APPROX_DP, False
+
+
+def _match_new_facilities(sites, facilities, radius_km=50.0, cap_per_site=3,
+                          dp=None, mcp_twin=False):
     """Pure matcher: {site_id: [up to cap_per_site nearest new facilities]}.
-    Sites/facilities are dicts with latitude/longitude; bad rows are skipped."""
+    Sites/facilities are dicts with latitude/longitude; bad rows are skipped.
+
+    dp: facility coordinates are rounded to this many decimal places before
+    the distance, the radius test and the order are computed (None = exact).
+    A rounded match serves `km` as _served_km plus distance_status; with
+    mcp_twin it serves the exact `km` and adds `km_approx` instead."""
     out = {}
     for s in sites:
         try:
@@ -357,16 +406,26 @@ def _match_new_facilities(sites, facilities, radius_km=50.0, cap_per_site=3):
                 flat, flon = f.get("latitude"), f.get("longitude")
                 if flat is None or flon is None:
                     continue
-                km = _haversine_km(slat, slon, float(flat), float(flon))
+                flat, flon = float(flat), float(flon)
+                km = _haversine_km(slat, slon, flat, flon)
+                by = km if dp is None else _haversine_km(
+                    slat, slon, round(flat, dp), round(flon, dp))
             except (TypeError, ValueError):
                 continue
-            if km <= radius_km:
-                near.append({"name": f.get("name"), "state": f.get("state"),
-                             "capacity_mw": f.get("capacity_mw"),
-                             "km": round(km, 1)})
+            if by <= radius_km:
+                row = {"name": f.get("name"), "state": f.get("state"),
+                       "capacity_mw": f.get("capacity_mw")}
+                if dp is None or mcp_twin:
+                    row["km"] = round(km, 1)
+                if dp is not None and mcp_twin:
+                    row["km_approx"] = _served_km(by)
+                elif dp is not None:
+                    row["km"] = _served_km(by)
+                    row["distance_status"] = DISTANCE_APPROX_STATUS
+                near.append((by, row))
         if near:
-            near.sort(key=lambda x: x["km"])
-            out[s["id"]] = near[:cap_per_site]
+            near.sort(key=lambda x: x[0])
+            out[s["id"]] = [row for _, row in near[:cap_per_site]]
     return out
 
 
@@ -554,7 +613,9 @@ def portfolio_snapshot(user_id, since_dt=None, max_sites=100):
                 """, (since_dt,))
                 new_fac = [dict(r) for r in cur.fetchall()]
                 if new_fac:
-                    nearby = _match_new_facilities(sites, new_fac)
+                    dp, mcp_twin = _nearby_precision()
+                    nearby = _match_new_facilities(sites, new_fac, dp=dp,
+                                                   mcp_twin=mcp_twin)
             except Exception:
                 try: c.rollback()
                 except Exception: pass
