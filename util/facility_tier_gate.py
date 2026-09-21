@@ -67,6 +67,12 @@ MINIMAL_ANON_FIELDS = frozenset({'name', 'city', 'state', 'country', 'status', '
 # Keys that are plumbing, not data: they describe the response or link onward,
 # carry no facility fact, and must survive the mask or the caller loses its
 # cite/upgrade path. Kept for every tier.
+# coordinates_status when this gate has coarsened the values. routes.provenance
+# owns "known"/"unknown"; this is the third state it cannot see, because it runs
+# before the rounding. Formatted, not fixed, so the number in the string can
+# never disagree with the dp actually applied.
+COORDS_APPROX_FMT = "approximate_{dp}dp"
+
 PASSTHROUGH_KEYS = frozenset({
     'slug', 'profile_url', 'id', 'v', 'confidence_badge',
     'coordinates_status', 'connectivity_note',
@@ -180,6 +186,25 @@ def gate_record(rec, tier) -> tuple[dict, int]:
         dropped = sum(1 for k, v in rec.items()
                       if k not in keep and v not in (None, '', [], {}))
         rounded = _round_coords(out, dp) if dp is not None else 0
+        # ★ r-loudgate (2026-09-20): a coarsened coordinate must not still be
+        # described as "known".
+        #
+        # routes.provenance.normalize_coordinates sets coordinates_status from
+        # the RAW values, and it has to run BEFORE this gate (verified_flag
+        # reads is_duplicate, which the mask drops). So the field whose entire
+        # job is to describe coordinate quality was computed before the
+        # transformation that invalidates it, and shipped "known" next to a
+        # latitude rounded to ~1.1km.
+        #
+        # Found by the partner generating a connector from our spec: "an agent
+        # asks for a facility, gets a plausible record, and reports it as
+        # complete." Every other gate we have announces itself with a 403; this
+        # one returns 200 and looked whole. Stamping the RECORD — not only the
+        # response envelope — means an agent that extracts `data` and discards
+        # the envelope still carries the caveat, and every row of a gated LIST
+        # carries its own.
+        if rounded:
+            out['coordinates_status'] = COORDS_APPROX_FMT.format(dp=dp)
         return out, dropped + rounded
     except Exception:
         safe = {k: v for k, v in rec.items()
@@ -316,6 +341,14 @@ def apply_record_gate(resp, tier) -> dict:
     resp['_gated'] = True
     resp['_coord_precision_dp'] = dp
     resp['_redacted_values'] = n
+    # ★ r-loudgate (2026-09-20): a COUNT does not tell a caller what it lost.
+    # `_redacted_values: 4` reads as noise; the field NAMES let an agent say
+    # "operator and power capacity were withheld" instead of presenting a
+    # partial record as whole. Names only — never the values.
+    _withheld = sorted(k for k, v in rec.items()
+                       if k not in data and v not in (None, '', [], {}))
+    if _withheld:
+        resp['_withheld_fields'] = _withheld
     resp['_upgrade_cta'] = (
         'Power capacity, operator, on-site fiber and exact coordinates '
         'require a Developer key — dchub.cloud/pricing')
