@@ -1139,7 +1139,37 @@ def canon_nums() -> dict:
     """
     _p = PINNED
     _pub = _p.get('public') or {}
-    _tools = _p.get('tools_advertised') or len(_p.get('tool_manifest') or ())
+    # ★2026-09-20 — {canon_tools} NOW RESOLVES LIVE, like every floor below it.
+    #
+    # It read the pin (falling back to len(tool_manifest), a second copy of the
+    # same repo number). The docstring above defends that as "a second
+    # canon-DERIVED source, not a second hand-typed number", and that is true —
+    # but derived-from-the-repo is not derived-from-the-server, and this dict
+    # sits one line above five floors that all take `_live` FIRST and the pin
+    # only at cold start. Inside one function: the floors healed, the two MCP
+    # headline numbers did not.
+    #
+    # ★ AND CI DOES NOT PIN THIS TO THE LIVE GATE, though two comments in this
+    # repo say it does. test_fix_closure_shell.py compares
+    # PINNED['tools_advertised'] to worker.js MCP_FALLBACK_TOOLS and to
+    # PINNED['tool_manifest'] — three copies of one number, checked against each
+    # other. The ONE test that probes tools/list,
+    # test_pinned_manifest_matches_live_tools_list, is opt-in
+    # (DCHUB_LIVE_MCP_CHECK=1) and its own skip reason says so: "the unit env is
+    # offline... this skip means repo+canon drifting TOGETHER from live is NOT
+    # covered here". So "following PINNED cannot go stale"
+    # (routes/agent_concierge.py, line ~110) is not a property CI provides.
+    #
+    # Non-blocking by construction: resolve_tools_advertised_cached() answers
+    # from memory and refreshes in a daemon thread, so a hot path pays nothing —
+    # the same contract that let the floors move to `_live` here.
+    try:
+        # ★ peek=True: read the cache, never start a probe. See the resolver's
+        # docstring — this path is the one that must not reach the network.
+        _tools = resolve_tools_advertised_cached(peek=True)
+    except Exception:
+        _tools = None
+    _tools = _tools or _p.get('tools_advertised') or len(_p.get('tool_manifest') or ())
     try:
         from canonical_stats import _FALLBACK as _cf
     except Exception:
@@ -1238,6 +1268,45 @@ def canon_text(s):
     return s
 
 
+# ── The advertised tool count: ONE adoption rule, two callers ──────────────
+def _adopt_live_tool_count(live, pinned):
+    """Decide the advertised tool count from a live tools/list reading.
+
+    Returns (value, why). Pure — no clock, no network, no globals — so it is
+    testable on its own, exactly like _adopt_live_version below.
+
+    ★ IT EXISTS BECAUSE THE RULE HAD TWO HOMES AND WAS ABOUT TO GET A THIRD.
+    resolve_canon() carried it inline; /.well-known/mcp-server.json carried no
+    rule at all and simply published the pin. Adding a second copy for the
+    manifest is how `_PUBLIC_FLOOR_KEYS` happened — a value that IS measured,
+    published from a pin, because the consumer did not go through the gate.
+    One function, both callers.
+
+    ★ THE DIRECTION IS THE OPPOSITE OF _adopt_live_version's, and that is not
+    an oversight. A VERSION may never move backwards: an over-claimed version
+    breaks a registry publish, so the pin is a safe cold answer precisely
+    because it can only lag. A tool COUNT is the other way round — publishing
+    "91 MCP tools" against a server advertising 90 is an over-claim a registry
+    scraper turns into a listing that is simply wrong, and the only way to
+    correct it is to let the number come DOWN. So a live reading is adopted in
+    either direction.
+
+    What it refuses is a reading that is not a count at all. _mcp_tool_names()
+    returns [] — not None — when a tools/list frame comes back carrying no
+    tools, so _mcp_tool_count() answers 0 on a degraded gate. Publishing "0 MCP
+    tools" is the one outcome worse than publishing a stale number, and it is
+    reachable, so 0 keeps the pin.
+    """
+    if isinstance(live, bool) or not isinstance(live, int):
+        return pinned, "not-an-int"
+    if live <= 0:
+        return pinned, "non-positive"
+    if live == pinned:
+        return pinned, "agrees"
+    return live, ("live-higher" if (isinstance(pinned, int) and live > pinned)
+                  else "live-lower")
+
+
 # ── Served server version, for REQUEST PATHS ───────────────────────────────
 _SERVER_VERSION_TTL_S = 900          # 15 min
 _server_version_cache: dict = {"at": 0.0, "val": None}
@@ -1306,6 +1375,99 @@ def resolve_server_version_cached() -> str:
     # Never blank: an empty version field is worse than a stale one for a
     # registry scraper, which is the same rule _wk_canon_version() is held to.
     return str(PINNED.get("version") or "")
+
+
+# ── Advertised tool count, for REQUEST PATHS ───────────────────────────────
+_TOOLS_ADVERTISED_TTL_S = 900        # 15 min, same as the version cache
+_tools_advertised_cache: dict = {"at": 0.0, "val": None}
+_tools_advertised_lock = threading.Lock()
+_tools_advertised_refreshing = False
+
+
+def _refresh_tools_advertised() -> None:
+    """Populate the cache off the request path. Never raises."""
+    global _tools_advertised_refreshing
+    try:
+        val, _why = _adopt_live_tool_count(
+            _mcp_tool_count(), PINNED.get("tools_advertised"))
+        if val:
+            with _tools_advertised_lock:
+                _tools_advertised_cache["val"] = val
+                _tools_advertised_cache["at"] = time.time()
+    except Exception:
+        pass
+    finally:
+        with _tools_advertised_lock:
+            _tools_advertised_refreshing = False
+
+
+def resolve_tools_advertised_cached(peek: bool = False) -> int:
+    """The advertised tool count for SURFACES SERVED ON A REQUEST. Never
+    blocks, never raises, never returns 0.
+
+    ★ WHY THIS EXISTS RATHER THAN resolve_canon()["tools_advertised"].
+    The same reason resolve_server_version_cached() does, and the docstring
+    there has the measurements: resolve_canon() probes live per call (mean
+    10.3s for the sibling floors resolver) against a 15s edge budget, so a
+    handler that calls it trades a stale number for an intermittent 503.
+
+    ★ WHY IT EXISTS AT ALL. resolve_canon() has healed `tools_advertised` from
+    the live gate for months, and /.well-known/mcp-server.json — the manifest
+    every MCP registry scrapes — did not consume it. It read PINNED directly
+    and published the pin inside its own description string. The VERSION beside
+    it was fixed this way on 2026-08-30 and the count was left behind, so this
+    surface had one self-healing headline number and one hand-walked one.
+
+    ★ AND THE DRIFT WAS NOT DETECTABLE EITHER. ai_surface_sentinel audits this
+    manifest at severity HIGH by comparing its `version` FIELD to the canon.
+    The tool count is not a field — it is prose inside `description` — so no
+    comparison reaches it. The version's fix bought detection for free because
+    canon and the surface disagreed; the count's could not, because nothing was
+    looking at it. Deriving it is the whole fix.
+
+    Contract, identical to resolve_server_version_cached(): answer immediately
+    with the freshest value we HAVE; if that is stale, start ONE background
+    refresh and still answer now. Single-flighted. A cold process serves PINNED
+    for the first few seconds after boot and the live count thereafter.
+
+    ★ peek=True IS NOT AN OPTIMISATION — IT IS THE CONTRACT OF THE CALLER.
+    canon_nums() renders {canon_*} for every canon_text() surface, so it runs
+    inside thousands of tests. Starting a background probe from there put a
+    live dchub.cloud fetch inside 24 test files at once and the no-network hook
+    refused every one ("the unit-tests step would FAIL on this"). That is the
+    same rule _live_public_floors() states about itself one function below:
+    PEEK-ONLY, it never triggers a query, because there is no round trip to pay
+    for on that path. peek=True answers from whatever the cache HAS and starts
+    nothing; the refresh belongs to real request paths, which is why
+    well_known_mcp_server() calls this without it.
+
+    ★ THE COLD ANSWER IS NOT SAFE THE WAY THE VERSION'S IS, and saying so is
+    the point. _adopt_live_version is monotonic, so the version pin can only
+    lag. This pin can be an OVER-claim — 91 against a live 90 — for as long as
+    the cache is cold. That is strictly better than today, where the pin is the
+    only value this surface can ever produce, but it is not zero: the pin still
+    has to be walked when a tool is REMOVED, and the sentinel still cannot see
+    the count. Both are recorded in tests/test_wellknown_tool_count_derived.py.
+    """
+    with _tools_advertised_lock:
+        val = _tools_advertised_cache["val"]
+        fresh = val is not None and (time.time() - _tools_advertised_cache["at"]) < _TOOLS_ADVERTISED_TTL_S
+        start = (not peek) and (not fresh) and (not _tools_advertised_refreshing)
+        if start:
+            globals()["_tools_advertised_refreshing"] = True
+    if start:
+        try:
+            threading.Thread(target=_refresh_tools_advertised,
+                             name="tools-advertised-refresh", daemon=True).start()
+        except Exception:
+            with _tools_advertised_lock:
+                globals()["_tools_advertised_refreshing"] = False
+    if val:
+        return val
+    # Never 0: "0 MCP tools" in a registry description is worse than a stale
+    # count, which is the same rule resolve_server_version_cached() is held to
+    # for a blank version.
+    return PINNED.get("tools_advertised") or 0
 
 
 def resolve_canon() -> dict:
@@ -1511,8 +1673,8 @@ def resolve_canon() -> dict:
     # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:
         c["tools_live"] = _mcp_tool_count()
-        if isinstance(c["tools_live"], int) and c["tools_live"] > 0:
-            c["tools_advertised"] = c["tools_live"]
+        c["tools_advertised"], c["_tools_why"] = _adopt_live_tool_count(
+            c["tools_live"], c.get("tools_advertised"))
     except Exception as e:
         c["_tools_error"] = str(e)[:120]
     # ★2026-08-30: the SERVER VERSION self-heals too. It was the last headline
