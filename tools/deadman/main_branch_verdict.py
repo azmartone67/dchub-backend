@@ -36,8 +36,32 @@ import os
 import subprocess
 import sys
 
-# The workflows carrying main's six required status checks.
-GATING = ("pre-merge.yml", "regression-lint.yml", "app-contract-gate.yml")
+# main's required status checks. They live in branch protection, not in this
+# repo, so this is the one copy here — re-measure it, do not trust it:
+#   gh api repos/azmartone67/dchub-backend/branches/main/protection \
+#     --jq .required_status_checks.contexts
+# Measured 2026-09-21: seven. tests/test_main_red_is_watched.py maps each one to
+# the workflow job that emits it and fails if GATING misses that workflow.
+REQUIRED_CONTEXTS = ("substance-gate", "syntax-check", "unit-tests",
+                     "regression-lint", "db-parity", "app-contract-gate",
+                     "contract")
+# Required, but only brain-pr-substance-gate.yml emits it and that runs on
+# pull_request alone, so main never has a run of it to judge.
+PR_ONLY_CONTEXTS = ("substance-gate",)
+
+# The workflows whose runs on main carry the other six (a check's context is its
+# job's `name:`, else the job id):
+#   pre-merge.yml              syntax-check, unit-tests, regression-lint, db-parity
+#   app-contract-gate.yml      app-contract-gate
+#   api-response-contract.yml  contract
+# ★2026-09-21 api-response-contract.yml was missing: `contract` went red on main
+# at 84f4a441d (stats.mw_coverage removed) and four runs of this verdict said
+# "all 3 gating workflow(s) green" until #5039 fixed main.
+# regression-lint.yml carries NONE of the seven — its job is `lint`; the
+# `regression-lint` context is pre-merge.yml's job of that name. It stays so a
+# red lint on main still surfaces, but that red blocks no PR.
+GATING = ("pre-merge.yml", "regression-lint.yml", "app-contract-gate.yml",
+          "api-response-contract.yml")
 
 
 def verdict(head_sha, runs_by_workflow):
