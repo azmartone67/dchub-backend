@@ -1260,6 +1260,7 @@ jobs:
             ctp.txt
             ut.txt
             fl.txt
+            lm.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
