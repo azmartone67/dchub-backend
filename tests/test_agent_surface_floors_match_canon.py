@@ -65,7 +65,7 @@ SURFACES = (
 
 # Floors that were live-wrong on 2026-08-31 and must never return.
 RETIRED_FACILITY_FLOORS = ("15,000+", "12,650+")
-RETIRED_DEAL_FLOORS = ("4,000+", "1,600+", "1,400+")
+RETIRED_DEAL_FLOORS = ("4,000+", "1,400+")  # 1,600+ is canon again (2026-09-21 walk DOWN)
 
 FACILITY_WORDS = ("facilit", "data center", "physical")
 SUBSTATION_WORDS = ("substation",)
@@ -262,7 +262,9 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     assert CANON_FACILITIES == "24,400+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
-    assert CANON_DEALS == "2,200+", (
+    # ★2026-09-21: 2,200+ -> 1,600+, the first walk DOWN (690 AUTO deal rows
+    #   quarantined; /transactions dedup count 1,625). "1,600+" leaves RETIRED_DEAL_FLOORS.
+    assert CANON_DEALS == "1,600+", (
         f"PINNED deals moved to {CANON_DEALS}. Same drill.")
 
 

@@ -139,13 +139,20 @@ def test_must_fail_control_the_old_pinned_copy_does_drift(live_canon):
     """Proves the assertion above can fail. This is the copy the builder
     produced BEFORE the fix — the detector must reject it, or
     test_generated_copy... is green for the wrong reason."""
+    # ★2026-09-21: the stale deal count is derived from the live floor. It was
+    #   the literal "1,800+", written when the floor was 1,900. When the floor
+    #   walked DOWN to 1,600, 1,800 fell inside the honest band (floor ..
+    #   floor+599) and this control could no longer fail. An old pinned copy
+    #   sits BELOW the floor; say so relative to it.
+    old_deals = LIVE_CANON["deals_floor"] - 100
     stale = ("DC Hub is the data layer for data-center infrastructure: 82 "
              "live MCP tools covering 18,500 discovered facilities, 300 "
-             "DCPI markets, 1,800+ tracked deals, ISO-grid headroom.")
+             f"DCPI markets, {old_deals:,}+ tracked deals, ISO-grid headroom.")
     drifts = detect_number_drift(stale, LIVE_CANON)
     assert any(d["kind"] == "deals" for d in drifts), (
-        "the detector no longer flags the 1,800-vs-1,900 drift — this test "
-        "can no longer fail, so the convergence test proves nothing")
+        f"the detector no longer flags the {old_deals:,}-vs-"
+        f"{LIVE_CANON['deals_floor']:,} drift — this test can no longer fail, "
+        "so the convergence test proves nothing")
 
 
 def test_floors_are_rendered_as_floors_not_exact_counts(live_canon):

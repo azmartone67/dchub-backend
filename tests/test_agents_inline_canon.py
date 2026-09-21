@@ -34,7 +34,7 @@ SRC = open(SRC_PATH, encoding="utf-8").read()
 #: Retired deal floors, restated here rather than imported: the owning module is
 #: a sibling TEST, and importing test-from-test couples their collection. If the
 #: two ever disagree, test_retired_lists_agree below is the tripwire.
-RETIRED_DEAL_FLOORS = ("4,000+", "1,600+", "1,400+")
+RETIRED_DEAL_FLOORS = ("4,000+", "1,400+")  # 1,600+ is canon again (2026-09-21 walk DOWN)
 
 
 def _agents_md():
@@ -118,7 +118,10 @@ def test_the_retired_floor_match_is_anchored():
     assert _retired_hits("- 94,000+ transmission lines") == [], (
         "'4,000+' matched inside '94,000+' — the retired-floor check is "
         "unanchored again and will report over-claims that do not exist.")
-    assert _retired_hits("- 21,600+ widgets") == [], "'1,600+' matched inside '21,600+'"
+    # ★2026-09-21: was "21,600+" / '1,600+'. 1,600+ left the retired list when the
+    #   deal floor walked down to it, which made that line pass for no reason.
+    #   Anchor the property on a floor that is still retired.
+    assert _retired_hits("- 21,400+ widgets") == [], "'1,400+' matched inside '21,400+'"
     assert _retired_hits("- 4,000+ tracked M&A deals") == ["4,000+"], (
         "the anchored check stopped catching the real retired floor — it must "
         "still fire on a bare 4,000+.")
