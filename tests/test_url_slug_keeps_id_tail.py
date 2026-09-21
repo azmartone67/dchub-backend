@@ -170,11 +170,18 @@ def test_the_dcpi_fallback_folds_exactly_the_way_slugify_does():
     assert folded == "coeur-d-alene"
 
 
+# The 404 return point. It was the inline body f"<h1>Market not found: {slug}</h1>"
+# until 2026-09-21, when the 404 became a real noindex page built by
+# _dcpi_not_found_response (tests/test_dcpi_404_is_a_page.py). Same point in
+# the route, so both ordering checks below keep their meaning.
+_DCPI_404_RETURN = "return _dcpi_not_found_response(slug)"
+
+
 def test_the_dcpi_fallback_runs_before_the_404_is_returned():
     """Ordering is the whole point: after the Response it is dead code."""
     src = open(DCPI, encoding="utf-8").read()
     fallback = _SQL_FOLD.search(src)
-    not_found = src.index('f"<h1>Market not found: {slug}</h1>"')
+    not_found = src.index(_DCPI_404_RETURN)
     assert fallback.start() < not_found, "fallback must precede the 404 response"
     # and it must be reachable only once the exact lookup missed
     branch = src.rindex("if not s:", 0, fallback.start())
@@ -196,7 +203,7 @@ def test_the_dcpi_fallback_cannot_301_into_a_redirect_loop():
     assert normalize_periods("st.-louis")[0] == "st-louis"
 
     src = open(DCPI, encoding="utf-8").read()
-    blk = src[_SQL_FOLD.search(src).start():src.index('f"<h1>Market not found: {slug}</h1>"')]
+    blk = src[_SQL_FOLD.search(src).start():src.index(_DCPI_404_RETURN)]
     assert "normalize_periods(_target)" in blk, "fallback redirects without the loop latch"
     assert blk.index("normalize_periods(_target)") < blk.index("redirect(f\"/dcpi/{_target}\""), \
         "the latch must run BEFORE the redirect, not after"

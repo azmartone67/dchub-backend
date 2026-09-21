@@ -8762,6 +8762,39 @@ def _dcpi_facility_list_html(mkt_name, _fac_ctry_sql, _fac_ctry_params):
         + "".join(_items) + '</ul></div>')
 
 
+def _dcpi_not_found_response(slug):
+    """404 for an unknown /dcpi/<slug>: a real page that says noindex.
+
+    Measured live 2026-09-21: the old body was one headless line,
+    `<h1>Market not found: <slug></h1>` (41-48 bytes), with no <title>, no
+    robots meta and no X-Robots-Tag, and the slug went into it unescaped.
+    The status was right; everything else told a crawler nothing, and the
+    unescaped slug made the response render whatever markup the path held.
+
+    Now: a full document, noindex in BOTH the meta and the header, the slug
+    html-escaped, and onward links. Plain HTML with no inline script or style,
+    so it renders under _DCPI_CSP unchanged. phase 284: even a 404 ships the
+    CSP so it doesn't trip the watch.
+    """
+    import html as _html
+    _s = _html.escape(str(slug or ""), quote=True)
+    body = (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta name=\"robots\" content=\"noindex, follow\">"
+        "<title>Market not found | DC Hub Power Index</title></head><body>"
+        "<h1>Market not found</h1>"
+        f"<p>No DC Hub Power Index market matches <code>{_s}</code>.</p>"
+        "<p><a href=\"/dcpi\">All DCPI market rankings</a> \u00b7 "
+        "<a href=\"/markets/directory\">Browse all markets</a> \u00b7 "
+        "<a href=\"/\">DC Hub home</a></p></body></html>"
+    )
+    r = Response(body, status=404, mimetype="text/html")
+    r.headers["Content-Security-Policy"] = _DCPI_CSP
+    r.headers["X-Robots-Tag"] = "noindex"
+    return r
+
+
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     # r-period-slug (2026-07-06): strip periods and 301 to the '-'-normalized
@@ -8893,10 +8926,7 @@ def public_market_page(slug):
             if _tnorm == _target and not _tsuf:
                 from flask import redirect
                 return redirect(f"/dcpi/{_target}", code=301)
-        # phase 284: even 404 should ship the CSP so it doesn't trip the watch
-        r = Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")
-        r.headers["Content-Security-Policy"] = _DCPI_CSP
-        return r
+        return _dcpi_not_found_response(slug)
 
     # r-gate-everywhere (2026-06-27): the numeric DCPI scores (rendered into page
     # text + JSON-LD + meta/og) are the PAID product. Resolve tier ONCE and split
