@@ -1,0 +1,59 @@
+name: Loop-closure shell tick (daily; shadow unless LOOP_CLOSURE_ARM=1)
+
+# Drives routes/loop_closure_master_shell.py, the shell that names who owns
+# each open actuation lever and drives the one nothing else schedules
+# (brain_spec_implementer, #5004).
+#
+# WHY THIS FILE EXISTS: a shell built to drive an unscheduled lever would
+# otherwise be one more unscheduled lever.
+#
+# SAFE BY DEFAULT: the shell is SHADOW unless LOOP_CLOSURE_ARM=1 is set on the
+# dchub-backend Railway service (web; this tick is not worker-relayed). Even
+# armed, its one actuator opens a PR only if the implementer's own
+# SPEC_IMPLEMENTER_ARM=1 is also set. Every run persists a snapshot either way,
+# so the shadow history accumulates at GET /api/v1/admin/loop-closure/state.
+#
+# PUBLIC REPO -> PUBLIC ACTIONS LOGS: this prints lane NAMES and verdicts
+# only. Rates, counts and reasons stay behind the admin-gated /state endpoint.
+#
+# LOUD ON INERT: if the shell's own inert check fires (armed, a READY lane,
+# no action, for a full window) this run FAILS, so the alarm reaches a person
+# instead of sitting in a snapshot table.
+
+on:
+  schedule:
+    - cron: '17 7 * * *'    # 07:17 UTC daily, after the RAG shell's ~06:00 tick
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run the loop-closure tick
+        # Hits the Railway origin directly to avoid the CF Worker timeout.
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping loop-closure tick"
+            exit 0
+          fi
+          RESPONSE=$(curl -sS -X POST --max-time 150 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/loop-closure/master-tick" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)
+          a = d.get("action") or {}
+          print("armed:                  ", d.get("armed"))
+          print("weakest actionable lane:", d.get("weakest_actionable_lane"))
+          print("ready lanes:            ", d.get("ready_lanes"))
+          print("acted:                  ", d.get("acted"), "| doc:", a.get("doc"), "| pr:", a.get("pr"))
+          print("lever owned elsewhere:  ", [s.get("lane") for s in d.get("skipped_lanes") or []])
+          print("unmeasured / killed:    ", [e.get("lane") for e in d.get("excluded_lanes") or []])
+          print("inert check fired:      ", (d.get("inert_check") or {}).get("fired"))
+          ' || { echo "::warning::Non-JSON response from the tick"; exit 0; }
+          INERT=$(echo "${RESPONSE}" | python3 -c 'import json,sys; print(((json.load(sys.stdin) or {}).get("inert_check") or {}).get("fired"))' 2>/dev/null || echo "?")
+          if [ "${INERT}" = "True" ]; then
+            echo "::error::loop_closure_shell_inert — armed with a READY lane for a full window and took no action. See GET /api/v1/admin/loop-closure/state"
+            exit 1
+          fi
