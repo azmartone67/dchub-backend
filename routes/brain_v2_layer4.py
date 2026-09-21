@@ -2047,47 +2047,67 @@ def brain_value_shipped():
     # Each query is wrapped by _dual() which returns (0,0) on ANY error
     # (missing table/column), so a schema drift degrades to "no verified
     # value" rather than crashing — fail-safe by construction.
-    # ★★★ 2026-09-21: SPEC PRs NO LONGER COUNT AS SHIPPED CODE.
-    # Measured on origin/main: of 111 `brain-spec:` merges since 2026-09-01,
-    # 106 changed ONLY docs/ — 95%. Every one of them landed here as a
-    # "code_fix" at x8 weight, which is how the brain reported high output
-    # while its own innovation board showed 30 approvals declined with
-    # "already specced and MERGED — needs an implementation, not another
-    # spec". The metric was rewarding the loop that produced nothing.
+    # ★★★ 2026-09-21 (corrected same day): code_fixes counts only PRs the
+    # BRAIN'S OWN PIPELINE opened.
     #
-    # ★ THE FILTER IS A FILER PROXY, NOT A DIFF INSPECTION, and the response
-    # says so. brain_pr_outcomes stores pr_title/branch, not the changed file
-    # list, so this excludes everything the spec filer opened — including the
-    # 5 of 111 that DID touch code. Undercounting by ~5% is the honest error
-    # to make when the alternative is overcounting by 95%; the excluded rows
-    # are returned as `spec_prs` rather than dropped, so the number is
-    # visible rather than merely smaller.
-    _NOT_SPEC = ("AND COALESCE(pr_title,'') NOT LIKE 'brain-spec:%' "
-                 "AND COALESCE(branch,'') NOT LIKE 'brain-spec/%' ")
+    # WHAT WAS ACTUALLY WRONG. brain_pr_outcome_monitor marks a PR
+    # brain_authored when its commit carries `Co-Authored-By: Claude` — which
+    # every human-directed Claude Code session PR does. Read live via
+    # GET /api/v1/admin/brain/pr-outcomes on 2026-09-21: of the 88 merged
+    # /pull/ rows returned (merged 2026-08-26..09-20), ALL 88 were
+    # brain_authored=TRUE, but only 7 came from a brain pipeline branch
+    # (brain-v2/, brain/fix-, brain-l5, [brain- title). The other 81 were
+    # fix/, feat/, seo/, wt/, ads/ … — work a human directed. So the metric
+    # credited the brain with ~12x what its own pipeline shipped.
+    #
+    # ★ THE FIRST FIX HERE WAS WRONG, AND SAID SO CONFIDENTLY. An earlier
+    # version of this block excluded `brain-spec:` titles on the theory that
+    # spec-only PRs inflated this metric. It excluded ZERO rows: spec PRs are
+    # titled `[brain-spec] …` (bracket, not colon) and, measured, NONE of the
+    # 88 rows is a spec PR — they were never in this table. It also claimed
+    # the table lacked a changed-file list; it has `files_changed`. The theory
+    # was inferred and never checked against the rows.
+    #
+    # ATTRIBUTION IS DERIVED FROM branch/pr_title, NOT the brain_authored
+    # flag. Those are raw facts, correct for every historical row; the flag is
+    # a derived classification that is wrong for most of them, and fixing the
+    # monitor's rule would only correct NEW rows. The same flag also feeds
+    # brain_self_perception and brain_strategic_planner (L6) — those are NOT
+    # changed here; that is a separate, reviewed change.
+    #
+    # Docs-only diffs are excluded too, by the real file list: a pipeline PR
+    # that touched nothing but docs/ is not a code fix.
+    _PIPELINE = ("AND (COALESCE(branch,'') LIKE 'brain-v2/%' "
+                 "OR COALESCE(branch,'') LIKE 'brain/fix-%' "
+                 "OR COALESCE(branch,'') LIKE 'brain-l5%' "
+                 "OR COALESCE(pr_title,'') LIKE '[brain-%') ")
+    _NOT_DOCS_ONLY = ("AND (COALESCE(files_changed,'') = '' OR EXISTS ("
+                      "SELECT 1 FROM unnest(string_to_array(files_changed, ',')) f"
+                      " WHERE btrim(f) <> '' AND btrim(f) NOT LIKE 'docs/%')) ")
     code_7d, code_30d = _dual(
         """SELECT
               COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
                               AND merged_at IS NOT NULL
-                              """ + _NOT_SPEC + """
+                              """ + _PIPELINE + _NOT_DOCS_ONLY + """
                               AND merged_at >= NOW() - INTERVAL '7 days'),
               COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
                               AND merged_at IS NOT NULL
-                              """ + _NOT_SPEC + """
+                              """ + _PIPELINE + _NOT_DOCS_ONLY + """
                               AND merged_at >= NOW() - INTERVAL '30 days')
            FROM brain_pr_outcomes"""
     )
-    # The excluded rows, reported beside the metric they used to inflate.
-    spec_7d, spec_30d = _dual(
+    # The rows this now EXCLUDES, reported beside the metric they inflated:
+    # merged PRs the monitor booked as brain output that no brain pipeline
+    # opened. Visible, never counted.
+    nonpipe_7d, nonpipe_30d = _dual(
         """SELECT
               COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
                               AND merged_at IS NOT NULL
-                              AND (COALESCE(pr_title,'') LIKE 'brain-spec:%'
-                                   OR COALESCE(branch,'') LIKE 'brain-spec/%')
+                              AND NOT (TRUE """ + _PIPELINE + """)
                               AND merged_at >= NOW() - INTERVAL '7 days'),
               COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
                               AND merged_at IS NOT NULL
-                              AND (COALESCE(pr_title,'') LIKE 'brain-spec:%'
-                                   OR COALESCE(branch,'') LIKE 'brain-spec/%')
+                              AND NOT (TRUE """ + _PIPELINE + """)
                               AND merged_at >= NOW() - INTERVAL '30 days')
            FROM brain_pr_outcomes"""
     )
@@ -2239,16 +2259,20 @@ def brain_value_shipped():
         # a `spec_prs` key inside them would add the excluded rows straight
         # back into the total — the exact inflation this change removes. They
         # live here so the number is visible without being counted.
-        spec_prs_excluded={
-            "_7d": spec_7d, "_30d": spec_30d,
-            "basis": ("merged /pull/ PRs whose pr_title starts 'brain-spec:' "
-                      "or branch starts 'brain-spec/'. This is a FILER proxy, "
-                      "not a diff inspection — brain_pr_outcomes does not "
-                      "store the changed file list. Measured on origin/main "
-                      "2026-09-21: 106 of 111 such merges since 09-01 changed "
-                      "only docs/, and the other 5 DID touch code and are "
-                      "excluded here too. Undercounts by ~5%; counting them "
-                      "as code_fixes overcounted by 95%."),
+        # ★ DELIBERATELY OUTSIDE shipped_7d/30d. Those dicts are summed by
+        # _sum_nonnull() into total_shipped and weighted by _value_score(), so
+        # a key inside them would add the excluded rows straight back.
+        non_pipeline_prs_excluded={
+            "_7d": nonpipe_7d, "_30d": nonpipe_30d,
+            "basis": ("merged /pull/ PRs in brain_pr_outcomes that NO brain "
+                      "pipeline opened: branch not brain-v2/, brain/fix-, "
+                      "brain-l5, and title not '[brain-'. The monitor books "
+                      "them as brain_authored because their commit carries "
+                      "Co-Authored-By: Claude — true of every human-directed "
+                      "Claude Code session PR. Measured 2026-09-21 on the 88 "
+                      "merged rows the outcomes endpoint returns: 7 pipeline, "
+                      "81 not. code_fixes counts only the pipeline ones, and "
+                      "drops pipeline PRs whose files_changed is docs/ only."),
         },
         weights=_WEIGHTS,
         generated_at=_dt.datetime.utcnow().isoformat() + "Z",
