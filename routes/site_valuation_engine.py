@@ -892,32 +892,43 @@ def _fetch_power_cost_usd_mwh(state: str) -> dict:
 
 
 def _fetch_tax_abatement(state: str) -> dict:
-    """Property-tax abatement value factor from tax_incentives_neon (50 states).
+    """Property-tax abatement value factor for the site's state.
     A DC-specific, long-duration abatement de-risks a decade+ of opex → a modest,
-    transferable site-value premium (capped +8%)."""
+    transferable site-value premium (capped +8%).
+
+    Read through util.tax_incentives, not tax_incentives_neon: the table froze on
+    2026-03-17 and priced a premium for programs since paused to new applicants
+    (AZ IL NE OH) or repealed (NJ). A new site cannot obtain those, so they
+    now count for nothing, and the note says why."""
+    rec = None
     try:
+        from util.tax_incentives import state_incentive
         with _db_conn() as c:
-            cur = c.cursor()
-            cur.execute(
-                "SELECT property_tax_abatement, COALESCE(duration_years,0), "
-                "       COALESCE(data_center_specific,false), COALESCE(max_benefit,'') "
-                "  FROM tax_incentives_neon WHERE state_abbr=%s LIMIT 1", (state,))
-            r = cur.fetchone()
-            if r and r[0]:
-                dur = int(r[1] or 0); dc = bool(r[2]); maxb = (r[3] or '')
-                pct = 0.03 + min(0.04, (dur / 20.0) * 0.04) + (0.02 if dc else 0.0)
-                pct = round(min(0.08, pct), 3)
-                return {"abatement": True, "factor": round(1 + pct, 3), "pct": pct,
-                        "duration_years": dur, "data_center_specific": dc,
-                        "max_benefit": maxb,
-                        "note": (f"{'Data-center-specific ' if dc else ''}property-tax "
-                                 f"abatement ({dur} yr{'s' if dur != 1 else ''}"
-                                 f"{', ' + maxb if maxb else ''}) — +{round(pct*100)}% site value. "
-                                 + ("" if dc else "★ Generic STATE incentive (not DC-specific, "
-                                    "not site-verified) — confirm the parcel's actual abatement "
-                                    "term; a longer site-specific deal is worth more."))}
+            rec = state_incentive(c.cursor(), state)
     except Exception:
-        pass
+        rec = None
+    if rec and rec.get("property_tax_abatement"):
+        dur = int(rec.get("duration_years") or 0); dc = bool(rec.get("data_center_specific"))
+        maxb = (rec.get("max_benefit") or '')
+        pct = 0.03 + min(0.04, (dur / 20.0) * 0.04) + (0.02 if dc else 0.0)
+        pct = round(min(0.08, pct), 3)
+        return {"abatement": True, "factor": round(1 + pct, 3), "pct": pct,
+                "duration_years": dur, "data_center_specific": dc,
+                "max_benefit": maxb,
+                "status": rec.get("status"), "last_verified": rec.get("last_verified"),
+                "note": (f"{'Data-center-specific ' if dc else ''}property-tax "
+                         f"abatement ({dur} yr{'s' if dur != 1 else ''}"
+                         f"{', ' + maxb if maxb else ''}) — +{round(pct*100)}% site value. "
+                         + ("" if dc else "★ Generic STATE incentive (not DC-specific, "
+                            "not site-verified) — confirm the parcel's actual abatement "
+                            "term; a longer site-specific deal is worth more."))}
+    if rec and rec.get("open_to_new_projects") is False:
+        status = (rec.get("status") or "closed").replace("_", " ")
+        return {"abatement": False, "factor": 1.0, "pct": 0.0,
+                "status": rec.get("status"), "last_verified": rec.get("last_verified"),
+                "note": (f"{rec.get('state_name') or state}'s data-center tax incentive is "
+                         f"{status} (since {rec.get('status_as_of') or 'n/a'}) — not "
+                         f"available to a new site, so no premium is counted.")}
     return {"abatement": False, "factor": 1.0, "pct": 0.0,
             "note": "No property-tax abatement on record for this state."}
 

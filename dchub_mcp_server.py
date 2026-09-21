@@ -2971,30 +2971,29 @@ async def get_tax_incentives(state: str = "") -> str:
         cur = conn.cursor()
         cur.execute("SET LOCAL statement_timeout = 8000")
 
+        # util.tax_incentives, not tax_incentives_neon: the table froze on
+        # 2026-03-17 and still read nine changed programs (OH paused, NJ
+        # repealed, MN/NC electricity exemptions repealed, ...) as available.
+        # The public tool (dchub-mcp-server) proxies REST, which serves the
+        # registry; this failover now gives the same answer.
+        from util.tax_incentives import state_incentive, all_state_incentives, registry
+        _keep = ('state_abbr', 'state_name', 'sales_tax_exempt', 'property_tax_abatement',
+                 'energy_incentive', 'data_center_specific', 'incentive_details',
+                 'qualifying_investment', 'source_url', 'status', 'status_as_of',
+                 'status_note', 'last_verified')
         if state and len(state) <= 3:
-            cur.execute("""
-                SELECT state_abbr, state_name, sales_tax_exempt, property_tax_abatement,
-                       enterprise_zone, investment_tax_credit, job_creation_credit,
-                       energy_incentive, data_center_specific, incentive_details,
-                       qualifying_investment, source_url
-                FROM tax_incentives_neon
-                WHERE UPPER(state_abbr) = UPPER(%s)
-            """, (state.upper(),))
+            rec = state_incentive(cur, state)
+            results = [{k: rec.get(k) for k in _keep}] if rec else []
         else:
-            cur.execute("""
-                SELECT state_abbr, state_name,
-                       sales_tax_exempt, property_tax_abatement, data_center_specific,
-                       LEFT(incentive_details, 80) as summary
-                FROM tax_incentives_neon
-                ORDER BY state_abbr
-            """)
-
-        columns = [desc[0] for desc in cur.description]
-        rows = cur.fetchall()
-        results = [dict(zip(columns, row)) for row in rows]
-
-        cur.execute("SELECT COUNT(DISTINCT state_abbr) FROM tax_incentives_neon")
-        total_states = cur.fetchone()[0] or 0
+            results = [
+                {'state_abbr': r.get('state_abbr'), 'state_name': r.get('state_name'),
+                 'sales_tax_exempt': r.get('sales_tax_exempt'),
+                 'property_tax_abatement': r.get('property_tax_abatement'),
+                 'data_center_specific': r.get('data_center_specific'),
+                 'summary': (r.get('incentive_details') or '')[:80],
+                 'status': r.get('status'), 'last_verified': r.get('last_verified')}
+                for r in all_state_incentives(cur)]
+        total_states = len(results) if not (state and len(state) <= 3) else len(registry())
 
         cur.close()
         conn.close()
@@ -3005,7 +3004,7 @@ async def get_tax_incentives(state: str = "") -> str:
             'incentives': results,
             'count': len(results),
             'states_covered': total_states,
-            'source': 'DC Hub Tax Incentive Database',
+            'source': 'DC Hub tax-incentive registry (verified states) + tax_incentives_neon snapshot (2026-03-17, unverified states)',
             'note': 'Sales tax exemptions, property tax abatements, enterprise zones, and state-specific DC incentive programs.'
         })
     except Exception as e:

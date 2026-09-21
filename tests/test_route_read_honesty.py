@@ -426,8 +426,13 @@ def test_tax_incentives_reads_the_table_that_exists():
     blob = " ".join(_sql_literals("routes/persona_briefs.py"))
     assert not re.search(r"FROM\s+tax_incentives\s", blob + " "), \
         "`tax_incentives` does not exist — the live table is tax_incentives_neon"
-    assert "tax_incentives_neon" in blob
-    assert "state_abbr" in blob, "tax_incentives_neon is keyed state_abbr, not state"
+    # Since 2026-09-21 the brief reads through util.tax_incentives, which owns
+    # the table read (and supersedes it for states the registry has verified).
+    with open(os.path.join(ROOT, "routes/persona_briefs.py"), encoding="utf-8") as fh:
+        assert "from util.tax_incentives import state_incentive" in fh.read()
+    util = " ".join(_sql_literals("util/tax_incentives.py"))
+    assert "tax_incentives_neon" in util
+    assert "state_abbr = %s" in util, "tax_incentives_neon is keyed state_abbr, not state"
 
 
 def test_deals_value_is_not_republished_as_value_usd():
@@ -541,8 +546,9 @@ def test_policy_brief_dead_pipeline_read_no_longer_zeroes_grid_stress(
         fail_substrings=("FROM capacity_pipeline",),
         rows={"FROM facilities": [(587, 23724.0, 118)],
               "FROM market_power_scores": [("AVOID", 19, 12.0, 55.0, 40.0)],
-              "FROM tax_incentives_neon": [("Virginia", "details", "inv", "jobs",
-                                            5, "max", True, True, True, "url")]},
+              "FROM tax_incentives_neon": [("VA", "Virginia", True, True, True, True,
+                                            "details", "inv", "jobs", 5, "max",
+                                            "url", "2026-03-17")]},
         poison=True)
     monkeypatch.setattr(pb, "_conn", lambda: cur.connection)
 
@@ -583,8 +589,8 @@ def test_policy_brief_grid_stress_is_null_when_grid_stress_itself_fails(
         fail_substrings=("FROM market_power_scores",),
         rows={"FROM facilities": [(587, 23724.0, 118)],
               "FROM capacity_pipeline": [(6, 3150.0, 4, 2850.0)],
-              "FROM tax_incentives_neon": [("Virginia", "d", "i", "j", 5, "m",
-                                            True, True, True, "u")]},
+              "FROM tax_incentives_neon": [("VA", "Virginia", True, True, True, True,
+                                            "d", "i", "j", 5, "m", "u", "2026-03-17")]},
         poison=True)
     monkeypatch.setattr(pb, "_conn", lambda: cur.connection)
 
@@ -607,8 +613,8 @@ def test_policy_brief_healthy_read_is_complete_and_has_no_error_block(
         rows={"FROM facilities": [(587, 23724.0, 118)],
               "FROM capacity_pipeline": [(6, 3150.0, 4, 2850.0)],
               "FROM market_power_scores": [("AVOID", 19, 12.0, 55.0, 40.0)],
-              "FROM tax_incentives_neon": [("Virginia", "d", "i", "j", 5, "m",
-                                            True, True, True, "u")]})
+              "FROM tax_incentives_neon": [("VA", "Virginia", True, True, True, True,
+                                            "d", "i", "j", 5, "m", "u", "2026-03-17")]})
     monkeypatch.setattr(pb, "_conn", lambda: cur.connection)
 
     body = client.get("/api/v1/brief/policy?state=VA").get_json()

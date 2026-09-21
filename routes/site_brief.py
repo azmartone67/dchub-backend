@@ -147,31 +147,34 @@ def _energy_for_state(cur, state):
 
 
 def _tax_for_state(cur, state):
-    """Data-center tax incentive snapshot for a state."""
+    """Data-center tax incentive snapshot for a state.
+
+    Through util.tax_incentives, not tax_incentives_neon directly: that table
+    froze on 2026-03-17 and still reads nine changed programs (OH paused, NJ
+    repealed, ...) as available. `status` / `last_verified` say which store
+    answered and how old the answer is."""
     if not state:
         return None
     try:
-        cur.execute(
-            """SELECT state_name, sales_tax_exempt, property_tax_abatement,
-                      data_center_specific, qualifying_investment,
-                      incentive_details
-                 FROM tax_incentives_neon
-                WHERE state_abbr = %s LIMIT 1""", (state.upper(),))
-        row = cur.fetchone()
+        from util.tax_incentives import state_incentive
+        rec = state_incentive(cur, state)
     except Exception:
         return None
-    if not row:
+    if not rec:
         return None
-    summary = row[5]
+    summary = rec.get("incentive_details")
     if summary and len(summary) > 240:
         summary = summary[:240] + "…"
     return {
-        "state_name": row[0],
-        "sales_tax_exempt": row[1],
-        "property_tax_abatement": row[2],
-        "data_center_specific": row[3],
-        "qualifying_investment": row[4],
+        "state_name": rec.get("state_name"),
+        "sales_tax_exempt": rec.get("sales_tax_exempt"),
+        "property_tax_abatement": rec.get("property_tax_abatement"),
+        "data_center_specific": rec.get("data_center_specific"),
+        "qualifying_investment": rec.get("qualifying_investment"),
         "summary": summary,
+        "status": rec.get("status"),
+        "last_verified": rec.get("last_verified"),
+        "source_url": rec.get("source_url"),
     }
 
 

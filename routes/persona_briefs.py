@@ -715,31 +715,42 @@ def policy_brief():
             # endpoint whose paywall teaser sells a "complete tax-incentive
             # program list". Column names differ from the dead query's
             # entirely; mapped to what the table actually holds.
-            rows = _read(cur, """
-                SELECT state_name, incentive_details, qualifying_investment,
-                       qualifying_jobs, duration_years, max_benefit,
-                       sales_tax_exempt, property_tax_abatement,
-                       data_center_specific, source_url
-                  FROM tax_incentives_neon
-                 WHERE UPPER(state_abbr) = %s
-                 LIMIT 10""", errors, "state_incentives", (state,))
-            incentives = [
-                {"state_name": r[0],
-                 "details": (r[1] or '')[:400],
-                 "qualifying_investment": r[2],
-                 "qualifying_jobs": r[3],
-                 "duration_years": r[4],
-                 "max_benefit": r[5],
-                 "sales_tax_exempt": r[6],
-                 "property_tax_abatement": r[7],
-                 "data_center_specific": r[8],
-                 "source_url": r[9]}
-                for r in rows]
+            # ★ 2026-09-21 — through util.tax_incentives, not the table: it
+            # froze on 2026-03-17 and still read nine changed programs (OH
+            # paused, NJ repealed, MN/NC electricity repealed, ...) as open.
+            # The source is dated by when the answer was verified, not by
+            # when this brief ran: now_iso() dated a six-month-old snapshot
+            # "today".
+            incentives, rec = [], None
+            try:
+                from util.tax_incentives import state_incentive
+                rec = state_incentive(cur, state)
+            except Exception as e:
+                errors["state_incentives"] = (
+                    f"{type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}")
+            if rec:
+                incentives = [
+                    {"state_name": rec.get("state_name"),
+                     "details": (rec.get("incentive_details") or '')[:400],
+                     "qualifying_investment": rec.get("qualifying_investment"),
+                     "qualifying_jobs": rec.get("qualifying_jobs"),
+                     "duration_years": rec.get("duration_years"),
+                     "max_benefit": rec.get("max_benefit"),
+                     "sales_tax_exempt": rec.get("sales_tax_exempt"),
+                     "property_tax_abatement": rec.get("property_tax_abatement"),
+                     "data_center_specific": rec.get("data_center_specific"),
+                     "source_url": rec.get("source_url"),
+                     "status": rec.get("status"),
+                     "status_note": rec.get("status_note"),
+                     "last_verified": rec.get("last_verified")}]
             payload["state_incentives"] = (
                 None if "state_incentives" in errors else incentives)
             if incentives:
-                sources.append(src(f"{state} tax incentives",
-                                   "tax_incentives_neon", now_iso()))
+                sources.append(src(
+                    f"{state} tax incentives",
+                    ("DC Hub tax-incentive registry" if rec.get("provenance") == "registry"
+                     else "tax_incentives_neon (unverified snapshot)"),
+                    rec.get("as_of"), rec.get("source_url")))
 
             # Economic snapshot — derived numbers (best-effort).
             # ★ A DERIVED NUMBER INHERITS ITS INPUTS' UNCERTAINTY. This block

@@ -76,6 +76,7 @@ def _pull_signals(state: str):
         "time_to_power_months":    None,
         "tax_pct_offset":          0.0,    # 0..0.20 typical
         "tax_summary":             "",
+        "tax_status":              None,   # registry status, e.g. paused_new_applicants
     }
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -124,15 +125,13 @@ def _pull_signals(state: str):
             except Exception:
                 pass
             # Tax incentives → derive a coarse capex-offset percentage
+            # (util.tax_incentives, not tax_incentives_neon: the table froze
+            # on 2026-03-17 and credited programs since paused or repealed.)
             try:
-                cur.execute("""
-                    SELECT sales_tax_exempt, property_tax_abatement,
-                           data_center_specific, incentive_details
-                      FROM tax_incentives_neon
-                     WHERE state_abbr = %s LIMIT 1
-                """, (state.upper(),))
-                r = cur.fetchone()
+                from util.tax_incentives import state_incentive
+                r = state_incentive(cur, state)
                 if r:
+                    sig["tax_status"] = r.get("status")
                     offset = 0.0
                     if r.get("sales_tax_exempt"):      offset += 0.05  # ~5% capex
                     if r.get("property_tax_abatement"): offset += 0.08  # ~8% over horizon
@@ -299,7 +298,8 @@ def simulate_buildout():
                      "$0.6-1.3M/MW/yr ex-power industry ranges. Redundancy mult "
                      "1.0/1.15/1.6/1.8 for N/N+1/2N/2N+1. Power = capacity × "
                      "8760 × 0.55 utilization × 1.30 PUE × ¢/kWh. Tax offset "
-                     "from tax_incentives_neon (sales 5% + property 8% + DC-bonus "
-                     "3%, capped 20%). DCPI verdict + water_stress + retail rate "
+                     "from the state incentive record (sales 5% + property 8% + "
+                     "DC-bonus 3%, capped 20%; a program paused or repealed for "
+                     "new applicants counts 0). DCPI verdict + water_stress + retail rate "
                      "pulled live. Sensitivity walks each input ±20%."),
     ), 200
