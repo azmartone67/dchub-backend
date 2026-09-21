@@ -12,8 +12,10 @@ with paid users and the email-suppression list excluded so the send is clean.
 Admin-gated (X-Admin-Key = DCHUB_ADMIN_KEY, or X-Internal-Key = DCHUB_INTERNAL_KEY).
 
 "Free" = has a valid email AND a `users.plan` value POSITIVELY KNOWN not to
-pay. Suppressed / unsubscribed / bounced addresses (email_suppression) and the
-operator's own mailboxes are removed. Deduped by lower(email), newest kept.
+pay. Suppressed / unsubscribed / bounced addresses (email_suppression), the
+operator's own mailboxes, and every other address that is ours (dchub domains,
+probes, test fixtures — routes/_audience_identity) are removed. Deduped by
+lower(email), newest kept.
 
 ★ INVERTED 2026-09-20, after a live read of this endpoint shipped 20 PAYING
   plans labelled "free". The filter was a denylist — `_PAID = ("pro",
@@ -51,7 +53,8 @@ from flask import Blueprint, Response, jsonify, request
 logger = logging.getLogger(__name__)
 audience_export_bp = Blueprint("audience_export", __name__)
 
-from routes._audience_identity import is_operator_email  # noqa: E402
+from routes._audience_identity import (  # noqa: E402
+    is_internal_email, is_operator_email)
 
 # If the registry cannot be imported we fall back to this. It is deliberately
 # the NARROWEST defensible answer, not a copy of today's derived set: a
@@ -228,7 +231,7 @@ def _gather():
     _return(c)
 
     rows, seen, with_name = [], set(), 0
-    suppressed_hits = operator_hits = not_free_hits = 0
+    suppressed_hits = operator_hits = internal_hits = not_free_hits = 0
     for email, name, company, plan, created in users:
         key = email.strip().lower()
         if not key or key in seen:
@@ -240,6 +243,14 @@ def _gather():
         # see routes/_audience_identity for why a marker list cannot see it.
         if is_operator_email(key):
             operator_hits += 1
+            continue
+        # Ours by shape — dchub domains, probes, test fixtures. The list
+        # warm_key_cohort's removed_ours applies, imported, not copied. Until
+        # 2026-09-21 this loop applied only the named rule above, and 21 of
+        # the 149 rows it shipped were ours. Checked AFTER the operator rule so
+        # the two published counts never overlap.
+        if is_internal_email(key):
+            internal_hits += 1
             continue
         # Belt and braces against the two layers drifting: the SQL allowlist
         # should already have removed this row, so a hit here is a defect, and
@@ -259,6 +270,7 @@ def _gather():
     meta = {"total": len(rows), "with_name": with_name,
             "suppressed_excluded": suppressed_hits,
             "operator_excluded": operator_hits,
+            "internal_excluded": internal_hits,
             "not_free_excluded_in_python": not_free_hits,
             "excluded_unknown_or_paid_plan": excluded_plans,
             "non_paid_plans": non_paid}
@@ -294,6 +306,7 @@ def free_users_csv():
                              "X-Total-Rows": str(meta["total"]),
                              "X-With-Name": str(meta["with_name"]),
                              "X-Operator-Excluded": str(meta["operator_excluded"]),
+                             "X-Internal-Excluded": str(meta["internal_excluded"]),
                              "X-Excluded-Unknown-Or-Paid-Plan":
                                  json.dumps(ex, sort_keys=True)
                                  if ex is not None else "unread"})
