@@ -193,6 +193,9 @@
     "test_llm_spend.py": {
       "pglob": 660
     },
+    "test_llm_spend_coverage.py": {
+      "pglob": 680
+    },
     "test_locked_gate_manifest_post_only.py": {
       "glob": 670
     },
