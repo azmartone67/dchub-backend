@@ -55,6 +55,10 @@ class FakeDB:
     def __init__(self, rows):
         self.rows = [dict(r) for r in rows]
         self.statements = []            # every normalised statement executed
+        # crm_flush_last exists only once the schema script has created it;
+        # its columns and primary key are read FROM that DDL.
+        self.flush_last = {}            # primary key -> row
+        self.flush_cols = self.flush_pk = None
 
     def snapshot(self):
         return copy.deepcopy(self.rows)
@@ -68,7 +72,13 @@ class FakeDB:
         self.statements.append(s)
         p = iter(params or ())
         if s.startswith("CREATE TABLE IF NOT EXISTS crm_outbound_queue"):
+            if mm := re.search(r"CREATE TABLE IF NOT EXISTS crm_flush_last \((.+?)\);", s):
+                defs = [d.strip() for d in mm[1].split(",")]
+                self.flush_cols = [d.split()[0] for d in defs]
+                self.flush_pk = [d.split()[0] for d in defs if "PRIMARY KEY" in d]
             return [], 0
+        if "crm_flush_last" in s:
+            return self._run_flush_last(s, p)
         m = re.fullmatch(
             r"SELECT (?P<cols>.+?) FROM crm_outbound_queue"
             r"(?: WHERE (?P<where>.+?))?(?: GROUP BY (?P<group>\w+))?"
@@ -91,6 +101,51 @@ class FakeDB:
                 new = {col: fn(r) for col, fn in sets}
                 r.update(new)
             return [], len(hit)
+        raise AssertionError(f"fake DB does not understand: {s[:160]}")
+
+    def _run_flush_last(self, s, p):
+        if self.flush_cols is None:
+            raise AssertionError('relation "crm_flush_last" does not exist')
+        m = re.fullmatch(
+            r"INSERT INTO crm_flush_last \((?P<cols>[^)]+)\) VALUES \((?P<vals>.+?)\)"
+            r" ON CONFLICT \((?P<key>\w+)\) DO UPDATE SET (?P<set>.+)", s)
+        if m:
+            cols = [c.strip() for c in m["cols"].split(",")]
+            if not set(cols) <= set(self.flush_cols):
+                raise AssertionError(f"crm_flush_last has no column in {cols}")
+            if [m["key"]] != self.flush_pk:
+                raise AssertionError("there is no unique or exclusion constraint "
+                                     "matching the ON CONFLICT specification")
+            row = {}
+            for c, v in zip(cols, [v.strip() for v in m["vals"].split(",")], strict=True):
+                if v == "%s":
+                    row[c] = next(p)
+                elif v == "%s::jsonb":
+                    row[c] = json.loads(next(p))
+                elif v == "NOW()":
+                    row[c] = NOW
+                else:
+                    raise AssertionError(f"fake DB does not understand value: {v}")
+            old = self.flush_last.get(row[m["key"]])
+            if old is None:
+                self.flush_last[row[m["key"]]] = row
+            else:
+                for a in m["set"].split(","):
+                    mm = re.fullmatch(r"(\w+) = EXCLUDED\.(\w+)", a.strip())
+                    if not mm or mm[1] not in self.flush_cols:
+                        raise AssertionError(f"fake DB does not understand assignment: {a}")
+                    old[mm[1]] = row[mm[2]]
+            return [], 1
+        m = re.fullmatch(r"SELECT (?P<cols>.+?) FROM crm_flush_last", s)
+        if m:
+            age = "EXTRACT(EPOCH FROM (NOW() - ran_at))/3600.0"
+            cols = [c.strip() for c in m["cols"].split(",")]
+            for c in cols:                  # checked even when the table is empty
+                if c != age and c not in self.flush_cols:
+                    raise AssertionError(f"fake DB has no column {c!r}")
+            return [tuple((NOW - r["ran_at"]).total_seconds() / 3600.0 if c == age
+                          else copy.deepcopy(r[c]) for c in cols)
+                    for r in self.flush_last.values()], 0
         raise AssertionError(f"fake DB does not understand: {s[:160]}")
 
     def _where(self, where, p):
@@ -140,6 +195,8 @@ class FakeDB:
             for r in rows:
                 out[r[group]] = out.get(r[group], 0) + 1
             return list(out.items())
+        if cols == ["COUNT(*)"]:
+            return [(len(rows),)]
         if cols == ["EXTRACT(EPOCH FROM (NOW() - MIN(captured_at)))/3600.0"]:
             if not rows:
                 return [(None,)]
@@ -267,6 +324,9 @@ def m(monkeypatch):
                      DISABLE=False, DCHUB_ADMIN_KEY="adm-test",
                      _SCHEMA_READY=False).items():
         monkeypatch.setattr(mod, k, v)
+    # Every flush records itself under this process's role (crm_flush_last).
+    for k in ("DCHUB_ROLE", "RAILWAY_SERVICE_NAME", "RAILWAY_REPLICA_ID"):
+        monkeypatch.delenv(k, raising=False)
     return mod
 
 
@@ -289,6 +349,16 @@ def _by_id(db):
     return {r["id"]: r for r in db.rows}
 
 
+def _queue_reads_or_writes(db):
+    """Statements that read lead rows or change the queue. Every flush exit
+    now records itself (crm_flush_last), so a skip runs SQL — the schema
+    script, one unsent COUNT(*) and the upsert — and none of it is either."""
+    return [s for s in db.statements
+            if "crm_outbound_queue" in s
+            and not s.startswith(("CREATE TABLE IF NOT EXISTS crm_outbound_queue",
+                                  "SELECT COUNT(*) FROM crm_outbound_queue"))]
+
+
 # ── 1. the gate ──────────────────────────────────────────────────────
 
 def test_THE_INCIDENT_a_non_pat_key_touches_zero_rows(m, monkeypatch):
@@ -303,8 +373,18 @@ def test_THE_INCIDENT_a_non_pat_key_touches_zero_rows(m, monkeypatch):
         assert "pat-" in out["reason"], out
         assert "pushed" not in out, "a skip must not carry a green-looking pushed count"
     assert hs.calls == [], f"HubSpot was called {len(hs.calls)}x with a key health calls unusable"
-    assert db.statements == [], f"the gate let SQL through: {db.statements[:2]}"
+    assert _queue_reads_or_writes(db) == [], f"the gate let SQL through: {db.statements[:3]}"
+    assert db.flush_last["all"]["summary"]["skipped"] == "destination_not_configured"
     assert db.rows == before, "rows changed during a flush that should not have run"
+
+
+def test_MUST_FAIL_CONTROL_the_filter_sees_a_flush_that_ran(m, monkeypatch):
+    """_queue_reads_or_writes is what the gate tests assert empty — prove it
+    is not empty by construction: a flush that runs shows its SELECT and UPDATE."""
+    db, _ = _wire(m, monkeypatch, [_row(1)])
+    m.flush_outbound_queue()
+    seen = _queue_reads_or_writes(db)
+    assert [s.split()[0] for s in seen] == ["SELECT", "UPDATE"], seen
 
 
 def test_the_gate_IS_the_health_predicate_not_a_copy(m, monkeypatch):
@@ -314,7 +394,7 @@ def test_the_gate_IS_the_health_predicate_not_a_copy(m, monkeypatch):
     monkeypatch.setattr(m, "_destination_state", lambda: (False, "SENTINEL-GAP-7"))
     out = m.flush_outbound_queue()
     assert (out["skipped"], out["reason"]) == ("destination_not_configured", "SENTINEL-GAP-7")
-    assert hs.calls == [] and db.statements == []
+    assert hs.calls == [] and _queue_reads_or_writes(db) == []
     monkeypatch.setattr(m, "_destination_state", lambda: (True, ""))
     out = m.flush_outbound_queue()
     assert out["ok"] is True and out["pushed"] == 1, out
@@ -525,16 +605,20 @@ def test_the_scheduler_log_names_a_skip(m, monkeypatch):
     log = _RecLogger()
     ns = {"logger": log}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), "crawler_scheduler.py", "exec"), ns)
-    monkeypatch.setattr(m, "flush_outbound_queue", lambda limit=100: {
+    calls = []
+    monkeypatch.setattr(m, "flush_outbound_queue", lambda limit=100, **kw: calls.append(kw) or {
         "ok": False, "skipped": "destination_not_configured", "reason": "GAP-XYZ"})
-    ns["_run_crm_outbound_flush"]()
+    ret = ns["_run_crm_outbound_flush"]()
     assert [lvl for lvl, _ in log.lines] == ["warning"], log.lines
     assert "destination_not_configured" in log.lines[0][1] and "GAP-XYZ" in log.lines[0][1]
+    assert calls == [{"trigger": "scheduler"}], calls
+    assert ret == {"slot_status": "stalled: destination_not_configured"}, ret
     log.lines.clear()
-    monkeypatch.setattr(m, "flush_outbound_queue", lambda limit=100: {
+    monkeypatch.setattr(m, "flush_outbound_queue", lambda limit=100, **kw: {
         "ok": True, "pushed": 3, "failed": 0, "provider": "hubspot"})
-    ns["_run_crm_outbound_flush"]()
+    ret = ns["_run_crm_outbound_flush"]()
     assert [lvl for lvl, _ in log.lines] == ["info"] and "pushed=3" in log.lines[0][1]
+    assert ret == {"slot_status": "success"}, ret
 
 
 # ── the fake itself ──────────────────────────────────────────────────

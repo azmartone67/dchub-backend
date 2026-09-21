@@ -1329,7 +1329,7 @@ def _run_with_guard(name, func):
         
         def _target():
             try:
-                func()
+                result["ret"] = func()
                 result["done"] = True
             except Exception as e:
                 result["error"] = str(e)
@@ -1345,7 +1345,13 @@ def _run_with_guard(name, func):
         elif result["error"]:
             status = f"error: {result['error'][:100]}"
         else:
-            status = "success"
+            # A job that returns {"slot_status": "<status>"} beats THAT — an
+            # honest non-success without raising (_run_crm_outbound_flush: a
+            # skipped flush used to beat 'success'). Anything else a job
+            # returns is ignored, so no existing return value can leak in.
+            ret = result.get("ret")
+            status = ((str(ret.get("slot_status") or "").strip() or "success")
+                      if isinstance(ret, dict) else "success")
             
     except Exception as e:
         status = f"guard_error: {str(e)[:100]}"
@@ -4176,26 +4182,36 @@ def _run_crm_outbound_flush():
     stub). Defaults to STUB mode (no creds → CSV-export queue). Each
     capture_event() hook elsewhere in the codebase already writes rows
     inline; this cron is just the async outbound delivery loop.
-    Never raises. Kill switch CRM_REVERSE_ETL_DISABLE=1."""
+    Never raises. Kill switch CRM_REVERSE_ETL_DISABLE=1.
+
+    ★2026-09-21: returns {"slot_status": flush_slot_status(result)} so the
+    guard beats what the flush DID. Never raising meant a skipped flush beat
+    'success', and the public board read a job that delivered nothing as
+    healthy. The flush also records itself (crm_flush_last) for /crm/health,
+    which is served by a process that never runs this slot."""
     try:
-        from routes.crm_reverse_etl import flush_outbound_queue as _flush
-        d = _flush(limit=100) or {}
-        if d.get("ok") and not isinstance(d.get("skipped"), str):
+        from routes.crm_reverse_etl import (flush_outbound_queue as _flush,
+                                            flush_slot_status)
+        d = _flush(limit=100, trigger="scheduler") or {}
+        status = flush_slot_status(d)
+        if status == "success":
             logger.info(
-                "📇 crm_outbound_flush: pushed=%s failed=%s provider=%s dry_run=%s",
-                d.get("pushed"), d.get("failed"),
+                "📇 crm_outbound_flush: pushed=%s failed=%s transient=%s "
+                "provider=%s dry_run=%s",
+                d.get("pushed"), d.get("failed"), d.get("transient_errors"),
                 d.get("provider"), d.get("dry_run"),
             )
         else:
             # A skip or a destination refusal logged as "pushed=None failed=None"
             # reads as a quiet day. Name it.
             logger.warning(
-                "📇 crm_outbound_flush: NOT delivering (%s) — %s",
-                d.get("skipped") or d.get("error") or "destination refused",
-                d.get("reason") or d,
+                "📇 crm_outbound_flush: NOT delivering (%s; unsent=%s) — %s",
+                status, d.get("unsent"), d.get("reason") or d,
             )
+        return {"slot_status": status}
     except Exception as e:
         logger.error("📇 crm_outbound_flush: error — %s", e)
+        return {"slot_status": f"error: {e}"}
 
 
 def _run_ai_surface_sentinel():
