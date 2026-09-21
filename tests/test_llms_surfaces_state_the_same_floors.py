@@ -21,8 +21,9 @@ look identical to any check that only asks "is the number here wrong?".
 
 ★ The static llms-full.txt / static/llms-full.txt files in the repo are NOT
 what serves. /llms-full.txt is an inline canon_text() block in
-ai_discovery_routes.register_discovery_routes; ai_agent_discovery.serve_llms_full
-reads the static file and is shadowed by it. Those files still read 18,500+ /
+ai_discovery_routes.register_discovery_routes, the path's only registration
+(ai_agent_discovery.serve_llms_full read the static file, was never registered
+by main.py, and was deleted 2026-09-21). Those files still read 18,500+ /
 1,900+, so a guard pointed at them would pass while the live surface stayed
 short. This drives the real route through a Flask test client.
 """

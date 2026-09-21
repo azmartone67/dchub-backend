@@ -178,6 +178,9 @@
     "test_insert_counts_name_rows_inserted.py": {
       "walk": 78
     },
+    "test_install_first_use_contract.py": {
+      "walk": 70
+    },
     "test_iso_error_echo_scrubbed.py": {
       "glob": 20
     },
@@ -196,6 +199,7 @@
     "test_llm_spend_coverage.py": {
       "pglob": 680
     },
+    "test_llms_cite_without_mcp.py": {"walk": 76},
     "test_locked_gate_manifest_post_only.py": {
       "glob": 670
     },

@@ -2239,6 +2239,16 @@ try:
     except Exception as _instats_early:
         import logging
         logging.getLogger(__name__).warning('install_stats wiring failed: %s', _instats_early)
+    # 2026-09-20: install funnel — GET /api/v1/ops/install-funnel. install-stats
+    # reads minted 0; this names WHICH rung is empty (visitors at the edge ->
+    # mint attempts on every /keys/claim outcome -> mints), probe-excluded.
+    # Same safe-zone recipe as install_stats above.
+    try:
+        from routes.install_funnel import register_install_funnel
+        register_install_funnel(app)
+    except Exception as _infun_early:
+        import logging
+        logging.getLogger(__name__).warning('install_funnel wiring failed: %s', _infun_early)
     # PHASE 0 (2026-08-05) — detector-supply scout. Scans GitHub for repos
     # carrying known-shape code-transform corpora and records what survives a
     # DETERMINISTIC filter, to answer whether a funnel exists at all before the
@@ -3716,6 +3726,20 @@ try:
     except Exception as _rms:
         import logging
         logging.getLogger(__name__).warning('reliability_master_shell wiring failed: %s', _rms)
+    # 2026-09-21: LOOP-CLOSURE master shell (#79) — one lane per open actuation
+    # gap, each naming WHO OWNS THE LEVER. It drives the one lever nothing was
+    # pulling (brain_spec_implementer, be#5004 — unscheduled) and names the rest
+    # (human desk, existing scheduler, a pending decision). SHADOW by default;
+    # arm with LOOP_CLOSURE_ARM=1 (lane 5 also needs SPEC_IMPLEMENTER_ARM=1).
+    # Kill: LOOP_CLOSURE_DISABLED=1; per-lane LOOP_CLOSURE_LANE_<NAME>_OFF=1.
+    # Carries an inert-check on itself (armed + a READY lane + no action).
+    try:
+        from routes.loop_closure_master_shell import loop_closure_master_shell_bp
+        app.register_blueprint(loop_closure_master_shell_bp)
+        print("[main] loop_closure_master_shell_bp registered: POST /api/v1/admin/loop-closure/master-tick", flush=True)
+    except Exception as _lcs:
+        import logging
+        logging.getLogger(__name__).warning('loop_closure_master_shell wiring failed: %s', _lcs)
     # 2026-07-03: AI-Adoption master shell — the loop whose single north-star is
     # DISTINCT EXTERNAL AI AGENTS / WEEK. Orchestrates existing pieces (ai_reach_rollup,
     # brain_ecosystem_watch, mcp_registry_outreach, geo_autopublish) across 5 tiers:

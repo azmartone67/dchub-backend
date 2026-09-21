@@ -2383,6 +2383,19 @@ def claim_key():
     if ip and not _kc_re.match(r"^[\d:.]{3,45}$", ip):
         ip = ip[:64]  # keep but flag in metadata
 
+    # ★ install-page funnel (2026-09-20): EVERY exit below records an attempt for
+    # an install-* client_name, not only the mint. Both reuse branches hand back
+    # an existing key under its ORIGINAL client_name, so a visitor who pressed
+    # "mint" on /install/<client> otherwise leaves no install-* trace at all.
+    # No-op for any other client_name; fail-open (routes/install_funnel.py).
+    def _note_install_attempt(outcome, key=None, key_client=None):
+        try:
+            from routes.install_funnel import record_install_attempt
+            record_install_attempt(client_name, outcome, api_key=key,
+                                   key_client_name=key_client, ip=ip, ua=ua)
+        except Exception:
+            pass
+
     # Phase ZZ+1 (2026-05-15) — DEDUPE STRATEGY CHANGE.
     #
     # Was: 1 key per IP per 24h. Silently broke shared-IP deployments
@@ -2469,6 +2482,7 @@ def claim_key():
             # 'identified'. Never hardcode — that would over-claim to the agent.
             existing_tier = (existing[2] if len(existing) > 2 and existing[2] else "free")
             _restamp_claim_session(existing_key)
+            _note_install_attempt("reused", existing_key, client_name)
             return jsonify(
                 ok=True,
                 api_key=existing_key,
@@ -2521,7 +2535,8 @@ def claim_key():
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
-                """SELECT api_key, tier, COUNT(*) OVER () AS unused_n
+                """SELECT api_key, tier, COUNT(*) OVER () AS unused_n,
+                          metadata->>'client_name'
                      FROM mcp_dev_keys
                     WHERE metadata->>'source' = 'claim_api'
                       AND metadata->>'ip' = %s
@@ -2536,6 +2551,9 @@ def claim_key():
         if _unused and len(_unused) >= _UNUSED_KEY_CAP:
             _u_key, _u_tier = _unused[0][0], (_unused[0][1] or "free")
             _restamp_claim_session(_u_key)
+            # The key handed back may carry ANOTHER client_name (web-map, …).
+            _note_install_attempt("reused_unused_cap", _u_key,
+                                  _unused[0][3] if len(_unused[0]) > 3 else None)
             return jsonify(
                 ok=True,
                 api_key=_u_key,
@@ -2655,6 +2673,7 @@ def claim_key():
             except Exception:
                 pass  # never break a claim on a courtesy email
     except Exception as e:
+        _note_install_attempt("failed")
         return jsonify(
             ok=False,
             error="storage_failed",
@@ -2692,6 +2711,7 @@ def claim_key():
                      "issued at your paid tier, not the free tier."),
         }
 
+    _note_install_attempt("minted", api_key, client_name)
     return jsonify(
         ok=True,
         api_key=api_key,
@@ -6157,6 +6177,10 @@ def mcp_funnel():
                 _rel = _bridge.get("relayed_click", 0)
                 _un  = _bridge.get("unattributable", 0)
                 _paid_total = _sig + _cal + _rel + _un
+                _psa_rate = (round(100.0 * (_sig + _cal + _rel) / _paid_total, 1)
+                             if _paid_total else None)
+                _psa_floor = 10
+                _psa_withhold = _paid_total < _psa_floor
                 out["paid_signal_attribution_30d"] = {
                     "paid_total":                          _paid_total,
                     "bridged_to_signal":                   _sig + _cal + _rel,
@@ -6165,9 +6189,22 @@ def mcp_funnel():
                     "bridged_via_relayed_click":           _rel,
                     "bridged_via_relayed_click_basis":     _PS_BRIDGE_BASIS,
                     "unattributable":                      _un,
+                    # ★ 2026-09-21: a rate over too few sales is WITHHELD,
+                    # not published. paid_total read 2-4 all month, so this
+                    # field published 0.0 over two sales -- read as "every
+                    # attributable sale is lost", and cited as EVIDENCE by the
+                    # brain's L6 citation gate and scaffold reconciler. Same
+                    # shape as this payload's *_wow_pct fields: headline None,
+                    # arithmetic in *_withheld, the reason beside it.
                     "attribution_rate_pct": (
-                        round(100.0 * (_sig + _cal + _rel) / _paid_total, 1)
-                        if _paid_total else None),
+                        None if _psa_withhold else _psa_rate),
+                    "attribution_rate_pct_withheld": (
+                        _psa_rate if _psa_withhold else None),
+                    "attribution_rate_floor": _psa_floor,
+                    "attribution_rate_withheld_reason": (
+                        f"paid_total {_paid_total} is below the floor of "
+                        f"{_psa_floor} -- a rate over {_paid_total} sales is "
+                        f"not a measurement" if _psa_withhold else None),
                     "definition": (
                         "honest paid = stripe_customer_id NOT NULL, seed/comp/NLR "
                         "excluded (identical filter to conversions_30d_real). "

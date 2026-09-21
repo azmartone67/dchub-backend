@@ -64,7 +64,10 @@ import os
 
 from flask import Blueprint, Response, jsonify, request
 
-from routes._audience_identity import is_operator_email
+# Re-exported under the old names, NOT renamed: audience_keys_export borrows
+# `_is_internal` from this module by object identity and pins that it does.
+from routes._audience_identity import (  # noqa: F401
+    INTERNAL_MARKERS as _INTERNAL_MARKERS, is_internal_email as _is_internal)
 
 logger = logging.getLogger(__name__)
 warm_key_cohort_bp = Blueprint("warm_key_cohort", __name__)
@@ -115,17 +118,10 @@ _CONSUMER_DOMAINS = {
 
 # Ours. An address here is the operator, a probe, or a reviewer comp — never a
 # prospect, and counting one as a lead is the failure this file's own history
-# is full of. `example.` / `test@` catch hand-typed fixtures.
-# ★ SUBSTRINGS CANNOT SEE A CONSUMER MAILBOX. This list matched none of the
-# operator's own address, `azmartone@gmail.com` — no dchub marker in it — so it
-# entered the cohort as a prospect. The named-address half of the rule lives in
-# routes/_audience_identity and is IMPORTED by both exports, not copied: a copy
-# is how the two lists drift.
-# `dchubmail.com` and the `+qa`/`+test` plus-tags were both found in the live
-# cohort on the first read — ours, and counted as leads until they were named.
-_INTERNAL_MARKERS = ("dchub.cloud", "dchub.io", "dchubmail.com", "@example.",
-                     "example.com", "test@", "probe@", "+probe@", "+qa",
-                     "+test", "+dev", "noreply", "no-reply")
+# is full of. The rule — `_INTERNAL_MARKERS` and `_is_internal` — lives in
+# routes/_audience_identity and is imported at the top of this file, so the
+# free-users export applies the same list instead of a copy (or none: before
+# 2026-09-21 it applied none, and 21 of its 149 rows were ours).
 
 
 def is_non_paid_tier(tier) -> bool:
@@ -173,13 +169,6 @@ def _release(c, error=False):
 def _domain(email: str) -> str:
     e = (email or "").strip().lower()
     return e.rsplit("@", 1)[1] if "@" in e else ""
-
-
-def _is_internal(email: str) -> bool:
-    e = (email or "").strip().lower()
-    if is_operator_email(e):
-        return True
-    return any(m in e for m in _INTERNAL_MARKERS)
 
 
 def _domain_kind(email: str) -> str:
