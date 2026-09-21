@@ -249,7 +249,6 @@ _BASELINE = {
     "routes/brain_inspector.py": 1,
     "routes/comprehensive_report.py": 4,
     "routes/deal_autopsy.py": 1,
-    "routes/deals_routes.py": 1,
     "routes/extractor_brain.py": 1,
     "routes/hyperscaler_brief.py": 5,
     "routes/market_brief.py": 6,
