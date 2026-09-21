@@ -44,8 +44,10 @@ from util.facility_facts import (change_items as _change_items,
                                  is_fleet_row as _is_fleet_row,
                                  real_operator as _real_operator,
                                  real_status as _real_status,
-                                 street_address as _street_address)
+                                 street_address as _street_address,
+                                 street_name_only as _street_name_only)
 import datetime as _dt
+from urllib.parse import quote as _url_quote
 
 logger = logging.getLogger(__name__)
 facility_profile_bp = Blueprint("facility_profile", __name__)
@@ -1370,12 +1372,351 @@ def _facility_change_rows(fac: dict):
     return [tuple(r) for r in rows if isinstance(r, (list, tuple))]
 
 
+# r-location-gate (2026-09-21): operator-withheld locations. The registry and
+# its two SQL functions are production schema added by a migration this code
+# cannot assume has run, so the functions are PROBED first — the way
+# _fetch_facility_by_slug probes columns — by exact signature, resolved on the
+# search_path the call itself will use. The id prefixes are the registry's
+# own: 'df' for a discovered_facilities row, 'f' for a facilities row.
+_WITHHOLD_ID_PREFIX = {"discovered_facilities": "df", "facilities": "f"}
+_WITHHOLD_FN_PROBE = (
+    "SELECT to_regprocedure('facility_location_redaction_keys("
+    "text,text,text,text,text,text)') IS NOT NULL"
+    " AND to_regprocedure('facility_location_is_redacted(text[])') IS NOT NULL")
+
+
+def _location_withheld(fac: dict) -> bool:
+    """True when the operator asked that this facility's exact location not be
+    published. Fetched by the ROUTE before anything reads the location (the
+    _nearby_generation_rows rule) and passed in as fac["_location_withheld"].
+
+    ★ FAIL-SOFT TO False, ALWAYS — a missing function, a missing column, no
+      pool, an unknown table — and never a 404 or a 500. False is the safe
+      error because the rows this protects already store no coordinates and
+      no address (the registry's write-side triggers clear them): a wrong
+      False costs the withheld SENTENCE ("not on record" instead), never the
+      location."""
+    try:
+        table = fac.get("_src_table")
+        prefix = _WITHHOLD_ID_PREFIX.get(table)
+        rid = fac.get("id")
+    except Exception:
+        return False
+    if not prefix or rid is None or str(rid).strip() == "":
+        return False
+    conn = None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return False
+        with conn.cursor() as c:
+            c.execute(_WITHHOLD_FN_PROBE)
+            probe = c.fetchone()
+            if not probe or probe[0] is not True:
+                return False
+            # `table` is one of the two literals keyed above, never input.
+            c.execute(
+                "SELECT facility_location_is_redacted("
+                "facility_location_redaction_keys("
+                "%s, id::text, canonical_slug, source, source_id, source_url))"
+                " FROM " + table + " WHERE id = %s LIMIT 1",
+                (prefix, rid))
+            row = c.fetchone()
+        return bool(row) and row[0] is True
+    except Exception as _wh_err:
+        logger.warning("facility_profile: location-withheld check unavailable "
+                       "(%s) — treated as not withheld", _wh_err)
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ★★★ r-location-gate (2026-09-21, owner-approved policy): a facility's EXACT
+# location is paid-only. This page is edge-cached for 24 h and byte-identical
+# for every visitor — search engines included — so it is the ANONYMOUS view,
+# everywhere in the document: visible text, attributes, iframes, links,
+# JSON-LD and inline script. It may state the street NAME (never the house or
+# building number), the city, region and country, and a point rounded to
+# _APPROX_DP decimals (~1.1 km). A signed-in visitor gets the exact point
+# client-side from GET/POST /api/v1/facility/<slug>/location, never from here,
+# and the page reads no cookie server-side, so the cache stays one copy.
+#
+# ★ An operator-withheld facility (facility_location_is_redacted, via
+#   _location_withheld) states that, and shows no area, map or reveal button.
+#   Its stored coordinates and address are already NULL; the route nulls them
+#   again before anything reads them.
+_APPROX_DP = 2              # decimals published: 0.01 deg ~ 1.1 km
+_APPROX_HALF_BOX = 0.02     # degrees shown either side of the rounded point
+_APPROX_CAPTION = "Approximate area (about 1 km)"
+_WITHHELD_TEXT = "Exact location withheld at the operator's request."
+_NOT_ON_RECORD_TEXT = "Exact location not on record."
+# The anonymous offer. The reveal script never repeats this number: a signed-in
+# visitor is shown the server's own `allowance.limit`, which is configurable.
+_EXACT_LOCATIONS_PER_MONTH = 10
+_DEVELOPER_PLAN_PRICE = "$49/mo"
+
+
+def _coarse_point(lat, lng):
+    """(lat, lng) rounded to _APPROX_DP decimals, or None with no usable pair.
+
+    The (0,0) sentinel belongs to routes.provenance.normalize_coordinates, as
+    everywhere else on this page; a pair it cannot check is not published."""
+    try:
+        from routes.provenance import normalize_coordinates as _norm
+        c = _norm({"latitude": lat, "longitude": lng})
+        la, lo = float(c.get("latitude")), float(c.get("longitude"))
+    except Exception:
+        return None
+    if not (math.isfinite(la) and math.isfinite(lo)):
+        return None
+    if not (-90.0 <= la <= 90.0 and -180.0 <= lo <= 180.0):
+        return None
+    # + 0.0 turns a rounded -0.0 into 0.0
+    return round(la, _APPROX_DP) + 0.0, round(lo, _APPROX_DP) + 0.0
+
+
+# The reveal widget's script. Plain DOM calls only: every string the API sends
+# is inserted as a text node or through setAttribute, never as markup, and a
+# link it sends is used only when it is on this site. No literal house number,
+# coordinate or limit is in here; the slug and price arrive as data-*
+# attributes. Credentials are read exactly where the site's own pages keep
+# them (js/dchub-access-gate.js, static/gating.js in dchub-frontend): the
+# `dchub_token` bearer from localStorage or, when that is empty, its cookie;
+# else the `dchub_api_key`. The key is also tried if the token is refused.
+_LOCATION_REVEAL_JS = r"""
+(function () {
+  var box = document.getElementById('loc-exact');
+  if (!box || !window.fetch) return;
+  var slug = box.getAttribute('data-slug') || '';
+  var price = box.getAttribute('data-plan-price') || '';
+  var signin = document.getElementById('loc-signin');
+  var btn = document.getElementById('loc-reveal');
+  var note = document.getElementById('loc-note');
+  var out = document.getElementById('loc-out');
+  var approx = document.getElementById('loc-map');
+  if (!slug || !btn || !note || !out) return;
+  var url = '/api/v1/facility/' + encodeURIComponent(slug) + '/location';
+
+  function stored(k) {
+    try { return window.localStorage.getItem(k) || ''; } catch (e) { return ''; }
+  }
+  function cookie(k) {
+    var all = String(document.cookie || '').split(';');
+    for (var i = 0; i < all.length; i++) {
+      var c = all[i].replace(/^\s+/, '');
+      if (c.indexOf(k + '=') === 0) {
+        var v = c.slice(k.length + 1);
+        try { return decodeURIComponent(v); } catch (e) { return v; }
+      }
+    }
+    return '';
+  }
+  var creds = [];
+  var tok = stored('dchub_token') || cookie('dchub_token');
+  var key = stored('dchub_api_key');
+  if (tok) creds.push({ 'Authorization': 'Bearer ' + tok });
+  if (key) creds.push({ 'X-API-Key': key });
+  if (!creds.length) return;      // anonymous: the rendered sign-in link stays
+  var headers = creds[0];
+
+  function show(el, on) { if (el) el.hidden = !on; }
+  function empty(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+  function say(text) {
+    empty(note);
+    if (text) note.appendChild(document.createTextNode(text));
+    show(note, !!text);
+  }
+  function node(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.appendChild(document.createTextNode(text));
+    return e;
+  }
+  function count(v) {
+    return (typeof v === 'number' && isFinite(v) && v >= 0 && Math.floor(v) === v) ? v : null;
+  }
+  function coord(v, lim) {
+    var n = (typeof v === 'number') ? v
+      : ((typeof v === 'string' && v.replace(/\s+/g, '') !== '') ? Number(v) : NaN);
+    return (isFinite(n) && Math.abs(n) <= lim) ? n : null;
+  }
+  function day(iso) {
+    var d = new Date(typeof iso === 'string' ? iso : '');
+    if (isNaN(d.getTime())) return '';
+    return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+            'Oct', 'Nov', 'Dec'][d.getUTCMonth()] + ' ' + d.getUTCDate() +
+      ', ' + d.getUTCFullYear();
+  }
+  function onSite(u, fallback) {
+    return (typeof u === 'string' &&
+            (/^\/(?!\/)/.test(u) || /^https:\/\/dchub\.cloud(\/|$)/.test(u))) ? u : fallback;
+  }
+
+  function exact(r) {
+    var la = coord(r.latitude, 90), lo = coord(r.longitude, 180);
+    if (la === null || lo === null) return;       // keep the approximate view
+    empty(out);
+    out.appendChild(node('p', 'loc-exact-coords', la.toFixed(4) + ', ' + lo.toFixed(4)));
+    if (typeof r.address === 'string' && r.address) {
+      out.appendChild(node('p', 'loc-exact-addr', r.address));
+    }
+    var span = 0.01;
+    var q = new URLSearchParams();
+    q.set('bbox', [(lo - span).toFixed(5), (la - span).toFixed(5),
+                   (lo + span).toFixed(5), (la + span).toFixed(5)].join(','));
+    q.set('layer', 'mapnik');
+    q.set('marker', la.toFixed(6) + ',' + lo.toFixed(6));
+    var frame = document.createElement('iframe');
+    frame.setAttribute('title', 'Exact facility location map');
+    frame.setAttribute('loading', 'lazy');
+    frame.setAttribute('src', 'https://www.openstreetmap.org/export/embed.html?' + q.toString());
+    var wrap = node('div', 'loc-frame');
+    wrap.appendChild(frame);
+    out.appendChild(wrap);
+    var pin = new URLSearchParams();
+    pin.set('mlat', la.toFixed(6));
+    pin.set('mlon', lo.toFixed(6));
+    var open = node('a', 'loc-open', 'Open in OpenStreetMap \u2192');
+    open.setAttribute('href', 'https://www.openstreetmap.org/?' + pin.toString() +
+      '#map=17/' + la.toFixed(6) + '/' + lo.toFixed(6));
+    open.setAttribute('target', '_blank');
+    open.setAttribute('rel', 'noopener');
+    out.appendChild(open);
+    show(approx, false); show(btn, false); show(signin, false); say('');
+    show(out, true);
+  }
+
+  function handle(r) {
+    var s = (r && typeof r === 'object') ? r.status : '';
+    var a = (r && r.allowance && typeof r.allowance === 'object') ? r.allowance : {};
+    var limit = count(a.limit), left = count(a.remaining);
+    if (s === 'exact') { exact(r); return; }
+    if (s === 'reveal_available') {
+      btn.textContent = 'Show exact location' + ((left !== null && limit !== null)
+        ? ' (' + left + ' of ' + limit + ' left this month)' : '');
+      btn.disabled = false;
+      show(btn, true); say('');
+      return;
+    }
+    show(btn, false);
+    if (s === 'limit_reached') {
+      var when = day(a.resets_at);
+      say('You\'ve used your ' + (limit !== null ? limit + ' ' : '') +
+          'exact locations this month' + (when ? ' \u2014 resets ' + when : '') + '. ');
+      var up = node('a', '', 'Developer plan' + (price ? ' (' + price + ')' : '') +
+                    ' shows every exact location.');
+      up.setAttribute('href', onSite(r.upgrade_url, '/pricing'));
+      note.appendChild(up);
+      return;
+    }
+    if (s === 'sign_in') { say(''); show(signin, true); return; }
+    if (s === 'withheld') { show(approx, false); say('Exact location withheld at the operator\'s request.'); return; }
+    if (s === 'unknown') { say('Exact location not on record.'); return; }
+  }
+
+  function call(method) {
+    return window.fetch(url, { method: method, headers: headers,
+                               credentials: 'same-origin', cache: 'no-store' })
+      .then(function (resp) {
+        if (!resp.ok) { var err = new Error('HTTP ' + resp.status); err.status = resp.status; throw err; }
+        return resp.json();
+      });
+  }
+  function peek(i) {
+    headers = creds[i];
+    return call('GET').then(function (r) {
+      if (r && r.status === 'sign_in' && i + 1 < creds.length) return peek(i + 1);
+      handle(r);
+    }, function (err) {
+      var refused = !!err && (err.status === 401 || err.status === 403);
+      if (refused && i + 1 < creds.length) return peek(i + 1);
+      if (refused) show(signin, true);   // a refused credential reads as signed out
+    });
+  }
+  btn.addEventListener('click', function () {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    call('POST').then(handle, function () { btn.disabled = false; });
+  });
+  show(signin, false);
+  peek(0);
+})();
+"""
+
+
+def _location_html(slug, street_name, city, state, country, lat, lng,
+                   withheld) -> str:
+    """The Location section — the anonymous view only. PURE.
+
+    `slug` is the facility's frozen slug (the reveal API and the sign-in
+    return path both key on it). `street_name` must already be the street
+    NAME (util.facility_facts.street_name_only). With `withheld`, only the
+    place and the withheld sentence; with no usable coordinates, the place and
+    "not on record"; otherwise an approximate-area map around the point
+    rounded to _APPROX_DP decimals, with no marker, and the reveal widget."""
+    city = "" if _placeholder_city(city) else (city or "")
+    place = ", ".join(p for p in (city, state or "", country or "") if p)
+    lines = []
+    if street_name and not withheld:
+        lines.append(("Street", street_name))
+    if place:
+        lines.append(("Area", place))
+    head = ('<div class="section loc-section" id="location">'
+            '<div class="section-head"><h2>Location</h2></div>' + "".join(
+                f'<div class="loc-line"><span class="loc-k">{k}</span> '
+                f'<span class="loc-v">{_esc(v)}</span></div>' for k, v in lines))
+    if withheld:
+        return head + f'<p class="loc-note">{_esc(_WITHHELD_TEXT)}</p></div>'
+    point = _coarse_point(lat, lng)
+    if point is None:
+        return head + f'<p class="loc-note">{_esc(_NOT_ON_RECORD_TEXT)}</p></div>'
+    la, lo = point
+    # Every number printed below is formatted at _APPROX_DP, so that constant
+    # IS the published precision — not a rounding the format could undo.
+    dp = _APPROX_DP
+    bbox = (f"{max(-180.0, lo - _APPROX_HALF_BOX):.{dp}f},"
+            f"{max(-90.0, la - _APPROX_HALF_BOX):.{dp}f},"
+            f"{min(180.0, lo + _APPROX_HALF_BOX):.{dp}f},"
+            f"{min(90.0, la + _APPROX_HALF_BOX):.{dp}f}")
+    area_href = f"https://www.openstreetmap.org/#map=14/{la:.{dp}f}/{lo:.{dp}f}"
+    signup = "/signup?next=" + _url_quote("/facilities/" + (slug or ""), safe="/")
+    # r82: the iframe (scrolling=no) eats every tap, so a transparent link
+    # covers it — to the same rounded area, never a pinned point.
+    return head + f"""
+          <div class="loc-map" id="loc-map">
+            <div class="loc-frame">
+              <iframe width="100%" height="320" frameborder="0" scrolling="no" loading="lazy"
+                marginheight="0" marginwidth="0" title="Approximate area map"
+                src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&amp;layer=mapnik"></iframe>
+              <a class="loc-map-open" href="{area_href}" target="_blank" rel="noopener"
+                 aria-label="Open the approximate area in OpenStreetMap"></a>
+            </div>
+            <p class="loc-caption">{_esc(_APPROX_CAPTION)}</p>
+          </div>
+          <div class="loc-exact" id="loc-exact" data-slug="{_esc(slug)}"
+               data-plan-price="{_esc(_DEVELOPER_PLAN_PRICE)}">
+            <p class="loc-signin" id="loc-signin"><a class="link" rel="nofollow"
+               href="{_esc(signup)}">Sign in free to see the exact location &mdash; {_EXACT_LOCATIONS_PER_MONTH} sites a month</a></p>
+            <button type="button" class="loc-reveal" id="loc-reveal" hidden></button>
+            <p class="loc-note" id="loc-note" aria-live="polite" hidden></p>
+            <div class="loc-out" id="loc-out" aria-live="polite" hidden></div>
+          </div>
+          <script>{_LOCATION_REVEAL_JS}</script>
+        </div>"""
+
+
 def _facts_html(operator: str, street: str, status: str) -> str:
-    """The Operator / Address / Status line under the <h1>. PURE. The values
+    """The Operator / Street / Status line under the <h1>. PURE. The values
     arrive vetted by util.facility_facts; an empty one is left out, and with
-    none there is no line."""
+    none there is no line. `street` is the street NAME only — see
+    r-location-gate at _location_html."""
     facts = [(label, value) for label, value in (
-        ("Operator", operator), ("Address", street), ("Status", status))
+        ("Operator", operator), ("Street", street), ("Status", status))
         if value]
     if not facts:
         return ""
@@ -1491,6 +1832,14 @@ def _is_junk_facility(name, slug) -> bool:
 def _render_profile(fac: dict, slug: str) -> str:
     """Server-rendered facility profile. Matches the static file
     visual style so transitions between static + dynamic are seamless."""
+    # r-location-gate (2026-09-21): an operator-withheld row renders as if it
+    # had no location at all, whatever the dict still carries — the way
+    # production serves it (stored NULLs, and the route nulls them again
+    # before its lookups). A copy, so the caller's dict is left alone.
+    _withheld = bool(fac.get("_location_withheld"))
+    if _withheld:
+        fac = dict(fac, latitude=None, longitude=None, address=None,
+                   substation_band=None, _nearby_gen=[], _fiber_carriers=[])
     name = fac.get("name") or "Data Center"
     provider = fac.get("provider") or "Operator"
     city = fac.get("city") or ""
@@ -1518,12 +1867,16 @@ def _render_profile(fac: dict, slug: str) -> str:
     # r-facility-facts (2026-09-15): the operator, street address and status
     # this page states in its first lines and its meta description, and the
     # record's recorded changes. Each only when util.facility_facts accepts the
-    # stored value, and none on a fleet-sized row. The Address tile and the
-    # Place JSON-LD read the same `_street`, so the page cannot print an
+    # stored value, and none on a fleet-sized row. Every surface that states
+    # the street reads the same `_street_name`, so the page cannot print an
     # address in one place that it refuses in another.
+    # r-location-gate (2026-09-21): `_street` still decides WHETHER the stored
+    # value is a street address; only its street NAME is printed — no house
+    # number, unit or postcode on any surface (see _location_html).
     _fleet = _is_fleet_row(power)
     _operator = "" if _fleet else _real_operator(fac.get("provider"), name)
     _street = "" if _fleet else _street_address(address)
+    _street_name = _street_name_only(_street)
     _status = "" if _fleet else _real_status(fac.get("status"))
     _changes = [] if _fleet else _change_items(fac.get("_changes"))
     _last_updated = _changes[0][0] if _changes else None
@@ -1597,7 +1950,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     _hash8 = slug.rsplit("-", 1)[-1] if "-" in slug else slug
     _addr = {k: v for k, v in {
         "@type": "PostalAddress",
-        "streetAddress": _street or None,
+        "streetAddress": _street_name or None,
         # r-placeholder-city (2026-09-07): the comment above says "no
         # fabricated fields", and this line was publishing a PostalAddress
         # whose locality is 'Regional' — a machine-readable claim, to the
@@ -1623,12 +1976,10 @@ def _render_profile(fac: dict, slug: str) -> str:
         "address": _addr,
         "additionalType": "https://schema.org/DataCenter",
     }
-    if lat and lng:
-        schema["geo"] = {
-            "@type": "GeoCoordinates",
-            "latitude": float(lat),
-            "longitude": float(lng),
-        }
+    # r-location-gate (2026-09-21): no `geo` node. GeoCoordinates here was the
+    # exact point, published to every crawler under CC-BY; the address above
+    # carries the street name, city, region and country, which is all the
+    # anonymous view may state.
     # Dataset node = the explicit "you may cite/reproduce this" signal AI engines
     # look for (CC-BY-4.0, DC Hub as creator). Additive; references the Place @id.
     dataset_ld = _json.dumps({
@@ -1695,17 +2046,18 @@ def _render_profile(fac: dict, slug: str) -> str:
         stats.append(("City", city))
     if _has(state):                    stats.append(("State", state))
     if _has(country):                  stats.append(("Country", country))
-    if lat and lng:                    stats.append(("Coordinates", f"{float(lat):.4f}, {float(lng):.4f}"))
-    if _street:                        stats.append(("Address", _street))
+    # r-location-gate (2026-09-21): no Coordinates tile (it printed the point
+    # to 4 dp and linked a pinned map) and no Address tile — the Location
+    # section states the street name and the area.
     # r82 (2026-06-30): Clarity showed DEAD CLICKS on the metric tiles — they're
     # styled like buttons but were plain <div>s. Make the tap-worthy ones real
-    # links (Market → its DCPI page, Coordinates → the map). Doubles as onward-nav
+    # links (Market → its DCPI page). Doubles as onward-nav
     # (lifts the ~1.19 pages/session). _dcpi is fetched here (moved up) so the
     # Market tile can point at the same guaranteed-resolving /dcpi/<slug>.
+    # The exact point is read here server-side only, to pick the market; the
+    # page prints the market, never the point.
     _dcpi = _market_dcpi(city, state, lat, lng)
     _mslug0 = (_dcpi.get("market_slug") or "") if _dcpi else ""
-    _osm_href = (f"https://www.openstreetmap.org/?mlat={lat}&mlon={lng}#map=14/{lat}/{lng}"
-                 if (lat and lng) else "")
 
     # r84 (2026-07-04): Clarity STILL showed dead clicks on the stat grid — r82
     # only linked Market+Coordinates (and Market silently died when the market
@@ -1720,7 +2072,6 @@ def _render_profile(fac: dict, slug: str) -> str:
         "Power":       f"/sites/{_esc(slug)}" if slug else "",
         "Country":     f"/facilities/in/{_esc(_cc)}" if (len(_cc) == 2 and _cc.isalpha()) else "",
         "Market":      f"/dcpi/{_esc(_mslug0)}" if _mslug0 else "",
-        "Coordinates": _osm_href,
     }
 
     def _tile(label, value):
@@ -1837,11 +2188,11 @@ def _render_profile(fac: dict, slug: str) -> str:
         logger.warning(f"facility_profile fiber connectivity failed: {_fib_err}")
         fiber_html = ""
 
-    # r-facility-facts (2026-09-15): the Operator / Address / Status line under
+    # r-facility-facts (2026-09-15): the Operator / Street / Status line under
     # the <h1>, "Last updated" and the "What changed" list. The rows are fetched
     # by the ROUTE (_facility_change_rows), like _fiber_carriers; a render
     # without them lists nothing and states no date.
-    facts_html = _facts_html(_operator, _street, _status)
+    facts_html = _facts_html(_operator, _street_name, _status)
     updated_html = (
         f'<div class="updated">Last updated <time datetime="{_last_updated.isoformat()}">'
         f'{_esc(_display_day(_last_updated))}</time></div>' if _last_updated else "")
@@ -1867,7 +2218,9 @@ def _render_profile(fac: dict, slug: str) -> str:
                          time_to_power_months=_ttp,
                          nearby_generation_mw=_gen_mw,
                          radius_km=int(_RADIUS_KM),
-                         address=address)
+                         # r-location-gate: the snippet is the cached page too
+                         # (meta, og: and twitter: descriptions) — street NAME.
+                         address=_street_name)
 
     # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
     # substantive, indexable content when its market has a deep-dive (fail-soft '').
@@ -1897,30 +2250,12 @@ def _render_profile(fac: dict, slug: str) -> str:
         logger.warning(f"facility_profile sponsor module failed: {_sp_err}")
         sponsor_html = ""
 
-    map_block = ""
-    if lat and lng:
-        # Cheap inline map preview via OpenStreetMap static tile
-        bbox = f"{float(lng)-0.05},{float(lat)-0.04},{float(lng)+0.05},{float(lat)+0.04}"
-        # r82: the static map iframe (scrolling=no) ate every tap → dead click.
-        # Overlay a full-size transparent link so tapping the map opens OSM.
-        map_block = f"""
-        <div class="section">
-          <div class="section-head"><h2>Location</h2></div>
-          <div style="position:relative;margin-top:8px">
-            <iframe width="100%" height="320" frameborder="0" scrolling="no" loading="lazy"
-              marginheight="0" marginwidth="0" title="Facility location map"
-              src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&layer=mapnik&marker={lat},{lng}"
-              style="border:1px solid var(--b);border-radius:12px;display:block"></iframe>
-            <a href="{_osm_href}" target="_blank" rel="noopener"
-               aria-label="Open location in OpenStreetMap"
-               style="position:absolute;inset:0;z-index:2;border-radius:12px"></a>
-          </div>
-          <p style="margin-top:10px">
-            <a href="{_osm_href}"
-               target="_blank" class="link" style="margin-top:0">Open in OpenStreetMap &rarr;</a>
-          </p>
-        </div>
-        """
+    # r-location-gate (2026-09-21): the Location section replaces the pinned
+    # map (marker= at the stored point, an OSM link carrying mlat/mlon, and a
+    # bbox built from the raw floats). Street name, area, an approximate-area
+    # map around the rounded point and the reveal widget — see _location_html.
+    location_html = _location_html(_fslug, _street_name, city, state, country,
+                                   lat, lng, _withheld)
 
     # r83 SEO: BreadcrumbList JSON-LD (the r81 breadcrumb was visual-only).
     # Marking it up earns a rich breadcrumb trail in Google AND Bing results
@@ -2021,6 +2356,24 @@ def _render_profile(fac: dict, slug: str) -> str:
   .fiber-note{{margin:14px 0 0;font-size:13px}}
   .link{{display:inline-block;margin-top:16px;color:var(--ind);text-decoration:none;font-weight:600;font-size:14px}}
   .map-block{{padding:0;overflow:hidden}}
+  .loc-section [hidden]{{display:none !important}}
+  .loc-line{{font-size:15px;margin:2px 0}}
+  .loc-k{{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-right:4px;font-family:'JetBrains Mono',monospace}}
+  .loc-frame{{position:relative;margin-top:12px}}
+  .loc-frame iframe{{width:100%;height:320px;border:1px solid var(--b);border-radius:12px;display:block}}
+  .loc-map-open{{position:absolute;inset:0;z-index:2;border-radius:12px}}
+  .loc-caption{{color:var(--dim);font-size:12px;margin-top:6px;font-family:'JetBrains Mono',monospace}}
+  .loc-note{{color:var(--mut);font-size:14px;margin-top:12px}}
+  .loc-note a,.loc-open{{color:var(--ind);text-decoration:none;font-weight:600}}
+  .loc-exact{{margin-top:4px}}
+  .loc-signin .link{{margin-top:12px}}
+  .loc-reveal{{margin-top:14px;background:var(--grad);color:#fff;border:0;border-radius:9px;padding:10px 18px;font:600 14px 'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer}}
+  .loc-reveal[disabled]{{opacity:.6;cursor:default}}
+  .loc-out{{margin-top:12px}}
+  .loc-exact-coords{{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600}}
+  .loc-exact-addr{{color:var(--mut);font-size:14px;margin-top:2px}}
+  .loc-open{{display:inline-block;margin-top:10px;font-size:14px}}
+  @media (max-width:640px){{.loc-reveal{{width:100%;display:block}}}}
   .cta{{background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(168,85,247,0.06));border:1px solid rgba(99,102,241,0.25);border-radius:16px;padding:22px 24px;margin:18px 0;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:center;text-align:center}}
   .cta a{{color:var(--ind);text-decoration:none;font-weight:600;font-size:14px}}
   .cta .primary{{background:var(--grad);color:#fff;padding:10px 18px;border-radius:9px}}
@@ -2063,7 +2416,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     {_mkt_context_html}
 
-    {map_block}
+    {location_html}
 
     {context_html}
     {fiber_html}
@@ -2924,6 +3277,14 @@ def facility_entity_json(slug):
                        "publishing the record without geo", exc_info=True)
         fac["latitude"] = None
         fac["longitude"] = None
+    # r-location-gate (2026-09-21): the twin is public and cached like the
+    # page, so it is the anonymous view too — facility_entity publishes no geo
+    # and only the street NAME. A withheld row publishes no street at all and
+    # says why. Same fail-soft lookup as the page.
+    try:
+        fac["_location_withheld"] = _location_withheld(fac)
+    except Exception:
+        fac["_location_withheld"] = False
     _disp = (fac.get("name") or slug)
     _canon = f"https://dchub.cloud/facilities/{slug}"
     resp = jsonify(facility_entity(fac, canonical_url=_canon, display_name=_disp))
@@ -3004,6 +3365,17 @@ text-align:center;padding:80px 20px">
             "X-DC-Hub-Source": "facility-twin-301",
         })
 
+    # r-location-gate (2026-09-21): FIRST, before anything below reads the
+    # location. A withheld row goes on as one with no location: the stored
+    # values are already NULL, and are nulled again here so that no section —
+    # nearby generation, fiber, the substation band — can derive one.
+    try:
+        fac["_location_withheld"] = _location_withheld(fac)
+    except Exception:
+        fac["_location_withheld"] = False
+    if fac["_location_withheld"]:
+        for _k in ("latitude", "longitude", "address", "substation_band"):
+            fac[_k] = None
     # One lookup per PAGE, before render — never inside the renderer. See
     # _nearby_generation_rows for why that separation is load-bearing.
     try:

@@ -109,11 +109,18 @@ class TestEntity:
         assert e["citation"] == CITE_AS
         assert e["url"] == "https://dchub.cloud/facilities/x"
 
-    def test_geo_and_address_ride_along_when_present(self):
-        e = facility_entity(FAC, canonical_url="u", display_name="d")
+    def test_the_address_rides_along_and_geo_never_does(self):
+        """r-location-gate (2026-09-21): exact location is paid-only and this
+        body is public and cached, so no pair of coordinates is published —
+        and the street is its NAME, never its house number."""
+        e = facility_entity({**FAC, "address": "4417 Quarry Ridge Road"},
+                            canonical_url="u", display_name="d")
         sc = e["spatialCoverage"]
-        assert sc["geo"]["latitude"] == 39.04
+        assert "geo" not in sc
         assert sc["address"]["addressLocality"] == "Ashburn"
+        assert sc["address"]["streetAddress"] == "Quarry Ridge Road"
+        for leak in ("39.04", "77.48", "4417", "latitude", "longitude"):
+            assert leak not in repr(e), leak
 
     def test_junk_coordinates_are_dropped_not_crashed(self):
         e = facility_entity({**FAC, "latitude": "x", "longitude": None},

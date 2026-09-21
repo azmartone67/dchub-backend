@@ -363,11 +363,20 @@ class TestTwinCoordinates:
         assert place["address"]["addressLocality"] == "Washington"
         assert resp.payload["provider"]["name"] == "Equinix"
 
-    def test_real_coordinates_still_reach_the_twin(self):
-        """The floor. Nulling every pair would satisfy the test above."""
-        resp, _ = _twin_route(dict(REAL_GEO))
-        geo = resp.payload["spatialCoverage"]["geo"]
-        assert geo["latitude"] == 39.04 and geo["longitude"] == -77.48
+    def test_real_coordinates_do_not_reach_the_twin_either(self):
+        """This was the floor ("nulling every pair would satisfy the test
+        above"). r-location-gate (2026-09-21) made nulling every pair the
+        POLICY: exact location is paid-only and the twin is public, so no pair
+        is published, real or not. The Null Island tests above now hold for
+        that stronger reason; the record around the pair must still survive."""
+        resp, status = _twin_route(dict(REAL_GEO))
+        assert status == 200
+        place = resp.payload["spatialCoverage"]
+        assert "geo" not in place
+        assert "39.04" not in repr(resp.payload)
+        assert "77.48" not in repr(resp.payload)
+        assert place["name"] == "Washington"
+        assert place["address"]["addressLocality"] == "Washington"
 
     def test_a_missing_normaliser_drops_the_geo_not_the_response(self):
         """Fails by dropping the ELEMENT — the choice _fiber_carrier_names

@@ -195,6 +195,194 @@ def street_address(value) -> str:
     return v if (street or numbered) else ""
 
 
+# ── the street NAME, without the number ────────────────────────────────────
+#
+# r-location-gate (2026-09-21). A facility's exact location is paid-only, and
+# the server-rendered page is edge-cached and identical for every visitor, so
+# what it may print of an address is the street NAME: never the house or
+# building number, a unit, a plot or a postcode. street_address() above still
+# decides WHETHER a stored value is an address; this decides how much of one
+# may be published. It removes; it never validates, so a bare city comes back
+# as itself and callers that need a street ask street_address() first.
+#
+# Over-stripping is the accepted failure: "Avenida 9 de Julio" loses its 9.
+# The only digits that can survive are an ordinal ("8th Avenue") and the
+# number of a route whose name is nothing but a road word ("Calle 31",
+# "Highway 370"): there the number IS the street's name, and no house number
+# can precede it without a street name of its own in between.
+
+_DIRECTIONALS = frozenset((
+    "n", "s", "e", "w", "ne", "nw", "se", "sw", "north", "south", "east",
+    "west", "northeast", "northwest", "southeast", "southwest",
+))
+# Each takes the identifier after it with it: "Suite 100", "Unit B", "Plot 7",
+# "No. 8", "# 4-15", "km 12".
+_UNIT_WORDS = frozenset((
+    "unit", "units", "suite", "ste", "apt", "apartment", "flat", "floor",
+    "fl", "flr", "level", "lvl", "room", "rm", "bldg", "building", "bld",
+    "tower", "wing", "house", "office", "ofc", "hall", "door", "dept", "box",
+    "pmb", "plot", "lot", "stand", "erf", "kav", "kavling", "lt", "lantai",
+    "sector", "phase", "stage", "shop", "bay", "dock", "hangar", "gate", "km",
+    "no", "nr", "nro", "num", "numero", "número", "n°", "nº", "#",
+))
+# A block code may be letters only: "Blok Bi".
+_BLOCK_WORDS = frozenset(("block", "blk", "blok"))
+# A numbered lane off a main road is a house number along that road ("Lane
+# 3111, X Road"), so it goes with its number when a street name follows it.
+_LANE_WORDS = frozenset(("lane", "alley"))
+_FLOOR_WORDS = frozenset(("floor", "fl", "flr", "level", "lvl", "storey",
+                          "story"))
+# Between two numbers they make one: "4762 AND 4764", "12 - 14", "12 & 14".
+_NUMBER_JOINERS = frozenset(("-", "–", "—", "&", "+", "/", "and", "to", "thru",
+                             "through", "y", "e", "et", "und"))
+_NUMBER_SUFFIXES = frozenset(("bis", "ter", "quater"))
+_EDGE_JUNK = frozenset(("and", "&", "+", "-", "–", "—", "/", "#", ",", ";",
+                        ":", "."))
+_ORDINAL = re.compile(r"^\d{1,4}(?:st|nd|rd|th)[.,]?$", re.I)
+_HOUSE_NUMBER = re.compile(r"^#?\d{1,6}[a-z]?(?:[-–—/]\d{1,6}[a-z]?)*[.,:]?$",
+                           re.I)
+_ROUTE_NUMBER = re.compile(r"^(?:[a-z]{1,3}-?)?\d{1,5}[a-z]?$", re.I)
+_ROUTE_NAME = re.compile(
+    r"^(?:(?:n|s|e|w|north|south|east|west)\.?\s+)?"
+    r"(?:(?:state|county|us|u\.s\.|farm\s+to\s+market|ranch\s+to\s+market"
+    r"|provincial|national|federal)\s+)?"
+    r"(?:highway|hwy|route|rte|rt|road|rd|street|st|interstate|calle|cl"
+    r"|carrera|cra|kr|avenida|av|avenue|ave|rodovia|carretera|ruta|estrada"
+    r"|autopista|autovia|strada|via|fm|rm|sr|cr|us|lane|ln)\.?$", re.I)
+_HAS_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+_CJK_NUMBER = re.compile(
+    r"[0-9０-９]+\s*(?:号楼|號樓|番地|丁目|番|号|號|弄|楼|樓|室|层|層|栋|棟|번지|번길|호)?")
+# "No.8" / "Str.5" / "#12" / "Nº5" -> the number as its own token.
+_GLUED_ABBREV = re.compile(r"(?<=[^\W\d_])\.(?=\d)")
+_GLUED_MARK = re.compile(r"(?i)(?:(?<=\s)|^)(#|n[°º]|no|nr)(?=\d)")
+# Parts of an address: commas, semicolons, brackets, a spaced dash, a pipe.
+_ADDRESS_PARTS = re.compile(r"[,;()\[\]|]|\s[-–—]\s")
+# Words that name no place on their own: "Street", "N", "de la". A unit word
+# that is still there was not taking an identifier, so it is part of a name
+# ("Hall Road", "Dock Street") and is deliberately not listed.
+_NOT_A_NAME = (_STREET_LAST | _STREET_FIRST | _DIRECTIONALS
+               | frozenset(("and", "of", "the", "de", "la", "du", "del", "des",
+                            "di", "da", "do", "no", "nr", "po", "p", "o")))
+
+
+def _is_identifier(token: str) -> bool:
+    """What a unit word takes with it: anything carrying a digit, or one
+    letter ("Suite B"). Never a word: "Hall Road" keeps its "Road"."""
+    return any(ch.isdigit() for ch in token) or bool(
+        re.fullmatch(r"[^\W\d_][.,:]?", token))
+
+
+def _street_part(part: str) -> str:
+    """One part of an address with its numbers, units and postcodes removed,
+    or "" when nothing that names a place is left."""
+    toks = []
+    for tok in part.split():
+        if _HAS_CJK.search(tok):
+            tok = _CJK_NUMBER.sub("", tok)
+        if tok:
+            toks.append(tok)
+    n = len(toks)
+    low = [t.lower().strip(".:") or t for t in toks]
+    drop = [False] * n
+    i = 0
+    while i < n:
+        nxt = toks[i + 1] if i + 1 < n else ""
+        if low[i] in ("po", "p.o") and i + 1 < n and low[i + 1] == "box":
+            drop[i] = True
+        elif (_ORDINAL.match(toks[i]) and i + 1 < n
+              and low[i + 1] in _FLOOR_WORDS):            # "3rd Floor"
+            drop[i] = drop[i + 1] = True
+            i += 1
+        elif nxt and (
+                (low[i] in _UNIT_WORDS and _is_identifier(nxt))
+                or (low[i] in _BLOCK_WORDS
+                    and (_is_identifier(nxt)
+                         or re.fullmatch(r"[^\W_]{1,3}[.,]?", nxt)))
+                or (low[i] in _LANE_WORDS and _HOUSE_NUMBER.match(nxt)
+                    and i + 2 < n)):
+            drop[i] = drop[i + 1] = True
+            i += 1
+        i += 1
+    kept = [j for j in range(n) if not drop[j]]
+    num = {j for j in kept
+           if _HOUSE_NUMBER.match(toks[j]) and not _ORDINAL.match(toks[j])}
+    for k, j in enumerate(kept):
+        if j in num:
+            continue
+        before = kept[k - 1] if k > 0 else None
+        after = kept[k + 1] if k + 1 < len(kept) else None
+        if before in num and (
+                (low[j] in _NUMBER_JOINERS and after in num)
+                or low[j] in _NUMBER_SUFFIXES
+                or (len(low[j]) == 1 and low[j].isalpha()
+                    and low[j] not in _DIRECTIONALS)):      # "12 A Main St"
+            num.add(j)
+    # A route whose whole name is a road word keeps its number: "Calle 31",
+    # "20544 HIGHWAY 370" -> "HIGHWAY 370". Only a LEADING run of house
+    # numbers is skipped; everything between it and the last token must match
+    # _ROUTE_NAME whole, so a number in the middle fails the match and none is
+    # kept ("Calle 31 12").
+    route = None
+    if kept and _ROUTE_NUMBER.match(toks[kept[-1]]):
+        lead = 0
+        while lead < len(kept) - 1 and kept[lead] in num:
+            lead += 1
+        rest = kept[lead:-1]
+        if rest and _ROUTE_NAME.match(" ".join(toks[j] for j in rest)):
+            route = kept[-1]
+            num.discard(route)
+    # A house number between two words ends the street: "Hauptstrasse 5
+    # 10115 Berlin" -> "Hauptstrasse", when what precedes it names a street.
+    words = [j for j in kept if j not in num]
+    for k, j in enumerate(kept):
+        if j in num and 0 < k < len(kept) - 1:
+            head = [x for x in kept[:k] if x not in num]
+            if head and any(x not in num for x in kept[k + 1:]) and \
+                    _names_a_street(" ".join(toks[x] for x in head)):
+                words = head
+                break
+    out = [toks[j] for j in words
+           if j == route or _ORDINAL.match(toks[j])
+           or not any(ch.isdigit() for ch in toks[j])]
+    while out and (out[0].lower() in _EDGE_JUNK
+                   or not any(ch.isalnum() for ch in out[0])):
+        out.pop(0)
+    while out and (out[-1].lower() in _EDGE_JUNK
+                   or not any(ch.isalnum() for ch in out[-1])):
+        out.pop()
+    if not out:
+        return ""
+    text = " ".join(out)
+    named = (route is not None or _HAS_CJK.search(text)
+             or any(_ORDINAL.match(t) for t in out)
+             or any(w.lower() not in _NOT_A_NAME for w in _WORDS.findall(text)))
+    return text if named else ""
+
+
+def street_name_only(address) -> str:
+    """The street NAME in `address`, without house or building numbers, units,
+    plots or postcodes; "" when nothing but those is there.
+
+        "2500 MAPLE RD"                    -> "MAPLE RD"
+        "Unit 5, 3 Mill Lane"              -> "Mill Lane"
+        "Rue des Lilas 12"                 -> "Rue des Lilas"
+        "Plot 7"                           -> ""
+        "Springfield"                      -> "Springfield"   (not validated)
+
+    Picks the first comma-separated part that names a street, else the first
+    part with anything left in it."""
+    v = _clean(address)
+    if not v:
+        return ""
+    v = _GLUED_MARK.sub(r"\1 ", _GLUED_ABBREV.sub(". ", v))
+    names = [s for s in (_street_part(p) for p in _ADDRESS_PARTS.split(v))
+             if s]
+    for s in names:
+        if _names_a_street(s):
+            return s
+    return names[0] if names else ""
+
+
 # ── recorded changes ────────────────────────────────────────────────────────
 
 # The routes/temporal_capture layer that tracks the rows these pages render,

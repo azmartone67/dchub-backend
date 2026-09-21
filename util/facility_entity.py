@@ -23,11 +23,15 @@ Pure: no Flask, no DB, no network. Callers supply the record.
 """
 from __future__ import annotations
 
+from util.facility_facts import is_fleet_row, street_address, street_name_only
 from util.facility_headline import plausible_mw
 
 SITE = "https://dchub.cloud"
 LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
 CITE_AS = "DC Hub, dchub.cloud"
+
+#: Said on the Place when the operator asked that the location be withheld.
+LOCATION_WITHHELD = "Exact location withheld at the operator's request."
 
 #: Why a facility MW is not a market MW. Published on every record that has one.
 NOT_AN_AGGREGATE = (
@@ -82,7 +86,15 @@ def facility_measures(fac: dict | None) -> list[dict]:
 
 def facility_entity(fac: dict | None, *, canonical_url: str,
                     display_name: str, as_of: str | None = None) -> dict:
-    """The facility as schema.org Dataset JSON-LD — the .json twin's body."""
+    """The facility as schema.org Dataset JSON-LD — the .json twin's body.
+
+    ★★★ r-location-gate (2026-09-21): exact location is paid-only, and this
+    body is public, keyless and cached. So the Place carries NO geo — not the
+    point, not a rounded one — and its streetAddress is the street NAME only
+    (util.facility_facts.street_name_only of an address street_address
+    accepts; none on a fleet-sized row, as on the page). A record flagged
+    `_location_withheld` carries no street and says so in its description.
+    """
     fac = fac or {}
     out = {
         "@context": "https://schema.org",
@@ -100,23 +112,23 @@ def facility_entity(fac: dict | None, *, canonical_url: str,
         "citation": CITE_AS,
         "variableMeasured": facility_measures(fac),
     }
+    withheld = bool(fac.get("_location_withheld"))
     place = {}
+    street = ("" if withheld or is_fleet_row(fac.get("power_mw"))
+              else street_name_only(street_address(fac.get("address"))))
+    if street:
+        place["streetAddress"] = street
     if fac.get("city"):
         place["addressLocality"] = fac["city"]
     if fac.get("state"):
         place["addressRegion"] = fac["state"]
     if fac.get("country"):
         place["addressCountry"] = fac["country"]
-    lat, lon = fac.get("latitude"), fac.get("longitude")
     node = {"@type": "Place", "name": display_name}
     if place:
         node["address"] = dict({"@type": "PostalAddress"}, **place)
-    if lat is not None and lon is not None:
-        try:
-            node["geo"] = {"@type": "GeoCoordinates",
-                           "latitude": float(lat), "longitude": float(lon)}
-        except (TypeError, ValueError):
-            pass
+    if withheld:
+        node["description"] = LOCATION_WITHHELD
     out["spatialCoverage"] = node
     if fac.get("provider"):
         out["provider"] = {"@type": "Organization", "name": fac["provider"]}
