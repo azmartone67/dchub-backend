@@ -340,41 +340,60 @@ def checkout_url(plan: str, ref: str = "", sid: str = "") -> str:
     return (_GO_BASE + tok) if tok else _PRICING_URL
 
 
-def rest_wall_ladder() -> dict:
-    """What a REST free-tier wall hands its caller (P0-C, 2026-09-21).
+def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
+    """What a REST free-tier wall hands its caller: only what actually opens it.
 
-    Those walls answered `upgrade_url: https://dchub.cloud/pricing`: a page
-    about prices, unmeasured, and the one page a slow asset read could replace
-    with a cached "briefly unavailable" stub. Now `upgrade_url` is the $10 pack
-    as a /go/c checkout (an unbound pack purchase mints and emails a key), and
-    `upgrade_options` is the ladder in the order agents buy it: the pack, then
-    Developer, then Pro for a human screening sites. Every label is read from
-    the module that owns the price. Caller-independent by construction: no key
-    or session is bound here, because these payloads are cached and shared.
+    `opens_on_rest` is the plan the endpoint's own require_plan() admits (every
+    wall that calls this sits in front of require_plan('pro') today), and
+    `upgrade_url` is that plan's measured /go/c checkout. The $10 pack and
+    Developer follow in `upgrade_options` marked `opens: "mcp"`, naming the MCP
+    tool that returns the full result for them.
+
+    ★ 2026-09-21. The first version (be#5072) put the $10 pack in upgrade_url
+    and pack → Developer → Pro in the options. Measured after it shipped: over
+    REST neither the pack nor Developer opens these lists, and a Developer key
+    is REFUSED by require_plan('pro'). A caller who bought what the wall offered
+    got a worse answer than before paying. Offering a rung that cannot open the
+    thing it is shown on is the false promise the MCP walls already refuse
+    (r62b-conv). When REST honors /pricing (Developer and pack credits opening
+    these lists), callers pass opens_on_rest="developer" and the ladder leads
+    with the pack again.
+
+    Caller-independent by construction, so it can ride a cached, shared payload.
     """
-    out = {"upgrade_url": checkout_url("metered")}
+    out = {"upgrade_url": checkout_url(opens_on_rest)}
     opts = []
     try:
-        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
-        if PACK10_PRICE_CENTS and PACK10_CREDITS:
-            opts.append({
-                "plan": "pack",
-                "label": "$%d one-time = %s API calls, credits don't expire" % (
-                    int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")),
-                "url": out["upgrade_url"],
-            })
-    except Exception:  # noqa: BLE001
-        pass
-    try:
         import tier_registry as _tr
-        for plan, what in (("developer", "full depth on every tool except the Pro-only ones"),
-                           ("pro", "Pro-only tools and site-grade coordinates, for a human screening sites")):
-            price = _tr.price_display(plan)
-            if price:
-                opts.append({"plan": plan, "label": "%s %s — %s" % (_tr.label(plan), price, what),
-                             "url": checkout_url(plan)})
+        price = _tr.price_display(opens_on_rest)
+        if price:
+            opts.append({"plan": opens_on_rest, "opens": "rest",
+                         "label": "%s %s opens this endpoint" % (_tr.label(opens_on_rest), price),
+                         "url": out["upgrade_url"]})
     except Exception:  # noqa: BLE001
         pass
+    if mcp_tool and opens_on_rest == "pro":
+        via = ("opens the full result through the MCP tool `%s` (https://dchub.cloud/mcp), "
+               "not this REST endpoint" % mcp_tool)
+        try:
+            from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+            if PACK10_PRICE_CENTS and PACK10_CREDITS:
+                opts.append({"plan": "pack", "opens": "mcp", "mcp_tool": mcp_tool,
+                             "label": "$%d one-time = %s API calls; %s" % (
+                                 int(PACK10_PRICE_CENTS) // 100,
+                                 format(int(PACK10_CREDITS), ","), via),
+                             "url": checkout_url("metered")})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import tier_registry as _tr
+            price = _tr.price_display("developer")
+            if price:
+                opts.append({"plan": "developer", "opens": "mcp", "mcp_tool": mcp_tool,
+                             "label": "%s %s; %s" % (_tr.label("developer"), price, via),
+                             "url": checkout_url("developer")})
+        except Exception:  # noqa: BLE001
+            pass
     if opts:
         out["upgrade_options"] = opts
     return out

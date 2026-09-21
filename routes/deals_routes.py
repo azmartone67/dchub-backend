@@ -812,7 +812,7 @@ def _rest_wall():
     pricing page, never to nothing: a wall with no way through is worse."""
     try:
         from routes.checkout_click_tracker import rest_wall_ladder
-        return rest_wall_ladder()
+        return rest_wall_ladder(opens_on_rest='pro', mcp_tool='list_transactions')
     except Exception:  # noqa: BLE001
         return {'upgrade_url': 'https://dchub.cloud/pricing'}
 
