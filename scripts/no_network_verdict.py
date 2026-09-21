@@ -16,9 +16,16 @@ Some attempts happen only under a condition, and one quiet run does not show a
 file is fixed: retire an entry only when it was quiet in every run compared,
 and compare at least three.
 
+With DCHUB_NO_NETWORK_PARTIAL_RUN=1 (each `unit-tests shard N` job) the log
+covers one shard's files only, so "nothing reached it" would be true of every
+registered file that ran in another shard. A partial run still fails on every
+error above but skips that warning. The `unit-tests` job judges every shard's
+log together, without the flag, so each quiet entry is reported once per run.
+
 Usage: python3 scripts/no_network_verdict.py <log> [<register>]
 """
 import json
+import os
 import sys
 from collections import defaultdict
 
@@ -30,8 +37,8 @@ def _esc(value):
     return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-def verdict(log_path, register_path=REGISTER):
-    """Return (exit code, lines to print)."""
+def verdict(log_path, register_path=REGISTER, partial=False):
+    """Return (exit code, lines to print). partial: the log is one shard's; see the module docstring."""
     try:
         with open(register_path, encoding="utf-8") as f:
             known = {name: set(hosts) for name, hosts in json.load(f)["known"].items()}
@@ -87,9 +94,12 @@ def verdict(log_path, register_path=REGISTER):
             "The hook refused it. Stub the fetch in the test; do not add it to the register to make it pass."
         )
 
+    if partial:
+        out.append("no-network: partial run (one unit-tests shard); quiet register entries are judged once, "
+                   "over every shard's log, by the unit-tests job")
     for name, hosts in sorted(known.items()):
         quiet = [h for h in sorted(hosts) if h not in reached.get(name, {})]
-        if quiet:
+        if quiet and not partial:
             out.append(
                 f"::warning file={name}::no network: the register lists {_esc(', '.join(quiet))} for {_esc(name)}, and nothing "
                 "reached it this run. Retire it only if it is quiet in every run compared (at least three)."
@@ -104,7 +114,7 @@ def main(argv):
     if len(argv) not in (2, 3):
         print("usage: python3 scripts/no_network_verdict.py <log> [<register>]", file=sys.stderr)
         return 2
-    code, lines = verdict(*argv[1:])
+    code, lines = verdict(*argv[1:], partial=os.environ.get("DCHUB_NO_NETWORK_PARTIAL_RUN") == "1")
     for line in lines:
         print(line)
     return code
