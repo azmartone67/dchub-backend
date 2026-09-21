@@ -14245,6 +14245,16 @@ print("   📍 Endpoints: /api/market-report, /api/market-report/generate, /api/
 # Global error handler
 @app.errorhandler(Exception)
 def handle_error(e):
+    # r-deals-500 (2026-09-21): registering a handler for Exception replaces
+    # Flask's own log_exception, so every unhandled error reached the caller as
+    # a 500 and left nothing in the logs: /api/v1/deals answered 230 of them in
+    # a week with zero log lines, and the cause could only be read off a
+    # response body. HTTPExceptions (abort(), 404, 405) are deliberate and stay
+    # quiet; anything else is a bug, so log it with its traceback.
+    from werkzeug.exceptions import HTTPException
+    if not isinstance(e, HTTPException):
+        logger.error("unhandled %s on %s %s", type(e).__name__,
+                     request.method, request.path, exc_info=e)
     response = jsonify({
         'success': False,
         'error': str(e)

@@ -76,6 +76,22 @@ def _val_m(raw, deal_id=None):
     return v
 
 
+def _stats_key(raw):
+    """Key for get_deals' stats_by_type / stats_by_year: always a str.
+
+    jsonify sorts object keys (Flask's DefaultJSONProvider.sort_keys), and
+    Python cannot order None against an int or a str. `deals.year` and
+    `deals.type` are nullable, and d.get('year', 'unknown') returns None —
+    not the default — for a NULL column, because the key is present. One
+    NULL-year row made every uncached /api/deals, /api/v1/deals and keyed
+    /api/v1/transactions answer 500 "'<' not supported between instances of
+    'NoneType' and 'int'" (measured 2026-09-21: 49% of /api/v1/deals over 7d).
+    JSON object keys are strings on the wire anyway, so a key that serialized
+    before serializes identically now: 2024 -> "2024".
+    """
+    return 'unknown' if raw is None else str(raw)
+
+
 # Region normalization (MCP fix Mar 22)
 REGION_ALIASES = {
     'north_america': 'North America', 'na': 'North America',
@@ -693,16 +709,16 @@ def get_deals():
     # Calculate stats by type
     stats_by_type = {}
     for d in deals:
-        dtype = d.get('type', 'unknown')
+        dtype = _stats_key(d.get('type'))
         if dtype not in stats_by_type:
             stats_by_type[dtype] = {'count': 0, 'value': 0}
         stats_by_type[dtype]['count'] += 1
         stats_by_type[dtype]['value'] += (d.get('value') or 0)
-    
+
     # Calculate stats by year
     stats_by_year = {}
     for d in deals:
-        yr = d.get('year', 'unknown')
+        yr = _stats_key(d.get('year'))
         if yr not in stats_by_year:
             stats_by_year[yr] = {'count': 0, 'value': 0}
         stats_by_year[yr]['count'] += 1
