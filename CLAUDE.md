@@ -41,10 +41,13 @@ minute. **Never disable a guard to make your own change land.**
 
 ### Why the hook exists when branch protection already does this
 
-`main` requires **six** checks — `substance-gate`, `syntax-check`, `unit-tests`,
-`regression-lint`, `db-parity` and `app-contract-gate` — and GitHub enforces
-them on direct pushes too: the push is rejected with
-`GH006: Protected branch update failed`.
+`main` requires **seven** checks — `substance-gate`, `syntax-check`,
+`unit-tests`, `regression-lint`, `db-parity`, `app-contract-gate` and
+`contract` (measured 2026-09-21) — and GitHub enforces them on direct pushes
+too: the push is rejected with `GH006: Protected branch update failed`.
+This line said six while `contract` was already required; main-branch-health
+now compares the live list with `REQUIRED_CONTEXTS` in
+`tools/deadman/main_branch_verdict.py` on every run and goes red on drift.
 
 ★ **`enforce_admins` is `true`**, so that applies to the repo admin as well.
 This section used to say `false`, and recorded **137 of 223 commits (61%)

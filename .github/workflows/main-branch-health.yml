@@ -30,6 +30,17 @@
 #   while CI that is genuinely STUCK stops beating and goes overdue on its own.
 #   Silence that expires is honest; a verdict copied off the wrong commit is not.
 #
+# ★2026-09-21 — IT NOW ALSO CHECKS WHAT IT WATCHES. Branch protection had grown
+#   a 7th required check, `contract`, that GATING did not read, so a red
+#   `contract` blocked every open PR while this job beat green. Offline tests pin
+#   the declared list but cannot see a context ADDED in GitHub's settings, so
+#   every run compares REQUIRED_CONTEXTS with branch protection's live list.
+#   Drift either way, or a list it could not read, turns a green verdict into
+#   contexts_drift / contexts_unmeasured: red on the board and red here. It reads
+#   GET /branches/main, because every /protection endpoint wants
+#   administration=read, which GITHUB_TOKEN cannot be granted (measured in
+#   Actions, 2026-09-21 — see collect_required()).
+#
 # Kill switch: repo variable MAIN_BRANCH_HEALTH_DISABLE=1.
 
 name: main-branch-health
@@ -78,8 +89,9 @@ jobs:
             echo "::error::DCHUB_ADMIN_KEY is not set — cannot beat the board. Failing rather than reporting a silent green."
             exit 1
           fi
-          # `main_red` and `unmeasured` are both OUTSIDE the ledger's _OK_STATUS
-          # set, so either one makes the feed overdue and visible.
+          # `main_red`, `unmeasured`, `contexts_drift` and `contexts_unmeasured`
+          # are all OUTSIDE the ledger's _OK_STATUS set, so each one turns the
+          # feed red.
           jq -nc --arg s "$STATUS" --arg n "$NOTE" \
             '{feed:"main-ci",status:$s,cadence_hours:2,note:$n}' \
           | curl --fail-with-body -sS --max-time 30 -X POST \
@@ -94,6 +106,23 @@ jobs:
         # The beat is for the board; a red job is for the person scrolling
         # Actions. Both, because main being red is the state that stops everyone.
         if: steps.verdict.outputs.status == 'main_red' || steps.verdict.outputs.status == 'unmeasured'
+        # Through env, not ${{ }} in the script: the note now carries gh's own
+        # error text, and a quote in it would be parsed as shell.
+        env:
+          STATUS: ${{ steps.verdict.outputs.status }}
+          NOTE: ${{ steps.verdict.outputs.note }}
         run: |
-          echo "::error::main is not green (${{ steps.verdict.outputs.status }}: ${{ steps.verdict.outputs.note }}). Every open PR is blocked until this is fixed."
+          echo "::error::main is not green ($STATUS: $NOTE). Every open PR is blocked until this is fixed."
+          exit 1
+
+      - name: Fail loudly if the required-check list drifted
+        # contexts_* reaches the board through `status` above. This makes the
+        # job red as well, and still fires while HEAD is pending, when nothing
+        # beats.
+        if: steps.verdict.outputs.contexts_status == 'drift' || steps.verdict.outputs.contexts_status == 'unmeasured'
+        env:
+          C_STATUS: ${{ steps.verdict.outputs.contexts_status }}
+          C_NOTE: ${{ steps.verdict.outputs.contexts_note }}
+        run: |
+          echo "::error::main-branch-health cannot vouch that it watches every required check ($C_STATUS: $C_NOTE). Make REQUIRED_CONTEXTS and GATING in tools/deadman/main_branch_verdict.py match branch protection, or restore the read."
           exit 1
