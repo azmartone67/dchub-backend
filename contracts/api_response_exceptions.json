@@ -116,7 +116,7 @@
       "keys": [
         "stats.mw_coverage"
       ],
-      "reason": "Removed deliberately by be#5022 (b69dc5fa4, 2026-09-21): the prose note #5010 published under stats.mw_coverage (\"54 of 248 report MW\") carried the very counts the tier gate withholds, and the gate's patterns match no prose field, so it walked through on every tier. No reader: 0 references in dchub-frontend origin/main, none in this repo. The baseline was never refreshed after #5022, so contract was red on main (and on every PR) from then until this entry.",
+      "reason": "Removed deliberately by be#5022 (b69dc5fa4, 2026-09-21): the prose note #5010 published under stats.mw_coverage (\"54 of 248 report MW\") carried the very counts the tier gate withholds, and the gate's patterns match no prose field, so it walked through on every tier. No reader: 0 references in dchub-frontend origin/main, none in this repo. contract stayed green after #5022 (the 02:53Z run on fbc74aae9 passed). It went red at 03:15Z, when #5026 -- a bot refresh generated at 4ef4fc37e, before #5022 -- auto-merged and put the key back in the baseline; the refresh bot refuses to run while contract fails, so main stayed red until this entry.",
       "added": "2026-09-21"
     }
   ]
