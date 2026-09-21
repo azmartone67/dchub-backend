@@ -19000,7 +19000,7 @@
    "keys": []
   },
   "GET /api/v1/ops/install-stats": {
-   "source": "routes/install_stats.py:177",
+   "source": "routes/install_stats.py:184",
    "handler": "install_stats",
    "resolution": "opaque",
    "open_at": [],
