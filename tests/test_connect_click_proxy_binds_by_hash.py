@@ -71,8 +71,10 @@ def client():
     return app.test_client()
 
 
-def _loc(client, qs):
-    r = client.get("/api/v1/connect/click?platform=cursor&" + qs)
+def _loc(client, **params):
+    # Parameters go as the test client's query_string, not a URL literal: the
+    # key rides only to our own route here (tests/test_no_provider_key_in_url.py).
+    r = client.get("/api/v1/connect/click", query_string={"platform": "cursor", **params})
     assert r.status_code in (302, 303), r.status_code
     return r.headers["Location"]
 
@@ -88,18 +90,18 @@ def _with_ref(link, ref):
     ("pro_annual", mc._STRIPE_ANNUAL, "k-"),
 ])
 def test_each_plan_lands_on_its_link_with_the_key_hash(client, plan, link, prefix):
-    loc = _loc(client, "plan=%s&key=%s" % (plan, KEY))
+    loc = _loc(client, plan=plan, key=KEY)
     assert loc == _with_ref(link, prefix + H)
     assert KEY not in loc, "the raw key reached Stripe"
 
 
 def test_no_key_means_no_ref(client):
-    assert _loc(client, "plan=pack") == STRIPE_LINKS["metered"]
+    assert _loc(client, plan="pack") == STRIPE_LINKS["metered"]
 
 
 @pytest.mark.parametrize("plan", ["", "starter", "enterprise", "PACKX"])
 def test_an_unknown_plan_lands_on_the_pack(client, plan):
-    assert _loc(client, "plan=%s&key=%s" % (plan, KEY)) == _with_ref(STRIPE_LINKS["metered"], "pk-" + H)
+    assert _loc(client, plan=plan, key=KEY) == _with_ref(STRIPE_LINKS["metered"], "pk-" + H)
 
 
 def test_the_hashes_are_the_shapes_the_webhook_matches():
@@ -114,7 +116,7 @@ def test_the_hashes_are_the_shapes_the_webhook_matches():
 def test_the_landing_view_stamp_is_kept_and_names_the_plan(client, monkeypatch, plan):
     db = _Db()
     monkeypatch.setattr(mc, "_get_db", lambda: db)
-    _loc(client, "plan=%s&view_id=77&key=%s" % (plan, KEY))
+    _loc(client, plan=plan, view_id="77", key=KEY)
     stamps = [(sql, p) for sql, p in db.log if sql.startswith("UPDATE connect_landing_views")]
     assert stamps, db.log
     sql, params = stamps[0]
