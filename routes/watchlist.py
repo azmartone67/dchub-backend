@@ -713,5 +713,7 @@ def watchlist_page():
         )
         return Response(html, mimetype="text/html")
     except Exception as e:
-        return Response(f"<!doctype html><body>watchlist: {e}</body>",
-                        mimetype="text/html", status=500)
+        # The detail goes to the server log; the page body stays fixed.
+        _log(f"page_failed: {e}")
+        return Response("<!doctype html><body>watchlist is temporarily "
+                        "unavailable</body>", mimetype="text/html", status=500)
