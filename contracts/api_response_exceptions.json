@@ -110,6 +110,14 @@
       ],
       "reason": "Transmission left the KMZ export on 2026-09-13 (energy_kmz_export.py, TRANSMISSION_RETIRED). data.transmission_lines published COUNT(*) of discovered_transmission_lines, a March 2026 crawl with no writer whose 2,821,162 rows repeat one line hundreds of times, so it was never a line count; endpoints.transmission advertised type=transmission-lines, which now answers 410 because the export has no line geometry to place. The summary states the exclusion in not_exported.transmission_lines instead. No reader: Railway logged no request to this route in the 7 days before removal except the probes behind this change, and neither dchub-frontend (whose Export KMZ button calls type=all only) nor dchub-mcp-server names the path.",
       "added": "2026-09-13"
+    },
+    {
+      "endpoint": "GET /api/v1/markets/<market>",
+      "keys": [
+        "stats.mw_coverage"
+      ],
+      "reason": "Removed deliberately in #5022 (b69dc5fa4): the prose note restated the MW counts the tier gate withholds on this endpoint. It was live for under an hour (added in #5010 at 01:50Z, removed at 02:44Z). #5026 then regenerated the baseline from a tree without #5022, which put the key back and failed this check on main at 84f4a441d. No reader: 0 occurrences of mw_coverage on origin/main of dchub-frontend (b80eb6099) or dchub-mcp-server (50352ff), so there is nothing to migrate.",
+      "added": "2026-09-21"
     }
   ]
 }
