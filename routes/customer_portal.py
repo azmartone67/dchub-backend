@@ -68,9 +68,38 @@ logger = logging.getLogger(__name__)
 customer_portal_bp = Blueprint("customer_portal", __name__)
 
 
-# Billing plans that count as "paid plan" (matches brain_investigator._PAID_PLANS).
-_PAID_PLANS = ("pro", "founding", "enterprise", "pro_annual", "developer")
-_PAID_PLANS_SQL = "('pro','founding','enterprise','pro_annual','developer')"
+# Billing plans that count as "paid plan".
+#
+# ★2026-09-20 — DERIVED. The literal this replaces was
+#     ("pro", "founding", "enterprise", "pro_annual", "developer")
+# which omitted `starter`, `team` and `research_seed`. It is compared against
+# `COALESCE(plan,'free') AS plan` selected `FROM users`, so those three
+# customers read as NOT on a paid plan — and this module's whole job is
+# deciding which lifecycle signal an account gets, so a paying Starter was
+# eligible for the high-usage-free and keyless-activation branches aimed at
+# free accounts.
+#
+# The old comment said "matches brain_investigator._PAID_PLANS". Matching a
+# second hand-typed list is what produced seven of them; both sides should
+# read the registry instead.
+def _paid_plans():
+    # 'pro_annual' is not a registry plan name. Kept because it was in the
+    # list this replaces and can only mean paying; dropping it would silently
+    # demote an annual subscriber.
+    _LEGACY = ("pro_annual",)
+    _FALLBACK = ("pro", "founding", "enterprise", "pro_annual", "developer")
+    try:
+        from tier_registry import paid_plan_names
+        got = tuple(paid_plan_names())
+        return (got + _LEGACY) if got else _FALLBACK
+    except Exception:
+        return _FALLBACK
+
+
+_PAID_PLANS = _paid_plans()
+# Same source, rendered for SQL — a hand-typed second copy is how the two
+# drift apart.
+_PAID_PLANS_SQL = "(" + ",".join("'%s'" % p for p in _PAID_PLANS) + ")"
 
 # high_usage_free threshold: MCP calls in the last 30 days to qualify as "heavy".
 _HIGH_USAGE_30D_THRESHOLD = int(

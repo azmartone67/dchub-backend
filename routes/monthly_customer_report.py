@@ -87,7 +87,31 @@ from flask import Blueprint, jsonify, request
 logger = logging.getLogger("monthly_customer_report")
 monthly_customer_report_bp = Blueprint("monthly_customer_report", __name__)
 
-PAID_PLANS = ("starter", "developer", "pro", "enterprise", "founding")
+def _paid_plans():
+    """Paid `users.plan` values, DERIVED from tier_registry rather than typed.
+
+    ★2026-09-20 — the literal this replaces was
+        ('starter', 'developer', 'pro', 'enterprise', 'founding')
+    and it omitted `team` and `research_seed`. It is the roster filter
+    (`FROM users u WHERE u.plan IN %(plans)s`), so those customers were left
+    out of the monthly report entirely — no recap, for a plan that is billing.
+
+    `users.plan` speaks exactly the registry's vocabulary, which is why
+    deriving is right here; a column that speaks a coarser one (e.g.
+    `mcp_dev_keys.tier`, whose word for paying is the non-plan string 'paid')
+    must NOT read this canon. Fails CLOSED to the literal above.
+    """
+    _LEGACY = ()
+    _FALLBACK = ('starter', 'developer', 'pro', 'enterprise', 'founding')
+    try:
+        from tier_registry import paid_plan_names
+        got = tuple(paid_plan_names())
+        return (got + _LEGACY) if got else _FALLBACK
+    except Exception:
+        return _FALLBACK
+
+
+PAID_PLANS = _paid_plans()
 FROM_EMAIL = "jonathan@dchub.cloud"
 FROM_NAME = "Jonathan Martone"
 DEFAULT_SEND_LIMIT = 25

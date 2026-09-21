@@ -50,7 +50,32 @@ from flask import Blueprint, jsonify, request
 logger = logging.getLogger("customer_white_glove")
 customer_white_glove_bp = Blueprint("customer_white_glove", __name__)
 
-PAID_PLANS = ("starter", "developer", "pro", "paid", "enterprise", "founding")
+def _paid_plans():
+    """Paid `users.plan` values, DERIVED from tier_registry rather than typed.
+
+    ★2026-09-20 — the literal this replaces was
+        ('starter', 'developer', 'pro', 'paid', 'enterprise', 'founding')
+    and it omitted `team` and `research_seed`. The roster query is
+    `FROM users u WHERE u.plan IN %s` further narrowed to accounts with a
+    stripe_customer_id and invoices_paid_count > 0 — so every row it drops is
+    a CONFIRMED PAYER who never entered the white-glove list.
+
+    `users.plan` speaks exactly the registry's vocabulary, which is why
+    deriving is right here; a column that speaks a coarser one (e.g.
+    `mcp_dev_keys.tier`, whose word for paying is the non-plan string 'paid')
+    must NOT read this canon. Fails CLOSED to the literal above.
+    """
+    _LEGACY = ('paid',)
+    _FALLBACK = ('starter', 'developer', 'pro', 'paid', 'enterprise', 'founding')
+    try:
+        from tier_registry import paid_plan_names
+        got = tuple(paid_plan_names())
+        return (got + _LEGACY) if got else _FALLBACK
+    except Exception:
+        return _FALLBACK
+
+
+PAID_PLANS = _paid_plans()
 GRACE_HOURS = 48
 ACTIVE_DAYS = 14
 COOLING_DAYS = 14

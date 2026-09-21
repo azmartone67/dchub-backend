@@ -39,7 +39,29 @@ from tier_registry import price as _canon_price
 logger = logging.getLogger(__name__)
 grid_transition_radar_bp = Blueprint("grid_transition_radar", __name__)
 
-_PAID = {"DEVELOPER", "PRO", "ENTERPRISE", "FOUNDING", "ADMIN"}
+def _derive_paid_upper(fallback):
+    """UPPERCASED paid plan names, from tier_registry.
+
+    ★2026-09-20 — `_resolve_caller_tier()` returns the signed `users.plan`
+    claim UPPERCASED, so the full plan vocabulary reaches this comparison —
+    not the FREE/IDENTIFIED/DEVELOPER/PRO/ENTERPRISE shortlist its docstring
+    used to promise. The literal this replaces was {"DEVELOPER","PRO","ENTERPRISE","FOUNDING","ADMIN"}, so a paying TEAM, STARTER or RESEARCH_SEED
+    customer was served the teaser.
+
+    ADMIN/INTERNAL are kept: they are gate words, and tier_registry excludes
+    `admin` from paid_plan_names() on purpose (a role, not a purchased plan).
+    Fails CLOSED to the previous literal so a broken import cannot widen the
+    gate.
+    """
+    try:
+        from tier_registry import paid_plan_names
+        got = {str(n).upper() for n in paid_plan_names()}
+        return (got | {"ADMIN", "INTERNAL"}) if got else set(fallback)
+    except Exception:
+        return set(fallback)
+
+
+_PAID = _derive_paid_upper({"DEVELOPER", "PRO", "ENTERPRISE", "FOUNDING", "ADMIN"})
 _UPGRADE_URL = "https://dchub.cloud/upgrade?tool=grid_transition_sentinel"
 
 

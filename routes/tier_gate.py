@@ -75,34 +75,93 @@ _TIER_PRICE = {
     "ENTERPRISE": "Custom",
 }
 
-_TIER_RANK = {
-    "FREE":       0,
-    "IDENTIFIED": 1,
+# ★2026-09-20 — DERIVED. `TEAM` was missing from this table, and this table is
+# what require_tier() and caller_is_privileged() compare. A missing name falls
+# to `.get(name, 0)` = FREE, so every `require_tier`-decorated route answered a
+# paying Team customer with a structured 402 — deals_routes, find_sites,
+# brain_rag, sites_capacity, expanded_infrastructure_api, peeringdb_layer,
+# public_endpoints, paywall_middleware and main.py among them.
+#
+# It is the THIRD instance of one defect. The r43-H notes below record FOUNDING
+# missing (denied on transactions / market intel / grid data) and RESEARCH_SEED
+# missing (denied the NLR institutional contract). Both were repaired by typing
+# one more line, which is why there was a third. Typing a fourth is not the fix.
+#
+# ★ WHY THIS IS NOT tier_registry's `rank`. TIERS.rank is a different scale
+# (pro=4, enterprise=5). What this table holds is the ACCESS CEILING the local
+# gates compare, and it is derived through `api_tier()` — the registry's own
+# answer to "what does this plan get to use" — mapped onto the local levels
+# below. founding/team -> pro -> 3 and research_seed -> enterprise -> 4 exactly
+# reproduce the hand-typed rows this replaces; `test_the_derived_table_still
+# _contains_every_row_it_replaced` pins that, so the derivation cannot quietly
+# re-rank an existing tier while it adds the missing one.
+_ACCESS_LEVEL = {
+    "anonymous":  0,
+    "free":       0,
+    "identified": 1,
     # Phase BBB-3 — STARTER shares rank with IDENTIFIED for the
     # require_tier decorator (both unlock the same routes). Daily-call
     # quota is enforced elsewhere by tier-specific rate-limit code that
     # CAN tell STARTER (500/day) from IDENTIFIED (200/day). This keeps
     # the new tier from accidentally bumping every other tier's rank
-    # comparison and breaking existing gates.
-    "STARTER":    1,
-    "DEVELOPER":  2,
-    "PRO":        3,
+    # comparison and breaking existing gates. DELIBERATE — and preserved
+    # by the derivation, because api_tier('starter') is 'starter', not 'pro'.
+    "starter":    1,
+    "developer":  2,
     # r43-H (2026-05-27): FOUNDING was MISSING here — require_tier('pro')
     # (rank 3) denied founding members (fell to .get default) on
     # transactions / market intel / grid data. Founding is Pro-equivalent,
-    # so it shares pro's rank.
-    "FOUNDING":   3,
-    "ENTERPRISE": 4,
+    # so it shares pro's rank. Now reached via api_tier('founding') == 'pro'.
+    "pro":        3,
     # r43-H (2026-05-28): research_seed (NLR custom institutional contract)
     # is enterprise-equivalent. Was missing here → require_tier denied NLR.
-    "RESEARCH_SEED": 4,
+    # Now reached via api_tier('research_seed') == 'enterprise'.
+    "enterprise": 4,
+    "admin":      5,
+}
+
+# Exactly the table this replaces. Restored verbatim if the registry cannot be
+# imported, so a broken import degrades to today's behaviour and never widens
+# a gate: every name it omits still falls to 0.
+_FALLBACK_TIER_RANK = {
+    "FREE": 0, "IDENTIFIED": 1, "STARTER": 1, "DEVELOPER": 2,
+    "PRO": 3, "FOUNDING": 3, "ENTERPRISE": 4, "RESEARCH_SEED": 4,
 }
 
 
+def _derive_tier_rank():
+    """Map every plan the registry knows onto the local access-ceiling scale."""
+    try:
+        from tier_registry import TIERS, api_tier
+    except Exception:
+        return dict(_FALLBACK_TIER_RANK)
+    out = {}
+    for name in TIERS:
+        level = _ACCESS_LEVEL.get(str(api_tier(name) or "").strip().lower())
+        if level is not None:
+            out[str(name).strip().upper()] = level
+    # A registry that resolves nothing is not usable; keep what worked before.
+    if not out or any(k not in out for k in _FALLBACK_TIER_RANK):
+        return dict(_FALLBACK_TIER_RANK)
+    return out
+
+
+_TIER_RANK = _derive_tier_rank()
+
+
 def _resolve_caller_tier() -> tuple[str, dict]:
-    """Returns (tier_name, debug_info). Tier name is one of FREE/
-    IDENTIFIED/DEVELOPER/PRO/ENTERPRISE. Best-effort across multiple
-    auth surfaces; defaults to FREE."""
+    """Returns (tier_name, debug_info). Best-effort across multiple auth
+    surfaces; defaults to FREE.
+
+    ★2026-09-20 — this used to promise "one of FREE/IDENTIFIED/DEVELOPER/PRO/
+    ENTERPRISE". IT DOES NOT. The JWT branch below appends
+    `(_plan.upper(), "cookie:jwt")` straight from the signed `plan` claim, so
+    the caller receives whatever `users.plan` holds, uppercased — TEAM,
+    STARTER, FOUNDING and RESEARCH_SEED all reach a consumer this way. Three
+    callers (routes/radar.py, routes/deal_autopsy.py,
+    routes/grid_transition_radar.py) had each typed a small uppercase set off
+    the old promise and teased paying customers whose plan was not in it.
+    Compare against tier_registry, not against this list."""
     debug = {}
     # r-tiermax (2026-06-30): collect EVERY tier signal (api-key + logged-in
     # cookie/JWT) and return the HIGHEST, instead of short-circuiting on the
