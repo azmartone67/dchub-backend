@@ -355,8 +355,8 @@ def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(
 # /llms-full.txt — the OTHER door this policy is published through
 #
 # ★ Everything above this line reads /llms.txt. That was the bug: measured
-# 2026-09-20 against live production, /llms-full.txt served 118 lines last
-# hand-edited 2026-06-25 with NO policy block at all — no live-vs-stale rule,
+# 2026-09-20 against live production, /llms-full.txt served 405 lines /
+# 23,152 bytes with NO policy block at all — no live-vs-stale rule,
 # not one of the directory names, no citation pattern. The guard could not
 # have caught it, because the guard read one of the two doors it publishes.
 #
@@ -375,22 +375,27 @@ def _door_app():
 
     ★ 2026-09-21 — THIS FIXTURE WAS THE BUG, the second time around. It
     registered ai_agent_discovery.discovery_bp ALONE and read /llms-full.txt off
-    it. Production registers register_discovery_routes(app) FIRST (main.py:10302)
-    and discovery_bp only at main.py:28846, and BOTH declare /llms-full.txt — so
-    the rule that actually answers is ai_discovery_routes.serve_llms_full_txt,
-    which be#4996 never touched. Measured on the origin at 01:15Z on 2026-09-21,
-    after that commit deployed SUCCESS: the live door still had no policy block,
+    it. Production never registers that blueprint — the discovery_bp main.py
+    registers is imported from routes.discovery_routes — so the rule that
+    actually answers is ai_discovery_routes.serve_llms_full_txt, from
+    register_discovery_routes(app), which be#4996 never touched. Measured on
+    the origin at 01:15Z on 2026-09-21, after that commit deployed SUCCESS: the
+    live door still had no policy block,
     while this file was green. A guard that builds its own app decides which
     handler it grades; build it the way production does, or it grades a handler
     no request reaches.
+
+    ai_agent_discovery.discovery_bp is still registered here, AFTER main.py's
+    rule, on purpose: the dead duplicate lived there, so a copy re-added to it
+    is graded by test_every_registered_handler_for_the_full_door_renders_the_block.
     """
     flask = pytest.importorskip("flask")
     from ai_discovery_routes import register_discovery_routes
     from ai_agent_discovery import discovery_bp
 
     app = flask.Flask(__name__)
-    register_discovery_routes(app)        # main.py:10302 — wins the path
-    app.register_blueprint(discovery_bp)  # main.py:28846
+    register_discovery_routes(app)        # as main.py does — the served rule
+    app.register_blueprint(discovery_bp)  # NOT in main.py — graded only
     return app
 
 
@@ -475,7 +480,7 @@ def test_every_door_serves_the_identical_block(
 
 
 def test_the_policy_precedes_the_body_on_the_full_door(full_body: str):
-    """A policy below 118 lines of endpoint listing is a policy nothing reads."""
+    """A policy below 400 lines of endpoint listing is a policy nothing reads."""
     i = full_body.find(_HEADING)
     assert i != -1 and i < 1200, (
         "%s puts the policy block %d bytes in; a model that truncates a long "
@@ -525,11 +530,11 @@ def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
 def test_every_registered_handler_for_the_full_door_renders_the_block():
     """Not just the one that wins today.
 
-    /llms-full.txt is declared twice — ai_discovery_routes.serve_llms_full_txt
-    (@app.route) and ai_agent_discovery.serve_llms_full (discovery_bp). Which one
-    answers depends on registration ORDER in main.py, which is not a thing this
-    file can see. So grade them all: then an order flip, a third copy, or a
-    deleted duplicate cannot quietly un-ship the policy.
+    /llms-full.txt was declared twice — ai_discovery_routes.serve_llms_full_txt
+    (@app.route) and ai_agent_discovery.serve_llms_full, on a blueprint main.py
+    never registers. The dead one is deleted, but grade every handler _door_app()
+    registers anyway: a copy re-added in either module, or a third one, must
+    render the block too, or the policy can quietly un-ship.
     """
     app = _door_app()
     endpoints = [r.endpoint for r in app.url_map.iter_rules()

@@ -1428,18 +1428,21 @@ learn the tools existed but not how to install them anywhere.
         # ★★★ THIS is the handler production serves for /llms-full.txt, and
         # be#4996 patched the OTHER one. Measured on the origin at 01:15Z on
         # 2026-09-21, after 9e71714 deployed SUCCESS: the door still carried no
-        # policy block. ai_agent_discovery.serve_llms_full registers the same
-        # path on discovery_bp (main.py:28846), but register_discovery_routes()
-        # runs FIRST (main.py:10302) so this rule wins — and main.py:25780 says
-        # so out loud: "OLD llms-full.txt route REMOVED -- now served by
-        # ai_discovery_routes.py (inline)".
+        # policy block. be#4996 patched ai_agent_discovery.serve_llms_full, which
+        # sat on ai_agent_discovery.discovery_bp — a blueprint main.py never
+        # registers (the discovery_bp main.py registers is imported from
+        # routes.discovery_routes, which declares no such path). That duplicate is now deleted; this is
+        # the only /llms-full.txt rule. main.py says so out loud: "OLD
+        # llms-full.txt route REMOVED -- now served by ai_discovery_routes.py
+        # (inline)".
         #
         # #4996 existed because "the guard read one of the two DOORS it
         # publishes". Its own fixture then registered one of the two HANDLERS —
         # the one no request reaches — and proved the block on that. Same shape,
-        # one level up. The guard now builds the app the way main.py does and
-        # asserts every registered handler for this path renders the block, so
-        # neither a registration order flip nor a third copy can un-ship it.
+        # one level up. The guard now builds the app from main.py's registration
+        # (plus the dead ai_agent_discovery blueprint, where the old duplicate
+        # lived) and asserts every registered handler for this path renders the
+        # block, so a re-added copy cannot un-ship it.
         content = canon_text("""# DC Hub — Data Center Intelligence Platform
 # Full API Documentation for AI Agents & LLM Systems
 # Base URL: https://dchub.cloud

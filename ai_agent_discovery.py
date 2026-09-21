@@ -4,13 +4,12 @@ DC Hub — AI Agent Discovery Routes v2
 Adds support for all major AI agent discovery protocols:
 - AGENTS.md (OpenAI/Linux Foundation standard)
 - Google Agent2Agent (A2A) Protocol
-- llms-full.txt (extended LLM documentation)
 - security.txt (RFC 9116)
 - Enhanced AI platform tracking
 
 Installation:
   1. Copy this file to your Replit project
-  2. Copy the discovery files (AGENTS.md, llms-full.txt, .well-known/agent.json, .well-known/security.txt)
+  2. Copy the discovery files (AGENTS.md, .well-known/agent.json, .well-known/security.txt)
   3. Add to main.py:
        from ai_agent_discovery import register_discovery_routes
        register_discovery_routes(app)
@@ -19,7 +18,6 @@ Installation:
 New endpoints served:
   GET /AGENTS.md                      - AGENTS.md (Linux Foundation standard)
   GET /.well-known/agent.json         - Google A2A Agent Card
-  GET /llms-full.txt                  - Extended LLM documentation
   GET /.well-known/security.txt       - Security contact (RFC 9116)
   POST /a2a/tasks/send                - A2A task handler
   GET /api/v1/ai-tracking/stats       - AI platform access statistics
@@ -531,58 +529,10 @@ def route_a2a_query(query):
         return {"type": "error", "message": str(e)}
 
 
-# ----- shared live-vs-stale policy -----
-import datetime as _dt
-from agent_door_policy import POLICY_HEADING, policy_block
-
-
-def _prepend_policy(doc: str) -> str:
-    """Put the policy block under the door's header comment, above the body.
-
-    Idempotent: a document that already carries the heading is returned
-    untouched, so a static file that later gains the block inline does not
-    get a second copy.
-    """
-    if not doc:
-        return policy_block() + "\n"
-    if POLICY_HEADING in doc:
-        return doc
-    lines = doc.split("\n")
-    # Recency is a retrieval-ranking signal for crawlers, and the static file
-    # carried a hand-typed "# Last Updated: 2026-06-25". Render it server-side
-    # so the door stops advertising itself as three months stale.
-    for _n, _l in enumerate(lines[:12]):
-        if _l.lower().startswith("# last updated:"):
-            lines[_n] = "# Last-Updated: %s" % (
-                _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d"))
-            break
-    i = 0
-    while i < len(lines) and (lines[i].startswith("#") or not lines[i].strip()):
-        i += 1
-    head, rest = lines[:i], lines[i:]
-    return "\n".join(head + [policy_block(), ""] + rest)
-
-
 # ----- llms-full.txt -----
-@discovery_bp.route('/llms-full.txt')
-def serve_llms_full():
-    """Serve extended LLM documentation"""
-    log_ai_access('llms-full.txt')
-    content = load_file('llms-full.txt')
-    if not content:
-        content = "# DC Hub Full API Documentation\n# See https://dchub.cloud/llms.txt for summary\n# API Base: https://dchub.cloud/api/v1\n"
-    # ★ The policy block goes ABOVE the document, not at the end of it. A model
-    # that truncates a long fetch must still get the live-vs-stale rule; a
-    # policy below 118 lines of endpoint listing is a policy nothing reads.
-    # Rendered from agent_door_policy (canon-substituted there) rather than
-    # pasted into the static file, whose counts would then rot in place — that
-    # file was last hand-edited 2026-06-25.
-    content = _prepend_policy(content)
-    response = make_response(content)
-    response.headers['Content-Type'] = 'text/plain; charset=utf-8'
-    response.headers['Cache-Control'] = 'public, max-age=3600'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    return response
+# Not served from here: ai_discovery_routes.serve_llms_full_txt owns the path.
+# This blueprint is never registered in main.py, so a handler here is dead
+# code -- be#4996 patched one and production never saw the change.
 
 
 # ----- security.txt -----
@@ -848,7 +798,6 @@ def register_discovery_routes(app):
     logger.info("🤖 AI Agent Discovery v2: ✅ Registered")
     logger.info("   ├── AGENTS.md (Linux Foundation)")
     logger.info("   ├── A2A Agent Card (Google)")
-    logger.info("   ├── llms-full.txt (Extended docs)")
     logger.info("   ├── security.txt (RFC 9116)")
     logger.info("   ├── A2A Task Handler (/a2a/tasks/send)")
     logger.info("   └── AI Tracking (/api/v1/ai-tracking/stats)")
