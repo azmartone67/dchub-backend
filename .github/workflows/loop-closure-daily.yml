@@ -37,9 +37,14 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping loop-closure tick"
             exit 0
           fi
-          RESPONSE=$(curl -sS -X POST --max-time 150 \
+          CODE=$(curl -sS -o "$RUNNER_TEMP/tick.json" -w '%{http_code}' -X POST --max-time 150 \
             "https://dchub-backend-production.up.railway.app/api/v1/admin/loop-closure/master-tick" \
-            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" || echo 000)
+          if [ "$CODE" != "200" ]; then
+            echo "::error::loop-closure tick returned HTTP $CODE, so the shell did not run. 401 = the DCHUB_ADMIN_KEY secret and the service key disagree; 404 = the route is not deployed."
+            exit 1
+          fi
+          RESPONSE=$(cat "$RUNNER_TEMP/tick.json")
           echo "${RESPONSE}" | python3 -c '
           import json, sys
           d = json.load(sys.stdin)

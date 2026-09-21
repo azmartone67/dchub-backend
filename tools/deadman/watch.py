@@ -82,6 +82,7 @@ WORKFLOWS = {
     "backup-neon-r2.yml": 30,          # daily 09:31 — Neon PITR/pg_dump -> R2
     "billing-reconcile-daily.yml": 30, # daily 08:23 — invoices_paid_count vs Stripe
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
+    "loop-closure-daily.yml": 30,      # daily 07:17 — loop-closure shell #79; its silent death is the shell going inert unnoticed
     # 2026-09-07: the GEO answer author. Daily 14:37 UTC, so 30h is ~2.5 cycles
     # — one missed run never alarms, two do. It is the ONLY writer of new
     # answers/<slug>.html pages, and its whole reason for existing is that its

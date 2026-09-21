@@ -583,3 +583,57 @@ def test_published_rate_is_withheld_below_the_floor():
     floor = assigns["_psa_floor"]
     assert isinstance(floor, ast.Constant) and floor.value >= 5, \
         "a floor below 5 sales is no floor"
+
+
+# ── the snapshot must persist at ANY size ─────────────────────────────
+def test_oversized_snapshot_detail_is_still_valid_json():
+    """★ `json.dumps(x)[:60000]` is invalid JSON past 60k chars; Postgres rejects
+    it for jsonb, the fail-soft handler swallows it, and the snapshot — which
+    inert_check reads — is silently never written.
+
+    MUTATION: bind a sliced json.dumps() again.
+    """
+    snap = {"generated_at": "2026-09-21T07:17:00+00:00", "armed": True,
+            "loop_score": 41.2, "weakest_actionable_lane": "spec_debt",
+            "ready_lanes": 1, "acted": True,
+            "lanes": {"spec_debt": {"blob": "x" * 200000}}}
+    captured = []
+
+    class _C:
+        def execute(self, sql, params=None):
+            captured.append(params)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _K:
+        def cursor(self, *a, **k):
+            return _C()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    try:
+        mp.setattr(lcs, "_ensure_tables", lambda: True)
+        mp.setattr(lcs, "_conn", lambda: _K())
+        lcs._persist(snap)
+    finally:
+        mp.undo()
+    params = next(p for p in captured if p)
+    detail = json.loads(params[-1])          # must PARSE, whatever its size
+    # Non-vacuity: this payload is ~200k chars, so the oversize branch MUST
+    # have run — a test whose input fits would prove nothing about size.
+    assert detail.get("_truncated") is True
+    # json_for_column keeps identifying scalars as STRINGS (str(v)[:300]).
+    # inert_check reads the table's typed armed/acted columns, never this JSON.
+    assert detail.get("armed") == "True"
+    assert detail.get("generated_at") == snap["generated_at"]
+    assert len(params[-1]) <= 60000

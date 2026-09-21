@@ -823,6 +823,27 @@ def _ensure_tables() -> bool:
         _close(c)
 
 
+_SNAPSHOT_KEEP = ("generated_at", "armed", "loop_score",
+                  "weakest_actionable_lane", "ready_lanes", "acted")
+
+
+def _detail_json(snapshot: dict) -> str:
+    """The snapshot as JSON that is VALID AT ANY SIZE.
+
+    ★ An earlier draft bound `json.dumps(snapshot)[:60000]`: past 60,000
+    characters that is cut mid-string, Postgres rejects it for a jsonb column,
+    the fail-soft handler swallows the error, and the snapshot is silently
+    never written — which would also blind inert_check, since it reads this
+    table. util.json_column.json_for_column is the house fix for exactly that
+    (tests/test_json_column_binding.py).
+    """
+    try:
+        from util.json_column import json_for_column
+        return json_for_column(snapshot, max_chars=60000, keep_keys=_SNAPSHOT_KEEP)
+    except Exception:
+        return json.dumps({k: snapshot.get(k) for k in _SNAPSHOT_KEEP}, default=str)
+
+
 def _persist(snapshot: dict) -> None:
     if not _ensure_tables():
         return
@@ -844,7 +865,7 @@ def _persist(snapshot: dict) -> None:
                   snapshot.get("acted"), snapshot.get("ready_lanes") or 0,
                   json.dumps({k: v.get("score") for k, v in
                               (snapshot.get("lanes") or {}).items()}),
-                  json.dumps(snapshot, default=str)[:60000]))
+                  _detail_json(snapshot)))
         try:
             c.commit()
         except Exception:
