@@ -1467,21 +1467,27 @@ def _click_to_pay(c, cur, days: int) -> dict:
     iv = "%d days" % int(days)
     plans = H.CLICK_TO_PAY_PLANS
     out = {"window_days": int(days), "basis": H.click_to_pay_basis(),
-           "mcp_go_c": None, "cold_go_p": None, "chatgpt_upgrade_h": None}
+           "mcp_go_c": None, "cold_go_p": None, "rest_wall_go_c": None,
+           "chatgpt_upgrade_h": None}
     try:
         cur.execute("SELECT to_regclass('pricing_checkout_clicks') IS NOT NULL")
         has_cold = bool((cur.fetchone() or [False])[0])
         cur.execute(H.click_to_pay_by_plan_sql(iv, include_cold=has_cold))
-        paths = {"mcp_go_c": {}, **({"cold_go_p": {}} if has_cold else {})}
+        paths = {"mcp_go_c": {}, "rest_wall_go_c": {},
+                 **({"cold_go_p": {}} if has_cold else {})}
         for path, plan, clicks, paid in cur.fetchall():
             row = paths.setdefault(path, {})
             cell = row.setdefault(plan if plan in plans else "other", {"clicks": 0, "paid": 0})
             cell["clicks"] += int(clicks or 0)
             cell["paid"] += int(paid or 0)
-        for row in paths.values():
+        for path, row in paths.items():
             for p in plans:
                 row.setdefault(p, {"clicks": 0, "paid": 0})
             for cell in row.values():
+                if path == "rest_wall_go_c":
+                    # No ref reaches Stripe from these links: unmeasurable, not 0.
+                    cell["paid"] = cell["click_to_pay_pct"] = None
+                    continue
                 cell["click_to_pay_pct"] = (round(100.0 * cell["paid"] / cell["clicks"], 1)
                                             if cell["clicks"] else None)
         out.update(paths)

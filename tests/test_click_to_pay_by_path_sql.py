@@ -22,6 +22,8 @@ tables other db-parity lanes own are never touched.
              M9 starter (a link from before)          its own plan row
              M10 metered, 40 days ago                 out of the window
              P10 livemode=false on pk-A               not a payment
+  rest_wall  W1 pro, no ref, no session (a REST wall)  its own column, paid null
+             W2 the same, probe UA                    out
   cold_go_p  C1 pro, page ref                         paid P11
              C2 metered, no ref                       a press, never joinable
              C3 starter, known_plan=false             out (not a /pricing plan)
@@ -97,6 +99,8 @@ def _seed(cur):
         ("10 days", "developer", "k-D", "sub_key", True, REAL_UA, S8),         # M8
         ("2 days", "starter", S9, "session", True, REAL_UA, None),             # M9
         ("40 days", "metered", "pk-OLD", "pack_key", True, REAL_UA, S1),       # M10
+        ("1 day", "pro", "", "none", True, REAL_UA, None),                     # W1 REST wall
+        ("1 day", "pro", "", "none", True, PROBE_UA, None),                    # W2 probe UA
     ]
     for age, plan, ref, kind, ok, ua, sid in clicks:
         cur.execute("INSERT INTO mcp_checkout_clicks (clicked_at, plan, ref, ref_kind, sig_ok,"
@@ -161,12 +165,13 @@ def test_every_path_and_plan_counts_what_the_seed_says(cur):
         ("mcp_go_c", "starter"): (1, 0),     # M9
         ("cold_go_p", "pro"): (1, 1),        # C1+P11
         ("cold_go_p", "metered"): (1, 0),    # C2, no ref
+        ("rest_wall_go_c", "pro"): (1, 0),   # W1; W2 is a probe; never in mcp_go_c
     }
 
 
 def test_without_the_cold_table_the_mcp_column_still_reads(cur):
     cur.execute(H.click_to_pay_by_plan_sql(IV, include_cold=False))
-    assert {r[0] for r in cur.fetchall()} == {"mcp_go_c"}
+    assert {r[0] for r in cur.fetchall()} == {"mcp_go_c", "rest_wall_go_c"}
 
 
 def test_chatgpt_stages_count_distinct_sessions(cur):
@@ -192,6 +197,8 @@ def test_the_endpoint_block_fills_every_plan_and_names_the_rest_other(cur):
     assert mcp["other"] == {"clicks": 1, "paid": 0, "click_to_pay_pct": 0.0}
     assert cold["pro"] == {"clicks": 1, "paid": 1, "click_to_pay_pct": 100.0}
     assert cold["developer"] == {"clicks": 0, "paid": 0, "click_to_pay_pct": None}
+    # A REST-wall click can never join a payment: unmeasurable, never a 0% rate.
+    assert out["rest_wall_go_c"]["pro"] == {"clicks": 1, "paid": None, "click_to_pay_pct": None}
     assert out["chatgpt_upgrade_h"] == {"plan": "metered", "walls": 5, "views": 1,
                                         "identified": 2, "paid": 2}
     assert "cold_go_p_note" not in out
