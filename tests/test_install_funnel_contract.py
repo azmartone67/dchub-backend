@@ -154,15 +154,15 @@ def test_no_client_ip_in_the_query_means_visitors_unavailable_not_zero():
 # ── attempts ──────────────────────────────────────────────────────────────
 
 def _att(client, outcome="minted", ip="a", ua="b", ua_class="human",
-         at=NOW - dt.timedelta(hours=1), ref=None, kc=None):
-    return (client, at, outcome, ip, ua, ua_class, ref, kc)
+         at=NOW - dt.timedelta(hours=1), kc=None):
+    return (client, at, outcome, ip, ua, ua_class, kc)
 
 
 def test_attempts_dedupe_exclude_probes_and_keep_reuse_outcomes():
     rows = [
         _att("install-verify-ledger", outcome="ledger_started", ua_class=None),
-        _att("install-claude", ref="/install/claude"),
-        _att("install-claude", ref="/install/claude"),          # worker retry: same attempter
+        _att("install-claude"),
+        _att("install-claude"),          # worker retry: same attempter
         _att("install-claude", outcome="reused_unused_cap", ip="c", kc="web-map"),
         _att("install-claude", ua_class="agent"),                # scripted, not a press
         _att("install-verify-funnel-e2e"),                       # our probe
@@ -174,7 +174,6 @@ def test_attempts_dedupe_exclude_probes_and_keep_reuse_outcomes():
     assert c["attempt_requests"] == 4
     assert c["non_browser_requests"] == 1
     assert c["by_outcome"]["minted"] == 2 and c["by_outcome"]["reused_unused_cap"] == 1
-    assert c["page_originated"] == 2
     assert probes["requests"] == 2
     assert probes["clients"] == ["install-claude", "install-verify-funnel-e2e"]
 
@@ -186,8 +185,8 @@ def _payload(visitors, attempts, mints, ledger_start=NOW - dt.timedelta(days=40)
     w = _windows(ledger_start)
     edge = {s: {k: {"visitors": 0, "human_requests": 0, "excluded_requests": {}} for k in w}
             for s in f.INSTALL_PAGES}
-    att = {s: {k: {"mint_attempts": 0, "by_outcome": {}, "page_originated": 0,
-                   "non_browser_requests": 0} for k in w} for s in f.INSTALL_PAGES}
+    att = {s: {k: {"mint_attempts": 0, "by_outcome": {}, "non_browser_requests": 0}
+               for k in w} for s in f.INSTALL_PAGES}
     for k in w:
         edge["claude"][k]["visitors"] = visitors
         att["claude"][k]["mint_attempts"] = attempts
@@ -322,8 +321,7 @@ def test_recorder_ignores_other_client_names_and_hashes_everything(monkeypatch):
     assert log == []
     key = "dch_live_" + "a" * 32
     ok = f.record_install_attempt("install-claude", "reused_unused_cap", api_key=key,
-                                  key_client_name="web-map", ip="198.51.100.7", ua=CHROME,
-                                  referer="https://dchub.cloud/install/claude?x=1")
+                                  key_client_name="web-map", ip="198.51.100.7", ua=CHROME)
     assert ok is True and conns[-1].closed
     sql, params = log[-1]
     assert sql.startswith("INSERT INTO install_mint_attempts")
@@ -331,7 +329,7 @@ def test_recorder_ignores_other_client_names_and_hashes_everything(monkeypatch):
     for raw in (key, "198.51.100.7", CHROME):
         assert raw not in flat, "a raw identifier reached the attempt ledger"
     assert params[0] == "install-claude" and params[1] == "reused_unused_cap"
-    assert params[2] == "web-map" and params[6] == "human" and params[7] == "/install/claude"
+    assert params[2] == "web-map" and params[6] == "human" and len(params) == 7
 
 
 def test_recorder_fails_open(monkeypatch):
@@ -443,7 +441,7 @@ def test_a_fresh_mint_records_minted(claim):
     assert r.status_code == 200 and len(db.inserts) == 1
     (n, o, kw), = claim.seen
     assert (n, o, kw["api_key"]) == ("install-claude", "minted", db.inserts[0])
-    assert kw["ip"] == "198.51.100.7" and kw["referer"].endswith("/install/claude")
+    assert kw["ip"] == "198.51.100.7" and "referer" not in kw
 
 
 def test_a_storage_failure_records_failed(claim):

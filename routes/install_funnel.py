@@ -338,7 +338,9 @@ def summarize_edge(rows, windows, has_ip):
 # One row per POST /api/v1/keys/claim made under an install-* client_name, on
 # EVERY outcome. The reuse branches are the reason it exists: they hand back an
 # existing key, so mcp_dev_keys never gains an install-* row for that visitor.
-# Stores hashes, never the IP, the user-agent or the key.
+# Stores hashes, never the IP, the user-agent or the key. No Referer either:
+# the zone worker injects `https://dchub.cloud` on every proxied request
+# (tests/test_relay_open_provenance.py), so it cannot attest the page.
 _DDL = (
     """CREATE TABLE IF NOT EXISTS install_mint_attempts (
         id              BIGSERIAL PRIMARY KEY,
@@ -349,8 +351,7 @@ _DDL = (
         key_hash        TEXT,
         ip_hash         TEXT,
         ua_hash         TEXT,
-        ua_class        TEXT,
-        referer_path    TEXT
+        ua_class        TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS install_mint_attempts_at_idx"
     " ON install_mint_attempts (attempted_at)",
@@ -382,7 +383,7 @@ def ensure_attempts_table():
 
 
 def record_install_attempt(client_name, outcome, *, api_key=None, key_client_name=None,
-                           ip="", ua="", referer=""):
+                           ip="", ua=""):
     """Append one attempt row. No-op for any client_name outside install-*.
 
     FAIL-OPEN and never raises: a claim must not break because its telemetry
@@ -396,22 +397,20 @@ def record_install_attempt(client_name, outcome, *, api_key=None, key_client_nam
         dsn = _dsn()
         if not dsn:
             return False
-        ref = _norm_path(referer)[:200] if referer else None
         conn = psycopg2.connect(dsn, sslmode="require", connect_timeout=4)
         try:
             with conn, conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO install_mint_attempts
                          (client_name, outcome, key_client_name, key_hash,
-                          ip_hash, ua_hash, ua_class, referer_path)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                          ip_hash, ua_hash, ua_class)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (name[:80], (outcome or "unknown")[:40],
                      (key_client_name or None) and str(key_client_name)[:80],
                      _hash16(api_key) if api_key else None,
                      _hash16(ip) if ip else None,
                      _hash16(ua) if ua else None,
-                     classify_visit(ua),
-                     ref),
+                     classify_visit(ua)),
                 )
         finally:
             conn.close()
@@ -433,10 +432,10 @@ def summarize_attempts(rows, windows):
     so one press can be two rows, and a person pressing twice is one attempter.
     """
     per = {s: {w: {"_ids": set(), "attempt_requests": 0, "non_browser_requests": 0,
-                   "by_outcome": {o: 0 for o in OUTCOMES}, "page_originated": 0}
+                   "by_outcome": {o: 0 for o in OUTCOMES}}
                for w in windows} for s in INSTALL_PAGES}
     probes = {"requests": 0, "clients": set()}
-    for (client, at, outcome, ip_h, ua_h, ua_class, referer_path, _kc) in rows or ():
+    for (client, at, outcome, ip_h, ua_h, ua_class, _kc) in rows or ():
         if outcome == "ledger_started":
             continue
         if _is_probe_attempt(client, ua_class):
@@ -460,8 +459,6 @@ def summarize_attempts(rows, windows):
             b["_ids"].add((ip_h, ua_h, at.astimezone(_dt.timezone.utc).date()))
             if outcome in b["by_outcome"]:
                 b["by_outcome"][outcome] += 1
-            if referer_path == "/install/" + slug:
-                b["page_originated"] += 1
     for s in per:
         for w in per[s]:
             per[s][w]["mint_attempts"] = len(per[s][w].pop("_ids"))
@@ -479,7 +476,7 @@ _MINTS_SQL = f"""
 """
 _ATTEMPTS_SQL = """
     SELECT client_name, attempted_at, outcome, ip_hash, ua_hash, ua_class,
-           referer_path, key_client_name
+           key_client_name
       FROM install_mint_attempts
      WHERE attempted_at >= %s
 """
@@ -615,7 +612,6 @@ def build_payload(now, windows, edge_per, edge_facts, edge_meta, edge_err,
                 "mint_attempts": a.get("mint_attempts") if attempts_err is None else None,
                 "mints": mint_per[slug][w],
                 "attempts_by_outcome": a.get("by_outcome"),
-                "attempts_page_originated": a.get("page_originated"),
                 "non_browser_attempt_requests": a.get("non_browser_requests"),
                 "excluded_requests": e.get("excluded_requests"),
             }

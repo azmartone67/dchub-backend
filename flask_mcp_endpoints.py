@@ -2392,8 +2392,7 @@ def claim_key():
         try:
             from routes.install_funnel import record_install_attempt
             record_install_attempt(client_name, outcome, api_key=key,
-                                   key_client_name=key_client, ip=ip, ua=ua,
-                                   referer=request.headers.get("Referer") or "")
+                                   key_client_name=key_client, ip=ip, ua=ua)
         except Exception:
             pass
 
