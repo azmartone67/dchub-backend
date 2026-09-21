@@ -10,6 +10,7 @@
 # This gate makes that impossible to miss. On every PR it classifies the diff:
 #   SCAFFOLD-ONLY  = every changed file is under docs/ or is routes/_proposed_*
 #                    (or is this workflow) => touches no code path that runs.
+#   EMPTY          = no file changed against the merge-base => nothing to merge.
 # For a scaffold-only PR it posts a loud comment and a NON-BLOCKING check so
 # the state is legible before a human merges. It NEVER hard-fails (respects the
 # human-merged, advisory ethos) — but if the PR body claims to "close"/"fixes"
@@ -61,7 +62,20 @@ jobs:
             exit 0
           fi
 
-          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          # ★ THREE dots: the diff against the MERGE-BASE, i.e. what this PR
+          # changes. BASE_SHA is the base branch's TIP at event time, not where
+          # the PR branched, so the old two-dot `git diff "$BASE_SHA" "$HEAD_SHA"`
+          # compared two trees: a PR behind main was charged with every file main
+          # changed since it branched (a docs-only scaffold claiming a fix then
+          # scored "Changes real code" and passed), and a PR whose change main
+          # already carried listed nothing — be#5114, 2026-09-21, printed an
+          # empty "Changed files:" and was blocked as a scaffold claiming a fix.
+          # Finding the merge-base needs history: the checkout is fetch-depth: 0.
+          # If it cannot be found, fail — an empty list would read as EMPTY.
+          if ! files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA"); then
+            echo "::error::cannot diff $BASE_SHA...$HEAD_SHA (no merge-base, or a commit missing) — the checkout needs full history (fetch-depth: 0)"
+            exit 1
+          fi
           echo "Changed files:"; echo "$files"
 
           # A file is "inert" if it can never change a running code path:
@@ -113,6 +127,22 @@ jobs:
               concl="neutral"
               ctitle="Scaffold-only PR — changes no running code"
             fi
+            # EMPTY is not scaffold-only. Against the merge-base an empty list
+            # means this PR changes NOTHING: its commits are already on the base
+            # branch, or they cancel out. It passed the inert loop only because
+            # there was no file to test, so name it for what it is. The verdict
+            # stays the inert one: merging a PR that claims a fix still closes
+            # the finding while changing nothing (FAIL); with no claim, neutral.
+            if [ -z "$files" ]; then
+              if [ "$claims_fix" -eq 1 ]; then
+                hdr="🛑 **Substance gate: EMPTY PR that CLAIMS a fix**"
+                ctitle="Empty PR CLAIMS a fix — changes no files"
+              else
+                hdr="ℹ️ **Substance gate: empty PR (changes no files)**"
+                ctitle="Empty PR — changes no files"
+              fi
+              note="Against its merge-base with the base branch this PR changes **no files at all** — its commits are already on the base branch, or they cancel out. Merging it changes nothing, so it cannot resolve a finding."
+            fi
 
             foot="<sub>${real_count} runtime file(s) changed · ${scaffolds} routes/_proposed_* scaffold(s) touched · brain-pr-substance-gate</sub>"
             body=$(printf '%s\n\n%s\n\n%s\n' "$hdr" "$note" "$foot")
@@ -156,7 +186,8 @@ jobs:
             V=unmeasured; N=""
             NOTE="BRAIN_SUBSTANCE_GATE_DISABLE=1 — gate is OFF and reporting neutral"
           else
-            N=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
+            # Three dots, as in the gate: the PR's own files, not base's since.
+            N=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" 2>/dev/null \
                 | grep -vE '^(docs/|routes/_proposed_|\.github/workflows/brain-pr-substance-gate\.yml)' \
                 | wc -l | tr -d ' ')
             case "${JOB_STATUS:-}" in
