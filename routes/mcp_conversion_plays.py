@@ -390,8 +390,9 @@ def consume_topup_credit(api_key: str, count: int = 1) -> bool:
                       AND credits_remaining >= %s
                     ORDER BY paid_at DESC LIMIT 1
                 )
+                  AND credits_remaining >= %s  -- re-checked after a concurrent burn
                 RETURNING credits_remaining;
-            """, (count, forms, count))
+            """, (count, forms, count, count))
             return cur.fetchone() is not None
     except Exception as e:
         print(f"[mcp_conversion_plays] consume_topup_credit: {e}", file=sys.stderr)
@@ -693,8 +694,14 @@ def consume_credits(api_key, mcp_session_id, count=1):
                            OR (%s IS NOT NULL AND mcp_session_id = %s))
                     ORDER BY paid_at DESC LIMIT 1
                 )
+                  -- The subselect's `>=` is evaluated once, against the row as it
+                  -- was before any concurrent burn committed. Only this outer
+                  -- condition is re-checked on the row a blocked UPDATE finally
+                  -- gets, so without it two burns of the last credit both
+                  -- succeed and the balance goes negative.
+                  AND credits_remaining >= %s
                 RETURNING credits_remaining;
-            """, (count, count, h, forms, sid, sid))
+            """, (count, count, h, forms, sid, sid, count))
             row = cur.fetchone()
             if row is None:
                 out.update(ok=False, error="insufficient_credits", remaining=0)

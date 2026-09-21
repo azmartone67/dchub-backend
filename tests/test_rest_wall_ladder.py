@@ -7,6 +7,11 @@ after it shipped: both REST lists sit behind require_plan('pro'), so neither
 the pack nor Developer opens them over REST, and a Developer key is refused
 outright. The wall now leads with the plan that opens the endpoint and lists the
 pack and Developer as what they are: full results through an MCP tool.
+
+Later the same day (frontend#1534) the facilities list itself started taking the
+pack and Developer over REST (util/rest_pack_access.py). Its wall now uses the
+pack-led ladder, and the test below reads which ladder from the route's own
+gate rather than from a literal.
 """
 import ast
 import pathlib
@@ -102,11 +107,27 @@ def test_the_deals_free_wall_renders_the_honest_ladder(signed, monkeypatch):
     assert all(o.get("mcp_tool") == "list_transactions" for o in opts[1:])
 
 
+def _cheapest_rest_opener_of_list_facilities(tree):
+    """Read from list_facilities itself: the plan its require_plan() admits, or
+    'pack' when a key below that plan is sent through serve_below_plan."""
+    fns = [n for n in tree.body
+           if isinstance(n, ast.FunctionDef) and n.name == "list_facilities"]
+    assert len(fns) == 1
+    plans = [n.args[0].value for n in ast.walk(fns[0])
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_real_require_plan"
+             and n.args and isinstance(n.args[0], ast.Constant)]
+    assert len(plans) == 1, plans
+    through_pack = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                       and n.func.id == "serve_below_plan" for n in ast.walk(fns[0]))
+    return "pack" if through_pack else plans[0]
+
+
 def test_the_facilities_free_payload_spreads_the_honest_ladder():
     """main.py is too heavy to import in a unit test, so read it: the one
     `_free_payload` dict spreads `_wall`, carries no literal upgrade_url, and
-    `_wall` comes from rest_wall_ladder(opens_on_rest='pro',
-    mcp_tool='search_facilities')."""
+    `_wall` comes from rest_wall_ladder() in the mode list_facilities' own gate
+    implies: the cheapest thing that opens the list over REST."""
     tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
     hits = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "_free_payload" for t in n.targets)]
@@ -122,4 +143,26 @@ def test_the_facilities_free_payload_spreads_the_honest_ladder():
              and isinstance(n.func, ast.Name) and n.func.id == "_rest_wall_ladder"]
     assert len(calls) == 1
     kw = {k.arg: k.value.value for k in calls[0].keywords if isinstance(k.value, ast.Constant)}
-    assert kw == {"opens_on_rest": "pro", "mcp_tool": "search_facilities"}
+    opener = _cheapest_rest_opener_of_list_facilities(tree)
+    assert opener == "pack", "list_facilities no longer takes the pack: re-read frontend#1534"
+    assert kw == {"opens_on_rest": opener}
+
+
+# ── the pack-led ladder: for a REST list the pack itself opens ──────────────
+
+def test_the_pack_led_ladder_leads_with_the_pack_checkout(signed):
+    wall = cct.rest_wall_ladder(opens_on_rest="pack")
+    assert _go(wall["upgrade_url"]) == ("metered", "", "")
+
+
+def test_the_pack_led_ladder_offers_pack_then_developer_both_opening_rest(signed):
+    import tier_registry as tr
+    from routes.mcp_conversion_plays import PACK10_CREDITS, PACK10_PRICE_CENTS
+
+    opts = cct.rest_wall_ladder(opens_on_rest="pack", mcp_tool="search_facilities")["upgrade_options"]
+    assert [(o["plan"], o["opens"]) for o in opts] == [("pack", "rest"), ("developer", "rest")]
+    assert [_go(o["url"])[0] for o in opts] == ["metered", "developer"]
+    assert "$%d one-time" % (PACK10_PRICE_CENTS // 100) in opts[0]["label"]
+    assert format(PACK10_CREDITS, ",") in opts[0]["label"]
+    assert tr.price_display("developer") in opts[1]["label"]
+    assert all("mcp_tool" not in o and "not this REST endpoint" not in o["label"] for o in opts)
