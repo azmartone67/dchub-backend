@@ -433,7 +433,6 @@ _PAGE_HTML = r"""<!DOCTYPE html>
   next call is served in full. No account, no subscription.</div>
 
   <div class="alt">
-    <a href="__GO_STARTER__">Starter · $9/mo<br><span style="color:#6a7390;font-size:.72rem">200 calls/day</span></a>
     <a href="__GO_DEV__">Developer · $49/mo<br><span style="color:#6a7390;font-size:.72rem">500 calls/day · full data</span></a>
   </div>
 
@@ -518,7 +517,6 @@ def _render_page(api_key: str, stats: dict, token: str,
             .replace("__STATS__", stats_html)
             .replace("__LOCKED__", locked_html)
             .replace("__GO_PACK__", base + "/go/pack5")
-            .replace("__GO_STARTER__", base + "/go/starter")
             .replace("__GO_DEV__", base + "/go/developer")
             .replace("__KEY_PREFIX__", _esc(api_key[:_PREFIX_LEN])))
 
