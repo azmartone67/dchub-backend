@@ -2239,6 +2239,16 @@ try:
     except Exception as _instats_early:
         import logging
         logging.getLogger(__name__).warning('install_stats wiring failed: %s', _instats_early)
+    # 2026-09-20: install funnel — GET /api/v1/ops/install-funnel. install-stats
+    # reads minted 0; this names WHICH rung is empty (visitors at the edge ->
+    # mint attempts on every /keys/claim outcome -> mints), probe-excluded.
+    # Same safe-zone recipe as install_stats above.
+    try:
+        from routes.install_funnel import register_install_funnel
+        register_install_funnel(app)
+    except Exception as _infun_early:
+        import logging
+        logging.getLogger(__name__).warning('install_funnel wiring failed: %s', _infun_early)
     # PHASE 0 (2026-08-05) — detector-supply scout. Scans GitHub for repos
     # carrying known-shape code-transform corpora and records what survives a
     # DETERMINISTIC filter, to answer whether a funnel exists at all before the
