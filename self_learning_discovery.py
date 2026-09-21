@@ -388,7 +388,7 @@ class SelfLearningDiscovery:
         country = ''
         
         # Common patterns like "City, State, Country" or "City, Country"
-        location_pattern = r'([A-Z][a-z]+(%s:\s+[A-Z][a-z]+)*),\s*([A-Z]{2}|\w+)'
+        location_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2}|\w+)'
         match = re.search(location_pattern, text)
         if match:
             city = match.group(1)

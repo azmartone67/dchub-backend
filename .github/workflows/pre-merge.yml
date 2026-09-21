@@ -384,7 +384,10 @@ jobs:
         # ★ Do not name a route module's file here: scripts/dataset_inventory.py
         # reads any workflow text naming a module as a LOADER of the tables it
         # writes ("workflow_loader"), which reclassifies them as foreign data.
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12" protego "PyJWT==2.12.0"
+        # 2026-09-21: + beautifulsoup4, PINNED as in requirements.txt.
+        # tests/test_regex_paramstyle_sweep_restored.py hands the self-learning
+        # extractor a real parsed element; importorskip would make it a silent skip.
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12" protego "PyJWT==2.12.0" "beautifulsoup4==4.14.3"
       # The beat wiring's own must-fail control. Runs BEFORE the suite so a
       # dishonest count fails fast — and it lives HERE rather than in
       # syntax-check because it reads the workflow YAML and needs pyyaml, which

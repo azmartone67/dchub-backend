@@ -359,7 +359,7 @@ def extract_facility_data(article):
 
     if not operator:
         op_patterns = [
-            r'(%s:by|from|operator|developer|built by|owned by|managed by)\s+([A-Z][A-Za-z\s&]+%s)(%s:\s+(%s:is|has|will|plans|broke|announced|data center|facility))',
+            r'(?:by|from|operator|developer|built by|owned by|managed by)\s+([A-Z][A-Za-z\s&]+?)(?:\s+(?:is|has|will|plans|broke|announced|data center|facility))',
             r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(?:breaks ground|broke ground|announces|plans|will build|to build|developing)',
         ]
         for pat in op_patterns:

@@ -509,13 +509,27 @@ del _cleanup_ports, _os_early, _sig_early
 # =============================================================================
 import os as _os_db
 import re as _re_db
+
+
+def _strip_channel_binding(url):
+    """Drop channel_binding=... from a libpq URL, wherever it sits in the query.
+
+    The pattern read `[&%s]` after the SQLite->Postgres paramstyle sweep, so a
+    leading `?channel_binding=` was never stripped. A bare `[&?]` restore
+    would turn `db?channel_binding=x&sslmode=y` into `db&sslmode=y` (no `?`),
+    so the separator is kept when another parameter follows.
+    """
+    return _re_db.sub(r'([?&])channel_binding=[^&]*(&|$)',
+                      lambda m: m.group(1) if m.group(2) else '', url)
+
+
 _neon_url = _os_db.environ.get('NEON_DATABASE_URL', '')
 if _neon_url:
     _neon_url = _neon_url.strip()
     _neon_url = _re_db.sub(r"^psql\s+", "", _neon_url)
     _neon_url = _re_db.sub(r"^[A-Z_]+=", "", _neon_url)
     _neon_url = _neon_url.strip("'\"")
-    _neon_url = _re_db.sub(r'[&%s]channel_binding=[^&]*', '', _neon_url)
+    _neon_url = _strip_channel_binding(_neon_url)
     if _neon_url.startswith(('postgresql://', 'postgres://')):
         _os_db.environ['DATABASE_URL'] = _neon_url
         print(f"DATABASE: Using Neon PostgreSQL as primary database")

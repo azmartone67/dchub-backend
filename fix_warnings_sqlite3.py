@@ -155,7 +155,7 @@ def fix_file(filepath):
         # Convert except sqlite3.Error/OperationalError → except Exception
         # Then remove import
         for i, line in enumerate(lines):
-            m = re.match(r'^(\s*)except\s+sqlite3\.(\w+)(\s+as\s+\w+)%s:', line)
+            m = re.match(r'^(\s*)except\s+sqlite3\.(\w+)(\s+as\s+\w+)?:', line)
             if m:
                 indent = m.group(1)
                 as_clause = m.group(3) or ''

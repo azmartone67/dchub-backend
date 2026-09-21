@@ -124,12 +124,12 @@ def extract_power_mw(text):
 def extract_investment_usd(text):
     """Extract investment amount in USD from article text."""
     patterns = [
-        (r'\$(\d+(%s:\.\d+)%s)\s*billion', 1_000_000_000),
-        (r'\$(\d+(%s:\.\d+)%s)\s*B\b', 1_000_000_000),
-        (r'\$(\d+(%s:\.\d+)%s)\s*million', 1_000_000),
-        (r'\$(\d+(%s:\.\d+)%s)\s*M\b', 1_000_000),
-        (r'€(\d+(%s:\.\d+)%s)\s*(%s:billion|B)', 1_100_000_000),  # rough EUR→USD
-        (r'€(\d+(%s:\.\d+)%s)\s*(%s:million|M)', 1_100_000),
+        (r'\$(\d+(?:\.\d+)?)\s*billion', 1_000_000_000),
+        (r'\$(\d+(?:\.\d+)?)\s*B\b', 1_000_000_000),
+        (r'\$(\d+(?:\.\d+)?)\s*million', 1_000_000),
+        (r'\$(\d+(?:\.\d+)?)\s*M\b', 1_000_000),
+        (r'€(\d+(?:\.\d+)?)\s*(?:billion|B)', 1_100_000_000),  # rough EUR→USD
+        (r'€(\d+(?:\.\d+)?)\s*(?:million|M)', 1_100_000),
     ]
     for pattern, multiplier in patterns:
         match = re.search(pattern, text)
@@ -149,8 +149,10 @@ def extract_acreage(text):
 def extract_sqft(text):
     """Extract square footage from article text."""
     patterns = [
-        r'([\d,]+)\s*(%s:square feet|sq\.%s\s*ft|SF)',
-        r'([\d,]+)\s*(%s:sqft|square-foot)',
+        # `\d[\d,]*`, not `[\d,]+`: the restored `?` makes these match again,
+        # and `[\d,]+` alone accepts a bare comma (", SF") -> int('') raises.
+        r'(\d[\d,]*)\s*(?:square feet|sq\.?\s*ft|SF)',
+        r'(\d[\d,]*)\s*(?:sqft|square-foot)',
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -198,11 +200,14 @@ def extract_state(text):
 
 def extract_country(text):
     """Extract country from article text. Returns ISO 2-letter code."""
+    # The abbreviations are case-sensitive (`(?-i:...)`): the search below runs
+    # re.IGNORECASE, and a bare `\bU\.?S\.?A?\b` would read the word "us" in
+    # any quote as the United States — US is checked first, so it would win.
     country_patterns = {
-        'US': [r'\bU\.%sS\.%sA%s\b', r'\bUnited States\b', r'\bAmerica\b'],
+        'US': [r'(?-i:\bU\.?S\.?A?\b)', r'\bUnited States\b', r'\bAmerica\b'],
         'IE': [r'\bIreland\b'],
         'ES': [r'\bSpain\b', r'\bMadrid\b'],
-        'GB': [r'\bUnited Kingdom\b', r'\bU\.%sK\.%s\b', r'\bEngland\b', r'\bLondon\b'],
+        'GB': [r'\bUnited Kingdom\b', r'(?-i:\bU\.?K\.?\b)', r'\bEngland\b', r'\bLondon\b'],
         'DE': [r'\bGermany\b', r'\bFrankfurt\b'],
         'NL': [r'\bNetherlands\b', r'\bAmsterdam\b'],
         'SG': [r'\bSingapore\b'],
