@@ -184,6 +184,21 @@ TABLES_OUT = pathlib.Path(
 # route and fail this gate on a change that never touched the backend.
 SKIP_DIRS = (".git", "node_modules", ".claude", "dchub-frontend", ".venv", "venv")
 
+# ★ 2026-09-21 — ROOT/tests IS NOT SERVED.  Nothing outside it imports it, so a
+# route registered there is a fixture, but the extractor read it as a backend
+# route: it pinned /__gone and /__probe (test_agentic_loop_inspect.py) into the
+# baseline as phantom debt, then turned main red on /dup
+# (test_shadow_debt_is_exact.py, #5127).  Excluded from the parsed TREES, not
+# filtered from the output: register_blueprint() facts are keyed by variable
+# name, so a test's register_blueprint(bp, url_prefix=…) would otherwise
+# re-prefix or resurrect a served `bp`, and setdefault attribution means "drop
+# what a test file declared" also drops served routes a test redeclares
+# (/api/v1/admin/flywheel/master-tick).  A directory, NOT a filename pattern —
+# smoke_test.py and routes/paywall_test.py are registered by main.py.  Not in
+# SKIP_DIRS: _python_files() is shared with check_credential_channel_coverage.py,
+# which reads 12 channels from tests/ alone.
+TEST_TREE = "tests"
+
 # Paths we deliberately do NOT expect to proxy through the worker.
 SKIP_PATTERNS = (
     "/<",            # catch-all dynamic patterns — handled inside Railway
@@ -280,7 +295,11 @@ def extract_flask_paths(root: pathlib.Path = ROOT) -> dict[str, str]:
     full set stays available for sanity-checking the extractor itself.
     """
     trees: dict[pathlib.Path, ast.AST] = {}
+    skipped_tests = 0
     for path in _python_files(root):
+        if path.relative_to(root).parts[0] == TEST_TREE:
+            skipped_tests += 1
+            continue
         try:
             trees[path] = ast.parse(path.read_text(errors="replace"))
         except SyntaxError:
@@ -348,6 +367,7 @@ def extract_flask_paths(root: pathlib.Path = ROOT) -> dict[str, str]:
                         prefix = reg_prefix.get(owner) or ctor_prefix.get(owner, "")
                         found.setdefault(_join(prefix, rule), rel_file)
     extract_flask_paths.skipped_fastapi = sorted(skipped_fastapi)
+    extract_flask_paths.skipped_tests = skipped_tests
     return found
 
 
@@ -390,6 +410,8 @@ def cmd_flask_routes(_args) -> int:
     skipped = getattr(extract_flask_paths, "skipped_fastapi", [])
     print(f"  {len(skipped)} FastAPI module(s) skipped (different app, "
           f"include_router prefixes): {', '.join(skipped) or 'none'}")
+    print(f"  {getattr(extract_flask_paths, 'skipped_tests', 0)} file(s) under "
+          f"{TEST_TREE}/ not scanned (fixtures, never served)")
     routes = html_routes(all_paths, static)
     FLASK_ROUTES_OUT.write_text(json.dumps(sorted(routes), indent=2))
     print(f"discovered {len(routes)} Flask HTML routes")
