@@ -313,7 +313,10 @@ def test_first_use_counts_rest_for_self_serve_keys_and_mcp_as_mcp(first_use):
         "keys": 3, "keys_in_a_format_the_rest_tracker_records": 3,
         "keys_seen_in_api_endpoint_log": 2, "keys_seen_in_api_usage_meter": 2,
         "keys_with_rest_rows_in_mcp_call_log": 0}
+    # counted from the tracker's first row on — and a floor for anything earlier
+    first_row = first_use["instrument"]["api_endpoint_log"]["first_row_at"]
     assert "FLOOR" not in web["reading"] and "is counted" in web["reading"]
+    assert first_row in web["reading"] and "are a floor" in web["reading"]
     assert first_use["instrument"]["api_endpoint_log"]["verdict"] == "live"
     assert first_use["control"]["keys_seen_in_api_endpoint_log"] == 1
     claim = first_use["evidence_status_claims"]["rest_tracker_cannot_see_these_keys"]
