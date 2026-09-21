@@ -28,6 +28,7 @@ Two guards live here:
 """
 
 import ast
+import functools
 import json
 import os
 
@@ -151,9 +152,13 @@ def _py_files():
                 yield os.path.relpath(p, REPO), p
 
 
+@functools.lru_cache(maxsize=None)
 def _sliced_dumps_reaching_a_query():
     """Every sliced json.dumps that lands in an execute() parameter, directly
-    or through one assignment hop."""
+    or through one assignment hop.
+
+    Walked once per process and shared, as a tuple, by the two tests that read
+    it: the walk parses every .py in the repo."""
     out = []
     for rel, path in _py_files():
         if rel.startswith("tests/"):
@@ -215,7 +220,7 @@ def _sliced_dumps_reaching_a_query():
                 else:
                     continue
                 break
-    return out
+    return tuple(out)
 
 
 def _target(sql):

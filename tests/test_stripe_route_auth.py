@@ -30,6 +30,7 @@ it, which is the only property that survives a detector's vocabulary going
 stale.
 """
 import ast
+import functools
 import pathlib
 
 import pytest
@@ -102,9 +103,14 @@ def _importable(path):
     return path.stem.isidentifier()
 
 
+@functools.lru_cache(maxsize=None)
 def _stripe_routes():
     """(path, file, lineno, source) for every Stripe-decorated handler.
-    `source` includes the decorators, so decorator-level gates are visible."""
+    `source` includes the decorators, so decorator-level gates are visible.
+
+    Walked ONCE per process and shared, as a tuple, by every test here: the
+    walk parses every .py in the repo, and the parametrized gate check alone
+    used to repeat it once per MUST_BE_GATED route (181 s of CI per run)."""
     found = []
     for f in ROOT.rglob("*.py"):
         if _SKIP_DIRS & set(f.relative_to(ROOT).parts[:-1]):
@@ -134,7 +140,7 @@ def _stripe_routes():
                         body = ast.get_source_segment(src, n) or ""
                         found.append((a.value, f.relative_to(ROOT), n.lineno,
                                       decos + "\n" + body))
-    return found
+    return tuple(found)
 
 
 def test_the_walk_finds_the_routes():

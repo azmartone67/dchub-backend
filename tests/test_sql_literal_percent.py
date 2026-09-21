@@ -20,6 +20,7 @@ Two guards, because the bug had two halves:
   2. an unmeasured board must not read as a healthy one (the amplifier)
 """
 import ast
+import functools
 import pathlib
 import re
 
@@ -41,10 +42,14 @@ SKIP = frozenset({".claude", "worktrees", "node_modules", ".git", "tests"})
 _BARE_PCT = re.compile(r"(?<!%)%(?![%s(diouxXeEfFgGcr])")
 
 
+@functools.lru_cache(maxsize=None)
 def _param_queries():
     """(file, lineno, sql) for every execute()/executemany() call that passes a
     literal SQL string AND a params argument — the only shape where a literal
-    percent is a bug."""
+    percent is a bug.
+
+    Walked once per process and shared, as a tuple, by the three tests that
+    read it: the walk parses every .py in the repo."""
     out = []
     for f in ROOT.rglob("*.py"):
         if SKIP & set(f.relative_to(ROOT).parts[:-1]):
@@ -71,7 +76,7 @@ def _param_queries():
                                 if isinstance(v, ast.Constant)
                                 and isinstance(v.value, str))
                 out.append((f.relative_to(ROOT), n.lineno, parts))
-    return out
+    return tuple(out)
 
 
 def test_the_scan_finds_queries():
