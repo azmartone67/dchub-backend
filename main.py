@@ -25343,6 +25343,13 @@ def _list_facilities_free():
     except Exception:
         pass
 
+    # P0-C (2026-09-21): the $10 pack as a measured /go/c checkout plus the
+    # ladder, not bare /pricing. See routes.checkout_click_tracker.rest_wall_ladder.
+    try:
+        from routes.checkout_click_tracker import rest_wall_ladder as _rest_wall_ladder
+        _wall = _rest_wall_ladder()
+    except Exception:  # noqa: BLE001
+        _wall = {'upgrade_url': 'https://dchub.cloud/pricing'}
     _free_payload = {
         'success': True,
         'data': facilities,
@@ -25350,7 +25357,7 @@ def _list_facilities_free():
         'total_matching': total_matching,
         'full_results_available': total_matching > FREE_LIMIT,
         'tier': 'free',
-        'upgrade_url': 'https://dchub.cloud/pricing',
+        **_wall,
         'note': f'Free tier: showing {len(facilities)} of {total_matching} matching facilities with basic fields. Upgrade for full data including capacity, coordinates, and detailed specs.'
     }
     # provenance-v1: collection-level block (once per response — fail-soft).
