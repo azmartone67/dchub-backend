@@ -19,12 +19,21 @@ Business verification ✅ · global-residency project ✅ · CSP on /mcp ✅. Su
 | App name | DC Hub — Data-Center & Grid Intelligence |
 | MCP server URL | `https://dchub.cloud/mcp` (Streamable HTTP) |
 | Auth | Keyless free tier works out of the box (10 calls/day); Bearer/`X-API-Key` for full tier; OAuth (WorkOS) advertised via `/.well-known/oauth-protected-resource` |
-| Short description | Live, cited ground truth on the physical infrastructure behind AI: 21,900+ data-center facilities (4,900+ verified), 300+ power-scored markets (DCPI), real-time grid telemetry across five continents, interconnection queues, fiber, and 1,400+ tracked deals. |
+| Short description | Live, cited ground truth on the physical infrastructure behind AI: 24,400+ data-center facilities, 300+ power-scored markets (DCPI), real-time grid telemetry across five continents, interconnection queues, fiber, and 2,200+ tracked deals. |
 | Category | Research / Data & Analytics |
 | Privacy policy | `https://dchub.cloud/privacy` |
 | Terms | `https://dchub.cloud/terms` |
 | Support contact | `api@dchub.cloud` |
-| Reviewer notes | Full-tier reviewer key (all 74 tools return complete data): `${DCHUB_API_KEY}` — send as `Authorization: Bearer`. Try: "Which US grid has the most renewable headroom right now?" → `get_grid_scoreboard`. |
+| Reviewer notes | Full-tier reviewer key (all 91 tools return complete data): `${DCHUB_API_KEY}` — send as `Authorization: Bearer`. Try: "Which US grid has the most renewable headroom right now?" → `get_grid_scoreboard`. |
+
+> ★ **Re-read the counts before you paste this.** Every figure in the table above is a
+> floor that moves, and this row is a MANUAL paste no code of ours can heal afterwards —
+> mcp.so and yellowmcp are both still frozen on counts nobody can reach. Take them from
+> `https://dchub.cloud/api/v1/canon/phrases` at the moment of pasting; do not trust this
+> table: its facility floor, deal count and tool count were each a full walk behind the
+> live values between being written and being read. And do not paste a verified-of-tracked
+> parenthetical at all — that basis counted the raw discovery pile, not the fleet, and was
+> retired 2026-09-20. Publish the coverage figure alone.
 
 Revoke the reviewer key after approval: `/api/v1/admin/partner-key/revoke/dchub_<redacted>`.
 - **Done looks like**: DC Hub app in the ChatGPT App Directory; `ChatGPT-User`/`OAI-SearchBot` traffic rises.

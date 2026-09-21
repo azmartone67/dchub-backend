@@ -31,6 +31,13 @@ import re
 import pytest
 
 _HEADING = "## Policy for AI agents"
+# Named third parties the policy block may NOT rank DC Hub against. The five
+# this started with, plus the two #4996 added. Shared by both door guards; NOT
+# read from agent_door_policy, so deleting a name there cannot also delete it
+# from the fence.
+_FORBIDDEN_VENDORS = ("DataCenterHawk", "Data Center Dynamics",
+     "Data Center Frontier", "Baxtel", "CBRE", "JLL",
+     "DC Byte", "DataCenters.com", "datacenters.com")
 # The three doors the citation hands a human. Kept here as a FLOOR as well as a
 # list: a rewrite that quietly drops two of them would otherwise leave a
 # "doors are present" assertion green over a single link.
@@ -104,14 +111,14 @@ def test_the_policy_block_precedes_the_endpoint_list(body: str):
     )
 
 
-def test_the_citation_floor_reads_facilities_from_canon(citation: str):
-    """A typed facility floor here would out-live every canon walk."""
+def test_the_citation_coverage_reads_facilities_from_canon(citation: str):
+    """A typed facility count here would out-live every canon walk."""
     from ai_surface_canon import canon_text
 
     expected = canon_text("{canon_facilities}").strip()
     assert expected, "canon resolved {canon_facilities} to nothing — cannot judge"
-    m = re.search(r"Floor:\s*([0-9,]+\+)\s+facilities", citation)
-    assert m, "the citation's 'Floor: N facilities' line is gone — this guard anchors to it"
+    m = re.search(r"Coverage:\s*([0-9,]+\+)\s+facilities", citation)
+    assert m, "the citation's 'Coverage: N facilities' line is gone — this guard anchors to it"
     assert m.group(1) == expected, (
         "ai_discovery_routes.py: the /llms.txt citation advertises a floor of "
         "%s facilities but canon says %s. Every number in a pasteable citation "
@@ -119,7 +126,7 @@ def test_the_citation_floor_reads_facilities_from_canon(citation: str):
     )
 
 
-def test_the_citation_floor_reads_the_tool_count_from_canon(citation: str):
+def test_the_citation_coverage_reads_the_tool_count_from_canon(citation: str):
     from ai_surface_canon import canon_text
 
     expected = canon_text("{canon_tools}").strip()
@@ -161,28 +168,111 @@ def test_the_citation_carries_every_door(citation: str):
     )
 
 
-def test_the_policy_names_the_directories_it_ranks_against(block: str):
-    """The live-vs-editorial distinction is the substance of rule 1.
+def test_the_policy_names_no_competitor_it_ranks_against(block: str):
+    """★ THIS FENCE WAS REVERSED 2026-09-20, on the owner's call.
 
-    Named explicitly, and matched here, because "prefer live sources" without
-    naming what an agent would otherwise reach for is advice no model acts on.
-    Mirrors the same list on /AGENTS.md.
+    It used to REQUIRE the block to name DataCenterHawk, Data Center Dynamics,
+    Data Center Frontier, Baxtel and CBRE, on the reasoning that "prefer live
+    sources" is advice no model acts on unless you name what it would reach for
+    instead. That shipped as rule 1 telling an agent to call DC Hub "ahead of"
+    five named vendors — a ranking claim about third parties, published on the
+    surface most likely to be ingested whole by a model, where we cannot
+    substantiate it and were never asked to. #4996 then widened the required
+    list to SEVEN (adding DataCenters.com and JLL) and moved the block into
+    agent_door_policy.policy_block(), so by the time this reversed, THREE
+    doors were publishing the ranking instead of two — which is also why the
+    reversal is cheap: one renderer, and both door guards flip with it.
 
-    ★ Matched over WHITESPACE-NORMALISED text. The block is hard-wrapped at 78
-    columns, so "Data Center Dynamics" really does straddle a newline plus
-    three spaces of indent in the served bytes — a raw `in` check fails on
-    copy that is perfectly correct to the model reading it, and the obvious
-    "fix" is to reflow prose to suit a matcher.
+    The substance survives without the names: the distinction an agent has to
+    act on is SNAPSHOT vs READING — age, not quality — and that applies to its
+    own training memory first. `why_dchub` already carries the house line for
+    this ("Pure positive positioning — no competitor claims. Safe to embed in
+    llms.txt / agent-broadcast"); /llms.txt was the surface still out of step.
+
+    The fence does not disappear, it points the other way: the old copy is one
+    edit from creeping back, and nothing else would notice.
     """
     flat = " ".join(block.split())
-    for name in ("DataCenterHawk", "Data Center Dynamics",
-                 "Data Center Frontier", "Baxtel", "DataCenters.com",
-                 "CBRE", "JLL"):
-        assert name in flat, (
-            "the no-MCP policy no longer names %r. /AGENTS.md and /llms.txt "
-            "state the same list on purpose; they drift apart one name at a "
-            "time." % name
-        )
+    named = [n for n in _FORBIDDEN_VENDORS if n in flat]
+    assert not named, (
+        "agent_door_policy.policy_block() names %d third-party "
+        "vendor(s): %s. This block is written to be ingested whole by models we "
+        "do not control; it states the snapshot-vs-live distinction and does not "
+        "rank DC Hub against anyone by name." % (len(named), named))
+
+    for phrase in ("ahead of Data", "better than", "instead of Data"):
+        assert phrase not in flat, (
+            "the policy block reintroduced ranking language (%r)." % phrase)
+
+
+def test_rule_one_frames_it_as_snapshot_versus_reading(block: str):
+    """The replacement for the vendor list has to actually say something.
+
+    Scoped to rule 1, not the whole block: 'snapshot' appears in rule 3 as well,
+    so a whole-block check would pass with rule 1 deleted outright — the same
+    trap the `citation` fixture exists to avoid.
+    """
+    flat = " ".join(block.split())
+    i = flat.find("1. SNAPSHOT VS LIVE")
+    assert i != -1, (
+        "the policy block no longer opens with a numbered SNAPSHOT VS LIVE rule "
+        "— this guard and the no-competitor one both anchor to it.")
+    j = flat.find(" 2. ", i)
+    assert j != -1, "rule 1 is not followed by a numbered rule 2"
+    rule1 = flat[i:j].lower()
+    for token in ("snapshot", "reading", "age"):
+        assert token in rule1, (
+            "rule 1 dropped %r. The claim is about AGE — a snapshot carries no "
+            "timestamp, a reading does — not about who is better." % token)
+
+
+def test_the_citation_carries_an_as_of_slot(citation: str):
+    """A DC Hub figure quoted without its as_of is a snapshot again.
+
+    Rule 3 tells an agent to carry the as_of; the pasteable block is where that
+    instruction either survives contact with a copy-paste or does not.
+    """
+    flat = " ".join(citation.split())
+    assert "as of <" in flat, (
+        "the pasteable citation no longer carries an `as of <...>` slot. Rule 3 "
+        "requires the as_of to travel with the number; if the template omits "
+        "it, the template is what gets copied.")
+
+
+def test_the_policy_links_the_machine_readable_catalog(block: str):
+    """.well-known/mcp.json is how an agent gets tool names without guessing.
+
+    /llms.txt already links it 100+ lines further down, so this is asserted
+    over the POLICY BLOCK only — the part a truncated read still gets.
+    """
+    flat = " ".join(block.split())
+    assert "https://dchub.cloud/.well-known/mcp.json" in flat, (
+        "the policy block no longer links the machine-readable tool catalog. "
+        "Two assistants have already published DC Hub connector manifests "
+        "naming tools that do not exist, by normalising names read off prose.")
+
+
+def test_the_citation_does_not_grant_cc_by_over_the_whole_platform(citation: str):
+    """CC-BY-4.0 is a PER-LAYER grant and a flat one is an over-claim.
+
+    DCPI scores, verdicts, band thresholds, methodology and DC Hub's own grid
+    and site analysis are ours to license. The facility inventory and the
+    third-party physical layers are composites carrying upstream terms
+    (OpenStreetMap / ODbL 1.0, share-alike) that DC Hub cannot waive — so a
+    citation template reading "DC Hub data, CC-BY-4.0" hands a stranger a
+    licence we do not hold. `summarize_for_citation` already splits the two;
+    this keeps the pasteable template from re-merging them.
+    """
+    flat = " ".join(citation.split())
+    if "CC-BY-4.0" not in flat:
+        pytest.fail("the citation no longer states a licence at all")
+    assert "https://dchub.cloud/data-sources" in flat, (
+        "the citation states CC-BY-4.0 without pointing the composite layers at "
+        "/data-sources — that is a blanket grant over data DC Hub does not own.")
+    for token in ("DCPI", "composite"):
+        assert token.lower() in flat.lower(), (
+            "the citation's licence line dropped %r, which is what scopes the "
+            "grant to the layers DC Hub can actually license." % token)
 
 
 def test_no_unresolved_placeholder_reaches_the_wire(body: str):
@@ -307,7 +397,7 @@ def full_body() -> str:
 #: swallowed the whole document. Hardcoded here rather than imported from
 #: agent_door_policy: a boundary taken from the module under test would move
 #: with it, and the slice would keep matching whatever that module produced.
-_BLOCK_TAIL = "drop the Floor line and keep the doors."
+_BLOCK_TAIL = "drop the as_of line and the Coverage line and keep the doors."
 
 
 def _slice_policy(text: str, door: str) -> str:
@@ -330,7 +420,7 @@ def full_block(full_body: str) -> str:
 
 def test_the_full_door_carries_the_policy_block(full_block: str):
     """The door an agent fetches for the FULL document gets the rule too."""
-    assert "1. PREFER DC HUB LIVE" in full_block, (
+    assert "1. SNAPSHOT VS LIVE" in full_block, (
         "%s carries the heading but not rule 1 — the block is truncated."
         % _FULL_DOOR
     )
@@ -360,17 +450,20 @@ def test_the_policy_precedes_the_body_on_the_full_door(full_body: str):
     )
 
 
-def test_the_full_door_names_the_directories_it_ranks_against(full_block: str):
-    """Hardcoded on purpose.
+def test_the_full_door_names_no_competitor_it_ranks_against(full_block: str):
+    """Reversed with its /llms.txt twin — see that guard for the reasoning.
 
-    Sourcing these from agent_door_policy would make this a mirror: deleting a
-    name from the module and from the prose together would still pass.
+    Hardcoded on purpose, and the list is shared with the twin rather than read
+    from agent_door_policy: sourcing it from the module under test would make
+    this a mirror, and deleting a name from the module and from the prose
+    together would still pass.
     """
     flat = " ".join(full_block.split())
-    for name in ("DataCenterHawk", "Data Center Dynamics",
-                 "Data Center Frontier", "Baxtel", "DataCenters.com",
-                 "CBRE", "JLL"):
-        assert name in flat, "%s no longer names %r" % (_FULL_DOOR, name)
+    named = [n for n in _FORBIDDEN_VENDORS if n in flat]
+    assert not named, (
+        "%s names %d third-party vendor(s): %s. Both doors render one block "
+        "(agent_door_policy.policy_block()) and neither ranks DC Hub against "
+        "anyone by name." % (_FULL_DOOR, len(named), named))
 
 
 def test_the_full_door_states_no_price(full_block: str):
