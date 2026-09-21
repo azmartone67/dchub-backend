@@ -1007,7 +1007,7 @@ jobs:
           fi
 
       # ── Install first-use by channel, against the same Postgres ─────────
-      # /api/v1/ops/install-stats/first-use joins mcp_dev_keys to three usage
+      # The install-stats first-use endpoint joins mcp_dev_keys to three usage
       # tables on three different key derivations (full key, 24-char prefix,
       # day-grain meter). Only a real Postgres shows each join returning a row
       # for its positive control and the probe exclusion holding. Owns and
