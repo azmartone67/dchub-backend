@@ -539,6 +539,25 @@ _STRIPE_MONTHLY = _CANON_LINKS["pro"]         # canonical Pro link; price via _p
 _STRIPE_ANNUAL  = _CANON_LINKS["pro_annual"]  # $1,188/yr one-time (see _annual_save_html)
 
 
+def _dev_price_usd() -> int:
+    """Canonical Developer monthly price, DERIVED like _pro_price_usd."""
+    try:
+        from tier_registry import price as _price
+        return int(_price("developer") or 0)
+    except Exception:
+        return 0
+
+
+def _pack_price_and_credits() -> tuple:
+    """($ price, "1,000") of the one-time pack, read from the module that owns it
+    (routes.mcp_conversion_plays). (0, "") when unavailable."""
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+        return int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")
+    except Exception:
+        return 0, ""
+
+
 def _pro_price_usd() -> int:
     """Canonical Pro monthly price, DERIVED. 0 when unavailable (fail-open to a
     price-free tile rather than a wrong number — same asymmetry canon_text uses).
@@ -575,58 +594,10 @@ def _annual_save_html() -> str:
     return f' <span class="save">{pct}% off</span>' if pct >= 1 else ""
 
 
-# The tile is its own template because the page template is rendered with a
-# single .format() pass: a pre-rendered string injected as {ANNUAL_TILE_HTML}
-# is NOT re-scanned, so {KEY}/{VIEW_ID} inside it would ship to the browser as
-# literal text. It is formatted here, with the same values, before injection.
-_ANNUAL_TILE_TEMPLATE = """    <a id="upg-annual" class="upgrade-tile" \
-href="/api/v1/connect/click?platform={KEY}&plan=pro_annual&view_id={VIEW_ID}">
-      <h3>Pro Annual{SAVE}</h3>
-      <div class="price">${PRICE}<span style="font-size:.7em;color:var(--muted)">/yr</span></div>
-      <div class="desc">One-time payment, 365 days of Pro. Best value.</div>
-    </a>
-"""
-
-
-def _annual_tile_html(client_key: str, view_id) -> str:
-    """The Pro Annual tile — rendered ONLY while the annual link is a saving.
-
-    ★ r-price-collapse (2026-09-05) WITHDREW Pro Annual, and the reason is
-    arithmetic: both annual SKUs were priced off the $299 monthly list, so
-    against a $99 list $1,188/yr is 12 x $99 EXACTLY — a 0% discount sold
-    beside a monthly button. tier_registry's own note calls that "an offer
-    that punishes the buyer for taking it".
-
-    ★ THAT WITHDRAWAL ONLY REACHED HALF THE SURFACES. It landed in
-    ANNUAL_OPTIONS, so /api/v1/tiers stopped advertising annual — and never
-    reached this module, so all 12 install pages went on rendering the tile
-    for five days. Measured live 2026-09-10 on /connect/cursor, cache-busted:
-
-        Pro Annual        Pro Monthly
-        $1,188 /yr        $99 /mo
-
-    ★ DERIVED, NOT DELETED, and that distinction is the point. The Stripe
-    link stays intact: an annual subscription already provisioned keeps
-    renewing, the live URL keeps resolving, and /api/v1/connect/click still
-    honours plan=pro_annual for anyone holding one. The offer is simply not
-    ADVERTISED while it is not a deal. Mint a $990/yr link (2 months free on
-    $99), set _ANNUAL_PRICE_USD, and the tile comes back on its own — which
-    is exactly the restore path tier_registry documents, with no code change
-    beyond the number.
-
-    Gated on _annual_save_html() so there is ONE definition of "is this a
-    saving" rather than two that can drift apart. That also fails closed: an
-    unreadable monthly price renders no tile rather than an unpriced one.
-    """
-    save = _annual_save_html()
-    if not save:
-        return ""
-    return _ANNUAL_TILE_TEMPLATE.format(
-        KEY=client_key,
-        VIEW_ID=(str(view_id) if view_id else ""),
-        SAVE=save,
-        PRICE=f"{_ANNUAL_PRICE_USD:,}",
-    )
+# P0-D (frontend#1535, 2026-09-21): install pages no longer tile Pro, annual or
+# monthly: they sell the pack and Developer, the plans agents buy. The annual
+# figures above stay as the Stripe link's own price for the restore path that
+# tier_registry.annual_save_display documents.
 
 
 # ── Telemetry: best-effort DB write ──────────────────────────────────────
@@ -901,21 +872,28 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
   <div class="step"><span class="step-num">4</span> Trial limits + upgrade</div>
   <p style="margin:0 0 6px;color:var(--muted);font-size:.95rem">
     {TRIAL_TERMS_STEP4_HTML}
-    Need more? Upgrade to Pro — gets you {canon_pro_mcp_calls} MCP calls/day, all {canon_tools} tools,
-    and removes the free-tier truncation on grid + fiber intel.
+    Need more? Agents buy one of two things: <strong>{canon_pack_offer}</strong> on this key
+    (credits don't expire, no subscription), or <strong>Developer {canon_price_developer}</strong>
+    for {canon_developer_mcp_calls} MCP calls/day on every tool except the Pro-only ones.
+    Pro ({canon_price_pro}) is for a human screening sites: <a href="https://dchub.cloud/pricing">all plans</a>.
   </p>
-  <div class="upgrade-grid{ANNUAL_GRID_MOD}">
-    <!-- r68-funnel-stamping (2026-06-06): both hrefs now point at the
-         /api/v1/connect/click proxy which stamps connect_landing_views
-         .stripe_clicked_at before bouncing to Stripe.  The href is
-         re-set by mintKey() once a trial key exists so we can carry
-         it through as client_reference_id. -->
-    <a id="upg-monthly" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_monthly&view_id={VIEW_ID}">
-      <h3>Pro Monthly</h3>
-      <div class="price">${PRO_PRICE}<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
-      <div class="desc">Cancel anytime. Same Pro access, monthly billing.</div>
+  <div class="upgrade-grid">
+    <!-- P0-D (frontend#1535, 2026-09-21): the two plans agents buy. Both hrefs
+         point at the /api/v1/connect/click proxy, which stamps
+         connect_landing_views.stripe_clicked_at before bouncing to Stripe;
+         mintKey() re-points them at the minted key once one exists. Pro is
+         not tiled here: it is the plan for a human screening sites. -->
+    <a id="upg-pack" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pack&view_id={VIEW_ID}">
+      <h3>{PACK_CREDITS} API calls</h3>
+      <div class="price">${PACK_PRICE}<span style="font-size:.7em;color:var(--muted)"> one-time</span></div>
+      <div class="desc">Credits land on this key and never expire. No subscription.</div>
     </a>
-{ANNUAL_TILE_HTML}  </div>
+    <a id="upg-developer" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=developer&view_id={VIEW_ID}">
+      <h3>Developer</h3>
+      <div class="price">${DEV_PRICE}<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
+      <div class="desc">{canon_developer_mcp_calls} MCP calls/day, every tool except the Pro-only ones. Cancel anytime; your Developer key arrives by email.</div>
+    </a>
+  </div>
   <p class="upgrade-note" id="ref-note" style="display:none">
     Upgrade links carry your trial key so the conversion attributes back to this page.
   </p>
@@ -1110,18 +1088,16 @@ async function mintKey(again) {{
       // Stripe as client_reference_id (Fix-E attribution chain preserved).
       const viewQS = VIEW_ID ? ("&view_id=" + encodeURIComponent(VIEW_ID)) : "";
       const keyQS = "&key=" + encodeURIComponent(mintedKey);
-      document.getElementById("upg-monthly").href =
-        "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
-        "&plan=pro_monthly" + viewQS + keyQS;
-      // ★ The annual tile is DERIVED and may not be on the page at all
-      // (see _annual_tile_html). Unguarded, this line throws a TypeError and
-      // takes the rest of mintKey() with it — the ref-note and the
-      // mint-update POST that attributes the trial key to this view.
-      const annualEl = document.getElementById("upg-annual");
-      if (annualEl) {{
-        annualEl.href =
-          "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
-          "&plan=pro_annual" + viewQS + keyQS;
+      // ★ Guarded per tile: an unguarded getElementById().href on a tile that
+      // is not on the page throws a TypeError and takes the rest of mintKey()
+      // with it (the ref-note and the mint-update POST that attributes the key).
+      for (const [tileId, tilePlan] of [["upg-pack", "pack"], ["upg-developer", "developer"]]) {{
+        const tileEl = document.getElementById(tileId);
+        if (tileEl) {{
+          tileEl.href =
+            "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
+            "&plan=" + tilePlan + viewQS + keyQS;
+        }}
       }}
       document.getElementById("ref-note").style.display = "block";
 
@@ -1352,8 +1328,9 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     # cannot be swapped (a surviving {canon_*} is a KeyError under .format()).
     return canon_text(_PAGE_TEMPLATE_RAW).format(
         PRO_PRICE=_pro_price_usd(),
-        ANNUAL_TILE_HTML=_annual_tile_html(client_key, view_id),
-        ANNUAL_GRID_MOD=("" if _annual_tile_html(client_key, view_id) else " solo"),
+        DEV_PRICE=_dev_price_usd(),
+        PACK_PRICE=_pack_price_and_credits()[0],
+        PACK_CREDITS=_pack_price_and_credits()[1],
         NAME=c["name"],
         KEY=client_key,
         TAGLINE=c["tagline"],
@@ -1570,23 +1547,45 @@ def mint_update():
 # client_reference_id wired. View_id comes from a query param so the
 # stamp lands on the row that minted the trial key (= the row the
 # funnel-attribution joins on).
+# P0-D (frontend#1535, 2026-09-21): plan → (Payment Link, client_reference_id
+# prefix). The key rides to Stripe as a HASH, never raw:
+#   pk-<sha256(key)>  the pack: the webhook grants the credits to THIS key hash
+#                     (after checking a pack price was paid), trial keys included.
+#   k-<sha256(key)>   a subscription: the webhook lifts the tier of a durable
+#                     (mcp_dev_keys) key with that hash. A trial key has none, so
+#                     the Developer tile says the paid key arrives by email.
+# The raw key used to go as the ref. conversion_attribution reads a raw ref as a
+# bare MCP session id, which a trial key is not, so it bound nothing, while the
+# agent's key sat in a third party's URL. pro_monthly / pro_annual are no longer
+# tiled but stay routable for links already handed out.
+_CLICK_PLANS = {
+    "pack": (_CANON_LINKS["metered"], "pk-"),
+    "developer": (_CANON_LINKS["developer"], "k-"),
+    "pro_monthly": (_STRIPE_MONTHLY, "k-"),
+    "pro_annual": (_STRIPE_ANNUAL, "k-"),
+}
+
+
 @mcp_connect_bp.route("/api/v1/connect/click", methods=["GET"])
 def connect_click_proxy():
     """Stamp connect_landing_views.stripe_clicked_at then 302 to Stripe.
 
     Query params:
       platform — cursor|cline|continue|claude-desktop (audit only)
-      plan     — pro_monthly | pro_annual  (which Stripe link to bounce to)
+      plan     — pack | developer (the tiles); pro_monthly | pro_annual still
+                 resolve for links already handed out. Anything else → pack.
       view_id  — connect_landing_views.id (set by the page after _record_view)
       key      — minted trial key, used as client_reference_id for Stripe
                  attribution (Fix-E pattern, mirrors redeem-page click).
     """
     platform = (request.args.get("platform") or "").strip().lower()
-    plan = (request.args.get("plan") or "pro_monthly").strip().lower()
+    plan = (request.args.get("plan") or "pack").strip().lower()
+    if plan not in _CLICK_PLANS:
+        plan = "pack"
     view_id = (request.args.get("view_id") or "").strip()
     key = (request.args.get("key") or "").strip()
 
-    stripe_base = _STRIPE_ANNUAL if plan == "pro_annual" else _STRIPE_MONTHLY
+    stripe_base, ref_prefix = _CLICK_PLANS[plan]
 
     # Stamp first.  Best-effort: a failure here must NEVER block the
     # redirect (the user is mid-click on the Upgrade button — making them
@@ -1631,12 +1630,12 @@ def connect_click_proxy():
                 try: db.close()
                 except Exception: pass
 
-    # Carry the minted trial key forward to Stripe so the webhook can
-    # attribute the conversion back to this page via the existing
-    # users.api_key match path.
+    # Carry the minted key forward to Stripe as its HASH (see _CLICK_PLANS).
     sep = "&" if "?" in stripe_base else "?"
     if key:
-        redirect_url = f"{stripe_base}{sep}client_reference_id={key}"
+        import hashlib as _hl
+        ref = ref_prefix + _hl.sha256(key.encode()).hexdigest()
+        redirect_url = f"{stripe_base}{sep}client_reference_id={ref}"
     else:
         redirect_url = stripe_base
     return redirect(redirect_url, code=302)

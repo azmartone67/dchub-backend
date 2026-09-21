@@ -140,12 +140,16 @@ def test_no_format_field_survives_render(client, stats_state):
 # ── 3. The price is derived, and the retired ones are gone ───────────────
 @pytest.mark.parametrize("client", ALL_CLIENTS)
 def test_price_matches_the_tier_registry_ssot(client, stats_state):
+    """P0-D (2026-09-21): the tiles are the pack and Developer, not Pro. Each
+    price tile a buyer reads is its owner's figure: Developer from tier_registry,
+    the pack from routes.mcp_conversion_plays."""
     _warm(facilities_distinct=_SYNTH)
     body = _body(client)
-    want = f"${tier_registry.price('pro')}"
-    assert f'<div class="price">{want}<' in body, (
-        f"/connect/{client} price tile does not match tier_registry.price('pro')"
-        f" = {want}")
+    from routes.mcp_conversion_plays import PACK10_PRICE_CENTS
+    for owner, want in (("tier_registry.price('developer')", f"${tier_registry.price('developer')}"),
+                        ("mcp_conversion_plays.PACK10_PRICE_CENTS", f"${int(PACK10_PRICE_CENTS) // 100}")):
+        assert f'<div class="price">{want}<' in body, (
+            f"/connect/{client} price tile does not match {owner} = {want}")
 
 
 @pytest.mark.parametrize("client", ALL_CLIENTS)
