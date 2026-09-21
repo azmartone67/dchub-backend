@@ -43,9 +43,11 @@ minute. **Never disable a guard to make your own change land.**
 
 `main` requires **seven** checks — `substance-gate`, `syntax-check`,
 `unit-tests`, `regression-lint`, `db-parity`, `app-contract-gate` and `contract`
-(`.github/workflows/api-response-contract.yml`) — and GitHub enforces them on
-direct pushes too: the push is rejected with
-`GH006: Protected branch update failed`.
+(`.github/workflows/api-response-contract.yml`; measured 2026-09-21) — and GitHub
+enforces them on direct pushes too: the push is rejected with
+`GH006: Protected branch update failed`. main-branch-health compares the live
+list with `REQUIRED_CONTEXTS` in `tools/deadman/main_branch_verdict.py` on every
+run and goes red on drift.
 
 ★ **`enforce_admins` is `true`**, so that applies to the repo admin as well.
 This section used to say `false`, and recorded **137 of 223 commits (61%)

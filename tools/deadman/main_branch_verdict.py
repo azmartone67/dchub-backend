@@ -37,11 +37,15 @@ import subprocess
 import sys
 
 # main's required status checks. They live in branch protection, not in this
-# repo, so this is the one copy here — re-measure it, do not trust it:
+# repo, so this is the one copy here. tests/test_main_red_is_watched.py maps
+# each one to the workflow job that emits it and fails if GATING misses that
+# workflow — but nothing offline can see a context ADDED in GitHub's settings,
+# which is how `contract` joined unnoticed. So every run also compares this
+# tuple with what branch protection requires NOW (collect_required ->
+# required_drift), and a mismatch either way keeps the verdict off green.
+# Measured 2026-09-21: seven. By hand, with the owner's token:
 #   gh api repos/azmartone67/dchub-backend/branches/main/protection \
 #     --jq .required_status_checks.contexts
-# Measured 2026-09-21: seven. tests/test_main_red_is_watched.py maps each one to
-# the workflow job that emits it and fails if GATING misses that workflow.
 REQUIRED_CONTEXTS = ("substance-gate", "syntax-check", "unit-tests",
                      "regression-lint", "db-parity", "app-contract-gate",
                      "contract")
@@ -109,6 +113,64 @@ def verdict(head_sha, runs_by_workflow):
         len(green), head_sha[:9])
 
 
+def required_drift(live, declared):
+    """(status, note): the contexts branch protection requires (`live`) against
+    the ones this module declares (`declared`). Pure — no network, no env.
+
+    `live` is whatever collect_required() returned: a list of context names, or
+    the exception that stopped the read.
+
+    status is one of:
+      match       the same set on both sides
+      drift       they differ, and the note names each side. Required in GitHub
+                  but not declared: GATING may not watch it — the 2026-09-21
+                  `contract` blind spot. Declared but no longer required: its
+                  red would be reported as blocking PRs it does not block.
+      unmeasured  the read failed, or came back empty, missing or malformed.
+                  NEVER `match`: main requires checks, so an empty answer is a
+                  failed probe, not proof that nothing is required.
+    """
+    if isinstance(live, BaseException):
+        return "unmeasured", "could not read main's required contexts: %s" % (
+            str(live).replace("\n", " ")[:200] or type(live).__name__)
+    if not isinstance(live, (list, tuple)) or not live:
+        return "unmeasured", ("branch protection answered %s for main's required "
+                              "contexts — a failed read here, not proof that "
+                              "nothing is required" % repr(live)[:80])
+    if not all(isinstance(c, str) and c for c in live):
+        return "unmeasured", "malformed required contexts: %s" % repr(live)[:200]
+    added = sorted(set(live) - set(declared))
+    dropped = sorted(set(declared) - set(live))
+    if not added and not dropped:
+        return "match", "all %d match REQUIRED_CONTEXTS" % len(set(live))
+    parts = []
+    if added:
+        parts.append("required in GitHub but missing from REQUIRED_CONTEXTS: %s"
+                     % " ".join(added))
+    if dropped:
+        parts.append("in REQUIRED_CONTEXTS but no longer required: %s"
+                     % " ".join(dropped))
+    return "drift", "; ".join(parts)
+
+
+def combined(verdict_result, contexts_result):
+    """(status, note) for the board: verdict() joined with required_drift().
+    Pure.
+
+    Any verdict other than `success` stands — main_red is still the actionable
+    news, and pending still beats nothing. `success` stands only on a contexts
+    `match`: all-green on GATING is only as complete as REQUIRED_CONTEXTS, so
+    otherwise it becomes `contexts_drift` or `contexts_unmeasured`. Neither is
+    in the ledger's _OK_STATUS, so the main-ci feed turns red; and the contexts
+    result rides in every note, so no status hides it."""
+    status, note = verdict_result
+    c_status, c_note = contexts_result
+    note = "%s | required contexts %s: %s" % (note, c_status, c_note)
+    if status == "success" and c_status != "match":
+        status = "contexts_%s" % c_status
+    return status, note
+
+
 def _gh(args):
     return subprocess.run(["gh"] + args, capture_output=True, text=True,
                           timeout=90, check=True).stdout
@@ -131,17 +193,54 @@ def collect(repo, head_sha=None):
     return head_sha, runs
 
 
+def collect_required(repo):
+    """main's required status-check contexts as branch protection reports them
+    to this job's token: a list, or the exception that stopped the read. Never
+    raises — required_drift() makes anything but a non-empty list `unmeasured`.
+
+    ★ GET /branches/main, NOT /branches/main/protection. Measured 2026-09-21 in
+    Actions run 35576294578, with main-branch-health's own permissions (actions
+    + contents read) and again with read-all:
+      /branches/main/protection[/required_status_checks[/contexts]]
+                          403 "Resource not accessible by integration",
+                          x-accepted-github-permissions: administration=read —
+                          which GITHUB_TOKEN cannot be granted at all
+      GraphQL ref.branchProtectionRule          FORBIDDEN, same message
+      /branches?protected=true                  200, but protection: null
+      /rules/branches/main, /rulesets           200 [] — branch protection here,
+                                                not rulesets
+      /branches/main                            200 on contents=read, all seven
+    """
+    try:
+        out = _gh(["api", "repos/%s/branches/main" % repo,
+                   "--jq", ".protection.required_status_checks"])
+        rsc = json.loads(out or "null") or {}
+        # `contexts` is the legacy list, `checks` its app-pinned successor;
+        # read both, so a context listed in only one still counts.
+        live = list(rsc.get("contexts") or [])
+        live += [c["context"] for c in rsc.get("checks") or []]
+    except subprocess.CalledProcessError as e:
+        return RuntimeError("gh api repos/%s/branches/main: %s" % (
+            repo, (e.stderr or "").strip()[:160] or "exit %s" % e.returncode))
+    except Exception as e:
+        # Any other surprise in the answer is unreadable, not "nothing required".
+        return e
+    return live
+
+
 def main():
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not repo:
         print("::error::GITHUB_REPOSITORY not set")
         return 1
     head_sha, runs = collect(repo, os.environ.get("MAIN_HEAD_SHA") or None)
-    status, note = verdict(head_sha, runs)
+    c_status, c_note = required_drift(collect_required(repo), REQUIRED_CONTEXTS)
+    status, note = combined(verdict(head_sha, runs), (c_status, c_note))
     for wf in GATING:
         mine = [r for r in (runs.get(wf) or []) if r.get("headSha") == head_sha]
         state = (mine[0].get("conclusion") or mine[0].get("status")) if mine else "no run yet"
         print("  %-24s -> %s" % (wf, state))
+    print("  %-24s -> %s: %s" % ("required contexts", c_status, c_note))
     print("verdict: %s — %s" % (status, note))
     # Machine-readable for the workflow step.
     gh_out = os.environ.get("GITHUB_OUTPUT")
@@ -150,6 +249,8 @@ def main():
             fh.write("status=%s\n" % status)
             fh.write("note=%s\n" % note.replace("\n", " "))
             fh.write("head_sha=%s\n" % head_sha)
+            fh.write("contexts_status=%s\n" % c_status)
+            fh.write("contexts_note=%s\n" % c_note.replace("\n", " "))
     return 0
 
 
