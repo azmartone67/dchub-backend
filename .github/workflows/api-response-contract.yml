@@ -104,6 +104,38 @@ jobs:
           esac
           exit "$CODE"
 
+      # ── A PR that COMMITS a baseline must commit main's surface. ──────────
+      # `check` above asks whether this merge ref still serves every key the
+      # baseline names. On #5026 (2026-09-21) the answer was yes — its merge
+      # ref predated #5022, which removed `stats.mw_coverage` 13 minutes after
+      # it opened — and it landed a baseline asserting a key main no longer
+      # served. So a baseline change is also checked against main as it is
+      # NOW (freshly fetched, not the stored merge SHA a re-run replays):
+      # merged onto current main, would it be main's surface?
+      # This narrows the window to the time since this run; it does not close
+      # it (strict:false). refresh-api-response-baseline.yml closes refresh PRs
+      # that go stale after this has run.
+      - name: A committed baseline is current main's surface
+        if: github.event_name == 'pull_request'
+        run: |
+          set +e -uo pipefail
+          if git diff --quiet HEAD^1 HEAD -- contracts/api_response_surface.json; then
+            echo "this PR does not change contracts/api_response_surface.json — nothing to verify"
+            exit 0
+          fi
+          if ! git fetch -q origin +refs/heads/main:refs/remotes/origin/main; then
+            echo "::error::cannot fetch main — baseline freshness UNMEASURED, which is not a pass"
+            exit 2
+          fi
+          python3 scripts/api_response_contract.py verify-against --main origin/main --candidate HEAD
+          CODE=$?
+          case "$CODE" in
+            0) echo "::notice::the committed baseline is current main's surface" ;;
+            1) echo "::error::this PR's baseline is not the surface of current main — it was generated against an older tree. Regenerate on current main: git fetch origin main && git merge origin/main && python3 scripts/api_response_contract.py baseline" ;;
+            *) echo "::error::baseline freshness UNMEASURED (exit $CODE) — this is NOT a pass. See the log above." ;;
+          esac
+          exit "$CODE"
+
       # ── Baseline freshness. If a PR ADDS keys, the baseline is stale but the
       # check still passes (additive = fine). Tell the author, do not block.
       - name: Baseline freshness (advisory)

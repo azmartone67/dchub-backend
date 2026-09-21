@@ -284,28 +284,51 @@ class _Conn:
         return None
 
 
-def test_neutral_weight_means_the_negative_never_arrived(monkeypatch):
-    """A class failing 9 of 10 at NEUTRAL 1.0 never reached the ranker.
+def _formula(rate, n):
+    from routes.brain_work_selector import _soft_greedy
+    return round(float(_soft_greedy(rate, n)), 4)
 
-    MUTATION: `applied <= 1.0` — reports a never-arrived negative as delivered.
+
+def test_a_boosted_good_class_is_reached_not_a_false_alarm(monkeypatch):
+    """★ THE LIVE CASE, 2026-09-21 06:55Z: brain_spec_pr, 8 of 44 failed (82%
+    success), ranker applied 1.1545. The formula maps NEUTRAL 0.625 to 1.0, so
+    a boost is what it prescribes — reporting 'did not reach' was a false alarm.
+
+    MUTATION: judge by `applied < 1.0` instead of the formula.
     """
+    monkeypatch.setattr(lcs, "_conn", lambda: _Conn(_Cur(("brain_spec_pr", 44, 8))))
+    monkeypatch.setattr(lcs, "applied_weight_for", lambda k: _formula(36 / 44, 44))
+    w = lcs._worst_class()
+    assert w["expected_weight"] > 1.0, "floor: a class above NEUTRAL must be boosted"
+    assert w["outcomes_reached_ranker"] is True, w["verdict_basis"]
+
+
+def test_failing_class_at_neutral_weight_did_not_reach(monkeypatch):
+    """9 of 10 failed, the formula says well below 1.0, the ranker applied the
+    NEUTRAL fallback: the outcomes never arrived."""
     monkeypatch.setattr(lcs, "_conn", lambda: _Conn(_Cur(("dead_route", 10, 9))))
     monkeypatch.setattr(lcs, "applied_weight_for", lambda k: 1.0)
     w = lcs._worst_class()
-    assert w["available"] and w["negative_reached_ranker"] is False
-
-
-def test_down_weighted_class_counts_as_reached(monkeypatch):
-    monkeypatch.setattr(lcs, "_conn", lambda: _Conn(_Cur(("dead_route", 10, 9))))
-    monkeypatch.setattr(lcs, "applied_weight_for", lambda k: 0.4)
-    assert lcs._worst_class()["negative_reached_ranker"] is True
+    assert w["expected_weight"] < 1.0 - lcs._WEIGHT_TOLERANCE
+    assert w["outcomes_reached_ranker"] is False
+    assert "not reaching" in w["verdict_basis"]
 
 
 def test_unreadable_weight_is_none_not_false(monkeypatch):
-    """MUTATION: `bool(applied and applied < 1.0)` — turns None into False."""
+    """MUTATION: return False when the applied weight cannot be read."""
     monkeypatch.setattr(lcs, "_conn", lambda: _Conn(_Cur(("dead_route", 10, 9))))
     monkeypatch.setattr(lcs, "applied_weight_for", lambda k: None)
-    assert lcs._worst_class()["negative_reached_ranker"] is None
+    assert lcs._worst_class()["outcomes_reached_ranker"] is None
+
+
+def test_expectation_near_neutral_is_unknowable():
+    """A missed read falls back to NEUTRAL, so an expectation near NEUTRAL
+    cannot tell 'reached' from 'missed'.
+
+    MUTATION: drop the near-neutral guard.
+    """
+    reached, why = lcs.outcomes_reached_verdict(1.0, 1.01)
+    assert reached is None and "NEUTRAL" in why
 
 
 def test_worst_class_read_failure_is_reported_not_raised(monkeypatch):
@@ -361,11 +384,13 @@ def test_objective_unavailable_payload_scores_none(monkeypatch):
 
 
 # ── lane 5: spec debt — the one lever this shell pulls ────────────────
-def _impl(armed=True, disabled=False, acted=True):
+def _impl(armed=True, disabled=False, acted=True, plans=None):
     calls = []
     mod = types.ModuleType("routes.brain_spec_implementer")
     mod._armed = lambda: armed
     mod._disabled = lambda: disabled
+    mod.plan_for_spec = lambda doc, corpus=None: (plans or {}).get(
+        doc, {"ok": True, "would_act": True})
 
     def implement_spec(spec_name, kind="spec", item_id=0, apply=False):
         calls.append({"doc": spec_name, "apply": apply})
@@ -436,6 +461,53 @@ def test_disabled_implementer_is_not_actionable(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.brain_spec_implementer", mod)
     out = lcs.lane_spec_debt(scan=_SCAN, attempted=set())
     assert out["actionable"] is False and "DISABLE" in out["why_not_actionable"]
+
+
+_BLOCKED = {"ok": True, "would_act": False, "blocked": True,
+            "reason": "triage recorded BLOCKED — waits on an owner decision"}
+
+
+def test_spec_debt_skips_a_blocked_head_and_names_it(monkeypatch):
+    """★ THE LIVE CASE: the oldest open spec (agenda-41) is BLOCKED on an owner
+    decision; the implementer declines it. The lane must target the next one
+    it WOULD act on, and name the blocked one as the owner's lever.
+
+    MUTATION: take the oldest spec regardless of would_act / blocked.
+    """
+    mod, _ = _impl(plans={"old.md": _BLOCKED})
+    monkeypatch.setitem(sys.modules, "routes.brain_spec_implementer", mod)
+    out = lcs.lane_spec_debt(scan=_SCAN, attempted=set())
+    assert out["target"]["doc"] == "newer.md"
+    assert out["blocked_on_owner"] == ["old.md"]
+    assert out["blocked_on_owner_count"] == 1
+
+
+def test_all_blocked_is_not_actionable_and_says_why(monkeypatch):
+    mod, _ = _impl(plans={"old.md": _BLOCKED, "newer.md": _BLOCKED})
+    monkeypatch.setitem(sys.modules, "routes.brain_spec_implementer", mod)
+    out = lcs.lane_spec_debt(scan=_SCAN, attempted=set())
+    assert out["actionable"] is False
+    assert "2 blocked on an owner decision" in out["why_not_actionable"]
+
+
+def test_tick_creates_the_table_before_reading_history(monkeypatch):
+    """★ First live tick: inert_check read a table that did not exist yet and
+    reported "unreadable" when the truth was "no history yet".
+
+    MUTATION: drop the _ensure_tables() call at the top of run_tick.
+    """
+    order = []
+    monkeypatch.setattr(lcs, "_ensure_tables", lambda: order.append("ensure") or True)
+    monkeypatch.setattr(lcs, "inert_check", lambda: order.append("inert") or {"fired": False})
+    for n in ("lane_gradient", "lane_activation"):
+        monkeypatch.setattr(lcs, n, lambda: _L("x", None, error="stub"))
+    monkeypatch.setattr(lcs, "lane_negative", lambda: {**_L("negative", None), "success_rate": None})
+    monkeypatch.setattr(lcs, "lane_objective", lambda success_rate=None: _L("objective", None))
+    monkeypatch.setattr(lcs, "lane_spec_debt", lambda: _L("spec_debt", None))
+    monkeypatch.setattr(lcs, "_persist", lambda snap: None)
+    lcs.run_tick(dry_override=True)
+    assert order and order[0] == "ensure", order
+    assert order.index("ensure") < order.index("inert")
 
 
 def test_dry_act_passes_apply_false_and_records_nothing(monkeypatch):
@@ -514,6 +586,7 @@ def test_dry_tick_selects_the_actionable_lane_and_leaks_nothing(monkeypatch):
                         lambda: {**_L("spec_debt", 10.0, actionable=True),
                                  "ready": True, "target": {"doc": "old.md"}})
     monkeypatch.setattr(lcs, "inert_check", lambda: {"fired": False})
+    monkeypatch.setattr(lcs, "_ensure_tables", lambda: True)
     persisted = []
     monkeypatch.setattr(lcs, "_persist", persisted.append)
     snap = lcs.run_tick()

@@ -26,7 +26,7 @@ flask = pytest.importorskip("flask")
 
 import routes.install_stats as ist  # noqa: E402
 from routes.api_usage_tracker import _SCHEMA as _TRACKER_SCHEMA  # noqa: E402
-from routes.api_usage_tracker import STORED_PREFIX_LEN, TRACKED_KEY_PREFIX  # noqa: E402
+from routes.api_usage_tracker import ACCOUNT_KEY_PREFIX, STORED_PREFIX_LEN  # noqa: E402
 
 DSN = os.environ.get("INSTALL_FIRST_USE_SQL_DSN")
 SCHEMA = "install_first_use_t"
@@ -73,7 +73,9 @@ def _k(n):
     return "dch_live_" + ("%032x" % n)
 
 
-TRACKED_KEY = TRACKED_KEY_PREFIX + "t" * 30
+TRACKED_KEY = ACCOUNT_KEY_PREFIX + "t" * 30
+# A shape outside TRACKED_KEY_PREFIXES: the format predicate's negative control.
+UNTRACKED_SHAPE_KEY = "dch_trial_" + ("%031x" % 11)
 KEYS = {
     "web-mcp":          (_k(1), 3),
     "web-bulk":         (_k(2), 10),
@@ -85,7 +87,7 @@ KEYS = {
     "web-unclassified": (_k(8), 6),
     "web-meter":        (_k(9), 40),
     "web-tracked":      (TRACKED_KEY, 20),
-    "web-never":        (_k(11), 1),
+    "web-never":        (UNTRACKED_SHAPE_KEY, 1),
     "web-nullevent":    (_k(12), 8),
     "install-claude":   (_k(20), 6),
     "install-verify-first-use": (_k(30), 1),
@@ -140,7 +142,9 @@ def _seed(cur):
     _call(cur, "install-verify-first-use", 0, "bulk:FREE", ua=probe_ua,
           at_sql="NOW() - interval '20 minutes'")
 
-    # api_endpoint_log: the tracker's 24-char prefix, only ever for a dchub_ key.
+    # api_endpoint_log as it stood BEFORE the tracker recorded dch_live_ keys
+    # (2026-09-21): the 24-char prefix of the dchub_ key only. The after is
+    # proven through the real hooks in tests/test_usage_tracker_self_serve_sql.py.
     cur.execute(
         "INSERT INTO api_endpoint_log (called_at, api_key_prefix, endpoint_path, status) "
         "SELECT created_at + interval '5 hours', LEFT(api_key, %s), '/api/v1/facilities', 200 "
@@ -249,7 +253,8 @@ def test_per_key_channel_grain_and_timing(db):
     assert web["web-unclassified"]["unclassified_rows"] == 1
     for c in ("web-probeua", "web-selfsession", "web-qaplatform"):
         assert web[c]["mcp_any_row"] and not web[c]["mcp"], c
-    assert [c for c, r in web.items() if r["tracker_sees_format"]] == ["web-tracked"]
+    # every dchub_ and dch_live_ key is a recordable shape; dch_trial_ is not
+    assert [c for c, r in web.items() if not r["tracker_sees_format"]] == ["web-never"]
 
 
 def test_the_probe_is_out_of_the_population_and_in_the_control(db):
@@ -261,7 +266,8 @@ def test_the_probe_is_out_of_the_population_and_in_the_control(db):
     assert (p["mcp"], p["rest"]) == (False, False)
     # ... but the any-row columns see both channels, and the REST call settled
     assert (p["mcp_any_row"], p["rest_any_row"], p["rest_settled"]) == (True, True, True)
-    assert not p["in_endpoint_log"] and not p["tracker_sees_format"]
+    # a recordable shape whose REST request predates the tracker recording it
+    assert not p["in_endpoint_log"] and p["tracker_sees_format"]
 
 
 def test_results_do_not_depend_on_the_session_time_zone(db):
@@ -298,7 +304,7 @@ def test_the_route_publishes_the_measured_figures(client):
     assert web["excluded_by_row_rules"]["keys_whose_only_mcp_rows_were_probe_rows"] == 3
     assert web["mcp_call_log_rows_not_counted_as_use"] == {"not_use_rows": 1, "unclassified_rows": 1}
     assert web["rest_visibility"] == {
-        "keys": 12, "keys_in_a_format_the_rest_tracker_records": 1,
+        "keys": 12, "keys_in_a_format_the_rest_tracker_records": 11,
         "keys_seen_in_api_endpoint_log": 1, "keys_seen_in_api_usage_meter": 2,
         "keys_with_rest_rows_in_mcp_call_log": 2}
     inst = body["populations"]["install-%"]["windows"]["all_time"]
@@ -310,6 +316,7 @@ def test_the_route_publishes_the_measured_figures(client):
     el = body["instrument"]["api_endpoint_log"]
     assert (el["verdict"], el["keys_known_to_have_made_a_rest_request"],
             el["of_those_seen_here"], el["keys_with_rows_here"]) == ("blind", 3, 0, 1)
+    assert el["first_row_at"] is not None     # the dchub_ key's row
     assert body["instrument"]["mcp_call_log.mcp"]["verdict"] == "live"
     assert body["evidence_status_claims"]["rest_tracker_cannot_see_these_keys"]["status"] == "observed"
     assert "FLOOR" in web["reading"]

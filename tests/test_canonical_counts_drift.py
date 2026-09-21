@@ -1719,7 +1719,7 @@ MAIN_CANON_RENDERED_FUNCS = (
     ("_canonical_pricing",
      "the pricing block embedded in every manifest above"),
     ("handle_well_known",
-     "the A2A server card + /.well-known/agent.json"),
+     "the A2A server card"),
     ("serve_tools_manifest",
      "the /tools manifest agents read for endpoint wiring"),
     ("get_ai_platforms_status",

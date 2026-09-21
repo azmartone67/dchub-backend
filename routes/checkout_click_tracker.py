@@ -328,6 +328,58 @@ def mint_checkout_token(plan: str, ref: str, sid: str = "") -> str | None:
     return payload + "." + sig
 
 
+_GO_BASE = "https://dchub.cloud/go/c/"
+
+
+def checkout_url(plan: str, ref: str = "", sid: str = "") -> str:
+    """The signed /go/c URL for `plan`, or the pricing page when none can be
+    minted (no signing secret, unknown plan). With no ref and no sid the URL is
+    caller-independent, so it is safe inside a payload shared by a cache, and
+    it is still measured: /go/c stamps mcp_checkout_clicks with the plan."""
+    tok = mint_checkout_token(plan, ref, sid)
+    return (_GO_BASE + tok) if tok else _PRICING_URL
+
+
+def rest_wall_ladder() -> dict:
+    """What a REST free-tier wall hands its caller (P0-C, 2026-09-21).
+
+    Those walls answered `upgrade_url: https://dchub.cloud/pricing`: a page
+    about prices, unmeasured, and the one page a slow asset read could replace
+    with a cached "briefly unavailable" stub. Now `upgrade_url` is the $10 pack
+    as a /go/c checkout (an unbound pack purchase mints and emails a key), and
+    `upgrade_options` is the ladder in the order agents buy it: the pack, then
+    Developer, then Pro for a human screening sites. Every label is read from
+    the module that owns the price. Caller-independent by construction: no key
+    or session is bound here, because these payloads are cached and shared.
+    """
+    out = {"upgrade_url": checkout_url("metered")}
+    opts = []
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+        if PACK10_PRICE_CENTS and PACK10_CREDITS:
+            opts.append({
+                "plan": "pack",
+                "label": "$%d one-time = %s API calls, credits don't expire" % (
+                    int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")),
+                "url": out["upgrade_url"],
+            })
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import tier_registry as _tr
+        for plan, what in (("developer", "full depth on every tool except the Pro-only ones"),
+                           ("pro", "Pro-only tools and site-grade coordinates, for a human screening sites")):
+            price = _tr.price_display(plan)
+            if price:
+                opts.append({"plan": plan, "label": "%s %s — %s" % (_tr.label(plan), price, what),
+                             "url": checkout_url(plan)})
+    except Exception:  # noqa: BLE001
+        pass
+    if opts:
+        out["upgrade_options"] = opts
+    return out
+
+
 @checkout_click_bp.route("/go/c/<token>", methods=["GET"])
 def checkout_click(token):
     """Stamp the click, then 302 to the canonical Stripe Payment Link."""

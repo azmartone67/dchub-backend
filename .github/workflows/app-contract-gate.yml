@@ -99,7 +99,12 @@ jobs:
           JWT_SECRET: contract-gate-placeholder-not-a-secret
           DCHUB_ADMIN_KEY: contract-gate-placeholder
           DCHUB_CONTRACT_GATE_STRICT: "1"
-        run: python3 -m pytest tests/test_agentic_loop_inspect.py -v --tb=short
+        # + the real-app door check (2026-09-21): it GETs every agent door
+        #   through the booted app and skips in unit-tests for the same reason.
+        run: >-
+          python3 -m pytest tests/test_agentic_loop_inspect.py
+          "tests/test_llms_cite_without_mcp.py::test_the_real_app_serves_what_the_one_registration_serves"
+          -v --tb=short
 
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.

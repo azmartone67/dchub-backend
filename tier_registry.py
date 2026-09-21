@@ -333,8 +333,40 @@ def api_tier(tier):
     return TIERS.get(_norm(tier), TIERS['free'])['api_tier']
 
 
+# ★ DELIBERATE — owner decision, 2026-09-21. An anonymous caller is metered at the
+# FREE allowance, not at TIER_LIMITS['anonymous'].
+#
+# What `anon` resolves to here decides the daily call quota every keyless MCP/API
+# caller gets, because api_tier_gating.get_request_tier() returns 'anon' for them.
+# Until today it got the free values only BY ACCIDENT: 'anon' has no entry of its
+# own, so `.get(n, TIER_LIMITS['free'])` fell through to free. That same fallback
+# would hand free limits to a typo'd tier name, so the anonymous quota was riding
+# on a line whose other job is catching mistakes.
+#
+# The decision, now explicit: anonymous == a free key == 10 calls/day. Free stays
+# at 10 to keep the upgrade to Developer worth buying (volume caps fire ~8x/month;
+# the paid-tool depth gates are what convert), the canon already said "a free key
+# is `free` (10/day, identical to anonymous)", and the published ladder quotes 10.
+#
+# Why NOT just correct 'anon' to TIER_LIMITS['anonymous']: that halves a live
+# quota (10 -> 5) and contradicts what the paywall, llms.txt and a partner's public
+# catalogue now say. If that is ever wanted, it is a pricing change — do it on
+# purpose, move the copy in the same change, and delete this.
+#
+# TIER_LIMITS['anonymous'] is NOT dead. The literal string 'anonymous' is emitted by
+# map_tier_gating, api_data_protection and power_plant_intel, and main.py's search
+# reads TIER_LIMITS['anonymous']['record_cap'] — so its record/page caps still gate
+# those surfaces. Only its mcp_daily=5 is unused as a daily call cap; that value is
+# where the old "Anonymous 5/day" copy came from. Two anonymous tier STRINGS exist
+# for historical reasons; this pins what the call quota means, not their merger.
+_ANON_METERED_AS = 'free'
+
+
 def limits(tier):
-    return TIER_LIMITS.get(_norm(tier), TIER_LIMITS['free'])
+    n = _norm(tier)
+    if n == 'anon':
+        return TIER_LIMITS[_ANON_METERED_AS]
+    return TIER_LIMITS.get(n, TIER_LIMITS['free'])
 
 
 def price(tier):

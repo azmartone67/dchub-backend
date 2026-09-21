@@ -48,6 +48,7 @@ import logging
 import datetime
 import hashlib
 import re
+import urllib.parse
 from typing import Any, Callable
 
 try:
@@ -518,6 +519,15 @@ _LIFECYCLE_BY_EVENT = {
 # property alone when the key is absent).
 _NO_LEAD_STATUS = ("customer",)
 
+# HubSpot's default lifecycle order. Through the API a stage only moves
+# FORWARD — a backward move is refused unless the stage is cleared first — so on
+# an existing contact ours is sent only when it is strictly ahead of the stored
+# one: customer beats lead, never the reverse. 'other' and custom-stage ids have
+# no place in this order, so a contact holding one is left alone, not guessed at.
+_LIFECYCLE_ORDER = ("subscriber", "lead", "marketingqualifiedlead",
+                    "salesqualifiedlead", "opportunity", "customer",
+                    "evangelist")
+
 
 def capture_event(event_type: str, payload: dict) -> dict:
     """Called by hooks. payload may include: email, session_id, company,
@@ -645,8 +655,62 @@ def push_to_salesforce(lead: dict) -> dict:
         return {"ok": False, "error": str(e)[:300]}
 
 
+def _hubspot_update_props(props: dict, current: dict) -> tuple:
+    """(properties to PATCH onto an EXISTING contact, stored values kept).
+
+    The create payload, minus what a create cannot hurt and an update can:
+      - blanks: "" CLEARS a HubSpot property. Most rows carry no name or
+        company, and sending them would wipe whatever the contact already has.
+      - lifecyclestage, unless it moves the contact forward (_LIFECYCLE_ORDER).
+      - hs_lead_status, unless the contact ends up at OUR stage (where the
+        create would have set it) and has none yet. A rep's status is theirs,
+        and NEW on a customer is what _NO_LEAD_STATUS exists to prevent."""
+    out = {k: v for k, v in props.items() if v not in (None, "")}
+    kept = {}
+    ours = props.get("lifecyclestage") or ""
+    have = (current.get("lifecyclestage") or "").strip()
+    rank = {s: i for i, s in enumerate(_LIFECYCLE_ORDER)}
+    forward = not have or (have in rank and ours in rank
+                           and rank[ours] > rank[have])
+    if not forward:
+        out.pop("lifecyclestage", None)
+        if have != ours:
+            kept["lifecyclestage"] = have
+    status_have = (current.get("hs_lead_status") or "").strip()
+    at_our_stage = forward or have == ours
+    if "hs_lead_status" in out and (status_have or not at_our_stage):
+        out.pop("hs_lead_status")
+        if status_have:
+            kept["hs_lead_status"] = status_have
+    return out, kept
+
+
+def _hubspot_update_existing(email: str, props: dict, headers: dict) -> dict:
+    """PATCH the contact keyed by email. ok only if the PATCH itself lands."""
+    url = ("https://api.hubapi.com/crm/v3/objects/contacts/"
+           + urllib.parse.quote(email, safe="") + "?idProperty=email")
+    g = requests.get(url + "&properties=lifecyclestage,hs_lead_status",
+                     headers=headers, timeout=12)
+    if g.status_code != 200:
+        return {"ok": False, "dup": True, "error": f"hs read {g.status_code}",
+                "raw": (g.text or "")[:500], "status_code": g.status_code,
+                "codes": _provider_error_codes(g.text)}
+    current = (g.json() or {}).get("properties") or {}
+    update, kept = _hubspot_update_props(props, current)
+    p = requests.patch(url, headers=headers,
+                       data=json.dumps({"properties": update}), timeout=12)
+    if p.status_code == 200:
+        j = p.json() or {}
+        return {"ok": True, "external_id": j.get("id"), "dup": True,
+                "updated": True, "kept": kept, "raw": j,
+                "status_code": p.status_code}
+    return {"ok": False, "dup": True, "error": f"hs patch {p.status_code}",
+            "raw": (p.text or "")[:500], "status_code": p.status_code,
+            "codes": _provider_error_codes(p.text)}
+
+
 def push_to_hubspot(lead: dict) -> dict:
-    """POST /crm/v3/objects/contacts."""
+    """POST /crm/v3/objects/contacts; on 409, PATCH the existing contact."""
     if requests is None:
         return {"ok": False, "error": "requests_missing"}
     if not HUBSPOT_API_KEY:
@@ -669,13 +733,14 @@ def push_to_hubspot(lead: dict) -> dict:
     }}
     if _stage not in _NO_LEAD_STATUS:
         hs_payload["properties"]["hs_lead_status"] = "NEW"
+    headers = {
+        "Authorization": f"Bearer {HUBSPOT_API_KEY}",
+        "Content-Type": "application/json",
+    }
     try:
         r = requests.post(
             "https://api.hubapi.com/crm/v3/objects/contacts",
-            headers={
-                "Authorization": f"Bearer {HUBSPOT_API_KEY}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             data=json.dumps(hs_payload),
             timeout=12,
         )
@@ -683,10 +748,13 @@ def push_to_hubspot(lead: dict) -> dict:
             j = r.json() or {}
             return {"ok": True, "external_id": j.get("id"),
                     "raw": j, "status_code": r.status_code}
-        # HubSpot returns 409 on duplicate — treat as success (already in CRM)
+        # 409 = the contact already exists (an import, an earlier row). That
+        # is not delivery: this payload's stage, lead status and attribution
+        # are exactly what the existing contact lacks. It used to return ok,
+        # so the flusher marked the row pushed and the payload went nowhere.
         if r.status_code == 409:
-            return {"ok": True, "external_id": None, "dup": True,
-                    "raw": (r.text or "")[:500], "status_code": r.status_code}
+            return _hubspot_update_existing(email, hs_payload["properties"],
+                                            headers)
         return {"ok": False, "error": f"hs {r.status_code}",
                 "raw": (r.text or "")[:500], "status_code": r.status_code,
                 "codes": _provider_error_codes(r.text)}
@@ -830,7 +898,13 @@ def _push_failure_class(result) -> str:
     codes = set(result.get("codes") or ())
     codes |= set(_ERROR_CODE_RE.findall(str(result.get("raw") or "")))
     # 404: a create POSTs to one fixed URL, so "not found" is the endpoint.
-    if status in (401, 403, 404) or codes & _CONFIG_ERROR_CODES:
+    # Not on the 409 path ("dup"): there the read and PATCH are keyed by THIS
+    # row's email, so a 404 means that one contact did not resolve (e.g. the
+    # address is only a secondary email). That is the row's answer — as
+    # config it would retry forever and report the portal as refusing.
+    by_email_404 = status == 404 and bool(result.get("dup"))
+    if (status in (401, 403, 404) and not by_email_404) \
+            or codes & _CONFIG_ERROR_CODES:
         return PUSH_FAIL_CONFIG
     if status == 429 or (status is not None and status >= 500):
         return PUSH_FAIL_TRANSIENT
