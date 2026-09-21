@@ -226,12 +226,25 @@ def test_scoring_is_on_keys_not_sessions_or_ips():
     """Grok rotates egress IP per request and opens a session per tool call."""
     src = _src()
     assert "sessions and IPs" in src, "the not_counted rationale was dropped"
-    # the SQL must never group or count by session_id / ip
-    sql_region = src[src.find("WITH ik AS"):src.find("rows = cur.fetchall()")]
-    for banned in ("session_id", "COUNT(DISTINCT l.session_id"):
-        assert banned not in sql_region, (
-            f"{banned} in the scoring SQL — inflates the figure ~10x"
-        )
+    # The SQL must never GROUP or COUNT by session / ip.
+    # ★ 2026-09-21: this sliced the source from "WITH ik AS" to
+    # "rows = cur.fetchall()" — a string no longer in the module, so find()
+    # returned -1 and the window ran to end of file. It then failed on the
+    # first-use SQL's probe-ROW exclusion (external_session_predicate on
+    # l.session_id), which drops our own sessions and scores nothing. It now
+    # reads the two scoring statements themselves and bans the unit, not the
+    # column name: a session may be EXCLUDED, never counted or grouped by.
+    from routes.install_stats import _FIRST_USE_SQL, _LEDGER_SQL
+    unit = r"(session_id|\bip\b|metadata->>'ip')"
+    for name, sql in (("_LEDGER_SQL", _LEDGER_SQL),
+                      ("_FIRST_USE_SQL", _FIRST_USE_SQL)):
+        flat = " ".join(sql.split())
+        assert "GROUP BY" in flat, f"{name}: no GROUP BY — the scan reads nothing"
+        for clause in re.findall(r"GROUP BY ([^)]*)", flat):
+            assert not re.search(unit, clause), (
+                f"{name} groups by {clause!r} — inflates the figure ~10x")
+        assert not re.search(r"COUNT\(\s*DISTINCT[^)]*" + unit, flat), (
+            f"{name} counts distinct sessions/IPs — inflates the figure ~10x")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
