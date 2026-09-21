@@ -2339,6 +2339,65 @@ def _advertised_daily(tier: str) -> int:
         return 50 if tier == "identified" else 10
 
 
+# ── Partner metering scope ─────────────────────────────────────────────────
+# ★ r-partner-meter (2026-09-21). The free unbound allowance is metered per
+# SOURCE IP. A hosted catalogue proxies every one of its customers through one
+# egress, so all of them draw on a single allowance, and every key minted after
+# it is spent arrives already gated — works for customer #1, demands an email of
+# everyone after.
+#
+# For a partner we have verified, meter per WORKSPACE instead. Two conditions,
+# BOTH required, because either alone is forgeable:
+#
+#   client_name  starts with the partner's prefix AND carries a workspace id
+#   source IP    is one of that partner's declared egress addresses
+#
+# A prefix alone would let anyone send "anythingmcp/x" and draw on an allowance
+# attached to that name. The IP pin is what makes the name trustworthy — and it
+# protects the PARTNER, whose customers' quota could otherwise be burned by a
+# third party guessing their naming scheme.
+#
+# AnythingMCP: client_name `anythingmcp/<cuid>` (an opaque workspace id, never an
+# address), egress a single /32 declared by Matteo Morelli 2026-09-21, who has
+# undertaken to warn before it changes. An unannounced new egress is treated as
+# "not them" — it falls back to IP metering rather than failing open.
+#
+# Env override (JSON {prefix: [ip, ...]}) so a declared host move is a config
+# change, not a deploy.
+_PARTNER_EGRESS_DEFAULT = {
+    "anythingmcp/": ("104.248.242.235",),
+}
+
+
+def _partner_egress():
+    raw = os.environ.get("DCHUB_PARTNER_EGRESS", "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {str(k): tuple(str(i) for i in (v or ()))
+                        for k, v in parsed.items()}
+        except Exception:
+            pass  # a malformed override must not widen anything
+    return _PARTNER_EGRESS_DEFAULT
+
+
+def _partner_meter_scope(client_name, ip):
+    """The partner prefix if (client_name, ip) is verified partner traffic.
+
+    None otherwise — including for a matching prefix from any other address,
+    and for a bare prefix with no workspace id after it.
+    """
+    if not client_name or not ip:
+        return None
+    for prefix, ips in _partner_egress().items():
+        if (client_name.startswith(prefix)
+                and len(client_name) > len(prefix)
+                and ip in ips):
+            return prefix
+    return None
+
+
 @mcp_bp.post("/api/v1/keys/claim")
 def claim_key():
     """Public: claim a free dev key without email. Rate-limited by IP.
@@ -2586,30 +2645,52 @@ def claim_key():
     # client_names or hopping mint doors no longer resets the meter; binding
     # an email (free) is now strictly cheaper than re-minting. FAIL-OPEN → 0.
     _carry_calls = 0
+    # r-partner-meter: verified partner traffic carries the WORKSPACE's own
+    # count, not the shared egress's. Anything else is metered by IP as before.
+    _meter_scope = _partner_meter_scope(client_name, ip)
     try:
         import hashlib as _cf_hl
         # auto_trial_keys stores sha256(ip)[:16] (routes/auto_trial.py mint).
         _cf_ip_hash = _cf_hl.sha256(ip.encode()).hexdigest()[:16]
         with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """SELECT COALESCE(MAX(COALESCE((metadata->>'validate_calls')::int, 0)), 0)
-                     FROM mcp_dev_keys
-                    WHERE metadata->>'source' = 'claim_api'
-                      AND metadata->>'ip' = %s
-                      AND (email IS NULL OR email = '')
-                      AND created_at > NOW() - make_interval(hours => %s)""",
-                (ip, _reuse_hours),
-            )
+            if _meter_scope:
+                # The workspace's own history — its client_name is unique to it.
+                cur.execute(
+                    """SELECT COALESCE(MAX(COALESCE((metadata->>'validate_calls')::int, 0)), 0)
+                         FROM mcp_dev_keys
+                        WHERE metadata->>'source' = 'claim_api'
+                          AND metadata->>'client_name' = %s
+                          AND (email IS NULL OR email = '')
+                          AND created_at > NOW() - make_interval(hours => %s)""",
+                    (client_name, _reuse_hours),
+                )
+            else:
+                cur.execute(
+                    """SELECT COALESCE(MAX(COALESCE((metadata->>'validate_calls')::int, 0)), 0)
+                         FROM mcp_dev_keys
+                        WHERE metadata->>'source' = 'claim_api'
+                          AND metadata->>'ip' = %s
+                          AND (email IS NULL OR email = '')
+                          AND created_at > NOW() - make_interval(hours => %s)""",
+                    (ip, _reuse_hours),
+                )
             _cf_live = int((cur.fetchone() or [0])[0] or 0)
-            cur.execute(
-                """SELECT COALESCE(MAX(COALESCE(call_count, 0)), 0)
-                     FROM auto_trial_keys
-                    WHERE request_ip_hash = %s
-                      AND signed_up_email IS NULL AND operator_email IS NULL
-                      AND minted_at > NOW() - make_interval(hours => %s)""",
-                (_cf_ip_hash, _reuse_hours),
-            )
-            _cf_trial = int((cur.fetchone() or [0])[0] or 0)
+
+            if _meter_scope:
+                # auto_trial_keys has no client_name, so it can only be matched
+                # by IP — and matching the partner's shared egress would
+                # re-import exactly the collapse this scope exists to remove.
+                _cf_trial = 0
+            else:
+                cur.execute(
+                    """SELECT COALESCE(MAX(COALESCE(call_count, 0)), 0)
+                         FROM auto_trial_keys
+                        WHERE request_ip_hash = %s
+                          AND signed_up_email IS NULL AND operator_email IS NULL
+                          AND minted_at > NOW() - make_interval(hours => %s)""",
+                    (_cf_ip_hash, _reuse_hours),
+                )
+                _cf_trial = int((cur.fetchone() or [0])[0] or 0)
         _carry_calls = max(_cf_live, _cf_trial)
     except Exception:
         _carry_calls = 0
@@ -2628,6 +2709,8 @@ def claim_key():
         "claim_id": claim_id,
         "claimed_at": datetime.now(timezone.utc).isoformat(),
         "email_captured": bool(email),
+        # r-partner-meter: which meter this key's allowance was carried from.
+        "meter_scope": (f"partner:{_meter_scope}" if _meter_scope else "ip"),
         # keystone (audit item 1, 2026-06-30): bind this key to the calling MCP
         # session so a later same-session call on ANY replica resolves it durably.
         # The in-memory sessionMeta bind was lost across replicas, which is why
