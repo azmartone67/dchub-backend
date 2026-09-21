@@ -57,11 +57,11 @@ PR_ONLY_CONTEXTS = ("substance-gate",)
 # ★2026-09-21 api-response-contract.yml was missing: `contract` went red on main
 # at 84f4a441d (stats.mw_coverage removed) and four runs of this verdict said
 # "all 3 gating workflow(s) green" until #5039 fixed main.
-# regression-lint.yml carries NONE of the seven — its job is `lint`; the
-# `regression-lint` context is pre-merge.yml's job of that name. It stays so a
-# red lint on main still surfaces, but that red blocks no PR.
-GATING = ("pre-merge.yml", "regression-lint.yml", "app-contract-gate.yml",
-          "api-response-contract.yml")
+# regression-lint.yml is NOT here: it carries none of the seven. Its job is
+# `lint`; the `regression-lint` context is pre-merge.yml's job of that name, and
+# the workflow's `name:` matching it is what kept it here until 2026-09-21. A red
+# lint blocks no PR, so it must not read as main_red (ci-triage still triages it).
+GATING = ("pre-merge.yml", "app-contract-gate.yml", "api-response-contract.yml")
 
 
 def verdict(head_sha, runs_by_workflow):

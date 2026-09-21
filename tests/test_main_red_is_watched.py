@@ -172,6 +172,20 @@ def test_gating_covers_every_workflow_that_carries_a_required_context():
         "to that check without any GATING edit.")
 
 
+def test_gating_reads_only_workflows_that_carry_a_required_context():
+    """main_red tells the board every open PR is blocked, which is true only of
+    a required check. regression-lint.yml sat in GATING until 2026-09-21 because
+    its workflow `name:` equals a required context, but its job is `lint`; the
+    `regression-lint` context is pre-merge.yml's job of that name."""
+    carrying = {wf for wfs in _carriers().values() for wf, on in wfs.items()
+                if _push_to_main_starts_it(on) or "schedule" in on}
+    extra = sorted(set(_gating_workflow_files()) - carrying)
+    assert not extra, (
+        f"GATING reads {extra}, which carry no required context on main. A red "
+        "there blocks no PR, yet main-branch-health would beat main_red and say "
+        "every open PR is blocked.")
+
+
 def test_every_gating_workflow_runs_on_every_push_to_main():
     """verdict() reads "no run for HEAD" as not-created-yet, never as
     does-not-apply. A paths filter, or no push trigger at all, would make that
