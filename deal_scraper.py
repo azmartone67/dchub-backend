@@ -38,6 +38,8 @@ from urllib.parse import urlparse
 import feedparser  # noqa: F401  — parse_feed() imports it lazily; keeping
                    # this here makes a MISSING dependency fail at import
                    # time rather than mid-crawl.
+from util.deal_corroboration import (extract_directional_pair, is_corroborated,
+                                     stated_deal_type)
 from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 import requests
 
@@ -135,10 +137,10 @@ def parse_value_millions(text: str) -> Optional[float]:
     
     # $X billion / $Xbn / $X.Xb
     patterns_billion = [
-        r'\$\s*([\d.]+)\s*(%s:billion|bn|b\b)',
-        r'([\d.]+)\s*(%s:billion|bn)\s*(%s:dollar|usd|\$)',
-        r'worth\s*\$%s\s*([\d.]+)\s*(%s:billion|bn|b\b)',
-        r'valued%s\s*(%s:at)%s\s*\$%s\s*([\d.]+)\s*(%s:billion|bn|b\b)',
+        r'\$\s*([\d.]+)\s*(?:billion|bn|b\b)',
+        r'([\d.]+)\s*(?:billion|bn)\s*(?:dollar|usd|\$)',
+        r'worth\s*\$?\s*([\d.]+)\s*(?:billion|bn|b\b)',
+        r'valued?\s*(?:at)?\s*\$?\s*([\d.]+)\s*(?:billion|bn|b\b)',
     ]
     for pattern in patterns_billion:
         match = re.search(pattern, text)
@@ -149,8 +151,8 @@ def parse_value_millions(text: str) -> Optional[float]:
     
     # $X million / $Xm
     patterns_million = [
-        r'\$\s*([\d.]+)\s*(%s:million|mn|m\b)',
-        r'([\d.]+)\s*(%s:million|mn)\s*(%s:dollar|usd|\$)',
+        r'\$\s*([\d.]+)\s*(?:million|mn|m\b)',
+        r'([\d.]+)\s*(?:million|mn)\s*(?:dollar|usd|\$)',
     ]
     for pattern in patterns_million:
         match = re.search(pattern, text)
@@ -193,32 +195,15 @@ def parse_mw(text: str) -> Optional[float]:
     return None
 
 
-def parse_deal_type(text: str) -> str:
-    """Classify deal type from text."""
-    text = text.lower()
-    
-    if any(w in text for w in ['acquir', 'acquisition', 'purchase', 'bought', 'buy']):
-        return 'M&A'
-    if any(w in text for w in ['merger', 'merge']):
-        return 'M&A'
-    if any(w in text for w in ['joint venture', ' jv ', 'partnership']):
-        return 'JV'
-    if any(w in text for w in ['equity', 'funding', 'raise', 'investment round', 'series']):
-        return 'Equity'
-    if any(w in text for w in ['debt', 'loan', 'financing', 'credit facility']):
-        return 'Debt'
-    if any(w in text for w in ['ipo', 'goes public', 'public offering', 'listed']):
-        return 'IPO'
-    if any(w in text for w in ['power agreement', 'ppa', 'power purchase', 'energy deal']):
-        return 'Power Agreement'
-    if any(w in text for w in ['land', 'campus', 'breaks ground', 'new build', 'construction']):
-        return 'New Build'
-    if any(w in text for w in ['lease', 'leasing']):
-        return 'Lease'
-    if any(w in text for w in ['capex', 'capital expenditure', 'spending']):
-        return 'CapEx'
-    
-    return 'M&A'  # Default
+def parse_deal_type(text: str) -> Optional[str]:
+    """Classify deal type from the headline, or None when it names no deal.
+
+    Whole words only, and no default. This used to test bare substrings and
+    fall back to 'M&A', so "Released" read as a Lease, "emerging" as a
+    merger, and "Anthropic and Microsoft Dominate Nscale's $103 Billion in
+    Contracts" — which names no transaction — was published as M&A.
+    """
+    return stated_deal_type(text)
 
 
 def extract_companies(text: str) -> Tuple[Optional[str], Optional[str]]:
@@ -242,40 +227,30 @@ def extract_companies(text: str) -> Tuple[Optional[str], Optional[str]]:
         'Mistral AI', 'EcoDataCenter', 'Serverfarm',
     ]
     
-    buyer, seller = None, None
-    
-    # Pattern: "X acquires Y" / "X to acquire Y" / "X buys Y"
-    acq_patterns = [
-        r'([\w\s&/.]+%s)\s+(%s:acquires%s|buys%s|purchases%s|to acquire|to buy|to purchase)\s+([\w\s&/.]+%s)(%s:\s+(%s:for|in|from)|\s*$)',
-        r'([\w\s&/.]+?)\s+(?:and|,)\s+([\w\s&/.]+?)\s+(?:acquire|buy|purchase)\s+([\w\s&/.]+)',
-    ]
-    
-    for pattern in acq_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            buyer = match.group(1).strip()
-            seller = match.group(2).strip() if match.lastindex >= 2 else None
-            break
-    
-    # If no pattern match, find known companies in text
-    if not buyer:
-        found = []
-        for company in KNOWN_COMPANIES:
-            if company.lower() in text_lower:
-                found.append(company)
-        if len(found) >= 2:
-            buyer = found[0]
-            seller = found[1]
-        elif len(found) == 1:
-            buyer = found[0]
-    
-    # Clean up
+    # Buyer and seller come ONLY from a directional clause the text states
+    # ("X acquires Y", "Y sold to X"). The old fallback took the first and
+    # second KNOWN_COMPANIES hit in LIST order, by bare substring — which is
+    # how "Nvidia Buying ... SB Energy Shares" became "Ares acquires Nvidia"
+    # (sh-ARES) in prod. Its acquisition regex never ran: every `?` in it had
+    # been rewritten to `%s`, so it demanded a literal "%s".
+    buyer, seller = extract_directional_pair(text)
     if buyer:
-        buyer = buyer.strip(' .,;:')[:100]
-    if seller:
-        seller = seller.strip(' .,;:')[:100]
-    
-    return buyer, seller
+        return buyer[:100], seller[:100]
+
+    # No directional clause: at most an ACTOR (the one company the story is
+    # about) and never a seller. Earliest whole-word mention wins.
+    hits = [(m.start(), company) for company in KNOWN_COMPANIES
+            for m in [re.search(r'(?<![A-Za-z0-9])%s(?![A-Za-z0-9])' % re.escape(company), text)]
+            if m]
+    if hits:
+        return min(hits)[1], None
+    return None, None
+
+
+def _mentions_any(text: str, signals: List[str]) -> bool:
+    """Whole-word match: 'india' is not in 'indiana', 'uk' is not in 'duke'."""
+    return any(re.search(r'(?<![a-z0-9])%s(?![a-z0-9])' % re.escape(sig.strip()), text)
+               for sig in signals)
 
 
 def detect_region(text: str) -> str:
@@ -293,13 +268,13 @@ def detect_region(text: str) -> str:
                     'asia', 'apac']
     latam_signals = ['brazil', 'mexico', 'latin america', 'chile', 'colombia']
     
-    if any(s in text for s in apac_signals):
+    if _mentions_any(text, apac_signals):
         return 'APAC'
-    if any(s in text for s in emea_signals):
+    if _mentions_any(text, emea_signals):
         return 'EMEA'
-    if any(s in text for s in latam_signals):
+    if _mentions_any(text, latam_signals):
         return 'LATAM'
-    if any(s in text for s in na_signals):
+    if _mentions_any(text, na_signals):
         return 'North America'
     
     return 'Global'
@@ -332,7 +307,7 @@ def detect_market(text: str) -> str:
     }
     
     for market, signals in markets.items():
-        if any(s in text for s in signals):
+        if _mentions_any(text, signals):
             return market
     
     return 'Global'
@@ -453,7 +428,10 @@ def article_to_deal(article: Dict) -> Optional[Dict]:
     summary = article.get('summary', '')
     combined = title + ' ' + summary
     
-    buyer, seller = extract_companies(combined)
+    # Parties and type come from the HEADLINE only: it is the one text the row
+    # keeps (as `notes`), so anyone can check the row against it. The summary
+    # still feeds value / MW / region below.
+    buyer, seller = extract_companies(title)
     
     # Must have at least a buyer
     if not buyer:
@@ -474,12 +452,18 @@ def article_to_deal(article: Dict) -> Optional[Dict]:
     if value and value > 50000:
         return None
     mw = parse_mw(combined)
-    deal_type = parse_deal_type(combined)
+    deal_type = parse_deal_type(title)
     region = detect_region(combined)
     market = detect_market(combined)
     
     # Skip CapEx announcements (they inflate stats)
     if deal_type == 'CapEx':
+        return None
+
+    # Publish only what the headline states: the buyer by name, the kind of
+    # deal, and — for a seller — the direction between them. M&A needs a
+    # target. Same predicate the quarantine of pre-fix rows uses.
+    if not deal_type or not is_corroborated(title, buyer, seller, deal_type):
         return None
     
     # Generate deterministic ID from key fields.
@@ -507,6 +491,7 @@ def article_to_deal(article: Dict) -> Optional[Dict]:
         'region': region,
         'status': 'announced',
         'notes': title[:200],
+        'source_url': article.get('url') or None,
     }
 
 
@@ -554,13 +539,13 @@ def insert_deals(deals: List[Dict], dry_run: bool = False) -> int:
         for d in deals:
             try:
                 cur.execute("""
-                    INSERT INTO deals (id, buyer, seller, value, mw, market, date, year, type, region, status, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO deals (id, buyer, seller, value, mw, market, date, year, type, region, status, notes, source_url)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO NOTHING
                 """, (
                     d['id'], d['buyer'], d['seller'], d['value'], d['mw'],
                     d['market'], d['date'], d['year'], d['type'], d['region'],
-                    d['status'], d['notes']
+                    d['status'], d['notes'], d.get('source_url')
                 ))
                 if cur.rowcount > 0:
                     inserted += 1
