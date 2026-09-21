@@ -647,40 +647,95 @@ def recurrence_plan(prs) -> dict:
     return out
 
 
-def grade_recurrences(apply: bool = False, limit: int = _GRADE_MAX) -> dict:
-    """Grade brain PRs by recurrence. Dry run unless apply=True. Never raises."""
+class _NoDatabase(Exception):
+    """_get_db() returned None."""
+
+
+# ★★★ 2026-09-21 — NEVER HOLD A DB CONNECTION ACROSS NETWORK I/O.
+#
+# main.get_pg_connection() tracks every checkout, and a reaper force-closes any
+# connection held longer than ~60s. Measured on production: reclassify?apply=1
+# took its connection at the top of the handler, spent 61s fetching 150 PRs from
+# GitHub, and the log read
+#     FORCED RECLAIM: Connection ... held 61s by thread 'ThreadPoolExecutor-0_15'
+#        Checkout stack: ... line 779, in reclassify -> c = _get_db()
+#     Connection ... forcibly reclaimed and closed (main pool)
+# — then its UPDATE ran on the dead connection and the endpoint returned 500.
+# Nothing was written (L6's track record was unchanged before/after). The dry
+# run looked healthy only because it never touched the connection again after
+# the fetches; the write path is the one that needs it afterwards.
+#
+# So every DB touch here is its own short checkout: read and release, do the
+# slow GitHub work with NOTHING held, then check out a FRESH connection to write.
+
+def _db_read(sql: str, params) -> list:
     c = _get_db()
     if c is None:
-        return {"ok": False, "state": "UNMEASURED", "error": "no database"}
+        raise _NoDatabase("no database")
     try:
         with c.cursor() as cur:
-            # ★ 2026-09-21 — FETCH ONLY THE PRs THAT CAN CARRY A FINDING.
-            #
-            # The first version selected every brain_authored row (150) and made
-            # one GitHub call per row. Called at the origin it answered HTTP 200
-            # after 17s — past the edge's ~15s, so the public endpoint 503'd —
-            # with `naming_a_finding: 0` and nearly every PR in `unfetched`,
-            # including the three real L5 PRs it exists to grade. It had graded
-            # nothing in production, and because it also runs inside
-            # monitor_recent_prs it spent the same GitHub budget the monitor
-            # needs to list new PRs.
-            #
-            # Only ONE producer writes a `**Finding:**` line —
-            # brain_backlog_admin.py, and every PR it opens is titled
-            # `[brain-l5 draft] …` (verified by grepping origin/main for the
-            # literal). A PR without that title cannot name a finding, so it
-            # can neither be graded nor act as the later re-target. Narrowing
-            # here loses nothing and cuts ~150 calls to ~15.
-            #
-            # `[` is literal in Postgres LIKE; the pattern has no `_` wildcard.
-            cur.execute("""SELECT pr_number, outcome FROM brain_pr_outcomes
+            cur.execute(sql, params)
+            return cur.fetchall() or []
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def _db_write(statements) -> int:
+    """[(sql, params), ...] on ONE short checkout, ONE commit. Returns rowcount."""
+    c = _get_db()
+    if c is None:
+        raise _NoDatabase("no database")
+    try:
+        n = 0
+        with c.cursor() as cur:
+            for sql, params in statements:
+                cur.execute(sql, params)
+                n += cur.rowcount or 0
+        c.commit()
+        return n
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def grade_recurrences(apply: bool = False, limit: int = _GRADE_MAX) -> dict:
+    """Grade brain PRs by recurrence. Dry run unless apply=True. Never raises.
+
+    No DB connection is held while GitHub is queried — see _db_read.
+    """
+    try:
+        # ★ 2026-09-21 — FETCH ONLY THE PRs THAT CAN CARRY A FINDING.
+        #
+        # The first version selected every brain_authored row (150) and made
+        # one GitHub call per row. Called at the origin it answered HTTP 200
+        # after 17s — past the edge's ~15s, so the public endpoint 503'd —
+        # with `naming_a_finding: 0` and nearly every PR in `unfetched`,
+        # including the three real L5 PRs it exists to grade. It had graded
+        # nothing in production, and because it also runs inside
+        # monitor_recent_prs it spent the same GitHub budget the monitor
+        # needs to list new PRs.
+        #
+        # Only ONE producer writes a `**Finding:**` line —
+        # brain_backlog_admin.py, and every PR it opens is titled
+        # `[brain-l5 draft] …` (verified by grepping origin/main for the
+        # literal). A PR without that title cannot name a finding, so it
+        # can neither be graded nor act as the later re-target. Narrowing
+        # here loses nothing and cuts ~150 calls to ~15.
+        #
+        # `[` is literal in Postgres LIKE; the pattern has no `_` wildcard.
+        rows = _db_read("""SELECT pr_number, outcome FROM brain_pr_outcomes
                             WHERE brain_authored = TRUE
                               AND pr_title LIKE '[brain-l5%%'
                             ORDER BY pr_number DESC LIMIT %s""",
                         (max(1, min(int(limit), _GRADE_MAX)),))
-            stored = {int(r[0]): r[1] for r in cur.fetchall() or []}
+        stored = {int(r[0]): r[1] for r in rows}
         prs, unfetched = [], []
-        for n in stored:
+        for n in stored:                       # NOTHING is checked out here
             pr = _gh_api(f"/repos/{_GITHUB_REPO}/pulls/{n}")
             if not isinstance(pr, dict) or not pr:
                 unfetched.append(n)
@@ -693,30 +748,26 @@ def grade_recurrences(apply: bool = False, limit: int = _GRADE_MAX) -> dict:
         todo = {n: l for n, l in plan.items() if stored.get(n) == "unknown"}
         applied = 0
         if apply and todo:
-            with c.cursor() as cur:
-                for n, later in todo.items():
-                    f = next((p["finding"] for p in prs if p["number"] == n), "")
-                    cur.execute("""UPDATE brain_pr_outcomes
-                                      SET outcome = 'recurred',
-                                          regression_details = %s
-                                    WHERE pr_number = %s AND outcome = 'unknown'""",
-                                (f"finding {f[:120]} re-targeted by #{later} "
-                                 f"after this PR merged", n))
-                    applied += cur.rowcount or 0
-            c.commit()
+            stmts = []
+            for n, later in todo.items():
+                f = next((p["finding"] for p in prs if p["number"] == n), "")
+                stmts.append(("""UPDATE brain_pr_outcomes
+                                    SET outcome = 'recurred',
+                                        regression_details = %s
+                                  WHERE pr_number = %s AND outcome = 'unknown'""",
+                              (f"finding {f[:120]} re-targeted by #{later} "
+                               f"after this PR merged", n)))
+            applied = _db_write(stmts)         # fresh checkout, after the fetches
         return {"ok": True, "apply": bool(apply), "checked": len(stored),
                 "naming_a_finding": sum(1 for p in prs if p["finding"]),
                 "recurred": len(todo), "applied": applied,
                 "recurred_prs": {str(k): v for k, v in list(todo.items())[:100]},
                 "unfetched": unfetched[:50]}
+    except _NoDatabase:
+        return {"ok": False, "state": "UNMEASURED", "error": "no database"}
     except Exception as e:  # noqa: BLE001
         logger.warning("pr_outcome_monitor: grade_recurrences failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}
-    finally:
-        try:
-            c.close()
-        except Exception:
-            pass
 
 
 @brain_pr_outcome_monitor_bp.route(
@@ -776,28 +827,22 @@ def reclassify():
                            _RECLASSIFY_MAX))
     except Exception:
         limit = _RECLASSIFY_MAX
-    c = _get_db()
-    if c is None:
-        return jsonify(ok=False, state="UNMEASURED", error="no database"), 503
     try:
-        with c.cursor() as cur:
-            cur.execute("""SELECT pr_number FROM brain_pr_outcomes
+        rows = _db_read("""SELECT pr_number FROM brain_pr_outcomes
                             WHERE brain_authored = TRUE
                             ORDER BY pr_number DESC LIMIT %s""", (limit,))
-            numbers = [int(r[0]) for r in cur.fetchall() or []]
+        numbers = [int(r[0]) for r in rows]
+        # NOTHING is checked out during these fetches — see _db_read.
         fetched = [(n, _gh_api(f"/repos/{_GITHUB_REPO}/pulls/{n}"))
                    for n in numbers]
         plan = reclassify_plan(fetched)
         applied = 0
         if apply_ and plan["flip"]:
-            with c.cursor() as cur:
-                cur.execute("""UPDATE brain_pr_outcomes
-                                  SET brain_authored = FALSE
-                                WHERE pr_number = ANY(%s)
-                                  AND brain_authored = TRUE""",
-                            (plan["flip"],))
-                applied = cur.rowcount or 0
-            c.commit()
+            applied = _db_write([("""UPDATE brain_pr_outcomes
+                                        SET brain_authored = FALSE
+                                      WHERE pr_number = ANY(%s)
+                                        AND brain_authored = TRUE""",
+                                  (plan["flip"],))])
         return jsonify(ok=True, apply=apply_, checked=len(numbers),
                        keep=len(plan["keep"]), flip=len(plan["flip"]),
                        unmeasured=len(plan["unmeasured"]), applied=applied,
@@ -805,13 +850,10 @@ def reclassify():
                        unmeasured_prs=plan["unmeasured"][:50],
                        note=("dry run — pass ?apply=1 to write" if not apply_
                              else f"cleared brain_authored on {applied} row(s)"))
+    except _NoDatabase:
+        return jsonify(ok=False, state="UNMEASURED", error="no database"), 503
     except Exception as e:  # noqa: BLE001
         return jsonify(ok=False, error=str(e)[:200]), 500
-    finally:
-        try:
-            c.close()
-        except Exception:
-            pass
 
 
 @brain_pr_outcome_monitor_bp.route(
