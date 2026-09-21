@@ -303,6 +303,47 @@ def shadowed(app) -> dict:
     return {k: sorted(v) for k, v in seen.items() if len(set(v)) > 1}
 
 
+def classify_shadow_drift(debt: dict, live: dict) -> list:
+    """The booted app's shadowed pairs must EQUAL the pinned debt, exactly.
+
+    `live` is shadowed(app); `debt` is tests/app_contract.json's
+    "shadowed_debt", keyed the same way ({"METHOD rule": [endpoints]}).
+
+      live, not pinned   -> a NEW duplicate. Werkzeug serves one handler; the
+                            other still reads as live in source, and a test
+                            fixture that registers it alone grades it green.
+                            That is how /llms-full.txt shipped without its
+                            policy block (#4996 -> #5016 -> #5034).
+      pinned, but the endpoints differ -> a different pair now collides on a
+                            pinned rule. Also new, also a failure.
+      pinned, not live   -> a FIXED duplicate still pinned. Left in the dict it
+                            is headroom the same pair could come back into.
+
+    ★ Equality, not a count. The check this replaces allowed
+    max_shadowed_routes=18 while 16 were live: two new duplicates fitted under
+    it, and swapping one duplicate for another never moved the number.
+    """
+    failures: list = []
+    new = {k: v for k, v in live.items() if debt.get(k) != v}
+    if new:
+        listing = "\n".join("    %s -> %s" % (k, v) for k, v in sorted(new.items()))
+        failures.append(
+            "NEW SHADOWED ROUTE(S): %d rule+method pair(s) answered by more than "
+            "one handler, not pinned in shadowed_debt.\n"
+            "  Werkzeug serves ONE; the other is dead code that still reads as "
+            "live in source. Find the winner with app.url_map.bind('dchub.cloud')"
+            ".match(path, method=...) — never from source order — keep it, port "
+            "any fix only the loser holds, and delete the loser's registration. "
+            "Do not pin a new one to make this green.\n%s" % (len(new), listing))
+    fixed = sorted(set(debt) - set(live))
+    if fixed:
+        failures.append(
+            "FIXED SHADOW STILL PINNED: %s no longer shadowed. Remove it from "
+            "shadowed_debt in tests/app_contract.json so it cannot return "
+            "unnoticed." % ", ".join(fixed))
+    return failures
+
+
 def load_baseline() -> dict:
     with open(BASELINE, encoding="utf-8") as fh:
         return json.load(fh)
@@ -344,14 +385,17 @@ def main_() -> int:
         base.update({
             "_comment": (
                 "Behavior-gate baseline. route/blueprint floors are COLLAPSE "
-                "detectors (~10% under true). max_shadowed_routes is a RATCHET "
-                "— it may fall, never rise. Regenerate with "
+                "detectors (~10% under true). shadowed_debt is HAND-PINNED and "
+                "compared EXACTLY — a fixed pair leaves it, a new one is never "
+                "added to it; --update-baseline does not write it. Regenerate with "
                 "scripts/app_contract_gate.py --update-baseline only when the "
                 "change is intended; never to make a red build green."
             ),
             "min_routes": int(n_rules * 0.9),
             "min_blueprints": int(n_bps * 0.9),
-            "max_shadowed_routes": len(shadows),
+            # never derived from the live app: that would pin every new
+            # duplicate the moment someone regenerated the floors
+            "shadowed_debt": base.get("shadowed_debt", {}),
             "contract_routes": base.get("contract_routes") or [
                 "/api/v1/ops/deadman",
                 "/api/v1/health",
@@ -387,17 +431,8 @@ def main_() -> int:
             f"{base['min_blueprints']}."
         )
 
-    if len(shadows) > base["max_shadowed_routes"]:
-        new = len(shadows) - base["max_shadowed_routes"]
-        listing = "\n".join(f"    {k} -> {v}" for k, v in sorted(shadows.items()))
-        failures.append(
-            f"NEW SHADOWED ROUTE(S): {len(shadows)} now, baseline allows "
-            f"{base['max_shadowed_routes']} ({new} added).\n"
-            f"  Two handlers claim the same rule+method; Flask serves whichever "
-            f"matched first and the other is dead code that still reads as live "
-            f"in source. Remove the duplicate registration — do not raise the "
-            f"baseline.\n{listing}"
-        )
+    # A missing key compares against {} — the strictest reading, never a pass.
+    failures.extend(classify_shadow_drift(base.get("shadowed_debt", {}), shadows))
 
     # ★ A STALE ROUTE MAP IS A SILENT MISATTRIBUTION, so it is a red gate here
     # rather than a wrong answer there. api_response_contract.py uses this map

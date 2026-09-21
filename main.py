@@ -32,7 +32,6 @@ try:
     from routes.changes_feed import changes_feed_bp
 except Exception:
     changes_feed_bp = None
-from routes.dcpi_ask import dcpi_ask_bp
 from routes.open_data import open_data_bp
 from routes.lab import lab_bp
 from routes.seedlings import seedlings_bp
@@ -43441,7 +43440,7 @@ except Exception as _og_e:
 try:
     from routes.robots_seo import robots_seo_bp
     app.register_blueprint(robots_seo_bp)
-    print("[main] robots_seo_bp registered: /robots.txt + Sitemap directives", flush=True)
+    print("[main] robots_seo_bp registered: /robots-canonical.txt /robots-health", flush=True)
 except Exception as _rb_e:
     print(f"[main] robots_seo_bp register failed: {_rb_e}", flush=True)
 
@@ -43695,7 +43694,7 @@ except Exception as _cpe_e:
 try:
     from routes.comprehensive_report import comprehensive_report_bp
     app.register_blueprint(comprehensive_report_bp)
-    print("[main] comprehensive_report_bp registered: /reports/{monthly,quarterly-deep} + JSON", flush=True)
+    print("[main] comprehensive_report_bp registered: /reports/quarterly-deep + JSON, /api/v1/reports/monthly.json", flush=True)
 except Exception as _cr_e:
     print(f"[main] comprehensive_report_bp register failed: {_cr_e}", flush=True)
 
@@ -45087,7 +45086,7 @@ except Exception as _bdf_e:
 try:
     from routes.status_page import status_page_bp
     app.register_blueprint(status_page_bp)
-    print("[main] status_page_bp registered: /status /status.json /api/v1/status/probes", flush=True)
+    print("[main] status_page_bp registered: /system-status /status.json /api/v1/status/probes", flush=True)
 except Exception as _sp_e:
     print(f"[main] status_page_bp register failed: {_sp_e}", flush=True)
 
@@ -45118,9 +45117,6 @@ app.register_blueprint(lab_bp)
 
 # auto-registered: open_data_bp
 app.register_blueprint(open_data_bp)
-
-# phase 118: register Ask the Index
-app.register_blueprint(dcpi_ask_bp)
 
 # auto-registered: digest_bp
 app.register_blueprint(digest_bp)
@@ -46839,7 +46835,8 @@ except Exception as _bsp_e:
 #      opens a draft GitHub Issue labeled brain-l7-architecture +
 #      proposal. Conservative cap: 1/week. DRY-RUN by default
 #      (BRAIN_R3_ARCHITECTURE_DRY_RUN=1 default ON).
-#   3. brain_qa — POST /api/v1/brain/ask answers ops questions; keyword
+#   3. brain_qa — ask_brain() answers ops questions (UNROUTED since
+#      2026-09-21: /api/v1/brain/ask is brain_layer9's); keyword
 #      router picks context (MRR/funnel, brain backlog, media, sentinel,
 #      claims, state-of-2026, code hotspots). Admin-key gated; 50 Q/day
 #      per key; logged to brain_qa_log. Chat UI at /admin/ask-brain.
@@ -46862,7 +46859,7 @@ except Exception as _bap_e:
 try:
     from routes.brain_qa import brain_qa_bp
     app.register_blueprint(brain_qa_bp)
-    print("[main] brain_qa_bp registered: POST /api/v1/brain/ask + /api/v1/brain/ask/{status,log} + /admin/ask-brain (admin-gated; 50/day cap; budget BRAIN_R3_DAILY_BUDGET_USD; kill: BRAIN_R3_DISABLE or BRAIN_QA_DISABLE)", flush=True)
+    print("[main] brain_qa_bp registered: /api/v1/brain/ask/{status,log} + /admin/ask-brain (admin-gated; 50/day cap; budget BRAIN_R3_DAILY_BUDGET_USD; kill: BRAIN_R3_DISABLE or BRAIN_QA_DISABLE)", flush=True)
 except Exception as _bqa_e:
     print(f"[main] brain_qa_bp register failed: {_bqa_e}", file=sys.stderr)
 
@@ -47392,121 +47389,9 @@ try:
 except NameError:
     pass
 
-# === Phase 216: DCPI lite-recompute (top-level for reliability) ===
-try:
-    @app.route("/api/v1/dcpi/lite-recompute", methods=["POST"])
-    def _v216_dcpi_lite_recompute():
-        """Compute lite DCPI scores for all markets in the DB.
-        No admin key required (idempotent, read-only-ish via INSERT ON CONFLICT)."""
-        from flask import jsonify
-        import os, psycopg2
-        # r-status-taxonomy (2026-07-29): same single source of truth as
-        # routes/dcpi.py. THIRD WRITER — this handler is registered on the
-        # SAME URL as dcpi_bp.lite_recompute, so if the two disagreed about
-        # what "operational" means the published score would depend on which
-        # handler Werkzeug happened to resolve.
-        from util.status_taxonomy import (
-            operational_sql as _status_operational_sql,
-            pipeline_sql as _status_pipeline_sql,
-        )
-        from util.dcpi_score_row import (
-            LITE_MAY_NOT_CLOBBER_FULL as _LITE_NO_CLOBBER,
-        )
-        _op_f, _pipe_f = _status_operational_sql(), _status_pipeline_sql()
-        try:
-            conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
-            scored = 0
-            errors = 0
-            with conn.cursor() as cur:
-                # Ensure unique constraint exists
-                try:
-                    cur.execute("""
-                        DO $$
-                        BEGIN
-                            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'market_power_scores_slug_key') THEN
-                                ALTER TABLE market_power_scores ADD CONSTRAINT market_power_scores_slug_key UNIQUE (market_slug);
-                            END IF;
-                        END $$;
-                    """)
-                    conn.commit()
-                except Exception: pass
-                # Pull all US markets w/ >= 3 facilities + their state
-                cur.execute(f"""
-                    SELECT LOWER(city), city, state,
-                           COUNT(*) AS fac,
-                           COALESCE(SUM(power_mw) FILTER (WHERE {_op_f}), 0) AS op_mw,
-                           COALESCE(SUM(power_mw) FILTER (WHERE {_pipe_f}), 0) AS pipe_mw
-                    FROM discovered_facilities
-                    WHERE city IS NOT NULL AND city != ''
-                      -- {{2}} below is the f-string escape for the regex
-                      -- quantifier {{2}}; this query is an f-string so the
-                      -- status filters above come from util/status_taxonomy.
-                      AND state IS NOT NULL AND LENGTH(state) = 2 AND state ~ '^[A-Z]{{2}}$'
-                      AND (country = 'US' OR country = 'USA')
-                    GROUP BY LOWER(city), city, state
-                    HAVING COUNT(*) >= 3
-                    LIMIT 200;
-                """)
-                rows = cur.fetchall()
-                for r in rows:
-                    try:
-                        slug_l, name, state, fac, op_mw, pipe_mw = r
-                        slug = slug_l.replace(" ", "-").replace(",", "")
-                        # $/kWh from state
-                        cur.execute("SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days';", (state,))
-                        kr = cur.fetchone()
-                        kwh = float(kr[0]) if kr and kr[0] else None
-                        # Lite scoring. r-status-taxonomy (2026-07-29):
-                        # ratio is pipeline / TOTAL footprint. op_mw used to
-                        # be the total (it contained pipe_mw), so this
-                        # preserves the previous scale; keeping the corrected
-                        # op_mw as the denominator would invert the fix and
-                        # pin markets with real pipeline at constraint=100 →
-                        # AVOID. Identical to routes/dcpi.py::lite_recompute.
-                        op_mw = float(op_mw or 0)
-                        pipe_mw = float(pipe_mw or 0)
-                        _footprint_mw = op_mw + pipe_mw
-                        pipe_ratio = (pipe_mw / _footprint_mw) if _footprint_mw > 0 else 0
-                        constraint = min(100, pipe_ratio * 150)
-                        excess = 0
-                        if kwh:
-                            excess = max(0, min(100, (0.30 - kwh) * 333))
-                        if pipe_mw < 50 and op_mw > 100:
-                            excess = max(excess, 60)
-                        verdict = "BUILD" if excess > 50 and constraint < 60 else ("AVOID" if constraint > 75 else "CAUTION")
-                        # r-provenance-writer (2026-08-08): this slug is
-                        # LOWER(city) with spaces hyphenated, which collides
-                        # head-on with the full scorer's slugs — 'laurel',
-                        # 'modesto' and 'salem' are all in both universes. So
-                        # this upsert could rewrite a fully-scored row's
-                        # constraint_score and verdict while leaving its
-                        # method_version untouched, producing a row that
-                        # advertises 2.2.0 over numbers the lite two-input
-                        # approximation produced. Guard imported from
-                        # util/dcpi_score_row, not retyped here — retyping it
-                        # is how the provenance columns drifted in the first
-                        # place.
-                        cur.execute(f"""
-                            INSERT INTO market_power_scores
-                            (market_slug, market_name, constraint_score, excess_power_score, verdict, tier_required, computed_at)
-                            VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW())
-                            ON CONFLICT (market_slug) DO UPDATE SET
-                              constraint_score = EXCLUDED.constraint_score,
-                              excess_power_score = EXCLUDED.excess_power_score,
-                              verdict = EXCLUDED.verdict,
-                              computed_at = NOW()
-                            WHERE {_LITE_NO_CLOBBER};
-                        """, (slug, name, constraint, excess, verdict))
-                        scored += 1
-                    except Exception:
-                        errors += 1
-            conn.commit()
-            conn.close()
-            return jsonify({"ok": True, "markets_scored": scored, "errors": errors, "candidate_count": len(rows)})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-except NameError:
-    pass
+# === Phase 216: DCPI lite-recompute — the main.py copy was deleted 2026-09-21.
+# It shared its rule with routes/dcpi.py::lite_recompute, which registered first
+# and answered every request, so this unauthenticated writer never ran.
 
 # === Phase 217: direct press_releases table insert (admin-keyless idempotent) ===
 try:

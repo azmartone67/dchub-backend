@@ -30,8 +30,11 @@ redirects_404_killer_bp = Blueprint("redirects_404_killer", __name__)
 # Exact-path redirects. Left = dead URL we saw in production; right =
 # closest working destination.
 _REDIRECTS: dict[str, str] = {
-    # /team didn't exist but was linked from footer in a few places
-    "/team":                  "/about",
+    # ★ Only paths with NO other handler. An exact rule here on a path
+    # something else serves is a shadowed duplicate: it never answers, and
+    # scripts/app_contract_gate.py fails the build on it. /team, /methodology
+    # and /research were removed 2026-09-21 for exactly that — each has a
+    # real page now.
 
     # /dcpi/* phantoms that nothing on the live page actually links but
     # an agent or stale press release might guess at
@@ -42,7 +45,6 @@ _REDIRECTS: dict[str, str] = {
     "/dcpi/markets":          "/dcpi",
 
     # Lone-word redirects users / search engines try
-    "/methodology":           "/dcpi/methodology/",
     "/dcpi-methodology":      "/dcpi/methodology/",
     "/data-quality":          "/dcpi/methodology/",
     "/data-sources":          "/dcpi/methodology/",
@@ -51,16 +53,7 @@ _REDIRECTS: dict[str, str] = {
     "/transactions/list":     "/transactions",
     "/transactions/recent":   "/transactions",
 
-    # /research bare path. The original note here — "out-of-repo CF Pages
-    # config makes /research/* unreachable, until that's fixed in the CF
-    # Dashboard" — was true when written (2026-06-03) and is NOT true any
-    # more, so do not reason from it. The unreachability was in-repo all
-    # along: dchub-frontend's _worker.js forwarded /research/* to Railway
-    # without asking the Pages ASSETS binding, and this table then redirected
-    # everything away. Fixed in dchub-frontend #1139 (ASSETS-first guard), so
-    # the real research pages now serve. Kept because /research bare is still
-    # owned by main.py's curated page, not by anything here.
-    "/research":              "/grid-intelligence",
+    # /research/* sub-paths nothing links but easy to guess.
     "/research/dcpi":         "/dcpi",
     "/research/methodology":  "/dcpi/methodology/",
 }

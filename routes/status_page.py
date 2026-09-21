@@ -98,7 +98,6 @@ def http_status_json():
 
 
 @status_page_bp.get("/system-status")
-@status_page_bp.get("/status")  # legacy alias — may be shadowed by CF redirect to status.dchub.cloud
 def http_status_page():
     """HTML status dashboard. Polls services from the browser so results
     reflect what users actually experience from their networks."""
@@ -287,6 +286,6 @@ def http_health():
         "ok": True,
         "blueprint": "status_page_bp",
         "version": "round-33-v1",
-        "routes": ["/status", "/status.json", "/api/v1/status/probes", "/api/v1/status/health"],
+        "routes": ["/system-status", "/status.json", "/api/v1/status/probes", "/api/v1/status/health"],
         "services_monitored": len(SERVICES),
     }), 200

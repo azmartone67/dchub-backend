@@ -642,7 +642,10 @@ def ask_brain(question: str, provided_key_hash: str) -> dict:
 
 # ─── HTTP routes ─────────────────────────────────────────────────
 
-@brain_qa_bp.route("/api/v1/brain/ask", methods=["POST", "GET"])
+# ★ UNROUTED 2026-09-21. This view's rule duplicated brain_layer9's
+# /api/v1/brain/ask, which registers first and so answered every request —
+# the /admin/ask-brain chat UI below included. Kept, not deleted: giving it
+# its own path is an owner decision. Until then nothing reaches it.
 def brain_ask():
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
@@ -678,7 +681,7 @@ def brain_ask_status():
             "BRAIN_R3_DAILY_BUDGET_USD": "$/day cross-unlock cap (def 3.00)",
         },
         endpoints={
-            "POST /api/v1/brain/ask":        "ask a question (admin)",
+            "POST /api/v1/brain/ask":        "served by brain_layer9, not this module",
             "GET  /api/v1/brain/ask/status": "this page (admin)",
             "GET  /api/v1/brain/ask/log":    "recent Q&A audit (admin)",
             "GET  /admin/ask-brain":         "chat UI",

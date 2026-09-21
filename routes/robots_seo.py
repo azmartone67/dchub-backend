@@ -6,8 +6,10 @@ api.dchub.cloud and dchub.cloud robots.txt. Adding this directive is
 the standard signal for crawlers that don't use GSC submission
 (Bing-via-IndexNow, DuckDuckGo, Brave, Mojeek, etc).
 
+/robots.txt itself is ai_discovery_routes.serve_robots_txt's. This module's
+/robots.txt rule was removed 2026-09-21: a shadowed duplicate that never served.
+
 Routes:
-  /robots.txt              — canonical, served from Flask via api.dchub.cloud
   /robots-canonical.txt    — alternate alias
 """
 from flask import Blueprint
@@ -38,14 +40,6 @@ Sitemap: https://dchub.cloud/sitemap.xml
 # Host preference (search engines treat as canonical signal)
 Host: dchub.cloud
 """
-
-
-@robots_seo_bp.route("/robots.txt")
-def robots_txt():
-    return ROBOTS_BODY, 200, {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "public, max-age=86400",
-    }
 
 
 @robots_seo_bp.route("/robots-canonical.txt")

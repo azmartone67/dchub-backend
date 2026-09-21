@@ -54,10 +54,10 @@ def dcpi_history():
     """Per-market DCPI time-series — excess/constraint/verdict over time."""
     market = (request.args.get("market") or "").strip().lower()
     if not market:
-        # r-hist-shadow (2026-07-11, frontend#1063): this blueprint registers
-        # BEFORE routes/dcpi.py's dcpi_bp in main.py (~line 1869 vs ~31574),
-        # so this rule SHADOWS the legacy all-markets handler
-        # (dcpi.api_history) on the identical path. The /dcpi landing page's
+        # r-hist-shadow (2026-07-11, frontend#1063): this is the ONLY
+        # /api/v1/dcpi/history rule (dcpi.api_history's own rule was a shadowed
+        # duplicate, removed 2026-09-21), so it also answers the legacy
+        # all-markets contract. The /dcpi landing page's
         # 30-day chart fetches /api/v1/dcpi/history with NO params and
         # expects {series:{slug:{name,data}}} — the hard 400 here broke that
         # chart on every headless-QA run. No market param = the legacy

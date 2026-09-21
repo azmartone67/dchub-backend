@@ -205,13 +205,8 @@ def test_backfill_mints_an_alias_for_the_pre_dedupe_slug():
 
 
 # ── soft 404 -> real 404 ───────────────────────────────────────────────
-def test_empty_market_returns_404_not_a_redirect_to_the_hub():
-    seo = SEO.read_text(encoding="utf-8")
-    seg = seo.split("def _markets_dir_redirect", 1)[1].split("\ndef ", 1)[0]
-    assert 'redirect("/markets/directory"' not in seg, (
-        "mass-redirecting empty markets to one hub is Google's definition of a "
-        "soft 404 -- GSC measured 299 of them")
-    assert "404" in seg
+# seo_pages' own /markets/<slug> view (and its _markets_dir_redirect) never
+# served and was deleted 2026-09-21; the rule is market_deep_dive's, below.
 
 
 def test_market_deepdive_also_returns_404():

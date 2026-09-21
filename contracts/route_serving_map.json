@@ -4231,6 +4231,16 @@
     "routes.exclusive_listings"
    ]
   },
+  "GET /api/v1/admin/loop-closure/master-tick": {
+   "modules": [
+    "routes.loop_closure_master_shell"
+   ]
+  },
+  "GET /api/v1/admin/loop-closure/state": {
+   "modules": [
+    "routes.loop_closure_master_shell"
+   ]
+  },
   "GET /api/v1/admin/loop-control": {
    "modules": [
     "routes.loop_control_master_shell"
@@ -5588,8 +5598,7 @@
   },
   "GET /api/v1/brain/ask": {
    "modules": [
-    "routes.brain_layer9_conversational",
-    "routes.brain_qa"
+    "routes.brain_layer9_conversational"
    ]
   },
   "GET /api/v1/brain/ask/log": {
@@ -6979,8 +6988,7 @@
   },
   "GET /api/v1/dcpi/ask": {
    "modules": [
-    "routes.dcpi",
-    "routes.dcpi_ask"
+    "routes.dcpi"
    ]
   },
   "GET /api/v1/dcpi/auto-press/recent": {
@@ -7020,7 +7028,6 @@
   },
   "GET /api/v1/dcpi/history": {
    "modules": [
-    "routes.dcpi",
     "routes.dcpi_temporal"
    ]
   },
@@ -7472,6 +7479,11 @@
   "GET /api/v1/facility/<path:slug>": {
    "modules": [
     "main"
+   ]
+  },
+  "GET /api/v1/facility/<path:slug>/location": {
+   "modules": [
+    "routes.facility_location_reveal"
    ]
   },
   "GET /api/v1/feedback/list": {
@@ -9984,7 +9996,17 @@
     "routes.gate_runs"
    ]
   },
+  "GET /api/v1/ops/install-funnel": {
+   "modules": [
+    "routes.install_funnel"
+   ]
+  },
   "GET /api/v1/ops/install-stats": {
+   "modules": [
+    "routes.install_stats"
+   ]
+  },
+  "GET /api/v1/ops/install-stats/first-use": {
    "modules": [
     "routes.install_stats"
    ]
@@ -10601,7 +10623,6 @@
   },
   "GET /api/v1/reports/monthly": {
    "modules": [
-    "routes.comprehensive_report",
     "routes.monthly_trend"
    ]
   },
@@ -12285,6 +12306,11 @@
     "routes.checkout_click_tracker"
    ]
   },
+  "GET /go/p/<plan>": {
+   "modules": [
+    "routes.pricing_click_tracker"
+   ]
+  },
   "GET /go/partners": {
    "modules": [
     "routes.partnership_click_tracker"
@@ -12537,8 +12563,7 @@
   },
   "GET /integrations/tools.json": {
    "modules": [
-    "main",
-    "routes.integrations_tools_json"
+    "main"
    ]
   },
   "GET /intelligence": {
@@ -12653,8 +12678,7 @@
   },
   "GET /markets/<slug>": {
    "modules": [
-    "routes.market_deep_dive",
-    "routes.seo_pages"
+    "routes.market_deep_dive"
    ]
   },
   "GET /markets/<slug>.json": {
@@ -12739,8 +12763,7 @@
   },
   "GET /methodology": {
    "modules": [
-    "routes.methodology_pages",
-    "routes.redirects_404_killer"
+    "routes.methodology_pages"
    ]
   },
   "GET /methodology/data-dictionary.json": {
@@ -13125,7 +13148,6 @@
   },
   "GET /reports/monthly": {
    "modules": [
-    "routes.comprehensive_report",
     "routes.monthly_trend"
    ]
   },
@@ -13181,8 +13203,7 @@
   },
   "GET /research": {
    "modules": [
-    "main",
-    "routes.redirects_404_killer"
+    "main"
    ]
   },
   "GET /research/<slug>": {
@@ -13212,8 +13233,7 @@
   },
   "GET /robots.txt": {
    "modules": [
-    "ai_discovery_routes",
-    "routes.robots_seo"
+    "ai_discovery_routes"
    ]
   },
   "GET /rss/dcpi-movers": {
@@ -13438,8 +13458,7 @@
   },
   "GET /status": {
    "modules": [
-    "routes.site_audit",
-    "routes.status_page"
+    "routes.site_audit"
    ]
   },
   "GET /status.json": {
@@ -13464,7 +13483,6 @@
   },
   "GET /team": {
    "modules": [
-    "routes.redirects_404_killer",
     "routes.team_landing"
    ]
   },
@@ -13530,8 +13548,7 @@
   },
   "GET /upgrade": {
    "modules": [
-    "routes.pair_code",
-    "routes.stripe_direct_upgrade"
+    "routes.pair_code"
    ]
   },
   "GET /upgrade/h/<token>": {
@@ -15024,7 +15041,17 @@
     "routes.brain_pr_metric_harness"
    ]
   },
+  "POST /api/v1/admin/brain/pr-outcomes/grade": {
+   "modules": [
+    "routes.brain_pr_outcome_monitor"
+   ]
+  },
   "POST /api/v1/admin/brain/pr-outcomes/monitor-now": {
+   "modules": [
+    "routes.brain_pr_outcome_monitor"
+   ]
+  },
+  "POST /api/v1/admin/brain/pr-outcomes/reclassify": {
    "modules": [
     "routes.brain_pr_outcome_monitor"
    ]
@@ -15165,6 +15192,11 @@
    ]
   },
   "POST /api/v1/admin/crm/flush": {
+   "modules": [
+    "routes.crm_reverse_etl"
+   ]
+  },
+  "POST /api/v1/admin/crm/requeue-config-failures": {
    "modules": [
     "routes.crm_reverse_etl"
    ]
@@ -15687,6 +15719,11 @@
   "POST /api/v1/admin/listings/leads/<lead_id>/status": {
    "modules": [
     "routes.exclusive_listings"
+   ]
+  },
+  "POST /api/v1/admin/loop-closure/master-tick": {
+   "modules": [
+    "routes.loop_closure_master_shell"
    ]
   },
   "POST /api/v1/admin/loop-control/master-tick": {
@@ -16716,8 +16753,7 @@
   },
   "POST /api/v1/brain/ask": {
    "modules": [
-    "routes.brain_layer9_conversational",
-    "routes.brain_qa"
+    "routes.brain_layer9_conversational"
    ]
   },
   "POST /api/v1/brain/audit-intake/refresh": {
@@ -17362,8 +17398,7 @@
   },
   "POST /api/v1/dcpi/ask": {
    "modules": [
-    "routes.dcpi",
-    "routes.dcpi_ask"
+    "routes.dcpi"
    ]
   },
   "POST /api/v1/dcpi/auto-press/scan": {
@@ -17383,7 +17418,6 @@
   },
   "POST /api/v1/dcpi/lite-recompute": {
    "modules": [
-    "main",
     "routes.dcpi"
    ]
   },
@@ -17515,6 +17549,11 @@
   "POST /api/v1/facilities/snapshot": {
    "modules": [
     "routes.facilities_delta"
+   ]
+  },
+  "POST /api/v1/facility/<path:slug>/location": {
+   "modules": [
+    "routes.facility_location_reveal"
    ]
   },
   "POST /api/v1/feedback/<int:sid>/vote": {

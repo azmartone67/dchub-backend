@@ -9146,9 +9146,12 @@ def public_market_page(slug):
 
 
 
-@dcpi_bp.route("/api/v1/dcpi/history", methods=["GET"])
 def api_history():
-    """Return per-day score history for top BUILD markets, last 30 days."""
+    """Return per-day score history for top BUILD markets, last 30 days.
+
+    Not routed itself: /api/v1/dcpi/history is dcpi_temporal.dcpi_history,
+    which calls this when no ?market= is given. This function's own rule on
+    that path was removed 2026-09-21: a shadowed duplicate that never served."""
     _ensure_tables()
     # r80: read the REAL daily history table. market_power_scores is
     # UPDATE-in-place (computed_at=NOW() per recompute), so grouping it by

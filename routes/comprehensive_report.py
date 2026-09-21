@@ -647,14 +647,8 @@ def _attach_narrative_safe(d, kind):
         return d
 
 
-@comprehensive_report_bp.route("/reports/monthly", methods=["GET"], strict_slashes=False)
-def monthly_html():
-    d = _attach_narrative_safe(_gather(quarter_window=False), "monthly")
-    return Response(_render_html(d), mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
-                             "Link": _CC_LINK_HEADER,
-                             "X-License": "CC-BY-4.0",
-                             "X-DC-Phase": "ZZZZZ-round47.13-comprehensive-monthly"})
+# /reports/monthly and /api/v1/reports/monthly are routes/monthly_trend.py's.
+# This module's rules on both were removed 2026-09-21: a shadowed duplicate that never served.
 
 
 @comprehensive_report_bp.route("/reports/quarterly-deep", methods=["GET"], strict_slashes=False)
@@ -672,7 +666,6 @@ _MONTHLY_JSON_TTL = 900
 
 
 @comprehensive_report_bp.route("/api/v1/reports/monthly.json", methods=["GET"], strict_slashes=False)
-@comprehensive_report_bp.route("/api/v1/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_json():
     # r-monthlycache (2026-06-23): the edge caches this (max-age=900) for external
     # callers, but ORIGIN callers — the brain-radar's localhost probe, internal
