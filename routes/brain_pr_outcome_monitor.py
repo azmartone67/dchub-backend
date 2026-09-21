@@ -89,9 +89,30 @@ _BRAIN_BODY_MARKERS = (
     "Auto-proposed by Brain v2 Layer 5",
     "Brain Layer-5 auto-proposed",
     "Brain Layer-6",
-    "brain_pr_opener",
-    "Co-Authored-By: Claude",
 )
+# ★★★ 2026-09-21 — TWO MARKERS REMOVED, EACH MEASURED MISFIRING.
+#
+#   "Co-Authored-By: Claude"  Every human-directed Claude Code session PR
+#                             carries this trailer. Of 25 misattributed PRs
+#                             checked, 24 were flagged by it alone.
+#   "brain_pr_opener"         A module NAME. It matches any PR whose body
+#                             merely mentions the module — e.g. a fix TO it.
+#                             The 25th misattributed PR was flagged by this.
+#
+# Both matched prose ABOUT the brain rather than work BY it. Read live via
+# GET /api/v1/admin/brain/pr-outcomes: of 88 merged brain_authored=TRUE rows,
+# only 7 came from a brain pipeline. The other 81 were fix/, feat/, seo/ …
+# sessions a human directed — so L6 (brain_strategic_planner) computed its
+# success rate and read its "recent PRs" from work it did not do, and
+# brain_self_perception believed the same.
+#
+# ★ VERIFIED SAFE BEFORE REMOVAL: all 7 real pipeline PRs (#4738 #4567 #4220
+# #4221 #4222 #4202 #3421) are still detected by title or branch markers
+# without these two. Zero real brain PRs lost.
+#
+# ★ DO NOT ADD BACK A TRAILER, A MODULE NAME, OR ANY SUBSTRING A HUMAN COULD
+# WRITE IN PROSE. A body marker must be a signature only a brain writer emits.
+# tests/test_brain_authored_markers.py pins this.
 
 
 def _truthy(v) -> bool:
@@ -685,6 +706,92 @@ def grade_endpoint():
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
     return jsonify(grade_recurrences(apply=_truthy(request.args.get("apply", "0"))))
+
+
+_RECLASSIFY_MAX = 150   # GitHub fetch per row; keeps one call inside the
+                        # admin POST budget. Idempotent — re-run to continue.
+
+
+def reclassify_plan(rows_to_prs) -> dict:
+    """Split stored brain_authored=TRUE rows by what _is_brain_authored says NOW.
+
+    PURE over its input: `rows_to_prs` is [(pr_number, pr_dict_or_None)].
+    ★ A PR we could not fetch is UNMEASURED and is NEVER flipped — failing to
+    read it is not evidence that it is not the brain's. Only TRUE -> FALSE is
+    ever proposed; this repairs one known error, it does not re-derive the flag
+    from scratch.
+    """
+    keep, flip, unmeasured = [], [], []
+    for n, pr in rows_to_prs:
+        if not isinstance(pr, dict) or not pr:
+            unmeasured.append(n)
+        elif _is_brain_authored(pr):
+            keep.append(n)
+        else:
+            flip.append(n)
+    return {"keep": keep, "flip": flip, "unmeasured": unmeasured}
+
+
+@brain_pr_outcome_monitor_bp.route(
+    "/api/v1/admin/brain/pr-outcomes/reclassify", methods=["POST"])
+def reclassify():
+    """Re-run the CURRENT _is_brain_authored() over stored rows and clear the
+    flag on the ones it now rejects.
+
+    ★ WHY THIS EXISTS. Removing the two misfiring markers corrects only rows
+    the monitor writes FROM NOW ON. The 81 historical rows it mislabelled stay
+    wrong — and they are exactly what L6 reads as "my last 25 PRs". The table
+    does not store the PR body, so the rule cannot be re-evaluated from stored
+    columns; this re-fetches each PR and runs the SAME function the monitor
+    uses — one definition, not a second SQL approximation of it.
+
+    DRY RUN BY DEFAULT. ?apply=1 writes. Only TRUE -> FALSE, only for PRs that
+    were actually fetched. ?limit= caps GitHub calls per request (max 150).
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    apply_ = _truthy(request.args.get("apply", "0"))
+    try:
+        limit = max(1, min(int(request.args.get("limit", _RECLASSIFY_MAX)),
+                           _RECLASSIFY_MAX))
+    except Exception:
+        limit = _RECLASSIFY_MAX
+    c = _get_db()
+    if c is None:
+        return jsonify(ok=False, state="UNMEASURED", error="no database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""SELECT pr_number FROM brain_pr_outcomes
+                            WHERE brain_authored = TRUE
+                            ORDER BY pr_number DESC LIMIT %s""", (limit,))
+            numbers = [int(r[0]) for r in cur.fetchall() or []]
+        fetched = [(n, _gh_api(f"/repos/{_GITHUB_REPO}/pulls/{n}"))
+                   for n in numbers]
+        plan = reclassify_plan(fetched)
+        applied = 0
+        if apply_ and plan["flip"]:
+            with c.cursor() as cur:
+                cur.execute("""UPDATE brain_pr_outcomes
+                                  SET brain_authored = FALSE
+                                WHERE pr_number = ANY(%s)
+                                  AND brain_authored = TRUE""",
+                            (plan["flip"],))
+                applied = cur.rowcount or 0
+            c.commit()
+        return jsonify(ok=True, apply=apply_, checked=len(numbers),
+                       keep=len(plan["keep"]), flip=len(plan["flip"]),
+                       unmeasured=len(plan["unmeasured"]), applied=applied,
+                       flip_prs=plan["flip"][:200],
+                       unmeasured_prs=plan["unmeasured"][:50],
+                       note=("dry run — pass ?apply=1 to write" if not apply_
+                             else f"cleared brain_authored on {applied} row(s)"))
+    except Exception as e:  # noqa: BLE001
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 
 @brain_pr_outcome_monitor_bp.route(
