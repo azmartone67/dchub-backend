@@ -3726,6 +3726,20 @@ try:
     except Exception as _rms:
         import logging
         logging.getLogger(__name__).warning('reliability_master_shell wiring failed: %s', _rms)
+    # 2026-09-21: LOOP-CLOSURE master shell (#79) — one lane per open actuation
+    # gap, each naming WHO OWNS THE LEVER. It drives the one lever nothing was
+    # pulling (brain_spec_implementer, be#5004 — unscheduled) and names the rest
+    # (human desk, existing scheduler, a pending decision). SHADOW by default;
+    # arm with LOOP_CLOSURE_ARM=1 (lane 5 also needs SPEC_IMPLEMENTER_ARM=1).
+    # Kill: LOOP_CLOSURE_DISABLED=1; per-lane LOOP_CLOSURE_LANE_<NAME>_OFF=1.
+    # Carries an inert-check on itself (armed + a READY lane + no action).
+    try:
+        from routes.loop_closure_master_shell import loop_closure_master_shell_bp
+        app.register_blueprint(loop_closure_master_shell_bp)
+        print("[main] loop_closure_master_shell_bp registered: POST /api/v1/admin/loop-closure/master-tick", flush=True)
+    except Exception as _lcs:
+        import logging
+        logging.getLogger(__name__).warning('loop_closure_master_shell wiring failed: %s', _lcs)
     # 2026-07-03: AI-Adoption master shell — the loop whose single north-star is
     # DISTINCT EXTERNAL AI AGENTS / WEEK. Orchestrates existing pieces (ai_reach_rollup,
     # brain_ecosystem_watch, mcp_registry_outreach, geo_autopublish) across 5 tiers:
