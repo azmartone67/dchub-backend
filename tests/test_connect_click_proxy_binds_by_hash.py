@@ -28,7 +28,8 @@ sys.path.insert(0, str(ROOT))
 import routes.mcp_connect as mc  # noqa: E402
 from routes._stripe_links import STRIPE_LINKS  # noqa: E402
 
-KEY = "dch_trial_proxyhashtest0000000001"
+# A FAKE trial key, low-entropy on purpose (scripts/check_no_leaked_credentials.py).
+KEY = "dch_trial_" + "0" * 23
 H = hashlib.sha256(KEY.encode()).hexdigest()
 
 
