@@ -1226,7 +1226,19 @@ def agent_facilities():
 
         finally:
             conn.close()
-        
+
+        # ★ SELECT * hands over every column — exact coordinates, the street
+        # address, raw_data (whose OSM tags repeat the address) — and a Moltbook
+        # identity is not a paid plan. Gate each row by the caller's own tier
+        # (util/facility_tier_gate.py): only a paid key gets the full row.
+        from util.facility_tier_gate import gate_records
+        try:
+            from api_tier_gating import get_request_tier
+            caller_tier = get_request_tier()
+        except ImportError:
+            caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+        facilities, _ = gate_records(facilities, caller_tier)
+
         response = {
             "success": True,
             "count": len(facilities),

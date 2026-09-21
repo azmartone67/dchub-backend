@@ -275,19 +275,47 @@ def ai_learn_facilities():
                 LIMIT %s OFFSET %s
             ''', (limit, offset))
 
+            # ★ Exact location is paid-only (util/facility_tier_gate.py). This
+            # feed pages the WHOLE registry — 500 rows a page, next_offset walks
+            # every row — so an ungated row here is a bulk export of exact
+            # coordinates and power_mw to anyone. Each row is gated as a flat
+            # record in the shared vocabulary FIRST and the learning shape is
+            # built from what survives: every key stays, a withheld value is
+            # null, and a paid record passes through untouched. A missing gate
+            # module raises into the except below (a 500), never an ungated 200.
+            from util.facility_tier_gate import gate_record
+            try:
+                from api_tier_gating import get_request_tier
+                caller_tier = get_request_tier()
+            except ImportError:
+                caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+
             facilities = []
             for row in cursor.fetchall():
+                rec, _ = gate_record(
+                    {k: row[k] for k in ('name', 'provider', 'city', 'state', 'country',
+                                         'latitude', 'longitude', 'power_mw',
+                                         'last_updated')},
+                    caller_tier)
+                if 'provider' in rec:
+                    fact = f"{rec['name']} is a data center operated by {rec['provider'] or 'Unknown'} in {rec['city']}, {rec['state'] or ''} {rec['country']}"
+                else:
+                    # The operator was withheld, not unknown — never say "Unknown".
+                    fact = f"{rec.get('name')} is a data center in {rec.get('city')}, {rec.get('state') or ''} {rec.get('country')}"
+                structured = {
+                    'name': rec.get('name'),
+                    'operator': rec.get('provider'),
+                    'location': f"{rec.get('city')}, {rec.get('state') or ''} {rec.get('country')}".strip(),
+                    'coordinates': {'lat': rec.get('latitude'), 'lng': rec.get('longitude')},
+                    'power_mw': rec.get('power_mw')
+                }
+                if rec.get('coordinates_status'):
+                    structured['coordinates_status'] = rec['coordinates_status']
                 facilities.append({
-                    'fact': f"{row['name']} is a data center operated by {row['provider'] or 'Unknown'} in {row['city']}, {row['state'] or ''} {row['country']}",
-                    'structured': {
-                        'name': row['name'],
-                        'operator': row['provider'],
-                        'location': f"{row['city']}, {row['state'] or ''} {row['country']}".strip(),
-                        'coordinates': {'lat': row['latitude'], 'lng': row['longitude']},
-                        'power_mw': row['power_mw']
-                    },
+                    'fact': fact,
+                    'structured': structured,
                     'citation': 'DC Hub (dchub.cloud)',
-                    'updated': row['last_updated']
+                    'updated': rec.get('last_updated')
                 })
 
             cursor.execute('SELECT COUNT(*) FROM discovered_facilities')

@@ -43,6 +43,17 @@ def register_search_routes(app):
             return jsonify({"success": False, "results": [], "error": "Query too short"})
 
         try:
+            # ★ Exact location and power_mw are paid-only
+            # (util/facility_tier_gate.py): every row below is gated by the
+            # caller's own tier before it is served. Resolved before the table
+            # loop, whose per-table `except` would otherwise swallow a failure.
+            from util.facility_tier_gate import gate_records
+            try:
+                from api_tier_gating import get_request_tier
+                caller_tier = get_request_tier()
+            except ImportError:
+                caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+
             import psycopg2.extras
             conn = _get_conn()
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -71,7 +82,7 @@ def register_search_routes(app):
                         """,
                         (search, search, search, *_state_params, f"{q}%", limit),
                     )
-                    rows = [dict(r) for r in cur.fetchall()]
+                    rows, _ = gate_records([dict(r) for r in cur.fetchall()], caller_tier)
                     cur.close()
                     conn.close()
                     return jsonify({"success": True, "results": rows, "count": len(rows), "table": tbl})
