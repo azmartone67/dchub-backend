@@ -136,6 +136,12 @@ WHITELIST_TABLES = {
     #     Whitelisted because the rule is wrong here, NOT because the guard is
     #     missing. If that INSERT is ever rewritten as one string, drop this.
     'interconnect_queue_runs', 'interconnect_queue_events',
+    # 2026-09-20: install_mint_attempts is an append-only event log (serial PK,
+    # no natural key) — one row per POST /api/v1/keys/claim under an install-*
+    # client_name. Two rows for one press (the worker retries the claim) are
+    # deduplicated at READ time by routes/install_funnel.py; collapsing them at
+    # write time would need a key the event does not have.
+    'install_mint_attempts',
 }
 
 # ── HARD rules (r-fixpack 2026-07-02) ────────────────────────────────
