@@ -246,15 +246,15 @@ def upsert_scored_market(cur, market, metrics, c_score, e_score, ttp,
 # The lite path
 # ─────────────────────────────────────────────────────────────────────────
 
-# The three lite writers (routes/dcpi.py::lite_recompute,
-# main.py::_v216_dcpi_lite_recompute, scripts/bulk_dcpi_score.py) do NOT run
+# The lite writers (routes/dcpi.py::lite_recompute, scripts/bulk_dcpi_score.py;
+# main.py::_v216_dcpi_lite_recompute was deleted 2026-09-21) do NOT run
 # the scorer above. They compute a two-input approximation — facility
 # pipeline ratio plus state $/kWh — that shares no weight, ceiling or band
 # with the published method. Stamping DCPI_METHOD_VERSION on their output
 # would be a straight falsehood, so they do not get to use the writer above.
 #
-# But leaving them alone is worse than it looks. All three upsert ON CONFLICT
-# (market_slug) DO UPDATE and overwrite constraint_score, excess_power_score
+# But leaving them alone is worse than it looks. Each upserts ON CONFLICT
+# (market_slug) DO UPDATE and overwrites constraint_score, excess_power_score
 # and verdict. Run one today and it rewrites the scores of a row the full
 # method produced while LEAVING that row's method_version in place — the row
 # then claims 2.2.0 while carrying numbers 2.2.0 never computed. A stale

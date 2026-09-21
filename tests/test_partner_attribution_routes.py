@@ -95,14 +95,14 @@ def test_open_redirect_is_refused(client, evil):
 
 def test_cookie_produces_a_partner_client_reference_id(client):
     client.set_cookie("dchub_partner_ref", "data-center-signals")
-    resp = client.get("/upgrade?tier=developer&direct=1")
+    resp = client.get("/pricing/upgrade?tier=developer&direct=1")
     assert resp.status_code == 302
     assert "web__partner__data-center-signals" in resp.headers["Location"]
 
 
 def test_explicit_surface_still_wins_over_the_cookie(client):
     client.set_cookie("dchub_partner_ref", "data-center-signals")
-    resp = client.get("/upgrade?tier=developer&direct=1&surface=market&ref=ashburn")
+    resp = client.get("/pricing/upgrade?tier=developer&direct=1&surface=market&ref=ashburn")
     loc = resp.headers["Location"]
     assert "web__market__ashburn" in loc
     assert "partner" not in loc
@@ -112,7 +112,7 @@ def test_forged_cookie_earns_nothing(client):
     """A visitor setting the cookie by hand to a slug we never issued must not
     manufacture a commissionable conversion."""
     client.set_cookie("dchub_partner_ref", "acme-affiliate")
-    resp = client.get("/upgrade?tier=developer&direct=1")
+    resp = client.get("/pricing/upgrade?tier=developer&direct=1")
     loc = resp.headers["Location"]
     assert "acme-affiliate" not in loc
     assert "web__partner__" not in loc
@@ -121,7 +121,7 @@ def test_forged_cookie_earns_nothing(client):
 def test_no_cookie_leaves_the_legacy_shape_untouched(client):
     """Regression guard: with no referral in play the URL must be exactly what
     it was before this change."""
-    resp = client.get("/upgrade?tier=developer&direct=1")
+    resp = client.get("/pricing/upgrade?tier=developer&direct=1")
     assert "mcp%3Atool%3Dnone%3Aref%3Dpaywall" in resp.headers["Location"]
 
 

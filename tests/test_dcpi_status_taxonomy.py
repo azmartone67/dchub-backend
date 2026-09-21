@@ -47,20 +47,6 @@ def _func_source(rel_path, func_name):
     return segment
 
 
-def _text_window(rel_path, start_marker, end_marker):
-    """TEXT slice between two markers — for code inside main.py, which this
-    suite must never import (it opens DB pools and registers ~200 blueprints).
-    Both markers are asserted present so a rename fails loudly."""
-    src = _read(rel_path)
-    i = src.find(start_marker)
-    assert i != -1, f"start marker {start_marker!r} gone from {rel_path}"
-    j = src.find(end_marker, i)
-    assert j != -1, f"end marker {end_marker!r} gone from {rel_path}"
-    window = src[i:j]
-    assert len(window) > 500, "window too small — markers collapsed"
-    return window
-
-
 # ── the taxonomy module itself ─────────────────────────────────────────────
 
 # Every status value observed live on 2026-07-29, in BOTH tables. The prompt's
@@ -182,18 +168,15 @@ def test_dcpi_publishes_the_status_basis_and_the_unclassified_bucket():
 
 
 def test_lite_writers_do_not_divide_by_the_corrected_operational_mw():
-    """Both lite writers upsert market_power_scores with
-    ON CONFLICT (market_slug) DO UPDATE, so they clobber the full path's
+    """The lite writer upserts market_power_scores with
+    ON CONFLICT (market_slug) DO UPDATE, so it clobbers the full path's
     scores. There op_mw is a DENOMINATOR: shrinking it without changing the
     ratio's basis multiplies pipe_ratio ~2.6x and pins constraint at 100
-    (verdict AVOID). Guards both copies — routes/dcpi.py and the same-URL
-    duplicate in main.py."""
+    (verdict AVOID). This guarded a second copy too — main.py's same-URL
+    duplicate — until that copy, which never served, was deleted 2026-09-21;
+    scripts/app_contract_gate.py now fails the build if a duplicate returns."""
     blueprint = _func_source("routes/dcpi.py", "lite_recompute")
-    inline = _text_window("main.py",
-                          "=== Phase 216: DCPI lite-recompute",
-                          "=== Phase 217:")
-    for label, src, taxonomy_ref in (("routes/dcpi.py", blueprint, "_SQL_OP_STATUS"),
-                                     ("main.py", inline, "status_taxonomy")):
+    for label, src, taxonomy_ref in (("routes/dcpi.py", blueprint, "_SQL_OP_STATUS"),):
         assert "pipe_ratio = (pipe_mw / op_mw)" not in src, \
             f"{label}: corrected op_mw still used as the ratio denominator"
         assert "_footprint_mw" in src, \

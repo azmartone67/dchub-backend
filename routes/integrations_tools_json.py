@@ -7,7 +7,7 @@ but the sentinel polls /api/v1/integrations/tools.json (different path).
 Add the alias.
 """
 import datetime
-from flask import Blueprint, jsonify, redirect
+from flask import Blueprint, jsonify
 
 integrations_tools_bp = Blueprint("integrations_tools", __name__)
 
@@ -68,7 +68,5 @@ def integrations_tools():
     }), 200, {"Cache-Control": "public, max-age=600", "Access-Control-Allow-Origin": "*"}
 
 
-@integrations_tools_bp.route("/integrations/tools.json", methods=["GET"])
-def integrations_tools_short():
-    """Short-path redirect to the canonical /api/v1/integrations/tools.json."""
-    return redirect("/api/v1/integrations/tools.json", code=301)
+# /integrations/tools.json is main.py's serve_tools_manifest. This module's
+# 301 on that path was removed 2026-09-21: a shadowed duplicate that never served.

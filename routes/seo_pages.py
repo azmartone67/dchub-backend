@@ -764,37 +764,11 @@ def _render_facility(f: dict, nearby: list, served=None) -> str:
 # ═════════════════════════════════════════════════════════════════════
 # MARKET PAGE — /markets/<slug>
 # ═════════════════════════════════════════════════════════════════════
-def _markets_dir_redirect():
-    # r-markets-404 (2026-07-15): unknown /markets/<slug> used to hard-404
-    # (~113/1000 of the GSC "Not found (404)" sample were dead /markets/*).
-    # These are INTERNAL links — /facility/<id> pages emit href="/markets/<slug>"
-    # for every facility, but (a) the city+state round-trip is lossy for
-    # multi-word cities/states (champs-sur-marne-ile-de-france) and (b) legacy
-    # facilities-table cities (Casper WY, Ottawa ON, Dubai) have no roll-up.
-    # Send crawlers to the server-rendered markets hub instead of a dead end
-    # (link equity → real market pages). 302 (not 301) + short cache so a market
-    # self-heals to its own 200 page the moment a facility backfills.
-    # ★★ REVERSED 2026-07-28. The 2026-07-15 note above argued this is "not a
-    # soft-404 (a real redirect to a real 200 page)". Google disagrees, and GSC
-    # now says so: 299 Soft 404s. Mass-redirecting many unrelated missing pages
-    # to ONE generic hub is Google's own textbook definition of a soft 404 —
-    # what matters is that the destination does not answer the request, not
-    # that it returns 200.
-    # ★The redirect only ever fired when the market has ZERO facilities, i.e.
-    # there is genuinely nothing to serve. 404 is the honest answer.
-    # Link equity is preserved by LINKING to the hub from the 404 body: a 404
-    # page's links are still crawled for discovery, and an honest 404 costs far
-    # less than a soft-404 flag across the whole /markets/ space.
-    _r = _error_page(
-        "That market has no data centers in DC Hub yet. "
-        "Browse the full market directory for one that does.", 404)
-    _r.headers['Cache-Control'] = 'public, max-age=3600'
-    _r.headers['X-DC-Page-Source'] = 'seo-market-404'
-    return _r
 
 
 # ── market CTA prices, derived (r-market-cta 2026-09-17) ─────────────────
-# This module's /markets/<slug> handler is the LOSING twin — the bytes on
+# This module's /markets/<slug> handler WAS the losing twin (unregistered
+# 2026-09-21; _render_market below now has no route) — the bytes on
 # dchub.cloud/markets/<slug> come from routes/market_deep_dive.py — but its
 # CTA was still selling the Starter monthly rate, the tier RETIRED by
 # r-price-collapse on 2026-09-05 (the literal is not repeated here: a
@@ -813,67 +787,9 @@ def _cta_prices():
             format(int(_K), ","))
 
 
-@seo_pages_bp.get("/markets/<slug>", strict_slashes=False)
-def market_page(slug: str):
-    slug = slug.strip().lower()
-    if not slug or len(slug) > 100:
-        abort(404)
-
-    c = _conn()
-    if c is None:
-        return _error_page("Database temporarily unavailable", 503)
-
-    parts = slug.replace('_', '-').split('-')
-    if len(parts) < 2:
-        return _markets_dir_redirect()
-    state_guess = parts[-1].upper()
-    city_guess = ' '.join(parts[:-1]).title()
-
-    facilities = []
-    stats = None
-    try:
-        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT id, name, provider, power_mw, status
-                  FROM discovered_facilities
-                 WHERE (LOWER(city) = LOWER(%s) AND UPPER(state) = %s)
-                    OR LOWER(COALESCE(city,'') || '-' || COALESCE(state,'')) = LOWER(%s)
-                 ORDER BY power_mw DESC NULLS LAST
-                 LIMIT 200
-            """, (city_guess, state_guess, slug))
-            facilities = cur.fetchall()
-
-            if facilities:
-                cur.execute("""
-                    SELECT
-                        COUNT(*)                       AS facility_count,
-                        COALESCE(SUM(power_mw), 0)    AS total_mw,
-                        COUNT(DISTINCT provider)      AS operator_count,
-                        AVG(power_mw)                 AS avg_mw,
-                        MAX(power_mw)                 AS max_mw
-                      FROM discovered_facilities
-                     WHERE LOWER(city) = LOWER(%s) AND UPPER(state) = %s
-                """, (city_guess, state_guess))
-                stats = cur.fetchone()
-    finally:
-        try: c.close()
-        except Exception: pass
-
-    if not facilities:
-        return _markets_dir_redirect()
-
-    return Response(
-        _render_market(slug, city_guess, state_guess, facilities, stats),
-        mimetype="text/html",
-        headers={
-            "Cache-Control": "public, max-age=1800, s-maxage=3600",
-            "X-DC-Page-Source": "seo-market",
-            # r-page-onramp: as-of citation header, ASCII only (latin-1 trap)
-            "X-Cite-As": _ascii_header(
-                f"DC Hub Market {slug} - as of "
-                f"{_dt.date.today().isoformat()}"),
-        },
-    )
+# /markets/<slug> is routes/market_deep_dive.py's market_short_html. This
+# module's view on the same rule was removed 2026-09-21: a shadowed duplicate that never served
+# (it registered second, so Werkzeug never reached it).
 
 
 def _render_market(slug, city, state, facilities, stats) -> str:

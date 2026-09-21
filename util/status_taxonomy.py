@@ -7,7 +7,6 @@ mixed-case 5-value literal that was hand-copied into every consumer:
     routes/dcpi.py  (US footprint query)     ← governs the DCPI saturation index
     routes/dcpi.py  (intl footprint query)
     routes/dcpi.py::lite_recompute
-    main.py::_v216_dcpi_lite_recompute
     main.py         (/api/v1/markets pipeline_mw_total)
     routes/dynamic_hero.py, routes/operator_brief.py,
     routes/ai_capacity_daily.py, routes/intelligence_routes.py

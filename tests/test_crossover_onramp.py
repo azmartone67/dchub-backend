@@ -159,53 +159,9 @@ def test_market_render_jsonld_and_onramp():
     _assert_onramp_links_canonical_connect(html, r"Query this market live via MCP: ")
 
 
-class _FakeCursor:
-    def __init__(self, results):
-        self._results = results
-        self._i = -1
-
-    def execute(self, sql, params=None):
-        self._i += 1
-
-    def fetchall(self):
-        r = self._results[self._i]
-        return r if isinstance(r, list) else []
-
-    def fetchone(self):
-        r = self._results[self._i]
-        return r if isinstance(r, dict) else None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-class _FakeConn:
-    def __init__(self, results):
-        self._cur = _FakeCursor(results)
-
-    def cursor(self, **kw):
-        return self._cur
-
-    def close(self):
-        pass
-
-
-def test_market_route_cite_header(monkeypatch):
-    app = Flask(__name__)
-    app.register_blueprint(seo.seo_pages_bp)
-    monkeypatch.setattr(
-        seo, "_conn", lambda: _FakeConn([_MKT_FACS, _MKT_STATS]))
-    r = app.test_client().get("/markets/ashburn-va")
-    assert r.status_code == 200
-    _assert_ascii_cite(r.headers.get("X-Cite-As"))
-    assert "ashburn-va" in r.headers["X-Cite-As"]
-    # rendered body carries the crossover pack end-to-end
-    body = r.get_data(as_text=True)
-    _assert_crossover_nodes(_flatten(_ld_blocks(body)))
-    _assert_onramp_links_canonical_connect(body, r"Query this market live via MCP: ")
+# (The /markets/<slug> ROUTE test that stood here graded seo_pages' view,
+# which never served — market_deep_dive answers that rule — and was
+# unregistered 2026-09-21. _render_market above still has its render test.)
 
 
 # ── 3. SEO facility page (/facility/<id>, rare no-canonical-slug render) ─
