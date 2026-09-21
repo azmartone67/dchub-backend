@@ -516,6 +516,17 @@ PINNED = {
                       # The static guard in test_canonical_counts_drift now
                       # measures the KEPT view, which is what actually ships.
                       "21,000+", "21,900+", "22,000+", "21k+",
+                      # ★2026-09-20, THE TENTH WALK: "22,900+" joins the
+                      # family the day it stopped being the floor. It was
+                      # PINNED["public"]["facilities"] until #4955 walked the
+                      # pin to "24,400+"; the same argument the 2026-09-16
+                      # note makes for "21,900+" applies unchanged — the
+                      # member that must re-ban itself on the next walk is
+                      # the one you just stopped publishing. Measured the
+                      # same hour on the live wire: /.well-known/mcp_facts.json
+                      # was still serving it (facilities "22,900+") from a
+                      # facts file generated 05:25Z, ~16h before the walk.
+                      "22,900+",
                       # ★2026-07-30: the 07-24..07-28 floor "12,650+" is itself
                       # retired (PINNED rebased to 15,000+, live 15,300+). It sat
                       # on the /ai hero CONTRADICTING the same page's live stat
