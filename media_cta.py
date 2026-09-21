@@ -30,7 +30,7 @@ from __future__ import annotations
 # middot to match the house post style already used across the composers.
 REACH_CTA = (
     "Connect your AI agent: dchub.cloud/mcp — free, call claim_free_key "
-    "· $10 = 1,000 calls"
+    "· $10 = 1,000 credits"
 )
 
 # Short form — X/Twitter (280) + Bluesky (300) are char-capped, so the full CTA

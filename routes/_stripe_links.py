@@ -77,8 +77,8 @@ STRIPE_LINKS = {
     # resolves; the founding PROGRAM (scarcity counter, separate card) is
     # retired from the public page because $99 is simply the list price now.
     "founding":        "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # $99/mo
-    "metered":         "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API calls (single one-time pack; 2026-06-25 repricing)
-    "pack5":           "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API calls (2026-06-25 repricing; env override DCHUB_PACK5_URL in mcp_conversion_plays.py)
+    "metered":         "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API credits (single one-time pack; 2026-06-25 repricing)
+    "pack5":           "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API credits (2026-06-25 repricing; env override DCHUB_PACK5_URL in mcp_conversion_plays.py)
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom
     "enterprise_annual": "https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b",  # Custom annual
     # r75 (2026-05-26): partnership-specific subscription links. NOT shown
@@ -119,8 +119,8 @@ TIER_PRICE_LABEL = {
     "pro":        "$99/mo",
     "founding":   "$99/mo",
     "pro_annual": "$1,188/yr",
-    "metered":    "$10 / 1,000 API calls",
-    "pack5":      "$10 / 1,000 API calls (one-time)",
+    "metered":    "$10 / 1,000 API credits",
+    "pack5":      "$10 / 1,000 API credits (one-time)",
     "enterprise": "Custom",
     "enterprise_annual": "Custom annual",
     "research_seed_nlr": "$3,000/yr (NLR FY 2026 Research Seed)",

@@ -74,7 +74,7 @@ def test_the_paid_tiles_survive_and_are_derived():
     from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
     from tier_registry import price
     assert "$%d<span" % (int(PACK10_PRICE_CENTS) // 100) in html
-    assert "%s API calls" % format(int(PACK10_CREDITS), ",") in html
+    assert "%s API credits" % format(int(PACK10_CREDITS), ",") in html
     assert "$%d<span" % int(price("developer")) in html
 
 

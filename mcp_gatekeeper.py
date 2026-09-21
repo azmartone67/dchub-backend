@@ -623,7 +623,7 @@ def _starter_cta():
 
 def _pack5_cta():
     """The $10 one-time credit pack — a call PACK, not a period cap."""
-    return f"$10 one-time = 1,000 API calls → {_canonical_link('pack5')}"
+    return f"$10 one-time = 1,000 API credits → {_canonical_link('pack5')}"
 
 
 # Per-tier monthly pricing (for inclusion in CTAs — gives MCP clients
@@ -1344,10 +1344,10 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "buy_now_note": "Direct Stripe checkout — no signup required",
             # 2026-06-25 (owner): the one-time credit pack is the LEAD option for
             # agents — monthly seats don't fit agent traffic. $10 one-time = 1,000
-            # API calls, no subscription. Same attribution path.
+            # API credits, no subscription. Same attribution path.
             "usage_url": _attribute("https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i"),
-            "usage_price": "$10 one-time = 1,000 API calls",
-            "usage_note": ("🤖 $10 one-time = 1,000 API calls, no subscription. "
+            "usage_price": "$10 one-time = 1,000 API credits",
+            "usage_note": ("🤖 $10 one-time = 1,000 API credits, no subscription. "
                            "Best fit for a high-volume agent; we email "
                            "your API key right after checkout."),
             # Phase ZZ+1 (2026-05-15): structured claim-endpoint card so

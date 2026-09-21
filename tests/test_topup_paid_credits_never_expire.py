@@ -133,8 +133,8 @@ def test_topup_start_is_retired_and_mints_nothing(monkeypatch, headers):
 
 
 @pytest.mark.parametrize("credits, cents, quoted", [
-    (2500, 1250, "2,500 API calls for $12.50,"),
-    (1000, 2000, "1,000 API calls for $20,"),
+    (2500, 1250, "2,500 API credits for $12.50,"),
+    (1000, 2000, "1,000 API credits for $20,"),
 ], ids=["cents", "whole_dollars"])
 def test_the_retired_start_quotes_the_pack_as_it_is_now(monkeypatch, credits, cents, quoted):
     """Read from the pack constants on every call, never frozen into the copy:

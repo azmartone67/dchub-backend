@@ -267,7 +267,7 @@ def topup_start():
         ok=False,
         error="topup_retired",
         message=(f"The one-time top-up is retired. The one-time pack replaces it: "
-                 f"{offer['credits']:,} API calls for {offer['price_label']}, "
+                 f"{offer['credits']:,} API credits for {offer['price_label']}, "
                  f"no subscription — {offer['pack_url']}"),
         **offer,
     ), 410
@@ -360,7 +360,7 @@ a{{color:#6366f1}}.foot{{margin-top:18px;text-align:center;font-size:.78rem}}
 <h1>This top-up is no longer sold</h1>
 <p>The one-time pack replaces it. No subscription.</p>
 <div class="price">{price}</div>
-<div style="color:#9ca3af;font-size:.95rem">{calls} API calls · one-time</div>
+<div style="color:#9ca3af;font-size:.95rem">{calls} API credits · one-time</div>
 <a href="{pack_url}" class="cta">Get {calls} calls — {price} →</a>
 <div class="foot"><a href="/pricing">Compare plans →</a></div>
 </div></body></html>""",

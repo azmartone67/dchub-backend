@@ -884,7 +884,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
          mintKey() re-points them at the minted key once one exists. Pro is
          not tiled here: it is the plan for a human screening sites. -->
     <a id="upg-pack" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pack&view_id={VIEW_ID}">
-      <h3>{PACK_CREDITS} API calls</h3>
+      <h3>{PACK_CREDITS} API credits</h3>
       <div class="price">${PACK_PRICE}<span style="font-size:.7em;color:var(--muted)"> one-time</span></div>
       <div class="desc">Credits land on this key and never expire. No subscription.</div>
     </a>
