@@ -693,7 +693,8 @@ def _hubspot_update_existing(email: str, props: dict, headers: dict) -> dict:
                      headers=headers, timeout=12)
     if g.status_code != 200:
         return {"ok": False, "dup": True, "error": f"hs read {g.status_code}",
-                "raw": (g.text or "")[:500], "status_code": g.status_code}
+                "raw": (g.text or "")[:500], "status_code": g.status_code,
+                "codes": _provider_error_codes(g.text)}
     current = (g.json() or {}).get("properties") or {}
     update, kept = _hubspot_update_props(props, current)
     p = requests.patch(url, headers=headers,
@@ -704,7 +705,8 @@ def _hubspot_update_existing(email: str, props: dict, headers: dict) -> dict:
                 "updated": True, "kept": kept, "raw": j,
                 "status_code": p.status_code}
     return {"ok": False, "dup": True, "error": f"hs patch {p.status_code}",
-            "raw": (p.text or "")[:500], "status_code": p.status_code}
+            "raw": (p.text or "")[:500], "status_code": p.status_code,
+            "codes": _provider_error_codes(p.text)}
 
 
 def push_to_hubspot(lead: dict) -> dict:
@@ -896,7 +898,13 @@ def _push_failure_class(result) -> str:
     codes = set(result.get("codes") or ())
     codes |= set(_ERROR_CODE_RE.findall(str(result.get("raw") or "")))
     # 404: a create POSTs to one fixed URL, so "not found" is the endpoint.
-    if status in (401, 403, 404) or codes & _CONFIG_ERROR_CODES:
+    # Not on the 409 path ("dup"): there the read and PATCH are keyed by THIS
+    # row's email, so a 404 means that one contact did not resolve (e.g. the
+    # address is only a secondary email). That is the row's answer — as
+    # config it would retry forever and report the portal as refusing.
+    by_email_404 = status == 404 and bool(result.get("dup"))
+    if (status in (401, 403, 404) and not by_email_404) \
+            or codes & _CONFIG_ERROR_CODES:
         return PUSH_FAIL_CONFIG
     if status == 429 or (status is not None and status >= 500):
         return PUSH_FAIL_TRANSIENT

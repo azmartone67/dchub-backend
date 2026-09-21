@@ -46,7 +46,8 @@ class _Resp:
         return self._body
 
 
-def _hubspot(m, monkeypatch, post=409, stored=None, get=200, patch=200):
+def _hubspot(m, monkeypatch, post=409, stored=None, get=200, patch=200,
+             patch_body=None):
     """Stub `requests`; returns the ordered list of (method, url, body)."""
     calls = []
 
@@ -67,8 +68,8 @@ def _hubspot(m, monkeypatch, post=409, stored=None, get=200, patch=200):
         @staticmethod
         def patch(url, headers=None, data=None, timeout=None):
             calls.append(("PATCH", url, json.loads(data)))
-            return _Resp(patch, {"id": "901"} if patch == 200
-                         else {"message": "Property values were not valid"})
+            return _Resp(patch, {"id": "901"} if patch == 200 else
+                         patch_body or {"message": "Property values were not valid"})
 
     monkeypatch.setattr(m, "requests", _Req)
     monkeypatch.setattr(m, "HUBSPOT_API_KEY", "pat-test")
@@ -180,3 +181,42 @@ def test_blank_fields_do_not_erase_the_existing_contact(m, monkeypatch):
     blank = sorted(k for k in ("firstname", "lastname", "company", "jobtitle")
                    if k in props)
     assert not blank, "PATCH would clear %s on the existing contact" % blank
+
+
+# ── how the flush charges a failed update (#5041's classifier) ───────
+
+@pytest.mark.parametrize("status,klass", [
+    (401, "config"), (403, "config"), (429, "transient"), (503, "transient"),
+    (400, "lead"), (404, "lead"),
+])
+def test_a_failed_update_is_charged_to_the_right_party(m, monkeypatch,
+                                                       status, klass):
+    """A 404 here is the by-email lookup missing THIS contact, so it is the
+    row's own answer. As config it would never spend an attempt, retry every
+    day forever, and make /crm/health report the whole portal as refusing."""
+    _hubspot(m, monkeypatch, patch=status)
+    res = m.push_to_hubspot(_lead("paid_conversion"))
+    assert res["ok"] is False and res["status_code"] == status, res
+    assert m._push_failure_class(res) == klass, (status, res)
+
+
+def test_a_404_on_the_CREATE_is_still_config(m, monkeypatch):
+    """Control: the create POSTs to one fixed URL, so its 404 is the endpoint."""
+    _hubspot(m, monkeypatch, post=404)
+    res = m.push_to_hubspot(_lead("paid_conversion"))
+    assert "dup" not in res
+    assert m._push_failure_class(res) == m.PUSH_FAIL_CONFIG
+
+
+def test_a_missing_property_past_the_raw_cut_is_still_config(m, monkeypatch):
+    """HubSpot lists one error per bad property. `raw` keeps 500 chars, so the
+    update result must carry the codes from the FULL body, as the create does."""
+    body = {"message": "Property values were not valid",
+            "errors": [{"code": "INVALID_EMAIL", "message": "x" * 700},
+                       {"code": "PROPERTY_DOESNT_EXIST",
+                        "message": "dchub_attribution does not exist"}]}
+    _hubspot(m, monkeypatch, patch=400, patch_body=body)
+    res = m.push_to_hubspot(_lead("paid_conversion"))
+    assert "PROPERTY_DOESNT_EXIST" not in res["raw"], "fixture must pass the cut"
+    assert "PROPERTY_DOESNT_EXIST" in res["codes"]
+    assert m._push_failure_class(res) == m.PUSH_FAIL_CONFIG
