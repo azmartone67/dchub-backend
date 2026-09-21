@@ -282,6 +282,7 @@
     "test_shell_scheduler_coverage.py": {
       "glob": 670
     },
+    "test_source_map_finding_shapes.py": {"walk": 80},
     "test_sql_literal_percent.py": {
       "pglob": 2120,
       "prglob": 2120
