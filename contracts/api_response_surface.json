@@ -22438,7 +22438,7 @@
    ]
   },
   "GET /api/v1/sites/find": {
-   "source": "routes/find_sites.py:401",
+   "source": "routes/find_sites.py:408",
    "handler": "find_sites",
    "resolution": "opaque",
    "open_at": [],
