@@ -71,6 +71,11 @@ PROTECTION_CONFIG = {
         "identified": 40,         # 4x free taste
         "starter":   200,         # r34: $9/mo Starter
         "developer":  500,        # $49/mo
+        # The $10 call pack on REST (util/rest_pack_access.py). A pack is not a
+        # plan: pack keys resolve to 'free', whose 10/day and 5 per response
+        # would make "full-depth API calls" false. It runs as tier 'pack' with
+        # Developer's numbers, the cheapest plan sold as full result sets.
+        "pack":       500,
         "founding":  2000,        # Pro-equivalent
         "pro":       2000,
         "team":      2000,        # r-starter-sweep: team==pro equivalence
@@ -86,6 +91,7 @@ PROTECTION_CONFIG = {
         "identified": 15,
         "starter":    20,    # r34: $9/mo Starter
         "developer":  25,
+        "pack":       25,    # = developer; see daily_record_caps
         "founding":  100,
         "pro":       100,
         "team":      100,    # r-starter-sweep: team==pro equivalence

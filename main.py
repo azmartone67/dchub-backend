@@ -24944,7 +24944,10 @@ def list_facilities():
     """List facilities with pagination and filtering.
 
     Freemium: unauthenticated requests get max 5 results with basic fields.
-    Authenticated Pro/Enterprise requests get full data as before.
+    Developer and above get full data: /pricing sells Developer as full result
+    sets. A valid key below Developer gets the full list for one $10-pack
+    credit, or else exactly the keyless preview, never a bare 403
+    (util/rest_pack_access.py, frontend#1534).
     AI Wars verification keys also get Pro-tier access.
     """
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -24958,11 +24961,16 @@ def list_facilities():
 
     if is_authenticated:
         if _real_require_plan is not None:
-            @_real_require_plan('pro')
+            @_real_require_plan('developer')
             @protect_data
             def _authed_facilities():
                 return _list_facilities_full()
-            return _authed_facilities()
+            resp = _authed_facilities()
+            from util.rest_pack_access import is_plan_upgrade_refusal, serve_below_plan
+            if is_plan_upgrade_refusal(resp):
+                return serve_below_plan(api_key, protect_data(_list_facilities_full),
+                                        _list_facilities_free)
+            return resp
         else:
             return jsonify({'success': False, 'error': 'tier_gating_unavailable',
                             'message': 'Authentication system is starting up. Please try again in a moment.'}), 503
@@ -25419,11 +25427,13 @@ def _list_facilities_free():
     except Exception:
         pass
 
-    # P0-C (2026-09-21): the $10 pack as a measured /go/c checkout plus the
-    # ladder, not bare /pricing. See routes.checkout_click_tracker.rest_wall_ladder.
+    # P0-C (2026-09-21): a measured /go/c checkout plus the ladder, not bare
+    # /pricing. The pack leads because the pack opens this list over REST:
+    # list_facilities sends a valid key below Developer through
+    # util/rest_pack_access.serve_below_plan (frontend#1534).
     try:
         from routes.checkout_click_tracker import rest_wall_ladder as _rest_wall_ladder
-        _wall = _rest_wall_ladder(opens_on_rest='pro', mcp_tool='search_facilities')
+        _wall = _rest_wall_ladder(opens_on_rest='pack')
     except Exception:  # noqa: BLE001
         _wall = {'upgrade_url': 'https://dchub.cloud/pricing'}
     _free_payload = {

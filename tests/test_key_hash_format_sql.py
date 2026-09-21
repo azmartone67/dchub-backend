@@ -9,6 +9,11 @@ form, and seed a row already stored in it, then read and burn with the raw key
 the way GET /api/v1/mcp/credits/balance (get_credit_status) and
 POST /api/v1/mcp/credits/burn (consume_credits) do.
 
+Last, two burns of a pack's LAST credit are raced on a real row lock. Only a
+real Postgres re-checks an UPDATE's conditions on the row a blocked statement
+finally gets, so only here can a double spend show (REST started burning
+credits too, frontend#1534).
+
 The database tests skip without PACK_EXPIRY_SQL_DSN. The db-parity job in
 pre-merge.yml sets it and then FAILS if this file skipped. Owns and recreates
 only mcp_topups and mcp_trial_emails.
@@ -137,3 +142,103 @@ def test_a_row_already_held_in_the_full_digest_is_read_and_burned(db):
         "session_burn": {"ok": True, "remaining": 49, "burned": 1},
         "stranger": 0,
     }, seen
+
+
+# ── two burns of the last credit ────────────────────────────────────────────
+
+class _HeldCommit:
+    """A real connection whose `with conn:` commit waits for `release`.
+
+    Both burns run `with c, c.cursor() as cur:`: the UPDATE executes inside the
+    block, taking the row lock, and commits on exit. Holding that exit open is
+    exactly "burn #1 has run but not committed"."""
+
+    def __init__(self, executed, release):
+        import psycopg2
+        self._c = psycopg2.connect(DSN)
+        self._executed, self._release = executed, release
+
+    def __enter__(self):
+        self._c.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self._release.wait(20)
+        return self._c.__exit__(*exc)
+
+    def cursor(self):
+        return _SignallingCursor(self._c.cursor(), self._executed)
+
+    def close(self):
+        self._c.close()
+
+
+class _SignallingCursor:
+    def __init__(self, cur, executed):
+        self._cur, self._executed = cur, executed
+
+    def __enter__(self):
+        self._cur.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._cur.__exit__(*exc)
+
+    def execute(self, *a, **k):
+        self._cur.execute(*a, **k)
+        self._executed.set()
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+
+BURNS = {
+    "consume_credits": lambda: mcp.consume_credits(KEY, None, 1),
+    "consume_topup_credit": lambda: mcp.consume_topup_credit(KEY, 1),
+}
+
+
+def _burned(result):
+    return result is True or (isinstance(result, dict) and result.get("ok") is True)
+
+
+@pytest.mark.parametrize("burn", sorted(BURNS))
+def test_two_burns_of_the_last_credit_spend_it_once(db, monkeypatch, burn):
+    import threading
+    import time
+    import psycopg2
+
+    row = _seed(db, _digest(KEY)[:32], "pack10_keybound-race", credits=1)
+    executed, release = threading.Event(), threading.Event()
+    held = [_HeldCommit(executed, release)]
+    lock = threading.Lock()
+
+    def _conn():
+        with lock:
+            return held.pop() if held else psycopg2.connect(DSN)
+
+    monkeypatch.setattr(mcp, "_conn", _conn)
+    results = {}
+    first = threading.Thread(target=lambda: results.__setitem__("first", BURNS[burn]()))
+    first.start()
+    assert executed.wait(10), "burn #1 never ran its UPDATE"
+    second = threading.Thread(target=lambda: results.__setitem__("second", BURNS[burn]()))
+    second.start()
+    staged = False
+    deadline = time.time() + 10
+    while time.time() < deadline and not staged:
+        with db.cursor() as cur:
+            cur.execute("SELECT count(*) FROM pg_stat_activity "
+                        "WHERE wait_event_type = 'Lock' AND datname = current_database()")
+            staged = cur.fetchone()[0] >= 1
+        if not staged:
+            time.sleep(0.05)
+    release.set()
+    first.join(20)
+    second.join(20)
+    assert staged, "burn #2 never waited on burn #1's row lock, so the race was not staged"
+    with db.cursor() as cur:
+        cur.execute("SELECT credits_remaining FROM mcp_topups WHERE id = %s", (row,))
+        left = cur.fetchone()[0]
+    seen = (_burned(results.get("first")), _burned(results.get("second")), left)
+    assert seen == (True, False, 0), (results, left)

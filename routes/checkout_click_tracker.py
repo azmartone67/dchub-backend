@@ -340,6 +340,34 @@ def checkout_url(plan: str, ref: str = "", sid: str = "") -> str:
     return (_GO_BASE + tok) if tok else _PRICING_URL
 
 
+def _pack_led_ladder() -> dict:
+    """The $10 pack leads (its measured /go/c checkout is upgrade_url), then
+    Developer. Both open the REST list they are shown on."""
+    out = {"upgrade_url": checkout_url("metered")}
+    opts = []
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+        if PACK10_PRICE_CENTS and PACK10_CREDITS:
+            opts.append({"plan": "pack", "opens": "rest",
+                         "label": "$%d one-time = %s API calls; each full answer here uses one" % (
+                             int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")),
+                         "url": out["upgrade_url"]})
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import tier_registry as _tr
+        price = _tr.price_display("developer")
+        if price:
+            opts.append({"plan": "developer", "opens": "rest",
+                         "label": "%s %s opens this endpoint" % (_tr.label("developer"), price),
+                         "url": checkout_url("developer")})
+    except Exception:  # noqa: BLE001
+        pass
+    if opts:
+        out["upgrade_options"] = opts
+    return out
+
+
 def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
     """What a REST free-tier wall hands its caller: only what actually opens it.
 
@@ -355,12 +383,16 @@ def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
     is REFUSED by require_plan('pro'). A caller who bought what the wall offered
     got a worse answer than before paying. Offering a rung that cannot open the
     thing it is shown on is the false promise the MCP walls already refuse
-    (r62b-conv). When REST honors /pricing (Developer and pack credits opening
-    these lists), callers pass opens_on_rest="developer" and the ladder leads
-    with the pack again.
+    (r62b-conv).
+
+    opens_on_rest="pack" is for a REST list the pack itself opens: a key below
+    Developer gets the full answer for one pack credit (util/rest_pack_access.py).
+    There the $10 pack leads and Developer follows, both `opens: "rest"`.
 
     Caller-independent by construction, so it can ride a cached, shared payload.
     """
+    if opens_on_rest == "pack":
+        return _pack_led_ladder()
     out = {"upgrade_url": checkout_url(opens_on_rest)}
     opts = []
     try:
