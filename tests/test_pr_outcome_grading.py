@@ -157,3 +157,33 @@ def test_summary_counts_recurred_as_merged():
     """Otherwise a recurred PR silently drops out of L6's denominator."""
     seg = ast.get_source_segment(SRC, _fn("summary"))
     assert '"recurred"' in seg
+
+
+# ── The fetch must stay narrow (2026-09-21) ──────────────────────────────
+
+def _grade_select():
+    seg = ast.get_source_segment(SRC, _fn("grade_recurrences"))
+    m = re.search(r'"""(SELECT pr_number, outcome FROM brain_pr_outcomes.*?)"""',
+                  seg, re.S)
+    assert m, "grade_recurrences' SELECT not found"
+    return m.group(1)
+
+
+def test_grader_fetches_only_l5_drafts():
+    """★ The first version fetched every brain_authored row — 150 GitHub calls
+    per run. It took 17s (the edge 503'd at ~15s), nearly every fetch failed,
+    it graded nothing, and it spent the monitor's own GitHub budget. Only
+    brain_backlog_admin writes a `**Finding:**` line, and it titles every PR
+    `[brain-l5 draft]`, so nothing else can be graded or act as a re-target."""
+    assert "[brain-l5" in _grade_select(), (
+        "grade_recurrences no longer narrows to [brain-l5 draft] PRs — it will "
+        "go back to one GitHub call per brain_authored row")
+
+
+def test_the_like_pattern_is_psycopg2_safe():
+    """The query also takes a %s parameter, so a literal % must be %%.
+    Verified on Postgres 18.6 via psycopg2: a single % raises IndexError,
+    grade_recurrences catches it, returns ok:False — and grades nothing,
+    silently. That is the inert state this fix exists to end."""
+    sel = _grade_select()
+    assert "'[brain-l5%%'" in sel, "LIKE pattern is not %%-escaped"

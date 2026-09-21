@@ -633,8 +633,28 @@ def grade_recurrences(apply: bool = False, limit: int = _GRADE_MAX) -> dict:
         return {"ok": False, "state": "UNMEASURED", "error": "no database"}
     try:
         with c.cursor() as cur:
+            # ★ 2026-09-21 — FETCH ONLY THE PRs THAT CAN CARRY A FINDING.
+            #
+            # The first version selected every brain_authored row (150) and made
+            # one GitHub call per row. Called at the origin it answered HTTP 200
+            # after 17s — past the edge's ~15s, so the public endpoint 503'd —
+            # with `naming_a_finding: 0` and nearly every PR in `unfetched`,
+            # including the three real L5 PRs it exists to grade. It had graded
+            # nothing in production, and because it also runs inside
+            # monitor_recent_prs it spent the same GitHub budget the monitor
+            # needs to list new PRs.
+            #
+            # Only ONE producer writes a `**Finding:**` line —
+            # brain_backlog_admin.py, and every PR it opens is titled
+            # `[brain-l5 draft] …` (verified by grepping origin/main for the
+            # literal). A PR without that title cannot name a finding, so it
+            # can neither be graded nor act as the later re-target. Narrowing
+            # here loses nothing and cuts ~150 calls to ~15.
+            #
+            # `[` is literal in Postgres LIKE; the pattern has no `_` wildcard.
             cur.execute("""SELECT pr_number, outcome FROM brain_pr_outcomes
                             WHERE brain_authored = TRUE
+                              AND pr_title LIKE '[brain-l5%%'
                             ORDER BY pr_number DESC LIMIT %s""",
                         (max(1, min(int(limit), _GRADE_MAX)),))
             stored = {int(r[0]): r[1] for r in cur.fetchall() or []}
