@@ -82,6 +82,14 @@
 #   3. it re-verifies against a fresh fetch of main before pushing, and opens
 #      nothing if main moved under it.
 #
+# `verify-against` passing is NOT enough on its own. A refresh whose baseline
+# main ALREADY carries passes it (it IS main's surface) yet merges nothing:
+# #5114 opened ~30 s after #5113 landed the same regeneration, with a tree
+# identical to main's. Its empty diff can never pass `substance-gate`, and
+# while it stays open the one-refresh-at-a-time rule opens no other refresh, so
+# the lane stopped for ~7 h. So (2) also closes, and (3) also refuses to open,
+# a refresh whose baseline is byte-identical to live main's.
+#
 # api-response-contract.yml runs the same verification as part of the
 # required `contract` check on any PR that changes the baseline.
 #
@@ -178,6 +186,12 @@ jobs:
             elif ! git fetch -q origin "+refs/pull/$N/head:refs/remotes/pr/$N"; then
               echo "UNMEASURED — cannot fetch the head of #$N, so it cannot be verified" > "/tmp/verify-$N.txt"
               RC=2
+            elif git diff --quiet origin/main "refs/remotes/pr/$N" -- contracts/api_response_surface.json; then
+              # Main already carries these exact bytes (see the header: #5114).
+              # verify-against would pass it, and it would stay open forever.
+              # Only exit 0 means identical; a git error falls through to verify.
+              echo "ALREADY ON MAIN — #$N's baseline is byte-identical to main $(git rev-parse --short=9 origin/main)'s" > "/tmp/verify-$N.txt"
+              RC=3
             else
               python3 scripts/api_response_contract.py verify-against \
                 --main origin/main --candidate "refs/remotes/pr/$N" > "/tmp/verify-$N.txt" 2>&1
@@ -188,10 +202,17 @@ jobs:
               echo "#$N is still main's surface — leaving it open"
               continue
             fi
+            WHY="verify-against exit $RC"
+            [ "$RC" = "3" ] && WHY="main already carries this baseline"
             {
-              echo "Closed by \`refresh-api-response-baseline\` (\`verify-against\` exit $RC)."
+              echo "Closed by \`refresh-api-response-baseline\` ($WHY)."
               echo
-              if [ "$RC" = "1" ]; then
+              if [ "$RC" = "3" ]; then
+                echo "Main ($(git rev-parse --short=9 origin/main)) already has this exact baseline, because another"
+                echo "refresh landed it first. Merging this PR would change nothing. Its empty diff"
+                echo "can never pass \`substance-gate\`, and while it stays open no other refresh"
+                echo "PR can open."
+              elif [ "$RC" = "1" ]; then
                 echo "If this baseline landed on main now ($(git rev-parse --short=9 origin/main)) it"
                 echo "would not be main's surface: main moved under it after it was generated."
               else
@@ -208,9 +229,9 @@ jobs:
             gh pr merge "$N" --disable-auto >/dev/null 2>&1 || true
             gh pr comment "$N" --body-file "/tmp/close-$N.md" || true
             if gh pr close "$N" --delete-branch; then
-              echo "::warning::closed stale refresh #$N (verify-against exit $RC)"
+              echo "::warning::closed refresh #$N ($WHY)"
             else
-              echo "::error::#$N is STALE and could not be closed — it can still land"
+              echo "::error::#$N could not be closed ($WHY) — it can still land or hold the lane shut"
               FAILED=1
             fi
           done
@@ -338,6 +359,12 @@ jobs:
           # not be main's surface if it landed now; the push that moved main
           # has its own run queued, and that run regenerates from it.
           git fetch -q origin +refs/heads/main:refs/remotes/origin/main
+          # ...or main already HAS these bytes: an earlier refresh merged while
+          # this one was built (#5114). That would be a PR that merges nothing.
+          if git diff --quiet origin/main HEAD -- contracts/api_response_surface.json; then
+            echo "::notice::main $(git rev-parse --short=9 origin/main) already carries this exact baseline — not opening a PR that would merge nothing"
+            exit 0
+          fi
           set +e
           python3 scripts/api_response_contract.py verify-against \
             --main origin/main --candidate HEAD
