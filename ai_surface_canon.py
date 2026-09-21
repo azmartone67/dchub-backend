@@ -453,7 +453,16 @@ PINNED = {
         # Floors DOWN at step=1000 per _PUBLIC_FLOOR_SPECS: 95,000 <= 95,569.
         # _FALLBACK["transmission_lines"] walked to 95,569 in the same commit so
         # the seed still sits at or above the floor it seeds.
-        "transmission_lines": "95,000+",
+        # ★2026-09-21 WALKED DOWN 95,000+ -> 94,000+. The rows the 09-20 walk
+        # counted are gone again: /api/v1/infrastructure/stats (direct DB query,
+        # imports neither canonical_stats nor this module) now reads
+        # stats.transmission_lines = 94,635, back beside the 94,633 of 09-19.
+        # resolve_public_floors was reporting degraded
+        # transmission_lines=94000<95000, so every "95,000+ transmission lines"
+        # was an over-claim, and the degraded canon kept the frontend heal
+        # fail-closed. Floors DOWN at step=1000: 94,000 <= 94,635.
+        # _FALLBACK["transmission_lines"] walks to 94,635 in the same commit.
+        "transmission_lines": "94,000+",
         # ── DCPI scoring-universe span (r-dcpi-regions, 2026-09-03) ──
         # Cold-start floors ONLY; canonical_stats' derivation publishes.
         # ★ Verified against

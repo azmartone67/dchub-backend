@@ -129,7 +129,10 @@ _FALLBACK = {
     # EXCLUDES it as a stale geocoded snapshot of the SAME population, and
     # mistaking a superseded layer for the live one is how "52,000 transmission
     # lines" was typed against a live 94,633 (see _PUBLIC_FLOOR_SPECS).
-    "transmission_lines": 95569,
+    # ★2026-09-21 95,569 -> 94,635, walked DOWN with the "94,000+" pin: the live
+    # COUNT(*) is back beside its 09-19 value. The seed still sits at or above
+    # the floor it seeds (94,635 >= 94,000).
+    "transmission_lines": 94635,
     # ★2026-09-19 cold-start seed for {canon_assets}. Raw measured int, same
     # convention as the three above; _floor_phrase(step=10000) publishes it
     # ("330,961 -> 330,000+"), the SAME step mcp_facts_export._floor() applies
