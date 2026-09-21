@@ -146,3 +146,96 @@ def test_as_of_is_not_truncated():
     assert "[:19]" not in seg and "[:10]" not in seg, (
         "as_of is sliced — a truncated ISO stamp loses its zone and the "
         "consumer reads it as local time")
+
+
+# ── r-prose-leaks-the-gate (2026-09-21) ──────────────────────────────────────
+# The free-tier trim in dchub-mcp-server is key-pattern AND type based
+# (_isMetricKey + `typeof v === 'number'`). A STRING is invisible to it, and a
+# string that restates a figure therefore publishes what the gate withheld.
+# Measured live on anonymous get_market_intel(market="dallas") the day #5010
+# shipped: facility_count null, total_power_mw null, mw_reporting_count null,
+# and mw_coverage "54 of 248 report MW" beside them.
+#
+# The rule is not "delete mw_coverage" — that is one instance. It is: this
+# view publishes figures as NUMBERS under gateable names, and never inside
+# prose. Both assertions below exist because the second one alone would pass
+# on an exact reintroduction of the old helper call.
+
+def _code_only(src: str) -> str:
+    """`src` with comments removed.
+
+    ★ The assertion below bans a NAME, and the block comment explaining why
+    names it repeatedly. Reading the raw slice, the explanation of the defect
+    IS the defect — the guard fails on the commit that fixes it, and the only
+    way to make it pass is to delete the reasoning. Tokenize instead, so the
+    ban lands on code and the history stays written down.
+    """
+    import io as _io
+    import tokenize as _tok
+    try:
+        out, row, col = [], 1, 0
+        for t in _tok.generate_tokens(_io.StringIO(src).readline):
+            if t.type == _tok.COMMENT:
+                continue
+            srow, scol = t.start
+            if srow > row:
+                out.append("\n" * (srow - row))
+                col = 0
+            if scol > col:
+                out.append(" " * (scol - col))   # keep columns, or names fuse
+            out.append(t.string)
+            row, col = t.end
+        return "".join(out)
+    except Exception:                     # unparseable slice — fail LOUD
+        raise AssertionError(
+            "get_market_stats no longer tokenizes on its own; this guard "
+            "cannot tell code from comment and must not pass silently")
+
+
+CODE = _code_only(BODY)
+
+
+def test_code_only_view_is_real():
+    """Anti-vacuity: prove the strip removed comments and kept the code."""
+    # Code kept. (A length comparison does NOT work here: the rebuild emits a
+    # newline per NL token, so the stripped copy can be LONGER than the source
+    # it stripped. An exact marker is the honest check.)
+    assert "def get_market_stats" in CODE and "_stats_out" in CODE
+    # Comments dropped — proven against a marker that exists ONLY in a comment.
+    marker = "r-prose-leaks-the-gate"
+    assert marker in BODY, (
+        f"{marker!r} is gone from the source, so its absence from CODE proves "
+        f"nothing — this anti-vacuity check needs a live comment to track")
+    assert marker not in CODE, "comments survived the strip"
+
+
+def test_no_prose_field_restates_a_figure():
+    """No mw_coverage_note() (or any renamed import of it) in this view."""
+    assert "mw_coverage_note" not in CODE and "_fc_mw_note" not in CODE, (
+        "a formatted coverage string in this response walks through the "
+        "consumer's tier gate carrying the numbers the gate just withheld")
+    assert "'mw_coverage'" not in CODE, "mw_coverage is published again"
+
+
+def test_basis_notes_carry_no_figures():
+    """The general form: prose written at this call site states no number.
+
+    A note reading "…/markets/<slug> reads 386 on the same market" would be
+    exactly the same leak with different words, and the assertion above would
+    not see it.
+    """
+    for note in _re_notes():
+        assert not re.search(r"\d", note), (
+            f"a basis note states a figure, which no tier gate can mask: {note!r}")
+
+
+def test_the_gateable_number_is_still_published():
+    """Anti-hollowing: removing the leak must not remove the denominator.
+
+    The whole point of #5010 was that SUM(power_mw) travelled with the count
+    of rows that reported anything. `mw_reporting_count` matches the consumer
+    trim's `_count$` pattern, so it is masked in lockstep with the total it
+    qualifies instead of slipping past it.
+    """
+    assert "'mw_reporting_count'" in BODY
+    assert "COUNT(*) FILTER (WHERE power_mw > 0) as mw_reporting_count" in BODY
