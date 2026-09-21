@@ -986,6 +986,21 @@ def discovery_facilities():
         cols = [d[0] for d in c.description]
         facilities = [dict(zip(cols, row)) for row in c.fetchall()]
 
+        # ★ The plan decorator is NOT the gate for these rows. require_plan
+        # lets a GET through on a dchub.cloud Origin/Referer (the map bypass
+        # list) or on the browser attestation cookie, and the Cloudflare worker
+        # sets that Referer on every proxied request — so an uncredentialed
+        # caller reaches this line. The rows are gated by the caller's own
+        # tier instead: exact coordinates, power_mw and source only for a paid
+        # key (util/facility_tier_gate.py, one ladder for every surface).
+        from util.facility_tier_gate import gate_records
+        try:
+            from api_tier_gating import get_request_tier
+            caller_tier = get_request_tier()
+        except ImportError:
+            caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+        facilities, _ = gate_records(facilities, caller_tier)
+
         c.execute(f"SELECT COUNT(*) FROM discovered_facilities {where}", params)
         total = c.fetchone()[0]
 

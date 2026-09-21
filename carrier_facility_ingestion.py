@@ -794,6 +794,22 @@ def register_carrier_routes(app, get_db):
                         fac['dchub_url'] = f"/facilities/{slugs[row[7]]}"
                 facilities.append(fac)
 
+            # ★ Exact location is paid-only (util/facility_tier_gate.py). Carrier
+            # ids are small sequential integers, so this route walks the whole
+            # presence table at survey-grade precision. Coordinates are the only
+            # withheld value in these rows (name/city/pdb_id and the profile link
+            # are the index), so the shared ladder rounds them in place and the
+            # row keys stay as they are. This response is also shared-cached at
+            # the edge by URL: the body an anonymous request primes is the one
+            # everybody receives, which is why it must be the gated body.
+            from util.facility_tier_gate import coarsen_coords_deep
+            try:
+                from api_tier_gating import get_request_tier
+                caller_tier = get_request_tier()
+            except ImportError:
+                caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+            coarsen_coords_deep(facilities, caller_tier)
+
             # Get carrier name
             c.execute("SELECT name FROM carrier_profiles WHERE pdb_id = %s", (carrier_key,))
             name_row = c.fetchone()

@@ -149,6 +149,16 @@ def facility_infrastructure(facility_id):
         radius_km = 50.0
     radius_km = max(1.0, min(radius_km, 200.0))
 
+    # Exact location is paid-only (util/facility_tier_gate.py). Resolved before
+    # the connection is taken, so a missing gate module fails the request
+    # without leaking one.
+    from util.facility_tier_gate import gate_record
+    try:
+        from api_tier_gating import get_request_tier
+        caller_tier = get_request_tier()
+    except ImportError:
+        caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+
     conn = _get_pg_conn()
     try:
         # Resolve facility coords by id (text) or slug
@@ -164,12 +174,34 @@ def facility_infrastructure(facility_id):
                 'error': 'facility-not-found-or-missing-coordinates',
                 'facility_id': facility_id,
             }), 404
-        lat, lon = float(row[0]), float(row[1])
+        # ★ The facility is gated BEFORE its point is used, and every query
+        # below measures from the GATED point. Rounding only the lat/lon in the
+        # reply is not enough here: the substation, gas and fiber rows carry
+        # exact public coordinates plus a full-precision distance_km to the
+        # origin, and three of those distances trilaterate the origin. A paid
+        # record passes through untouched, so its origin stays exact.
+        rec, _ = gate_record({
+            'latitude':  float(row[0]),
+            'longitude': float(row[1]),
+            'name':      row[2],
+            'provider':  row[3],
+            'power_mw':  float(row[4]) if row[4] is not None else None,
+        }, caller_tier)
+        lat, lon = rec.get('latitude'), rec.get('longitude')
+        if lat is None or lon is None:
+            # The gate failed closed to its minimal field set, which carries no
+            # coordinates, so there is no point it may measure from.
+            return jsonify({
+                'error': 'facility-coordinates-withheld',
+                'facility_id': facility_id,
+            }), 503
         facility_meta = {
-            'name':     row[2],
-            'provider': row[3],
-            'power_mw': float(row[4]) if row[4] is not None else None,
+            'name':     rec.get('name'),
+            'provider': rec.get('provider'),
+            'power_mw': rec.get('power_mw'),
         }
+        if rec.get('coordinates_status'):
+            facility_meta['coordinates_status'] = rec['coordinates_status']
 
         s_lat, n_lat, w_lon, e_lon = _bbox_for_radius(lat, lon, radius_km)
         s_lat25, n_lat25, w_lon25, e_lon25 = _bbox_for_radius(lat, lon, min(radius_km, 25))
@@ -303,19 +335,46 @@ def land_power_snapshot():
     if not requested:
         return jsonify({'error': f'layers must include at least one of {sorted(ALL_LAYERS)}'}), 400
 
+    if 'facilities' in requested:
+        # Exact location is paid-only (util/facility_tier_gate.py). Resolved
+        # before the connection is taken, so a missing gate module fails the
+        # request without leaking one.
+        from util.facility_tier_gate import gate_record
+        try:
+            from api_tier_gating import get_request_tier
+            caller_tier = get_request_tier()
+        except ImportError:
+            caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+
     conn = _get_pg_conn()
     try:
         result = {}
         meta = {}
 
         if 'facilities' in requested:
-            result['facilities'] = _q(conn, """
+            rows = _q(conn, """
                 SELECT id, name, provider, power_mw AS capacity_mw, status,
                        latitude AS lat, longitude AS lon, slug
                 FROM facilities
                 WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
                 LIMIT 500
             """, south, north, west, east, label='facilities')
+            # ★ 500 facilities per bbox and the bbox is free, so tiling it is a
+            # bulk export. Each row is gated under the shared names
+            # (latitude/longitude/power_mw) and handed back under this layer's
+            # own keys, in the same order: a withheld value is null, lat/lon
+            # carry the caller's precision, and a paid row is untouched. The
+            # other layers are open infrastructure and are not facilities.
+            _shared = {'lat': 'latitude', 'lon': 'longitude', 'capacity_mw': 'power_mw'}
+            gated_rows = []
+            for f in rows:
+                rec, _ = gate_record({_shared.get(k, k): v for k, v in f.items()},
+                                     caller_tier)
+                out = {k: rec.get(_shared.get(k, k)) for k in f}
+                if rec.get('coordinates_status'):
+                    out['coordinates_status'] = rec['coordinates_status']
+                gated_rows.append(out)
+            result['facilities'] = gated_rows
 
         if 'substations' in requested:
             result['substations'] = _q(conn, """

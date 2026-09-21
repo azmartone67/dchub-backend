@@ -449,3 +449,63 @@ def test_dchub_url_is_the_served_slug_never_the_legacy_form(api):
     assert freeze is not None and (
         pathlib.Path(freeze.__file__).resolve() == FREEZE.resolve()), (
         "the slugs came from something other than routes/facility_slug_freeze.py")
+
+
+# ── the tier ladder ─────────────────────────────────────────────────────────
+# Exact location is paid-only (util/facility_tier_gate.py). Carrier ids are
+# small sequential integers, so this route walks the whole presence table; and
+# the response is shared-cached at the edge by URL, so the body an anonymous
+# request primes is the body every later caller receives. The coordinates are
+# the only withheld value in these rows: the profile links are the index.
+PRESENCE_LAT = TABLES["carrier_facility_presence"][0]["facility_lat"]
+PRESENCE_LNG = TABLES["carrier_facility_presence"][0]["facility_lng"]
+
+
+def _coord_dp(value):
+    text = repr(float(value))
+    return len(text.split(".")[1].rstrip("0")) if "." in text else 0
+
+
+@pytest.fixture
+def ladder_defaults(monkeypatch):
+    """The ladder's own defaults. MAP_ANON_COORD_DP=6 is the kill switch; a
+    shell that set it must not turn these tests green."""
+    monkeypatch.delenv("MAP_ANON_COORD_DP", raising=False)
+    monkeypatch.delenv("MAP_FREE_COORD_DP", raising=False)
+
+
+def test_the_presence_fixture_is_finer_than_every_unpaid_rung(ladder_defaults):
+    """Control: coarse fixtures would let the tests below pass ungated."""
+    from util.facility_tier_gate import coord_dp_for_tier
+    rows = TABLES["carrier_facility_presence"]
+    assert {(r["facility_lat"], r["facility_lng"]) for r in rows} == {
+        (PRESENCE_LAT, PRESENCE_LNG)}
+    for tier in ("anon", "free"):
+        assert min(_coord_dp(PRESENCE_LAT), _coord_dp(PRESENCE_LNG)) > coord_dp_for_tier(tier)
+
+
+@pytest.mark.parametrize("tier", ["anon", "free"])
+def test_unpaid_callers_get_their_rung_and_keep_the_links(api, monkeypatch,
+                                                           ladder_defaults, tier):
+    import api_tier_gating
+    from util.facility_tier_gate import coord_dp_for_tier
+    if tier != "anon":
+        # anon is resolved for REAL: the test client sends no credential.
+        monkeypatch.setattr(api_tier_gating, "get_request_tier", lambda: tier)
+    _resp, body, _db, _world = _get(api)
+    rung = coord_dp_for_tier(tier)
+    assert rung is not None and (tier != "anon" or rung <= 2)
+    assert body["facilities"], "no rows came back, so nothing below is measured"
+    for f in body["facilities"]:
+        assert (f["lat"], f["lng"]) == (round(PRESENCE_LAT, rung),
+                                        round(PRESENCE_LNG, rung)), f
+    urls = {f["pdb_id"]: f["dchub_url"] for f in body["facilities"] if "dchub_url" in f}
+    assert urls == EXPECTED_URLS, "gating the coordinates must not cost the profile links"
+
+
+def test_a_paid_key_gets_the_presence_rows_exact(api, monkeypatch, ladder_defaults):
+    import api_tier_gating
+    monkeypatch.setattr(api_tier_gating, "get_request_tier", lambda: "developer")
+    _resp, body, _db, _world = _get(api)
+    assert {(f["lat"], f["lng"]) for f in body["facilities"]} == {
+        (PRESENCE_LAT, PRESENCE_LNG)}

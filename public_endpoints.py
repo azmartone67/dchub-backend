@@ -288,14 +288,35 @@ def public_map_data():
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
             LIMIT 5000
         """)
+        # ★ Exact location is paid-only (util/facility_tier_gate.py). This is
+        # 5,000 markers in one keyless request, so each row is gated by the
+        # caller's tier in the shared vocabulary (latitude/longitude/power_mw)
+        # and the marker is rebuilt from what survives: same keys, a withheld
+        # value is null, lat/lng carry the tier's precision, and a paid row
+        # passes through untouched. A missing gate raises into the 500 below.
+        from util.facility_tier_gate import gate_record
+        try:
+            from api_tier_gating import get_request_tier
+            caller_tier = get_request_tier()
+        except ImportError:
+            caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
         facilities = []
         for row in cursor.fetchall():
-            facilities.append({
+            rec, _ = gate_record({
                 'id': row[0], 'name': row[1], 'provider': row[2],
                 'city': row[3], 'state': row[4], 'country': row[5],
-                'region': row[6], 'lat': row[7], 'lng': row[8],
+                'region': row[6], 'latitude': row[7], 'longitude': row[8],
                 'power_mw': row[9], 'status': row[10], 'tier': row[11]
-            })
+            }, caller_tier)
+            marker = {
+                'id': rec.get('id'), 'name': rec.get('name'), 'provider': rec.get('provider'),
+                'city': rec.get('city'), 'state': rec.get('state'), 'country': rec.get('country'),
+                'region': rec.get('region'), 'lat': rec.get('latitude'), 'lng': rec.get('longitude'),
+                'power_mw': rec.get('power_mw'), 'status': rec.get('status'), 'tier': rec.get('tier')
+            }
+            if rec.get('coordinates_status'):
+                marker['coordinates_status'] = rec['coordinates_status']
+            facilities.append(marker)
         return jsonify({'success': True, 'count': len(facilities), 'facilities': facilities})
     except Exception as e:
         logger.error(f"/api/v1/map/public error: {e}")

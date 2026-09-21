@@ -61,6 +61,15 @@ def _window_days(since: str) -> int:
 def facility_risk_delta():
     fid = (request.args.get("facility_id") or request.args.get("id") or "").strip()
     days = _window_days(request.args.get("since"))
+    # Exact location is paid-only (util/facility_tier_gate.py): the facility
+    # block below is gated by the caller's tier. Resolved before a connection
+    # is taken, so a missing gate module fails the request without leaking one.
+    from util.facility_tier_gate import gate_record
+    try:
+        from api_tier_gating import get_request_tier
+        caller_tier = get_request_tier()
+    except ImportError:
+        caller_tier = "anon"    # cannot tell who is asking -> anonymous rung
     conn = _conn()
     if conn is None:
         return jsonify({"success": False, "error": "db_unavailable"}), 503
@@ -136,13 +145,26 @@ def facility_risk_delta():
                if dcpi["coverage"] == "validated" else
                f"No short-term risk change tracked for this market over {days}d")
 
+    # The facility block is gated as a record in the shared vocabulary and
+    # rebuilt from what survives: same keys, a withheld value is null, lat/lon
+    # at the caller's precision, and a paid record passes through untouched.
+    # Ids are sequential, so an ungated block here is the registry one row at
+    # a time at full precision.
+    facility_block = {"market": market_key}
+    if facility:
+        rec, _ = gate_record({k: facility.get(k) for k in (
+            "id", "name", "provider", "city", "state", "market",
+            "latitude", "longitude")}, caller_tier)
+        facility_block = {"id": rec.get("id"), "name": rec.get("name"),
+                          "provider": rec.get("provider"), "city": rec.get("city"),
+                          "state": rec.get("state"), "market": rec.get("market"),
+                          "lat": rec.get("latitude"), "lon": rec.get("longitude")}
+        if rec.get("coordinates_status"):
+            facility_block["coordinates_status"] = rec["coordinates_status"]
+
     return jsonify({
         "success": True, "_entity": "risk_delta",
-        "facility": ({"id": facility.get("id"), "name": facility.get("name"),
-                      "provider": facility.get("provider"), "city": facility.get("city"),
-                      "state": facility.get("state"), "market": facility.get("market"),
-                      "lat": facility.get("latitude"), "lon": facility.get("longitude")}
-                     if facility else {"market": market_key}),
+        "facility": facility_block,
         "window_days": days,
         "dcpi_market_health": dcpi,
         "static_dimensions": static,

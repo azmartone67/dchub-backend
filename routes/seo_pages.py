@@ -158,6 +158,21 @@ def _round(x, digits=2):
         return None
 
 
+def _anon_coords(lat, lon):
+    """(lat, lon) at the ANONYMOUS rung of util.facility_tier_gate's ladder.
+
+    Every page in this module is the same bytes for every visitor and is
+    shared-cached at the edge by URL, so each one is an anonymous surface
+    whoever is looking. Exact location is paid-only; these pages therefore
+    take coordinates from the shared ladder's 'anon' rung — never a local
+    round() — so they move with MAP_ANON_COORD_DP like every other surface.
+    """
+    from util.facility_tier_gate import coarsen_coords_deep
+    point = {'latitude': lat, 'longitude': lon}
+    coarsen_coords_deep(point, 'anon')
+    return point['latitude'], point['longitude']
+
+
 # ── validated market links (2026-07-28) ─────────────────────────────────
 # ROOT CAUSE of the /markets/* coverage churn. Facility pages emitted
 #   href="/markets/{_slug(city + '-' + state)}"
@@ -587,8 +602,8 @@ def _render_facility(f: dict, nearby: list, served=None) -> str:
     sqft      = f.get('sqft') or 0          # may be absent in discovered_facilities
     tier      = f.get('tier') or 0          # may be absent
     status    = f.get('status') or 'unknown'
-    lat       = _round(f.get('latitude'), 5)
-    lon       = _round(f.get('longitude'), 5)
+    lat, lon  = _anon_coords(_round(f.get('latitude'), 5),
+                             _round(f.get('longitude'), 5))
     fac_id    = f['id']
 
     # SEO-optimized title + description
@@ -664,9 +679,13 @@ def _render_facility(f: dict, nearby: list, served=None) -> str:
   </ul>
   <p>{_market_link(city, state, f"All {_h(city)} data centers &rarr;")}</p>"""
 
+    # An AREA view, never a marker: a pin (mlat/mlon) asserts a position, and
+    # at the anonymous rung the coordinates are only approximate.
     map_link = ""
+    coords_cell = f"{lat or '?'}, {lon or '?'}"
     if lat and lon:
-        map_link = f'<a href="https://www.openstreetmap.org/?mlat={lat}&mlon={lon}&zoom=15" target="_blank" rel="noopener">View on map ↗</a>'
+        map_link = f'<a href="https://www.openstreetmap.org/#map=13/{lat}/{lon}" target="_blank" rel="noopener">View area on map ↗</a>'
+        coords_cell = f"{lat}, {lon} (approximate)"
 
     # Breadcrumb now links UP to the /facilities hub (un-orphans this page for
     # crawl: facility → /facilities/in/<country> → /facilities).
@@ -707,7 +726,7 @@ def _render_facility(f: dict, nearby: list, served=None) -> str:
     <tr><th>Floor space</th><td>{_h(f'{int(sqft):,} sq ft' if sqft else 'Not disclosed')}</td></tr>
     <tr><th>Tier</th><td>{_h('Tier ' + str(int(tier)) if tier and int(tier) > 0 else 'Not disclosed')}</td></tr>
     <tr><th>Status</th><td>{_h(status.title())}</td></tr>
-    <tr><th>Coordinates</th><td>{lat or '?'}, {lon or '?'}</td></tr>
+    <tr><th>Coordinates</th><td>{coords_cell}</td></tr>
   </table>
 </section>
 
@@ -1234,6 +1253,7 @@ def _aws_landing_html(meta: dict, code: str) -> str:
     # SEO content body unchanged.
     canonical = f"https://dchub.cloud/facility/aws-{code}"
     location = ", ".join([s for s in (meta["city"], meta["state"], meta["country"]) if s])
+    lat, lon = _anon_coords(meta['lat'], meta['lon'])
 
     schema = f"""{{
   "@context": "https://schema.org",
@@ -1248,7 +1268,7 @@ def _aws_landing_html(meta: dict, code: str) -> str:
     "addressRegion": "{_esc_attr(meta['state'])}",
     "addressCountry": "{_esc_attr(meta['country'])}"
   }},
-  "geo": {{"@type": "GeoCoordinates", "latitude": "{meta['lat']}", "longitude": "{meta['lon']}"}},
+  "geo": {{"@type": "GeoCoordinates", "latitude": "{lat}", "longitude": "{lon}"}},
   "additionalType": "https://schema.org/DataCenter"
 }}"""
 
@@ -1274,7 +1294,7 @@ def _aws_landing_html(meta: dict, code: str) -> str:
     <tr><th>AWS region</th><td>{_h(meta['aws_region'])}</td></tr>
     <tr><th>Operator</th><td>{_h(meta['operator'])}</td></tr>
     <tr><th>Location</th><td>{_h(location)}</td></tr>
-    <tr><th>Coordinates</th><td>{meta['lat']}, {meta['lon']}</td></tr>
+    <tr><th>Coordinates</th><td>{lat}, {lon} (approximate)</td></tr>
     <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}">View full facility profile →</a></td></tr>
   </table>
 </section>
@@ -1352,13 +1372,19 @@ def aws_region_landing_legacy_redirect(code: str):
 
 # Address landing — /address/<slug>
 def _address_landing_html(meta: dict, slug: str) -> str:
+    # ★ An anonymous surface (see _anon_coords): the street address is
+    # paid-only, so nothing in the body interpolates meta['address'] — not
+    # the meta description, the JSON-LD PostalAddress, the breadcrumb, the
+    # lede, the headings or the fact table — and the coordinates come from the
+    # shared ladder's anonymous rung. The URL and <title> are left as they are.
     q = meta["query"]
     title = f"{q} | DC Hub"
     desc = (
-        f"{meta['address']}. {meta['summary']} View facility specs, "
+        f"{meta['summary']} View facility specs, "
         f"operator, power capacity, and Silicon Valley market context on "
         f"DC Hub."
     )
+    lat, lon = _anon_coords(meta['lat'], meta['lon'])
     # round-35: moved off /address/<slug> (CF edge-blocked 403 "DNS points to
     # prohibited IP") onto the un-blocked /facility/<slug> prefix. SEO content
     # body (h1, meta description, first paragraph with verbatim address query)
@@ -1373,31 +1399,29 @@ def _address_landing_html(meta: dict, slug: str) -> str:
   "url": "{canonical}",
   "address": {{
     "@type": "PostalAddress",
-    "streetAddress": "{_esc_attr(meta['address'])}",
     "addressLocality": "{_esc_attr(meta['city'])}",
     "addressRegion": "{_esc_attr(meta['state'])}",
     "addressCountry": "{_esc_attr(meta['country'])}"
   }},
-  "geo": {{"@type": "GeoCoordinates", "latitude": "{meta['lat']}", "longitude": "{meta['lon']}"}},
+  "geo": {{"@type": "GeoCoordinates", "latitude": "{lat}", "longitude": "{lon}"}},
   "additionalType": "https://schema.org/DataCenter"
 }}"""
 
     body = f"""<header class="dc-seo">
   <nav class="breadcrumb">
-    <a href="/">DC Hub</a> · <a href="/markets/{_esc_attr(meta['market_slug'])}">{_h(meta['city'])}, {_h(meta['state'])}</a> · {_h(meta['address'])}
+    <a href="/">DC Hub</a> · <a href="/markets/{_esc_attr(meta['market_slug'])}">{_h(meta['city'])}, {_h(meta['state'])}</a> · Data center
   </nav>
   <h1>{_h(meta['h1'])}</h1>
-  <p class="lede">Data center at <strong>{_h(meta['address'])}</strong>, operated by {_h(meta['operator'])}.</p>
+  <p class="lede">Data center in <strong>{_h(meta['city'])}, {_h(meta['state'])}</strong>, operated by {_h(meta['operator'])}.</p>
 </header>
 
 <section id="summary">
-  <h2>About {_h(meta['address'])}</h2>
+  <h2>About this data center</h2>
   <p>{_h(meta['summary'])}</p>
   <table>
-    <tr><th>Street address</th><td>{_h(meta['address'])}</td></tr>
     <tr><th>Operator</th><td>{_h(meta['operator'])}</td></tr>
     <tr><th>City</th><td>{_h(meta['city'])}, {_h(meta['state'])}</td></tr>
-    <tr><th>Coordinates</th><td>{meta['lat']}, {meta['lon']}</td></tr>
+    <tr><th>Coordinates</th><td>{lat}, {lon} (approximate)</td></tr>
     <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}">View full facility profile →</a></td></tr>
   </table>
 </section>
@@ -1414,7 +1438,7 @@ def _address_landing_html(meta: dict, slug: str) -> str:
 </section>
 
 <section id="cta">
-  <h2>Get the full {_h(meta['address'])} profile</h2>
+  <h2>Get the full facility profile</h2>
   <p>Full profile includes power capacity, fiber on-net carriers, water risk, M&amp;A history, and live CAISO grid intelligence.</p>
   <a href="/facilities/{_esc_attr(meta['facility_slug'])}" class="cta">View full facility profile</a>
   <a href="/signup?from=address-{_esc_attr(slug)}" class="cta secondary">Free MCP API access</a>

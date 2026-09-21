@@ -52,6 +52,9 @@
     "test_brain_model_routing.py": {
       "walk": 80
     },
+    "test_bulk_feeds_gated.py": {
+      "pglob": 2340
+    },
     "test_canon_resolved_per_request.py": {
       "pglob": 1910
     },

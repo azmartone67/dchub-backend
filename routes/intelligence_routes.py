@@ -401,6 +401,17 @@ def operator_portfolio(provider_name):
                 fac['sqft'] = float(fac['sqft']) if fac['sqft'] else None
                 fac['confidence_score'] = float(fac['confidence_score']) if fac['confidence_score'] else 0
                 facilities.append(fac)
+            # ★ Exact location and per-facility power are paid-only
+            # (util/facility_tier_gate.py). The provider match is ILIKE
+            # '%<name>%', so one short name returns 500 rows: the list is
+            # gated by the caller's tier. The aggregates above stay public.
+            from util.facility_tier_gate import gate_records
+            try:
+                from api_tier_gating import get_request_tier
+                caller_tier = get_request_tier()
+            except ImportError:
+                caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+            facilities, _ = gate_records(facilities, caller_tier)
             result['facilities'] = facilities
 
         cur.close()

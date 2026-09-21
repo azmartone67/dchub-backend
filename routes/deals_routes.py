@@ -2033,6 +2033,19 @@ def get_announcements():
             del item['raw_data']
             announcements.append(item)
 
+        # ★ Exact location and power_mw are paid-only
+        # (util/facility_tier_gate.py): up to 1,000 pipeline sites go out per
+        # keyless request, so every row is gated by the caller's tier. The
+        # raw_data-derived notes/land_acres/buildings are withheld with the
+        # rest of the paid columns.
+        from util.facility_tier_gate import gate_records
+        try:
+            from api_tier_gating import get_request_tier
+            caller_tier = get_request_tier()
+        except ImportError:
+            caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
+        announcements, _ = gate_records(announcements, caller_tier)
+
         return jsonify({
             'success': True,
             'data': announcements,
