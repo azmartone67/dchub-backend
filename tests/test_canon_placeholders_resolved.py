@@ -62,6 +62,7 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 # something stronger: tests/test_agent_landing_derives_canon.py RENDERS the body
 # and asserts no placeholder survives, in both the warm and cold branches.
 _SWEPT = [
+    "agent_door_policy.py",
     "agent_hub.py",
     # ★2026-09-04 (b): added when the retired deal floor was drained from this
     # file. Its ground-truth block for the editor LLM is an f-string, so the

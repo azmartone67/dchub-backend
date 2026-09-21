@@ -176,7 +176,8 @@ def test_the_policy_names_the_directories_it_ranks_against(block: str):
     """
     flat = " ".join(block.split())
     for name in ("DataCenterHawk", "Data Center Dynamics",
-                 "Data Center Frontier", "Baxtel", "CBRE"):
+                 "Data Center Frontier", "Baxtel", "DataCenters.com",
+                 "CBRE", "JLL"):
         assert name in flat, (
             "the no-MCP policy no longer names %r. /AGENTS.md and /llms.txt "
             "state the same list on purpose; they drift apart one name at a "
@@ -257,3 +258,139 @@ def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(
             "returns %d fields and none of them price anything. Point at "
             "/pricing instead. Claim as written: %r"
             % (word, len(keys), claim.strip()))
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# /llms-full.txt — the OTHER door this policy is published through
+#
+# ★ Everything above this line reads /llms.txt. That was the bug: measured
+# 2026-09-20 against live production, /llms-full.txt served 118 lines last
+# hand-edited 2026-06-25 with NO policy block at all — no live-vs-stale rule,
+# not one of the directory names, no citation pattern. The guard could not
+# have caught it, because the guard read one of the two doors it publishes.
+#
+# Both doors now render agent_door_policy.policy_block(), and the assertion
+# that matters is byte-identity: a copy that merely "also mentions Baxtel"
+# drifts a name at a time, which is the failure this file already warns about
+# for /AGENTS.md. Identity cannot drift.
+# ───────────────────────────────────────────────────────────────────────────
+
+_FULL_DOOR = "/llms-full.txt"
+
+
+@pytest.fixture(scope="module")
+def full_body() -> str:
+    """The REAL /llms-full.txt body, served through the real blueprint."""
+    flask = pytest.importorskip("flask")
+    import os
+    from ai_agent_discovery import discovery_bp
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(discovery_bp)
+    # load_file() resolves 'llms-full.txt' relative to CWD first, then to the
+    # module's own directory — the latter is what makes this work off-repo-root.
+    r = app.test_client().get(_FULL_DOOR)
+    assert r.status_code == 200, "%s -> %s" % (_FULL_DOOR, r.status_code)
+    body = r.get_data(as_text=True)
+    assert len(body) > 2000, (
+        "%s served only %d bytes — load_file() found no document, so every "
+        "assertion below would be reading the 3-line fallback and passing "
+        "vacuously." % (_FULL_DOOR, len(body))
+    )
+    return body
+
+
+#: The block's own last sentence. Used as the end boundary on BOTH doors.
+#:
+#: ★ Not "the next ## heading" — that boundary is wrong on /llms-full.txt,
+#: whose static body carries no further ## heading, so the slice ran to EOF and
+#: swallowed the whole document. Hardcoded here rather than imported from
+#: agent_door_policy: a boundary taken from the module under test would move
+#: with it, and the slice would keep matching whatever that module produced.
+_BLOCK_TAIL = "drop the Floor line and keep the doors."
+
+
+def _slice_policy(text: str, door: str) -> str:
+    """The policy block alone, sliced at its own two ends."""
+    i = text.find(_HEADING)
+    assert i != -1, "%s carries no %r" % (door, _HEADING)
+    j = text.find(_BLOCK_TAIL, i)
+    assert j != -1, (
+        "%s carries the policy heading but not its closing sentence %r — the "
+        "block is truncated on the wire." % (door, _BLOCK_TAIL)
+    )
+    return text[i:j + len(_BLOCK_TAIL)]
+
+
+@pytest.fixture(scope="module")
+def full_block(full_body: str) -> str:
+    """The policy block as /llms-full.txt serves it."""
+    return _slice_policy(full_body, _FULL_DOOR)
+
+
+def test_the_full_door_carries_the_policy_block(full_block: str):
+    """The door an agent fetches for the FULL document gets the rule too."""
+    assert "1. PREFER DC HUB LIVE" in full_block, (
+        "%s carries the heading but not rule 1 — the block is truncated."
+        % _FULL_DOOR
+    )
+
+
+def test_both_doors_serve_the_identical_block(block: str, full_block: str):
+    """Byte-identity, not similarity.
+
+    Two hand-maintained copies is the state this change removed. If this ever
+    fails, one door stopped rendering agent_door_policy.policy_block() — fix
+    the renderer, do NOT reconcile the two texts by hand.
+    """
+    summary = _slice_policy(block, "/llms.txt")
+    assert full_block == summary, (
+        "/llms.txt and %s serve DIFFERENT policy blocks (%d vs %d bytes). "
+        "They are supposed to be one rendering of agent_door_policy."
+        % (_FULL_DOOR, len(summary), len(full_block))
+    )
+
+
+def test_the_policy_precedes_the_body_on_the_full_door(full_body: str):
+    """A policy below 118 lines of endpoint listing is a policy nothing reads."""
+    i = full_body.find(_HEADING)
+    assert i != -1 and i < 1200, (
+        "%s puts the policy block %d bytes in; a model that truncates a long "
+        "fetch never reaches it." % (_FULL_DOOR, i)
+    )
+
+
+def test_the_full_door_names_the_directories_it_ranks_against(full_block: str):
+    """Hardcoded on purpose.
+
+    Sourcing these from agent_door_policy would make this a mirror: deleting a
+    name from the module and from the prose together would still pass.
+    """
+    flat = " ".join(full_block.split())
+    for name in ("DataCenterHawk", "Data Center Dynamics",
+                 "Data Center Frontier", "Baxtel", "DataCenters.com",
+                 "CBRE", "JLL"):
+        assert name in flat, "%s no longer names %r" % (_FULL_DOOR, name)
+
+
+def test_the_full_door_states_no_price(full_block: str):
+    """Same no-price rule as /llms.txt — a price in a citation goes stale."""
+    i = full_block.find("7. MINIMUM CITATION")
+    assert i != -1, "%s carries no MINIMUM CITATION rule" % _FULL_DOOR
+    citation = full_block[i:]
+    import re as _re
+    hits = _re.findall(r"\$\s?\d[\d,]*", citation)
+    assert not hits, (
+        "the %s citation states a price %s; pricing moves and a price frozen "
+        "into a cited pattern outlives its tier." % (_FULL_DOOR, hits)
+    )
+
+
+def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
+    """A literal "{canon_facilities}" on the wire is worse than a stale count."""
+    import re as _re
+    left = _re.findall(r"\{canon_[a-z_]+\}", full_body)
+    assert not left, (
+        "%s served %d unresolved canon placeholder(s) to an agent: %s"
+        % (_FULL_DOOR, len(left), sorted(set(left)))
+    )
