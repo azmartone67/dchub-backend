@@ -14,7 +14,6 @@ routes served facility rows past it to callers with no key and no cookie:
                                        raw_data
     /api/search/facilities             4 dp + power_mw
     /api/v1/map/public                 5,000 markers at 6 dp in one request
-    /api/v1/reveal-validation-feed     up to 5,000 rows, exact + capacity
     /api/v1/facility-risk-delta        one row per sequential id, 7 dp
     /api/v1/intelligence/portfolio/..  500 rows per ILIKE match, 6 dp + power_mw
     /api/v1/announcements              1,000 pipeline rows, 4 dp
@@ -479,46 +478,6 @@ def test_public_map_paid_is_the_full_marker(public_map, as_tier):
     assert body['facilities'] == [dict(zip(_MAP_KEYS, _MAP_ROW))]
 
 
-# ── 6. /api/v1/reveal-validation-feed ───────────────────────────────────────
-_SEEN = dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc)
-_REVEAL_ROW = (4242, 'Example Campus A', LAT, LON, 'Under Construction', POWER,
-               '2027', _SEEN, _SEEN, 'EX', 'ZZ')
-
-
-@pytest.fixture
-def reveal(monkeypatch):
-    import reveal_endpoints as mod
-    db = FakeDB([
-        ('SELECT id, name, latitude, longitude', [f'c{i}' for i in range(11)], [_REVEAL_ROW]),
-        ('SELECT COUNT(*) FROM discovered_facilities', ['count'], [(0,)]),
-    ])
-    monkeypatch.setattr(mod, '_get_db_safe', db.connect)
-    app = Flask(__name__)
-    app.register_blueprint(mod.reveal_ext_bp)
-    return app.test_client()
-
-
-@pytest.mark.parametrize('tier', ['anon', 'free'])
-def test_reveal_feed_is_gated(reveal, as_tier, tier):
-    as_tier(tier)
-    r = reveal.get('/api/v1/reveal-validation-feed?since=2026-01-01')
-    body = r.get_json()
-    assert r.status_code == 200 and body['success'] is True, body
-    assert_gated(body, tier, withheld=('nameplate_mw',))
-    row = body['facilities'][0]
-    assert row['status_bucket'] == 'pipeline', "derived from the (visible) status"
-
-
-def test_reveal_feed_paid_is_the_full_row(reveal, as_tier):
-    as_tier(PAID)
-    body = reveal.get('/api/v1/reveal-validation-feed?since=2026-01-01').get_json()
-    row = body['facilities'][0]
-    assert_exact(body)
-    assert row['nameplate_mw'] == POWER and row['expected_completion'] == '2027'
-    assert row['projection_bucket'] == '2030' and row['first_seen'] == _SEEN.isoformat()
-    assert 'coordinates_status' not in row
-
-
 # ── 7. /api/v1/facility-risk-delta ──────────────────────────────────────────
 _RISK_COLS = ['id', 'name', 'provider', 'city', 'state', 'market', 'latitude', 'longitude']
 _RISK_ROW = (4242, 'Example Campus A', PROVIDER, 'Exampleville', 'EX',
@@ -822,6 +781,11 @@ _NOT_SCANNED = {
     'deals_routes.py',                  # the pre-move copy; main.py imports routes.deals_routes
 }
 _EXEMPT = {
+    # Licensed-partner deliverable whose exact coordinates and capacity are part
+    # of the licence. It has never required a credential, so gating it could
+    # degrade the licensee's scheduled pull. Held open until the licensee's
+    # credential path is confirmed (owner decision 2026-09-21).
+    'reveal_endpoints.py:reveal_validation_feed',
     # Serves distances and counts only; no facility coordinate leaves it.
     'carrier_facility_ingestion.py:fiber_nearby_api',
     'routes/cross_layer_sites.py:cross_layer_sites',

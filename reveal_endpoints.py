@@ -493,17 +493,6 @@ def reveal_validation_feed():
                             f" OR {status_taxonomy.pipeline_sql('status')})")
         status_args = []
 
-    # Exact location and capacity are paid-only (util/facility_tier_gate.py),
-    # and this feed serves up to 5,000 rows to a keyless caller. Resolved
-    # before the connection is taken, so a missing gate module fails the
-    # request (500) without holding a pooled connection.
-    from util.facility_tier_gate import gate_record
-    try:
-        from api_tier_gating import get_request_tier
-        caller_tier = get_request_tier()
-    except ImportError:
-        caller_tier = 'anon'    # cannot tell who is asking -> anonymous rung
-
     facilities = []
     unclassified_excluded = 0
     coverage = {}
@@ -534,45 +523,25 @@ def reveal_validation_feed():
         cur.execute(sql, [since_dt] + status_args + [limit])
         for row in cur.fetchall():
             fid, name, lat, lon, status, mw, exp_completion, seen, upd, state, country = row
-            # Gate the row in the shared vocabulary FIRST, then derive every
-            # published field (buckets included) from what survived: same
-            # keys, a withheld value is null, and a paid row is untouched.
-            # float() before the gate so the ladder sees numbers it can round.
-            rec, _ = gate_record({
+            year = _completion_year(exp_completion)
+            facilities.append({
                 "id": fid,
                 "name": name,
-                "latitude": float(lat) if lat is not None else None,
-                "longitude": float(lon) if lon is not None else None,
+                "lat": float(lat) if lat is not None else None,
+                "lon": float(lon) if lon is not None else None,
                 "status": status,
-                "power_mw": float(mw) if mw is not None else None,
-                "expected_completion": exp_completion,
-                "first_seen": seen,
-                "last_updated": upd,
-                "state": state,
-                "country": country,
-            }, caller_tier)
-            year = _completion_year(rec.get("expected_completion"))
-            item = {
-                "id": rec.get("id"),
-                "name": rec.get("name"),
-                "lat": rec.get("latitude"),
-                "lon": rec.get("longitude"),
-                "status": rec.get("status"),
-                "status_bucket": status_taxonomy.classify(rec.get("status")),
-                "nameplate_mw": rec.get("power_mw"),
+                "status_bucket": status_taxonomy.classify(status),
+                "nameplate_mw": float(mw) if mw is not None else None,
                 # No announcement date exists on this table \u2014 see date_basis.
                 "announcement_date": None,
-                "expected_completion": rec.get("expected_completion"),
+                "expected_completion": exp_completion,
                 "expected_completion_year": year,
                 "projection_bucket": _projection_bucket(year),
-                "first_seen": rec["first_seen"].isoformat() if rec.get("first_seen") else None,
-                "last_updated": rec["last_updated"].isoformat() if rec.get("last_updated") else None,
-                "state": rec.get("state"),
-                "country": rec.get("country"),
-            }
-            if rec.get("coordinates_status"):
-                item["coordinates_status"] = rec["coordinates_status"]
-            facilities.append(item)
+                "first_seen": seen.isoformat() if seen else None,
+                "last_updated": upd.isoformat() if upd else None,
+                "state": state,
+                "country": country,
+            })
 
         # How many rows the window holds that the status filter dropped for
         # being unclassified \u2014 surfaced, never silently folded into a bucket.
