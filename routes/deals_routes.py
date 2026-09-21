@@ -859,7 +859,11 @@ def _get_transactions_free():
             import psycopg2
             with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
-                pg_cur.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
+                # DEALS_OK: this is the keyless listing agents cite first. Unguarded,
+                # it kept serving rows the counts below already excluded — on
+                # 2026-09-21 the three quarantine_uncorroborated AUTO rows ("Ares
+                # acquires Nvidia") still led it after total_matching had dropped.
+                pg_cur.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals WHERE " + DEALS_OK + " ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
                 db_deals = []
                 for row in pg_cur.fetchall():
                     buyer = row[3] or ''
