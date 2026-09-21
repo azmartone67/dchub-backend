@@ -94,6 +94,14 @@ _FLUSH_INTERVAL_SEC = int(os.environ.get("USAGE_FLUSH_INTERVAL_SEC", "30"))
 _BUFFER_MAX        = int(os.environ.get("USAGE_BUFFER_MAX", "10000"))
 _RETENTION_DAYS    = int(os.environ.get("USAGE_RETENTION_DAYS", "90"))
 
+# The X-API-Key shape this tracker records, and how much of it it keeps. Named
+# so a reader that joins on the stored prefix (routes/install_stats.py) derives
+# the same prefix and the same eligibility instead of retyping them. A key NOT of
+# this shape — every self-serve `dch_live_` key from /api/v1/keys/claim — is
+# never written to api_endpoint_log or api_usage_meter by this tracker.
+TRACKED_KEY_PREFIX = "dchub_"
+STORED_PREFIX_LEN  = 24
+
 # Paths we never track (would inflate volume or feedback-loop)
 _SKIP_PATH_PREFIXES = (
     "/static/",
@@ -366,8 +374,9 @@ def install_tracker(app) -> dict:
         g._usage_start_ns = time.time_ns()
         # Capture key + decide trackability cheaply
         ak = (request.headers.get("X-API-Key") or "").strip()
-        if ak and ak.startswith("dchub_") and len(ak) >= 24:
-            g._usage_key_prefix = ak[:24]
+        if (ak and ak.startswith(TRACKED_KEY_PREFIX)
+                and len(ak) >= STORED_PREFIX_LEN):
+            g._usage_key_prefix = ak[:STORED_PREFIX_LEN]
         else:
             # r-admin-observability (2026-07-27): ADMIN traffic was invisible.
             # _record() below tracks a request only if it carries an X-API-Key,

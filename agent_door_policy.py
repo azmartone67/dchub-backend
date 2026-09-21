@@ -18,7 +18,9 @@ and a third door never got the block at all:
     /llms-full.txt    NO             NO                                    NO
 
 /llms-full.txt is the door an agent fetches when it wants the FULL document,
-and it served 118 lines last touched 2026-06-25 with no policy at all. The
+and it served 405 lines / 23,152 bytes with no policy at all (an earlier
+revision of this note gave the size of the static llms-full.txt, which no
+route serves). The
 guard could not have caught it: it registers ai_discovery_routes and GETs
 /llms.txt, so it read one of the doors it publishes.
 
