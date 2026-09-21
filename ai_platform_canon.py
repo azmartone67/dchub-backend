@@ -142,6 +142,29 @@ _VENDOR_ALIASES = (
 # and not a synonym for "tooling" — treating unknown as tooling is how a
 # genuine caller stops being counted. Anything not matched stays UNKNOWN, and
 # UNKNOWN is the bucket that deserves investigation, never dismissal.
+# ── BYO-MCP surfaces ────────────────────────────────────────────────────────
+# Platforms where a USER brings DC Hub into a host they already run, and the
+# HOST owns the MCP session. Mirrors `_BYO_MCP_PLATFORMS` in
+# dchub-mcp-server/server.mjs, which is the canonical definition because that
+# server reads the `X-MCP-Platform` header and is what WRITES `mcp_client`.
+# The two repos share no module, so this copy is pinned by
+# tests/test_leakage_byo_composition.py — if the JS set changes, that test is
+# what tells you this one did not.
+#
+# ★2026-09-20 (r-byo-pin): membership does NOT imply a session-per-call
+# surface, and this set must never be used as if it did. Measured the same day
+# on the live 30d leakage board's own `real_top_clients` (signals / sessions):
+#     connectors-manager   200 / 200  ->   1.00   <- one session per call
+#     chatgpt               73 /   4  ->  18.25
+#     perplexity            84 /  14  ->   6.00
+#     grok                  22 /   5  ->   4.40
+#     smithery              92 /  21  ->   4.38
+# So this is the population to LOOK AT when a signals_per_session sits near
+# 1.00 — not a rule that pins it. Publish the share; let the reader judge.
+BYO_MCP_PLATFORMS = frozenset({
+    "chatgpt", "connectors-manager", "grok", "perplexity", "smithery",
+})
+
 CLASS_ASSISTANT = "assistant"          # resolves to a vendor via canonical_platform
 CLASS_VERIFIER  = "verifier_or_probe"  # conformance harness / listing checker
 CLASS_REGISTRY  = "registry_or_tooling"  # a directory or SDK, not an end agent
