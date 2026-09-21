@@ -409,10 +409,6 @@ _NOT_THE_APP = frozenset({".git", ".claude", "tests", "node_modules",
 _ROUTE_DECORATORS = frozenset({"route", "get", "post", "put", "patch",
                                "delete"})
 
-#: Floor on the walk: 1,490 application files on 2026-09-21. "Exactly one
-#: registration" is also what a walk that never left the repo root reports.
-_MIN_APP_FILES = 1000
-
 _Site = namedtuple("_Site", "rel line module owner_kind owner view")
 
 
@@ -751,11 +747,9 @@ def test_the_scan_can_see_what_it_exists_to_refuse(tmp_path):
     assert found == [("door.py", "function", "register", "a"),
                      ("routes/copy.py", "blueprint", "bp", "b")], found
 
+    # The walk's size floor is pinned where every scanning test's is:
+    # tests/scan_floors.json (walk: 95 directories on 2026-09-21, floor 76).
     walked = _app_files(_ROOT)
-    assert len(walked) >= _MIN_APP_FILES, (
-        "the scan walked only %d application files (floor %d) — a door "
-        "registered in a file it skipped would never be counted"
-        % (len(walked), _MIN_APP_FILES))
     assert any(p.parent.name == "routes" for p in walked), (
         "the scan never entered routes/, where most blueprints live")
 
