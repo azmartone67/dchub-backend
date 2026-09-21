@@ -43833,6 +43833,18 @@ except Exception as _mns_e:
 
 # r86c: the brain's media EDITORIAL DESK (event-driven post/suppress + ranked
 # data leads + the analyst voice spec). Powers the analyst-grade media engine.
+# 2026-09-21: drive a LANDED spec to an implementation. 106 of 111 brain-spec
+# merges since 09-01 changed only docs/, and all 30 declined board approvals
+# read "already specced — needs an implementation, not another spec" with
+# nothing consuming that. Dry-run by default; actuation needs apply=true AND
+# SPEC_IMPLEMENTER_ARM=1. Kill: SPEC_IMPLEMENTER_DISABLE=1
+try:
+    from routes.brain_spec_implementer import brain_spec_implementer_bp
+    app.register_blueprint(brain_spec_implementer_bp)
+    print("[main] brain_spec_implementer_bp registered: POST /api/v1/brain/spec-debt/implement", flush=True)
+except Exception as _bsi_e:
+    print(f"[main] brain_spec_implementer_bp register failed: {_bsi_e}", flush=True)
+
 try:
     from routes.media_editorial import media_editorial_bp
     app.register_blueprint(media_editorial_bp)

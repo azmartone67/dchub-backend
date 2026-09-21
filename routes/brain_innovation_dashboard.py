@@ -361,7 +361,8 @@ def approval_view(decision, pr_url, attempt) -> dict:
     a = attempt if isinstance(attempt, dict) else {}
     view = {"decision": str(decision or "approved"), "pr_state": "none",
             "pr_url": None, "pr_ref_url": None, "pr_note": "",
-            "can_request_pr": False, "can_override": False}
+            "can_request_pr": False, "can_override": False,
+            "can_implement": False, "implement_spec": ""}
     spec = a.get("fallback_spec_pr")
     spec = spec if isinstance(spec, dict) else {}
     url = pr_url or _pr_url_of(a)
@@ -379,6 +380,24 @@ def approval_view(decision, pr_url, attempt) -> dict:
         view.update(pr_state="declined", pr_note=_short(spec.get("note")),
                     pr_ref_url=_pr_link(spec.get("dup_pr")
                                         or spec.get("landed_spec_pr")))
+        # ★ 2026-09-21: a decline carrying `awaiting_implementation` is the
+        # ONLY dead end on this board with a real next move. The spec exists
+        # and is merged; what is missing is the code. Surface the spec's name
+        # so the page can offer "implement the spec" — a DIFFERENT action,
+        # not an override.
+        #
+        # ★ NOT can_override. override is only ever consulted against
+        # _pr_block_reason(_verdict) — the VERDICT gate (see :1005, :1024).
+        # This decline comes from the drafter's landed-spec fingerprint dedup,
+        # which override never reaches, so a can_override button here would
+        # re-POST, pass a gate that was not blocking, hit the identical dedup
+        # and decline again. Measured 2026-09-21: all 30 declined board items
+        # carry this note and every one of the 45 items had can_override
+        # false — an inert button would have looked like a fix and changed
+        # nothing.
+        if spec.get("awaiting_implementation"):
+            view.update(can_implement=True,
+                        implement_spec=spec.get("landed_spec") or "")
     elif a.get("ok") is False:
         view.update(pr_state="failed", can_request_pr=True,
                     pr_note=_short(a.get("error") or a.get("reason")
@@ -1519,6 +1538,12 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     h += '</span>';
     if(v.can_override){
       h += '<button class="pr-act override" data-pr-act="override">open PR anyway</button>';
+    } else if(v.can_implement){
+      // The spec is merged; what is missing is the code. This posts to
+      // /spec-debt/implement (a DIFFERENT action from override, which only
+      // bypasses the verdict gate and would hit the same dedup again).
+      h += '<button class="pr-act override" data-pr-act="implement" data-spec="'
+           + esc(v.implement_spec||'') + '">implement the spec</button>';
     } else if(v.can_request_pr){
       h += '<button class="pr-act" data-pr-act="request">open PR</button>';
     }
@@ -1601,7 +1626,41 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     var kind = card.getAttribute('data-kind');
     var id   = card.getAttribute('data-id');
     var key  = kind+':'+id;
-    var override = btn.getAttribute('data-pr-act') === 'override';
+    var act = btn.getAttribute('data-pr-act');
+    if(act === 'implement'){
+      // Separate endpoint, separate semantics: this drives the CODE drafter
+      // with the landed spec's own unchecked obligations as the directive.
+      // It does not re-run the approve path, which is why it does not call
+      // submitApproval() below.
+      var spec = btn.getAttribute('data-spec') || '';
+      var dv = viewOf(key) || {};
+      if(!spec){ toast('No spec recorded on this item', false); return; }
+      if(!window.confirm('This was declined because the spec already exists:\n\n'
+          + (dv.pr_note || '(no reason recorded)')
+          + '\n\nDrive the code drafter with '+spec+'’s outstanding\n'
+          + 'obligations as the directive? A human still merges the PR.')) return;
+      // authq()/authh() are the page's own auth helpers — the same pair
+      // submitApproval() uses. An earlier draft invented an admin-key getter
+      // that this page does not define, so the button would have thrown
+      // ReferenceError on first click and looked like a dead control. The
+      // helper name is deliberately not spelled here: the guard in
+      // tests/test_spec_implementer.py scans this block for it.
+      btn.disabled = true;
+      fetch(authq('/api/v1/brain/spec-debt/implement'), {
+        method:'POST', headers:authh(),
+        body: JSON.stringify({spec: spec, apply: true})
+      }).then(function(r){ return r.json(); }).then(function(j){
+        btn.disabled = false;
+        if(j && j.acted){
+          toast('Implementation PR opened for '+spec, true);
+          renderApproval(kind, id);
+        } else {
+          toast('Not opened: '+((j && (j.note || j.reason || j.error)) || 'unknown'), false);
+        }
+      }).catch(function(e){ btn.disabled = false; toast('Implement failed: '+e, false); });
+      return;
+    }
+    var override = act === 'override';
     if(override){
       var held = viewOf(key) || {};
       if(!window.confirm('The verdict gate held this PR back:\n\n'

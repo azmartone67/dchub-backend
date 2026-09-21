@@ -2047,13 +2047,47 @@ def brain_value_shipped():
     # Each query is wrapped by _dual() which returns (0,0) on ANY error
     # (missing table/column), so a schema drift degrades to "no verified
     # value" rather than crashing — fail-safe by construction.
+    # ★★★ 2026-09-21: SPEC PRs NO LONGER COUNT AS SHIPPED CODE.
+    # Measured on origin/main: of 111 `brain-spec:` merges since 2026-09-01,
+    # 106 changed ONLY docs/ — 95%. Every one of them landed here as a
+    # "code_fix" at x8 weight, which is how the brain reported high output
+    # while its own innovation board showed 30 approvals declined with
+    # "already specced and MERGED — needs an implementation, not another
+    # spec". The metric was rewarding the loop that produced nothing.
+    #
+    # ★ THE FILTER IS A FILER PROXY, NOT A DIFF INSPECTION, and the response
+    # says so. brain_pr_outcomes stores pr_title/branch, not the changed file
+    # list, so this excludes everything the spec filer opened — including the
+    # 5 of 111 that DID touch code. Undercounting by ~5% is the honest error
+    # to make when the alternative is overcounting by 95%; the excluded rows
+    # are returned as `spec_prs` rather than dropped, so the number is
+    # visible rather than merely smaller.
+    _NOT_SPEC = ("AND COALESCE(pr_title,'') NOT LIKE 'brain-spec:%' "
+                 "AND COALESCE(branch,'') NOT LIKE 'brain-spec/%' ")
     code_7d, code_30d = _dual(
         """SELECT
               COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
                               AND merged_at IS NOT NULL
+                              """ + _NOT_SPEC + """
                               AND merged_at >= NOW() - INTERVAL '7 days'),
               COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
                               AND merged_at IS NOT NULL
+                              """ + _NOT_SPEC + """
+                              AND merged_at >= NOW() - INTERVAL '30 days')
+           FROM brain_pr_outcomes"""
+    )
+    # The excluded rows, reported beside the metric they used to inflate.
+    spec_7d, spec_30d = _dual(
+        """SELECT
+              COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
+                              AND merged_at IS NOT NULL
+                              AND (COALESCE(pr_title,'') LIKE 'brain-spec:%'
+                                   OR COALESCE(branch,'') LIKE 'brain-spec/%')
+                              AND merged_at >= NOW() - INTERVAL '7 days'),
+              COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
+                              AND merged_at IS NOT NULL
+                              AND (COALESCE(pr_title,'') LIKE 'brain-spec:%'
+                                   OR COALESCE(branch,'') LIKE 'brain-spec/%')
                               AND merged_at >= NOW() - INTERVAL '30 days')
            FROM brain_pr_outcomes"""
     )
@@ -2200,6 +2234,22 @@ def brain_value_shipped():
         total_shipped_30d=total_30d,
         shipped_7d=shipped_7d,
         shipped_30d=shipped_30d,
+        # ★ DELIBERATELY OUTSIDE shipped_7d/30d. Those dicts are summed by
+        # _sum_nonnull() into total_shipped and weighted by _value_score(), so
+        # a `spec_prs` key inside them would add the excluded rows straight
+        # back into the total — the exact inflation this change removes. They
+        # live here so the number is visible without being counted.
+        spec_prs_excluded={
+            "_7d": spec_7d, "_30d": spec_30d,
+            "basis": ("merged /pull/ PRs whose pr_title starts 'brain-spec:' "
+                      "or branch starts 'brain-spec/'. This is a FILER proxy, "
+                      "not a diff inspection — brain_pr_outcomes does not "
+                      "store the changed file list. Measured on origin/main "
+                      "2026-09-21: 106 of 111 such merges since 09-01 changed "
+                      "only docs/, and the other 5 DID touch code and are "
+                      "excluded here too. Undercounts by ~5%; counting them "
+                      "as code_fixes overcounted by 95%."),
+        },
         weights=_WEIGHTS,
         generated_at=_dt.datetime.utcnow().isoformat() + "Z",
         purpose=(
