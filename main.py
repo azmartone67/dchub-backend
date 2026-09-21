@@ -3955,11 +3955,23 @@ try:
         app.register_blueprint(audience_export_bp)
         print("[main] audience_export_bp registered: /api/v1/admin/audience/free-users[.csv]", flush=True)
         # r-warm-keys (2026-09-17): the AGENT-key cohort. audience_export above
-        # reads `users` (web signups); ~493 addresses bound to an mcp_dev_keys
-        # row have never paid and nothing read them.
+        # reads `users` (web signups); the keys are in mcp_dev_keys, a different
+        # table and a different set of people.
+        # ★ The "~493 addresses" this comment used to claim was wrong: it counted
+        # key ROWS, unfiltered by email. Measured live 2026-09-20 through the
+        # endpoint itself, the non-paid cohort WITH a parseable address is 34
+        # (21 after our own domains are removed). Quote 34/21, not 493.
         from routes.warm_key_cohort import register_warm_key_cohort
         register_warm_key_cohort(app)
         print("[main] warm_key_cohort_bp registered: /api/v1/admin/audience/warm-keys[.csv]", flush=True)
+        # r-crm-keys (2026-09-20): the two above cover `users` (denylist-filtered)
+        # and the NON-PAID keys. Neither exports a paying keyed customer, and
+        # neither carries metadata.client_name / metadata.session_id, so a CRM
+        # import had to be hand-stitched from three sources. This is the whole
+        # key table, every tier, labelled.
+        from routes.audience_keys_export import register_audience_keys_export
+        register_audience_keys_export(app)
+        print("[main] audience_keys_export_bp registered: /api/v1/admin/audience/crm-keys[.csv]", flush=True)
     except Exception as _aex:
         import logging
         logging.getLogger(__name__).warning('audience_export wiring failed: %s', _aex)
