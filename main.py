@@ -25346,7 +25346,7 @@ def _list_facilities_free():
     # ladder, not bare /pricing. See routes.checkout_click_tracker.rest_wall_ladder.
     try:
         from routes.checkout_click_tracker import rest_wall_ladder as _rest_wall_ladder
-        _wall = _rest_wall_ladder()
+        _wall = _rest_wall_ladder(opens_on_rest='pro', mcp_tool='search_facilities')
     except Exception:  # noqa: BLE001
         _wall = {'upgrade_url': 'https://dchub.cloud/pricing'}
     _free_payload = {

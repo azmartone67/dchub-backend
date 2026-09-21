@@ -1,11 +1,12 @@
-"""REST free walls hand a measured /go/c pack checkout and the agent ladder.
+"""REST free walls offer only what actually opens them.
 
-P0-C (2026-09-21). Measured that morning: keyless GET /api/v1/facilities
-answered `upgrade_url: https://dchub.cloud/pricing`. That link is unmeasured and
-bound to nothing, and it went to the one page a slow asset read had just
-replaced with a cached "briefly unavailable" stub. The wall now names the $10
-pack as a signed /go/c checkout, with the ladder beside it in the order agents
-buy it.
+P0-C (2026-09-21). be#5072 replaced `upgrade_url: https://dchub.cloud/pricing`
+on the keyless facilities and free-transactions walls with a measured /go/c
+checkout, but led with the $10 pack and listed pack → Developer → Pro. Measured
+after it shipped: both REST lists sit behind require_plan('pro'), so neither
+the pack nor Developer opens them over REST, and a Developer key is refused
+outright. The wall now leads with the plan that opens the endpoint and lists the
+pack and Developer as what they are: full results through an MCP tool.
 """
 import ast
 import pathlib
@@ -31,26 +32,48 @@ def _go(url):
     return plan, ref, sid
 
 
-def test_upgrade_url_is_the_pack_checkout_not_the_pricing_page(signed):
-    assert _go(cct.rest_wall_ladder()["upgrade_url"]) == ("metered", "", "")
+def test_upgrade_url_is_the_checkout_of_the_plan_that_opens_the_endpoint(signed):
+    wall = cct.rest_wall_ladder(opens_on_rest="pro", mcp_tool="search_facilities")
+    assert _go(wall["upgrade_url"]) == ("pro", "", "")
 
 
-def test_ladder_is_pack_then_developer_then_pro_with_read_prices(signed):
+def test_only_the_opening_plan_is_labelled_as_opening_this_endpoint(signed):
+    """The regression this file exists for: a rung shown as the way through a
+    REST wall must be a rung that REST admits."""
+    opts = cct.rest_wall_ladder(opens_on_rest="pro", mcp_tool="search_facilities")["upgrade_options"]
+    rest = [o for o in opts if o["opens"] == "rest"]
+    assert [o["plan"] for o in rest] == ["pro"]
+    assert opts[0]["opens"] == "rest", "the way through this endpoint leads"
+    assert "opens this endpoint" in opts[0]["label"]
+    for o in opts:
+        if o["opens"] != "rest":
+            assert "opens this endpoint" not in o["label"], o
+
+
+def test_pack_and_developer_are_named_as_mcp_routes_to_the_full_result(signed):
     import tier_registry as tr
 
-    opts = cct.rest_wall_ladder()["upgrade_options"]
-    assert [o["plan"] for o in opts] == ["pack", "developer", "pro"]
-    assert [_go(o["url"])[0] for o in opts] == ["metered", "developer", "pro"]
-    assert tr.price_display("developer") in opts[1]["label"]
-    assert tr.price_display("pro") in opts[2]["label"]
-    assert "one-time" in opts[0]["label"]
+    opts = cct.rest_wall_ladder(opens_on_rest="pro", mcp_tool="search_facilities")["upgrade_options"]
+    assert [o["plan"] for o in opts] == ["pro", "pack", "developer"]
+    assert [_go(o["url"])[0] for o in opts] == ["pro", "metered", "developer"]
+    for o in opts[1:]:
+        assert o["opens"] == "mcp" and o["mcp_tool"] == "search_facilities"
+        assert "`search_facilities`" in o["label"] and "not this REST endpoint" in o["label"]
+    assert tr.price_display("pro") in opts[0]["label"]
+    assert tr.price_display("developer") in opts[2]["label"]
+    assert "one-time" in opts[1]["label"]
+
+
+def test_without_an_mcp_tool_only_the_opening_plan_is_offered(signed):
+    opts = cct.rest_wall_ladder(opens_on_rest="pro")["upgrade_options"]
+    assert [o["plan"] for o in opts] == ["pro"]
 
 
 def test_caller_independent_so_safe_inside_a_shared_cache(signed):
     """The deals payload is memoized and served to every caller, so nothing in
     it may be bound to one caller's key or session."""
-    a, b = cct.rest_wall_ladder(), cct.rest_wall_ladder()
-    assert a == b
+    a = cct.rest_wall_ladder(opens_on_rest="pro", mcp_tool="list_transactions")
+    assert a == cct.rest_wall_ladder(opens_on_rest="pro", mcp_tool="list_transactions")
     for o in a["upgrade_options"]:
         _, ref, sid = _go(o["url"])
         assert ref == "" and sid == ""
@@ -58,30 +81,32 @@ def test_caller_independent_so_safe_inside_a_shared_cache(signed):
 
 def test_without_a_signing_secret_it_falls_back_to_the_pricing_page(monkeypatch):
     monkeypatch.delenv("DCHUB_INTERNAL_KEY", raising=False)
-    wall = cct.rest_wall_ladder()
+    wall = cct.rest_wall_ladder(opens_on_rest="pro", mcp_tool="search_facilities")
     assert wall["upgrade_url"] == cct._PRICING_URL
     assert all(o["url"] == cct._PRICING_URL for o in wall.get("upgrade_options", []))
 
 
-def test_the_deals_free_wall_renders_the_ladder(signed, monkeypatch):
+def test_the_deals_free_wall_renders_the_honest_ladder(signed, monkeypatch):
     """Rendered, not grepped: the seed path runs with no database."""
     import flask
     from routes import deals_routes as dr
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    dr._FREE_TX_CACHE.clear() if hasattr(dr._FREE_TX_CACHE, "clear") else None
     app = flask.Flask(__name__)
     with app.app_context():
         body = dr._get_transactions_free().get_json()
     assert body["tier"] == "free"
-    assert _go(body["upgrade_url"])[0] == "metered"
-    assert [o["plan"] for o in body["upgrade_options"]] == ["pack", "developer", "pro"]
+    assert _go(body["upgrade_url"])[0] == "pro"
+    opts = body["upgrade_options"]
+    assert [(o["plan"], o["opens"]) for o in opts] == [("pro", "rest"), ("pack", "mcp"), ("developer", "mcp")]
+    assert all(o.get("mcp_tool") == "list_transactions" for o in opts[1:])
 
 
-def test_the_facilities_free_payload_spreads_the_ladder_and_types_no_url():
-    """main.py is too heavy to import in a unit test, so read the one
-    `_free_payload` dict: it must spread `_wall` and carry no literal
-    upgrade_url key."""
+def test_the_facilities_free_payload_spreads_the_honest_ladder():
+    """main.py is too heavy to import in a unit test, so read it: the one
+    `_free_payload` dict spreads `_wall`, carries no literal upgrade_url, and
+    `_wall` comes from rest_wall_ladder(opens_on_rest='pro',
+    mcp_tool='search_facilities')."""
     tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
     hits = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "_free_payload" for t in n.targets)]
@@ -91,5 +116,10 @@ def test_the_facilities_free_payload_spreads_the_ladder_and_types_no_url():
     keys = [k.value for k in d.keys if isinstance(k, ast.Constant)]
     assert "tier" in keys, "scanned the wrong dict"
     assert "upgrade_url" not in keys
-    spreads = [v for k, v in zip(d.keys, d.values) if k is None]
-    assert any(isinstance(v, ast.Name) and v.id == "_wall" for v in spreads)
+    assert any(k is None and isinstance(v, ast.Name) and v.id == "_wall"
+               for k, v in zip(d.keys, d.values))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "_rest_wall_ladder"]
+    assert len(calls) == 1
+    kw = {k.arg: k.value.value for k in calls[0].keywords if isinstance(k.value, ast.Constant)}
+    assert kw == {"opens_on_rest": "pro", "mcp_tool": "search_facilities"}
