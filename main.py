@@ -2854,6 +2854,16 @@ try:
     except Exception as _ccb:
         import logging
         logging.getLogger(__name__).warning('checkout_click wiring failed: %s', _ccb)
+    # 2026-09-21 (frontend#1534): the /pricing page's checkout hop. The page is
+    # static and cannot sign /go/c, so GET /go/p/<plan> stamps the plan in its own
+    # table (pricing_checkout_clicks) and 302s to the same Payment Link.
+    try:
+        from routes.pricing_click_tracker import pricing_click_bp
+        app.register_blueprint(pricing_click_bp)
+        print("[main] pricing_click_bp registered: GET /go/p/<plan>", flush=True)
+    except Exception as _pcb:
+        import logging
+        logging.getLogger(__name__).warning('pricing_click wiring failed: %s', _pcb)
     # 2026-07-27 digest wave: entitlement self-check (customer-visible tier
     # truth + mismatch list) + admin repair with audit trail. Serves the open
     # founder-tier 'license not working' ask.
