@@ -1143,6 +1143,77 @@ def requeue_config_failures(apply: bool = False) -> dict:
         _return(c)
 
 
+_EXISTING_ID_RE = re.compile(r"Existing ID: (\d+)")
+
+
+def requeue_duplicates(apply: bool = False) -> dict:
+    """Send again the rows HubSpot answered 409 for — the contact already existed.
+
+    ★2026-09-21: push_to_hubspot counts a 409 as delivered and writes nothing
+    onto the contact that is already there. The first real flush delivered 32
+    rows and 15 were 409s (14 paid_conversion) against contacts from the 09-20
+    CSV import, so those contacts never got dchub_event_type /
+    dchub_intent_score / dchub_attribution or their lifecycle stage — and their
+    rows say 'pushed', so no flush looks at them again.
+
+    Selects status='pushed' rows whose stored result is a duplicate that was
+    NOT updated (crm_response dup=true, no updated=true) and resets exactly
+    those to status='queued', push_attempts=0, for the next flush to re-send.
+    That writes our fields only if the running push_to_hubspot updates the
+    existing contact on 409; otherwise HubSpot answers 409 again and the row
+    goes back to 'pushed' as it was.
+
+    Dry run unless apply=True. Either way the result names every row."""
+    c = _conn()
+    if c is None:
+        return {"ok": False, "error": "no_db"}
+    try:
+        _ensure_schema(c)
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT id, event_type, lead_email, crm_pushed_at, crm_response
+                     FROM crm_outbound_queue
+                    WHERE status = 'pushed'
+                    ORDER BY captured_at ASC""")
+            rows = cur.fetchall() or []
+        dups = []
+        for r in rows:
+            resp = _stored_push_result(None, r[4])
+            if resp.get("dup") is not True or resp.get("updated"):
+                continue
+            found = _EXISTING_ID_RE.search(str(resp.get("raw") or ""))
+            dups.append({"id": int(r[0]), "event_type": r[1], "lead_email": r[2],
+                         "pushed_at": _iso(r[3]),
+                         "existing_contact_id": found.group(1) if found else None})
+        out = {"ok": True, "kind": "duplicates", "dry_run": not apply}
+        if not apply:
+            out.update(would_requeue=dups, would_requeue_count=len(dups))
+            return out
+        n = 0
+        if dups:
+            with c.cursor() as cur:
+                cur.execute(
+                    """UPDATE crm_outbound_queue SET
+                           status        = 'queued',
+                           push_attempts = 0
+                         WHERE id = ANY(%s)
+                           AND status = 'pushed'""",
+                    ([x["id"] for x in dups],))
+                n = int(cur.rowcount or 0)
+            c.commit()
+        out.update(requeued=dups, requeued_count=n)
+        if n != len(dups):
+            out["note"] = (f"{len(dups) - n} row(s) left status='pushed' "
+                           f"between the read and the write; not reset")
+        return out
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        return {"ok": False, "error": str(e)[:200]}
+    finally:
+        _return(c)
+
+
 # ── backfill (historical events) ─────────────────────────────────────
 
 def backfill_last_n_days(days: int = 7) -> dict:
@@ -1391,12 +1462,21 @@ def admin_flush():
 @crm_reverse_etl_bp.route("/api/v1/admin/crm/requeue-config-failures",
                           methods=["POST"])
 def admin_requeue_config_failures():
-    """Dry run by default: lists the failed rows whose last push failed for a
-    configuration reason. ?apply=1 resets exactly those to status='queued'."""
+    """Dry run by default. ?kind=config (the default) lists the failed rows
+    whose last push failed for a configuration reason; ?kind=duplicates lists
+    the pushed rows HubSpot answered 409 for (see requeue_duplicates).
+    ?apply=1 resets exactly the rows listed to status='queued'."""
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
     apply = (request.args.get("apply") or "").strip().lower() in ("1", "true", "yes")
-    out = requeue_config_failures(apply=apply)
+    kind = (request.args.get("kind") or "config").strip().lower()
+    requeue = {"config": requeue_config_failures,
+               "duplicates": requeue_duplicates}.get(kind)
+    if requeue is None:
+        return jsonify(ok=False, error=f"unknown kind {kind!r}",
+                       kinds=["config", "duplicates"]), 400
+    out = requeue(apply=apply)
+    out.setdefault("kind", kind)
     return jsonify(out), (200 if out.get("ok") else 503)
 
 
