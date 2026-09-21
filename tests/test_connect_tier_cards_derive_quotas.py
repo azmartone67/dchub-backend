@@ -59,7 +59,7 @@ def _rendered(tier: str) -> str:
 def test_the_tier_grid_is_here():
     html = _html()
     assert 'class="tier-grid"' in html
-    for tier in ("free", "pro", "enterprise"):
+    for tier in ("free", "developer", "pro", "enterprise"):
         assert f'class="tier-card {tier}"' in html, f"{tier} card is gone"
 
 
@@ -93,7 +93,7 @@ def test_the_retired_over_claim_cannot_return():
 
 
 # ── The label names the lane ─────────────────────────────────────────────
-@pytest.mark.parametrize("tier", ["free", "pro"])
+@pytest.mark.parametrize("tier", ["free", "developer", "pro"])
 def test_the_card_says_which_lane_it_quotes(tier):
     """A bare 'calls/day' beside a number picked from two disagreeing lanes is
     the ambiguity ai_surface_canon refuses to publish. Saying 'MCP' is what
@@ -127,3 +127,40 @@ def test_no_placeholder_survives_anywhere_ON_THE_WHOLE_PAGE():
         f"/connect ships unresolved canon tokens: {leaked}. If one is inside a "
         "comment, it is still in the response an agent reads — describe the "
         "placeholder in prose instead of writing the token.")
+
+
+# ── P0-B (2026-09-21): Developer is on the ladder, priced from the registry ──
+def test_developer_sits_between_free_and_pro():
+    """The strip read Free / Pro / Enterprise, so the plan agents buy was
+    missing from the page that tells agents what they get."""
+    html = _html()
+    order = [html.index(f'class="tier-card {t}"') for t in ("free", "developer", "pro", "enterprise")]
+    assert order == sorted(order)
+
+
+def test_developer_card_is_placeholders_not_literals():
+    card = _card("developer")
+    assert "{canon_developer_mcp_calls}" in card
+    assert "{canon_price_developer}" in card
+    for literal in ("$49", "500"):
+        assert literal not in card, f"{literal!r} is typed into the Developer card"
+
+
+def test_developer_and_pro_cards_render_the_registry_values():
+    from tier_registry import calls_per_day, price_display
+    for tier in ("developer", "pro"):
+        rendered = _rendered(tier)
+        assert f"{int(calls_per_day(tier)):,}" in rendered, tier
+        assert price_display(tier) and price_display(tier) in rendered, tier
+
+
+def test_the_note_names_the_agent_rungs_before_pro():
+    """Agents buy the pack or Developer; Pro is the human screener's plan."""
+    html = asc.canon_text(_html())
+    note = html[html.index('class="tier-grid"'):]
+    note = note[:note.index("Discovery Files")]
+    from tier_registry import price_display
+    pack = note.index("one-time")
+    dev = note.index("Developer " + price_display("developer"))
+    pro = note.index("Pro is for a person")
+    assert pack < pro and dev < pro

@@ -60,6 +60,9 @@ def test_the_rungs_are_in_the_order_a_caller_can_take_them(ladder):
     pack = ladder.index("one-time")
     sub = ladder.index("/mo")
     assert free < pack < sub
+    # P0-B (2026-09-21): the agent rungs — pack, then Developer — come before
+    # Pro, the human screener's plan.
+    assert pack < ladder.index("**Developer $") < ladder.index("**Pro $")
 
 
 def test_every_price_is_read_from_the_module_that_owns_it(ladder, mod):
@@ -71,9 +74,12 @@ def test_every_price_is_read_from_the_module_that_owns_it(ladder, mod):
     assert "$%d one-time" % (PACK10_PRICE_CENTS // 100) in ladder
     assert format(PACK10_CREDITS, ",") in ladder
     assert "$%d/mo" % int(tr.price("pro")) in ladder
-    per_day = tr.calls_per_day("pro")
-    if per_day:
-        assert format(int(per_day), ",") in ladder
+    assert "$%d/mo" % int(tr.price("developer")) in ladder
+    for tier in ("pro", "developer"):
+        per_day = tr.calls_per_day(tier)
+        if per_day:
+            # Lane-named: Developer's REST and MCP quotas differ.
+            assert "%s MCP calls/day" % format(int(per_day), ",") in ladder
 
     # And the CODE carries no hardcoded money. Scanned with the docstring
     # removed: that docstring quotes the measured $10/$99/$49 on purpose —
@@ -92,7 +98,7 @@ def test_every_price_is_read_from_the_module_that_owns_it(ladder, mod):
     assert "claim_free_key" in code, (
         "the scanned segment is not the function body — the assertions below "
         "would pass over an empty string")
-    for literal in ("$10", "$99", "$49", "1,000 API calls", "2,000 calls"):
+    for literal in ("$10", "$99", "$49", "1,000 API calls", "2,000 ", "500 "):
         assert literal not in code, (
             "%r is typed into the ladder — it must be read from the registry"
             % literal)
@@ -131,3 +137,27 @@ def test_the_ladder_is_actually_served(mod):
     assert "_llms_unlock_ladder()" in body
     # Above the paid-API heading, so the cheapest way through is read first.
     assert body.index("_llms_unlock_ladder()") < body.index("_llms_paid_heading()")
+
+
+def test_developer_is_on_the_ladder_even_when_the_pack_is_unreadable(mod, monkeypatch):
+    """An unreadable pack drops the pack line, not the agent rung."""
+    monkeypatch.setitem(sys.modules, "routes.mcp_conversion_plays", None)
+    out = mod._llms_unlock_ladder()
+    assert "**Developer $" in out
+    assert out.index("**Developer $") < out.index("**Pro $")
+
+
+def test_llms_full_carries_the_ladder_it_promises(mod):
+    """llms-full.txt told agents pricing is "in the unlock ladder further down
+    this file" and carried no ladder. It also claimed Developer gets "1,000
+    requests/day vs 100 free" — free is 10 on every lane."""
+    import flask
+    app = flask.Flask(__name__)
+    mod.register_discovery_routes(app)
+    body = app.test_client().get("/llms-full.txt").get_data(as_text=True)
+    assert "these are the three ways through" in body
+    assert "**Developer $" in body
+    assert "vs 100 free" not in body
+    import tier_registry as tr
+    assert "Developer Tier ($%d/month)" % int(tr.price("developer")) in body
+    assert "%s MCP calls/day" % format(int(tr.calls_per_day("developer")), ",") in body

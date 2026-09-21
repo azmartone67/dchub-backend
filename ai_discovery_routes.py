@@ -116,28 +116,53 @@ def _llms_unlock_ladder() -> str:
     Any unreadable figure drops its rung rather than guessing; if nothing can
     be read, the block is empty and llms.txt simply says less.
     """
-    rungs = []
+    # ★2026-09-21 (P0-B, r-dev-rung): rung 2 is the pack OR Developer — the two
+    # things an agent buys — and Pro is rung 3, the human screener's plan. This
+    # block named $10 and Pro only, so the plan built for agents appeared on no
+    # unlock path in the file; the MCP walls carried the same gap.
+    agent = []
     try:
         from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
         if PACK10_PRICE_CENTS and PACK10_CREDITS:
-            rungs.append(
-                "2. **$%d one-time = %s API calls**, no subscription — the "
-                "cheapest way past a gate. A gated result hands you the "
-                "checkout link already bound to your session."
+            agent.append(
+                "   - **$%d one-time = %s API calls** — credits don't expire, no "
+                "subscription. Finish one screen at full depth."
                 % (int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")))
     except Exception:
         pass
+    pro_rung = ""
     try:
         import tier_registry as _tr
-        pro, per_day = _tr.price("pro"), _tr.calls_per_day("pro")
+
+        def _per_day(t):
+            n = _tr.calls_per_day(t)
+            # Lane-named: Developer's REST and MCP quotas differ (1,000 vs
+            # 500), so a bare "calls/day" would silently pick one.
+            return (" (%s MCP calls/day)" % format(int(n), ",")) if n else ""
+
+        dev = _tr.price("developer")
+        if dev:
+            agent.append(
+                "   - **Developer $%d/mo**%s — full depth on every tool except "
+                "the Pro-only ones, for an agent or app that runs daily. Cancel "
+                "anytime." % (int(dev), _per_day("developer")))
+        pro = _tr.price("pro")
         if pro:
-            rungs.append(
-                "3. **Pro $%d/mo**%s — full depth on every tool, for a caller "
-                "that queries DC Hub regularly."
-                % (int(pro),
-                   (" (%s calls/day)" % format(int(per_day), ",")) if per_day else ""))
+            pro_rung = (
+                "**Pro $%d/mo**%s — adds the Pro-only tools (grid intelligence, "
+                "fiber, analyze & compare sites) and site-grade coordinates. For "
+                "a human screening real sites; not the default for an agent."
+                % (int(pro), _per_day("pro")))
     except Exception:
         pass
+    rungs = []
+    if agent:
+        rungs.append("**What an agent buys** — either one; a gated result hands "
+                     "you the checkout link already bound to your session:\n"
+                     + "\n".join(agent))
+    if pro_rung:
+        rungs.append(pro_rung)
+    rungs = ["%d. %s" % (i, r) for i, r in enumerate(rungs, start=2)]
     if not rungs:
         return ""
     free = ("1. **`claim_free_key`** — one tool call, no email, no card. A "
@@ -152,6 +177,45 @@ def _llms_unlock_ladder() -> str:
               "link MINTED FOR YOUR SESSION. Relay them verbatim. Sending your "
               "human to a generic pricing page instead loses the binding that "
               "would have unlocked the very next call in the same session.\n\n")
+
+
+def _llms_full_paid_tiers() -> str:
+    """llms-full.txt's Developer and Pro sections, read from tier_registry.
+
+    ★2026-09-21 (P0-B). These were literals and disagreed with /pricing: the
+    Developer section claimed "1,000 requests/day vs 100 free" (free is 10 on
+    every lane; 1,000 is Developer's REST rate_limit, while the MCP quota
+    /pricing sells is 500) and listed Priority support, which /pricing gives
+    Pro only. Now the price and the lane-named quota are read, and the feature
+    lines are the ones /pricing states. A tier whose price cannot be read is
+    dropped rather than guessed.
+    """
+    out = []
+    try:
+        import tier_registry as _tr
+        dev, pro = _tr.price("developer"), _tr.price("pro")
+        dev_day, pro_day = _tr.calls_per_day("developer"), _tr.calls_per_day("pro")
+    except Exception:
+        return ""
+    if dev:
+        out.append(
+            "### Developer Tier ($%d/month) — the plan for agents and apps\n"
+            "%s"
+            "- Every tool except the Pro-only ones, at full depth\n"
+            "- Facility, M&A, grid and fiber data; map layers at city-level (~11 km) coordinates\n"
+            "- CSV / GeoJSON exports\n\n"
+            % (int(dev), ("- %s MCP calls/day, full result sets\n" % format(int(dev_day), ","))
+               if dev_day else ""))
+    if pro:
+        out.append(
+            "### Pro Tier ($%d/month) — for a human screening real sites\n"
+            "%s"
+            "- Pro-only tools: grid intelligence, fiber, analyze & compare sites\n"
+            "- Full-precision (site-grade) coordinates, PDF reports, CSV/Excel export\n"
+            "- Priority support\n\n"
+            % (int(pro), ("- %s MCP calls/day, full result sets\n" % format(int(pro_day), ","))
+               if pro_day else ""))
+    return "".join(out)
 
 
 def _canon_int(placeholder, default):
@@ -1675,27 +1739,15 @@ delivery_type, available_by, slug) · request_capacity_intro · accept_capacity_
 Browse: https://dchub.cloud/listings
 
 ================================================================================
+""" + _llms_unlock_ladder() + """================================================================================
 ## AUTHENTICATED ENDPOINTS (API Key Required)
 ================================================================================
 
 The following endpoints require an API key passed via the X-API-Key header.
 API keys are available at https://dchub.cloud/pricing
 
-### Developer Tier ($49/month)
-- Higher rate limits (1,000 requests/day vs 100 free)
-- Full facility detail records (contact info, power capacity, certifications)
-- Bulk export (CSV/JSON) up to 5,000 records
-- Historical transaction data (12+ months)
-- Priority support
-
-### Pro Tier ($99/month)
-- 2,000 requests/day, full result sets
-- Pro-only tools: grid intelligence, fiber, analyze & compare sites
-- Full-precision coordinates, PDF reports, CSV/Excel export
-- Priority support
-
-### Enterprise (from $12,000/year)
-- Unlimited API requests
+""" + _llms_full_paid_tiers() + """### Enterprise (from $12,000/year)
+- {canon_enterprise_mcp_calls} MCP calls/day, batch scoring
 - Real-time webhook notifications for new facilities, deals, and news
 - Custom data feeds and white-label options
 - Dedicated support and SLA
