@@ -338,7 +338,7 @@ def _score_response(response_text, question, context=None, had_real_response=Fal
         (r'\n[-*]\s', 3),            # Bullet points
         (r'\n\d+[\.\)]\s', 3),      # Numbered lists
         (r'\|.*\|.*\|', 5),         # Tables
-        (r'(compare|versus|vs\.%s|on the other hand|however|although|in contrast)', 4),
+        (r'(compare|versus|vs\.?|on the other hand|however|although|in contrast)', 4),
         (r'(first|second|third|finally|in conclusion|to summarize)', 3),
     ]
     structure_bonus = 0
@@ -351,7 +351,7 @@ def _score_response(response_text, question, context=None, had_real_response=Fal
     accuracy = 55 if had_real_response else 50
 
     # Numeric data density — specific numbers show real analysis
-    numbers = re.findall(r'\d+\.%s\d*\s*(mw|gw|kw|kv|%|\$|billion|million|facilities|sqft|acres|km|miles|megawatts%s|gigawatts%s)', text)
+    numbers = re.findall(r'\d+\.?\d*\s*(mw|gw|kw|kv|%|\$|billion|million|facilities|sqft|acres|km|miles|megawatts?|gigawatts?)', text)
     accuracy = min(100, accuracy + len(numbers) * 4)
 
     # Market mentions (real markets show domain knowledge)

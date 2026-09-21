@@ -393,7 +393,7 @@ def match_capacity_threshold(alert_config, news, facilities, pipeline):
             })
     
     # Check news for MW mentions
-    mw_pattern = re.compile(r'(\d+(%s:,\d+)%s(%s:\.\d+)%s)\s*(%s:MW|megawatt)', re.IGNORECASE)
+    mw_pattern = re.compile(r'(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:MW|megawatt)', re.IGNORECASE)
     for item in news:
         text = f"{item.get('title', '')} {item.get('description', '')} {item.get('content', '')}"
         mw_matches = mw_pattern.findall(text)

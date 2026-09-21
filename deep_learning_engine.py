@@ -372,14 +372,14 @@ class DeepLearningEngine:
         transactions = []
         
         deal_patterns = [
-            (r'(\w+(%s:\s+\w+)*)\s+(%s:acquires%s|to acquire|acquired)\s+(\w+(%s:\s+\w+)*)', 'acquisition'),
-            (r'(\w+(%s:\s+\w+)*)\s+(%s:buys%s|to buy|bought)\s+(\w+(%s:\s+\w+)*)', 'acquisition'),
-            (r'(\w+(%s:\s+\w+)*)\s+(%s:merges%s with|merger with)\s+(\w+(%s:\s+\w+)*)', 'merger'),
-            (r'(\w+(%s:\s+\w+)*)\s+(%s:invests%s|investing)\s+.*in\s+(\w+(%s:\s+\w+)*)', 'investment'),
-            (r'(\w+(%s:\s+\w+)*)\s+(%s:sells%s|sold|divests%s)\s+(\w+(%s:\s+\w+)*)', 'divestiture'),
+            (r'(\w+(?:\s+\w+)*)\s+(?:acquires?|to acquire|acquired)\s+(\w+(?:\s+\w+)*)', 'acquisition'),
+            (r'(\w+(?:\s+\w+)*)\s+(?:buys?|to buy|bought)\s+(\w+(?:\s+\w+)*)', 'acquisition'),
+            (r'(\w+(?:\s+\w+)*)\s+(?:merges? with|merger with)\s+(\w+(?:\s+\w+)*)', 'merger'),
+            (r'(\w+(?:\s+\w+)*)\s+(?:invests?|investing)\s+.*in\s+(\w+(?:\s+\w+)*)', 'investment'),
+            (r'(\w+(?:\s+\w+)*)\s+(?:sells?|sold|divests?)\s+(\w+(?:\s+\w+)*)', 'divestiture'),
         ]
         
-        value_pattern = r'\$(\d+(%s:\.\d+)%s)\s*(%s:billion|B|bn|million|M|mn)'
+        value_pattern = r'\$(\d+(?:\.\d+)?)\s*(?:billion|B|bn|million|M|mn)'
         
         for pattern, deal_type in deal_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
@@ -412,7 +412,7 @@ class DeepLearningEngine:
         known_suffixes = ['Data Centers', 'Digital', 'Infrastructure', 'Realty', 'Capital']
         operators = []
         
-        pattern = r'\b([A-Z][a-z]+(%s:\s+[A-Z][a-z]+)*)\s+(%s:Data\s+Center|Digital|Infrastructure)'
+        pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:Data\s+Center|Digital|Infrastructure)'
         matches = re.findall(pattern, text)
         operators.extend(matches)
         

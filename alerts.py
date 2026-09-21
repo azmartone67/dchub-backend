@@ -645,7 +645,7 @@ def check_alerts_against_news(news_items: list):
             
             elif alert['alert_type'] == 'capacity_threshold':
                 # Extract MW from news
-                mw_match = re.search(r'(\d+(%s:\.\d+)%s)\s*MW', news.get('title', '') + ' ' + news.get('content', ''), re.I)
+                mw_match = re.search(r'(\d+(?:\.\d+)?)\s*MW', news.get('title', '') + ' ' + news.get('content', ''), re.I)
                 if mw_match:
                     mw = float(mw_match.group(1))
                     min_mw = config.get('min_mw', 0)

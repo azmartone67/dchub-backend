@@ -36,7 +36,7 @@ RSS_FEEDS = [
 DEAL_TYPE_PATTERNS = {
     'acquisition':   r'\b(acquire[ds]?|acquisition|acquiring|bought|purchase[ds]?)\b',
     'merger':        r'\b(merge[drs]?|merger|combining)\b',
-    'joint_venture': r'\b(joint.%sventure|jv|partnership|teaming)\b',
+    'joint_venture': r'\b(joint.?venture|jv|partnership|teaming)\b',
     'investment':    r'\b(invest(?:s|ed|ing|ment)?|fund(?:s|ed|ing)?|stake|raise[ds]?)\b',
     # r68 (Nico audit #1): REMOVED 'land_acquisition' (land|site|campus|acre|
     # parcel|property) — it matched nearly EVERY data-center article, turning
