@@ -67,8 +67,13 @@ USAGE
     python3 scripts/api_response_contract.py extract      # print surface JSON
     python3 scripts/api_response_contract.py baseline     # (re)write baseline
     python3 scripts/api_response_contract.py check        # diff vs baseline
+    python3 scripts/api_response_contract.py verify-baseline
+        # is the committed baseline EXACTLY this tree's surface?
+    python3 scripts/api_response_contract.py verify-against --main origin/main
+        # would HEAD's baseline be main's surface if HEAD landed on main NOW?
 
 Exit codes for `check`:   0 = PASS   1 = FAIL   2 = UNMEASURED
+Exit codes for `verify-*`: 0 = CURRENT  1 = STALE  2 = UNMEASURED
 """
 from __future__ import annotations
 
@@ -78,8 +83,10 @@ import difflib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1009,12 +1016,238 @@ def _emit(verdict: str, failures: list[dict[str, Any]], unmeasured: list[str],
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# BASELINE FRESHNESS — is a committed baseline the surface of the tree it lands in?
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# 2026-09-21: #5026 regenerated the baseline on 4ef4fc37e, where
+# GET /api/v1/markets/<market> still served `stats.mw_coverage`. #5022 removed
+# that key at 02:44Z. #5026 squash-merged at 03:15Z on checks that had run
+# against its OLD merge ref, so main's baseline asserted a key main no longer
+# served and `contract` went red on main and on every open PR.
+#
+# `check` could not have caught it on the PR: it asks "does this tree still
+# serve every key the baseline names?", and on #5026's merge ref the answer was
+# yes. The question that matters for a PR that COMMITS a baseline is different:
+# "is this baseline the surface of the tree it will land in?" — asked against
+# main as it is NOW, because branch protection is strict:false and nothing
+# re-runs a PR's checks when main moves (a re-run replays the stored merge SHA).
+#
+#   verify-baseline  — committed baseline == this tree's surface?
+#   verify-against   — build candidate ⊕ main (what a squash merge would land)
+#                      in a throwaway worktree and run verify-baseline there.
+#
+# Equality is on the CONTRACT FINGERPRINT, not on bytes: `source` line numbers
+# move on every edit above a handler (#5047 was 2 key lines + 360 source
+# lines), and a refresh must not go stale because main.py grew a comment.
+
+def contract_fingerprint(surface: dict[str, Any]) -> dict[str, Any]:
+    """What the contract is made of: per endpoint its resolution, keys and open
+    levels, plus the parse errors that decide what is measurable. `source`,
+    `handler`, attribution and `stats` are deliberately left out."""
+    return {
+        "schema_version": surface.get("schema_version"),
+        "parse_errors": sorted(surface.get("parse_errors", [])),
+        "endpoints": {
+            eid: {
+                "resolution": rec.get("resolution"),
+                "keys": sorted(rec.get("keys", [])),
+                "open_at": sorted(rec.get("open_at", [])),
+            }
+            for eid, rec in surface.get("endpoints", {}).items()
+        },
+    }
+
+
+def _fingerprint_diff(base: dict[str, Any], cur: dict[str, Any]) -> list[str]:
+    """Human-readable differences, the dangerous direction first: keys the
+    baseline asserts that the tree does not serve are exactly what `check`
+    fails main on once the baseline lands."""
+    fb, fc = contract_fingerprint(base), contract_fingerprint(cur)
+    be, ce = fb["endpoints"], fc["endpoints"]
+    asserted, unrecorded, other = [], [], []
+    if fb["schema_version"] != fc["schema_version"]:
+        other.append(f"schema_version {fb['schema_version']} -> {fc['schema_version']}")
+    for eid in sorted(set(be) | set(ce)):
+        b, c = be.get(eid), ce.get(eid)
+        if c is None:
+            asserted.append(f"{eid}  (endpoint no longer in this tree; "
+                            f"baseline names {len(b['keys'])} keys)")
+            continue
+        if b is None:
+            unrecorded.append(f"{eid}  (endpoint missing from the baseline; "
+                              f"tree serves {len(c['keys'])} keys)")
+            continue
+        asserted += [f"{eid}  {k}" for k in sorted(set(b["keys"]) - set(c["keys"]))]
+        unrecorded += [f"{eid}  {k}" for k in sorted(set(c["keys"]) - set(b["keys"]))]
+        if b["resolution"] != c["resolution"]:
+            other.append(f"{eid}  resolution {b['resolution']} -> {c['resolution']}")
+        if b["open_at"] != c["open_at"]:
+            gone = sorted(set(b["open_at"]) - set(c["open_at"]))
+            new = sorted(set(c["open_at"]) - set(b["open_at"]))
+            other.append(f"{eid}  open levels" + (f" -{gone}" if gone else "")
+                         + (f" +{new}" if new else ""))
+    for pe in sorted(set(fb["parse_errors"]) ^ set(fc["parse_errors"])):
+        side = "baseline only" if pe in fb["parse_errors"] else "tree only"
+        other.append(f"parse error ({side}): {pe}")
+    out = []
+    for label, items in (
+            ("ASSERTED BUT NOT SERVED — `check` fails on these once this "
+             "baseline lands", asserted),
+            ("SERVED BUT NOT RECORDED — generated against an older tree", unrecorded),
+            ("OTHER CONTRACT DIFFERENCES", other)):
+        if items:
+            out.append(f"{label} ({len(items)}):")
+            out += [f"    {x}" for x in items[:40]]
+            if len(items) > 40:
+                out.append(f"    … and {len(items) - 40} more")
+    return out
+
+
+def verify_baseline(baseline_path: str | None = None, verbose: bool = True,
+                    surface: dict[str, Any] | None = None) -> int:
+    """0 = CURRENT (the baseline IS this tree's surface), 1 = STALE (it was
+    generated against some other tree), 2 = UNMEASURED.
+
+    `surface` is the self-test's injection point, as in check()."""
+    def say(*lines: str) -> None:
+        if verbose:
+            for ln in lines:
+                print(ln)
+
+    path = baseline_path or BASELINE_PATH
+    try:
+        base = _load_json(path)
+    except FileNotFoundError:
+        say(f"UNMEASURED — baseline missing: {path}", "VERDICT: UNMEASURED")
+        return 2
+    except Exception as e:  # noqa: BLE001
+        say(f"UNMEASURED — baseline unreadable: {e}", "VERDICT: UNMEASURED")
+        return 2
+    if surface is None:
+        try:
+            surface = extract_surface()
+        except Exception as e:  # noqa: BLE001 - ANY extractor failure is unmeasured
+            say(f"UNMEASURED — extractor raised {type(e).__name__}: {e}",
+                "VERDICT: UNMEASURED")
+            return 2
+    if not surface.get("endpoints"):
+        say("UNMEASURED — this tree's surface is EMPTY; an empty surface is never "
+            "evidence that a baseline is current.", "VERDICT: UNMEASURED")
+        return 2
+    if not surface.get("url_map", {}).get("available"):
+        # The same refusal `baseline` makes: without url_map attribution the
+        # surface re-admits phantom keys, so it differs from any real baseline
+        # for a reason that has nothing to do with staleness.
+        say("UNMEASURED — url_map attribution unavailable "
+            "(contracts/route_serving_map.json unreadable, or "
+            "DCHUB_CONTRACT_NO_BOOT set); cannot compare against a baseline "
+            "that was attributed.", "VERDICT: UNMEASURED")
+        return 2
+
+    # The verdict is fingerprint equality; the itemized diff only explains it.
+    # (Deciding on the diff would let a fingerprint field the report forgets to
+    # compare pass silently — a mutation found exactly that.)
+    if contract_fingerprint(base) == contract_fingerprint(surface):
+        s = surface["stats"]
+        say(f"CURRENT — the committed baseline is this tree's surface "
+            f"({s['endpoints_total']} endpoints, {s['keys_total']} keys).",
+            "VERDICT: CURRENT")
+        return 0
+    diff = _fingerprint_diff(base, surface) or [
+        "the contract fingerprints differ in a field this report does not itemize"]
+    say("STALE — the committed baseline is NOT this tree's surface. It was",
+        "generated against a different tree; landing it would publish that",
+        "tree's contract as this one's.", "", *diff, "",
+        "  Regenerate on the tree it will land in: "
+        "python3 scripts/api_response_contract.py baseline",
+        "VERDICT: STALE")
+    return 1
+
+
+def verify_against(main_ref: str, candidate: str = "HEAD",
+                   verbose: bool = True) -> int:
+    """Would `candidate`'s committed baseline be main's surface if it landed on
+    `main_ref` NOW? Merges `main_ref` into `candidate` in a throwaway worktree —
+    the tree a squash merge would produce — and runs verify-baseline there with
+    THIS extractor. 0 CURRENT, 1 STALE, 2 UNMEASURED (including: the two do not
+    merge cleanly, so no such tree exists)."""
+    def git(*a: str, cwd: str = REPO) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *a],
+                              cwd=cwd, capture_output=True, text=True)
+
+    def unmeasured(why: str) -> int:
+        if verbose:
+            print(f"UNMEASURED — {why}\nVERDICT: UNMEASURED")
+        return 2
+
+    shas = {}
+    for name, ref in (("main", main_ref), ("candidate", candidate)):
+        r = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if r.returncode:
+            return unmeasured(f"cannot resolve {name} ref {ref!r}")
+        shas[name] = r.stdout.strip()
+    if verbose:
+        print(f"verify-against: candidate {shas['candidate'][:10]} landed on "
+              f"main {shas['main'][:10]} ({main_ref})")
+    tmp = tempfile.mkdtemp(prefix="api-baseline-verify-")
+    tree = os.path.join(tmp, "tree")
+    try:
+        r = git("worktree", "add", "-q", "--detach", tree, shas["candidate"])
+        if r.returncode:
+            return unmeasured(f"git worktree add failed: {r.stderr.strip()[:300]}")
+        r = git("-c", "user.name=api-baseline-verify",
+                "-c", "user.email=api-baseline-verify@users.noreply.github.com",
+                "merge", "-q", "--no-edit", shas["main"], cwd=tree)
+        if r.returncode:
+            return unmeasured(
+                "candidate does not merge cleanly onto main, so there is no tree "
+                "it could land as — update or regenerate it. "
+                f"({(r.stdout + r.stderr).strip()[:300]})")
+        sys.stdout.flush()
+        p = subprocess.run([sys.executable, os.path.abspath(__file__),
+                            "verify-baseline", "--repo", tree],
+                           stdout=None if verbose else subprocess.DEVNULL,
+                           stderr=None if verbose else subprocess.DEVNULL)
+        return p.returncode if p.returncode in (0, 1, 2) else 2
+    finally:
+        git("worktree", "remove", "--force", tree)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _rebind_repo(root: str) -> None:
+    """Point every repo-relative path at another checkout (used by
+    verify-against to measure a throwaway merge tree with THIS extractor)."""
+    global REPO, BASELINE_PATH, EXCEPTIONS_PATH, ROUTE_MAP_PATH
+    REPO = os.path.abspath(root)
+    BASELINE_PATH = os.path.join(REPO, "contracts", "api_response_surface.json")
+    EXCEPTIONS_PATH = os.path.join(REPO, "contracts", "api_response_exceptions.json")
+    ROUTE_MAP_PATH = os.path.join(REPO, "contracts", "route_serving_map.json")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("cmd", choices=["extract", "baseline", "check"])
-    ap.add_argument("--baseline", default=BASELINE_PATH)
+    ap.add_argument("cmd", choices=["extract", "baseline", "check",
+                                    "verify-baseline", "verify-against"])
+    ap.add_argument("--baseline", default=None,
+                    help="baseline file (default: contracts/api_response_surface.json "
+                         "in --repo)")
+    ap.add_argument("--repo", default=None,
+                    help="measure this checkout instead of the one holding the script")
+    ap.add_argument("--main", default="origin/main",
+                    help="verify-against: the ref the candidate would land on")
+    ap.add_argument("--candidate", default="HEAD",
+                    help="verify-against: the commit whose baseline is checked")
     args = ap.parse_args()
+    if args.repo:
+        _rebind_repo(args.repo)
+    baseline_path = args.baseline or BASELINE_PATH
+
+    if args.cmd == "verify-baseline":
+        return verify_baseline(baseline_path)
+    if args.cmd == "verify-against":
+        return verify_against(args.main, args.candidate)
 
     if args.cmd == "extract":
         json.dump(extract_surface(), sys.stdout, indent=2, sort_keys=False)
@@ -1035,12 +1268,12 @@ def main() -> int:
                   "re-run. DCHUB_CONTRACT_NO_BOOT disables attribution but is "
                   "for `check`/`extract` only.", file=sys.stderr)
             return 2
-        os.makedirs(os.path.dirname(args.baseline), exist_ok=True)
-        with open(args.baseline, "w", encoding="utf-8") as fh:
+        os.makedirs(os.path.dirname(baseline_path), exist_ok=True)
+        with open(baseline_path, "w", encoding="utf-8") as fh:
             json.dump(surface, fh, indent=1, sort_keys=False)
             fh.write("\n")
         s = surface["stats"]
-        print(f"wrote {args.baseline}")
+        print(f"wrote {baseline_path}")
         print(f"  {s['endpoints_total']} in-scope endpoints "
               f"({s['endpoints_resolved']} resolved, {s['endpoints_partial']} partial, "
               f"{s['endpoints_opaque_not_covered']} opaque/NOT COVERED)")
@@ -1050,7 +1283,7 @@ def main() -> int:
               f"to the serving handler via url_map (phantom sources dropped)")
         return 0
 
-    return check(args.baseline)
+    return check(baseline_path)
 
 
 if __name__ == "__main__":

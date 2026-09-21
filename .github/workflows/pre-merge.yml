@@ -1028,6 +1028,29 @@ jobs:
             echo "::error::the install first-use SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── REST usage tracker: self-serve keys + billing, same Postgres ─────
+      # The tracker records self-serve dch_live_ keys (X-API-Key or Bearer)
+      # but never the MCP server's fan-out. This drives real requests through
+      # its hooks and its real flush, then reads the rows back through the
+      # billing routes (which must count none of them) and the install-stats
+      # reader (which must now see them). Owns and drops only its private
+      # schema usage_tracker_self_serve_t.
+      - name: Usage tracker self-serve SQL against a real Postgres
+        env:
+          USAGE_TRACKER_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_usage_tracker_self_serve_sql.py -v --tb=short
+
+      - name: Prove the usage tracker SQL test actually RAN
+        env:
+          USAGE_TRACKER_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_usage_tracker_self_serve_sql.py \
+            -q -rs --tb=no > ut.txt 2>&1 || { cat ut.txt; exit 1; }
+          cat ut.txt
+          if grep -qi "skipped" ut.txt; then
+            echo "::error::the usage tracker SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # crm_flush_last is the row the CRM health endpoint reads to describe the
       # process that actually flushes. Its recorder never raises, so SQL that
       # Postgres refuses (an ON CONFLICT target with no unique constraint) would
@@ -1097,6 +1120,7 @@ jobs:
             cs.txt
             ar.txt
             fu.txt
+            ut.txt
             fl.txt
           )
           PRESENT=()
