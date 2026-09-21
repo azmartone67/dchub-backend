@@ -27,6 +27,7 @@ Run:  python3 -m pytest tests/test_llms_cite_without_mcp.py -v
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -366,6 +367,7 @@ def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(
 # ───────────────────────────────────────────────────────────────────────────
 
 _FULL_DOOR = "/llms-full.txt"
+_AGENTS_DOOR = "/AGENTS.md"
 
 
 def _door_app():
@@ -445,19 +447,31 @@ def test_the_full_door_carries_the_policy_block(full_block: str):
     )
 
 
-def test_both_doors_serve_the_identical_block(block: str, full_block: str):
-    """Byte-identity, not similarity.
+def test_every_door_serves_the_identical_block(
+    block: str, full_block: str, agents_block: str
+):
+    """Byte-identity, not similarity — across all THREE doors.
 
-    Two hand-maintained copies is the state this change removed. If this ever
-    fails, one door stopped rendering agent_door_policy.policy_block() — fix
-    the renderer, do NOT reconcile the two texts by hand.
+    Hand-maintained copies is the state this removed. If this ever fails, one
+    door stopped rendering agent_door_policy.policy_block() — fix the
+    renderer, do NOT reconcile the texts by hand.
+
+    ★ Widened from two doors to three 2026-09-21. /AGENTS.md was the last
+    hand-maintained copy, and it is the drift this file warns about: measured
+    after #5005 it carried an EQUIVALENT block — same seven rules, no vendors,
+    as_of + mcp.json + Coverage + CC-BY all present — and different bytes,
+    because it bolded the rule labels and substituted its own f-string locals
+    for the canon placeholders. Equivalent is what decays; identical cannot.
+    Extended here rather than as a second guard so a fourth door has one
+    assertion to join, not two to keep in step.
     """
     summary = _slice_policy(block, "/llms.txt")
-    assert full_block == summary, (
-        "/llms.txt and %s serve DIFFERENT policy blocks (%d vs %d bytes). "
-        "They are supposed to be one rendering of agent_door_policy."
-        % (_FULL_DOOR, len(summary), len(full_block))
-    )
+    for door, served in ((_FULL_DOOR, full_block), (_AGENTS_DOOR, agents_block)):
+        assert served == summary, (
+            "/llms.txt and %s serve DIFFERENT policy blocks (%d vs %d bytes). "
+            "They are supposed to be one rendering of agent_door_policy."
+            % (door, len(summary), len(served))
+        )
 
 
 def test_the_policy_precedes_the_body_on_the_full_door(full_body: str):
@@ -548,3 +562,131 @@ def test_every_registered_handler_for_the_full_door_renders_the_block():
         )
         checked.append(ep)
     assert len(checked) == len(endpoints)
+
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# THE THIRD DOOR: /AGENTS.md
+#
+# ★ Measured 2026-09-21 rendering all three doors through their real
+# blueprints: /llms.txt and /llms-full.txt carried policy_block() verbatim and
+# /AGENTS.md did not (12,942 bytes, its own hand-written rendering of the same
+# seven rules). It now splices policy_block().
+# ───────────────────────────────────────────────────────────────────────────
+
+
+def _agents_app():
+    """An app wired the way main.py wires THIS door — which is not _door_app().
+
+    ★ READ THIS BEFORE "fixing" it to reuse _door_app(). /AGENTS.md is declared
+    twice, like /llms-full.txt was: ai_agent_discovery.py:358 (discovery_bp) and
+    routes/agents_md_fallback.py. The difference is WHICH duplicate main.py
+    registers. main.py's `discovery_bp` is imported `from routes.discovery_routes
+    import (discovery_bp, init_discovery_routes, ...)` — the data-discovery
+    blueprint. ai_agent_discovery is never register_blueprint()'d there at all;
+    main.py imports exactly one name from it, identify_ai_platform.
+
+    So _door_app() registers a blueprint production does not have. For
+    /llms-full.txt that changes nothing — register_discovery_routes() runs first
+    and wins the path either way — but for /AGENTS.md it would REVERSE the
+    result: ai_agent_discovery's rule would be registered before this one, win,
+    and hand the guard its 1.1 KB AGENTS_MD_FALLBACK constant, which carries no
+    policy block. The guard would fail while the live door was fine — the same
+    class of error as #5016, pointed the other way.
+
+    Confirmed from the outside rather than argued: live https://dchub.cloud/
+    AGENTS.md served 11,168 bytes on 2026-09-20 and named
+    routes/agents_md_fallback.py in its own header line.
+    """
+    flask = pytest.importorskip("flask")
+    from routes.agents_md_fallback import agents_md_fallback_bp
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(agents_md_fallback_bp)  # main.py, the only one
+    return app
+
+
+def test_the_agents_door_duplicate_is_still_dead():
+    """Pins the premise _agents_app() rests on.
+
+    If ai_agent_discovery's blueprint is ever registered in main.py, its
+    /AGENTS.md rule is registered BEFORE routes/agents_md_fallback.py's and
+    wins, and the live door starts serving a 1.1 KB constant with no policy
+    block in it — silently, exactly as /llms-full.txt did after be#4996. This
+    guard is the tripwire for that, and it is the reason the fixture above may
+    register one blueprint without being a fixture that grades a door nobody
+    serves.
+
+    Deliberately NOT fixed here by patching that constant: it is a third
+    module, and #5016 left the same duplicate in place for the same reason.
+    """
+    main = Path(__file__).resolve().parents[1] / "main.py"
+    src = main.read_text()
+    assert "from ai_agent_discovery import discovery_bp" not in src, (
+        "main.py now registers ai_agent_discovery.discovery_bp. Its /AGENTS.md "
+        "rule is declared BEFORE routes/agents_md_fallback.py's and will win, "
+        "and it serves AGENTS_MD_FALLBACK (1,136 bytes, no policy block). "
+        "Either render policy_block() there too, or stop registering it."
+    )
+
+
+@pytest.fixture(scope="module")
+def agents_body() -> str:
+    """The REAL /AGENTS.md body, served through the blueprint that answers it."""
+    app = _agents_app()
+    r = app.test_client().get(_AGENTS_DOOR)
+    assert r.status_code == 200, "%s -> %s" % (_AGENTS_DOOR, r.status_code)
+    body = r.get_data(as_text=True)
+    assert len(body) > 2000, (
+        "%s served only %d bytes — that is the 1.1 KB ai_agent_discovery "
+        "constant or a stub, not the rendered door, and every assertion below "
+        "would be reading it instead." % (_AGENTS_DOOR, len(body))
+    )
+    assert "routes/agents_md_fallback.py" in body, (
+        "%s was answered by something other than the fallback template, which "
+        "names itself in its own header line. The fixture is grading a handler "
+        "the live door does not use." % _AGENTS_DOOR
+    )
+    return body
+
+
+@pytest.fixture(scope="module")
+def agents_block(agents_body: str) -> str:
+    """The policy block as /AGENTS.md serves it."""
+    return _slice_policy(agents_body, _AGENTS_DOOR)
+
+
+def test_the_agents_door_names_no_competitor_it_ranks_against(agents_block: str):
+    """Reversed with its two twins — see the /llms.txt guard for the reasoning.
+
+    Same hardcoded list, for the same reason: sourcing _FORBIDDEN_VENDORS from
+    agent_door_policy would make all three guards mirrors, and deleting a name
+    from the module would delete it from the fence at the same time.
+
+    Not redundant with the identity assertion. Identity says the three doors
+    AGREE; it stays green if a vendor is added to the one renderer, because all
+    three then agree on the version that names it. The fence is what fails, and
+    it has to exist on every door.
+    """
+    flat = " ".join(agents_block.split())
+    named = [n for n in _FORBIDDEN_VENDORS if n in flat]
+    assert not named, (
+        "%s names %d third-party vendor(s): %s. All three doors render one "
+        "block (agent_door_policy.policy_block()) and none of them ranks DC "
+        "Hub against anyone by name." % (_AGENTS_DOOR, len(named), named))
+
+
+def test_no_unresolved_placeholder_reaches_the_agents_door(agents_body: str):
+    """The splice must not leave a brace on the wire.
+
+    ★ Scoped to the WHOLE body, not the block: the f-string the block is
+    spliced into carries its own {fac} / {tools} / {endpoint} fields, and the
+    failure mode of a splice is a field that stopped being substituted, not one
+    inside the block.
+    """
+    import re as _re
+    left = _re.findall(r"\{[a-z_]+\}", agents_body)
+    assert not left, (
+        "%s served %d unresolved placeholder(s) to an agent: %s"
+        % (_AGENTS_DOOR, len(left), sorted(set(left)))
+    )

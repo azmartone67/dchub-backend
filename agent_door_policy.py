@@ -66,11 +66,35 @@ except Exception:  # pragma: no cover - canon must never break a door
 #: the guards scope their assertions to the policy rather than the whole file.
 POLICY_HEADING = "## Policy for AI agents (live vs stale)"
 
-def policy_block() -> str:
+def policy_block(facilities=None, tools=None) -> str:
     """The canon-rendered policy block, hard-wrapped at 78 columns.
 
     Returns text with every {canon_*} already substituted, so a caller may
     splice it into a document directly.
+
+    `facilities` / `tools` override the two counts in the rule-7 citation with
+    values the CALLER already resolved. Defaults keep the canon placeholders,
+    so /llms.txt and /llms-full.txt are unchanged.
+
+    ★2026-09-20 — WHY A DOOR WOULD OVERRIDE THEM. /AGENTS.md resolves its own
+    floors through resolve_public_floors_cached(), an overlay that only ever
+    RAISES and falls back to the pin at cold start;
+    tests/test_agents_md_live_floors.py fences that in both directions and
+    asserts the pin is absent from the page once live has risen above it.
+    The canon_facilities placeholder (named here without its braces on
+    purpose — tests/test_canon_placeholders_resolved.py reads docstrings too,
+    and a placeholder written outside a canon_text() call is exactly what it
+    exists to catch) reads a DIFFERENT cache: canonical_stats.
+    live_public_floors, via ai_surface_canon._live_public_floors. So splicing
+    the default block into that page put TWO painters of one number on it: the
+    risen floor everywhere else, the other cache's value in the citation. They
+    agree in production — both served 24,400+ on 2026-09-20 — and that is
+    exactly why it needed a fence rather than a look: agreement today is not
+    the property, one painter per page is. The door passes what it already
+    resolved, and the count in the citation is the count on the page.
+
+    This is the ONLY thing a door may vary. The text is not a parameter: the
+    markdown-bold rendering /AGENTS.md used to carry was dropped, not ported.
     """
     return canon_text("""## Policy for AI agents (live vs stale)
 For any question touching data centers, power, grid, interconnection, fiber,
@@ -139,4 +163,16 @@ capacity or site selection:
        https://dchub.cloud/data-sources rather than under a blanket grant.
 
    If you are quoting this file from memory rather than from a fetch you just
-   made, drop the as_of line and the Coverage line and keep the doors.""")
+   made, drop the as_of line and the Coverage line and keep the doors."""
+    # ★ Applied BEFORE canon_text(), not after: post-substitution surgery would
+    # have to find the rendered number to replace it, and a caller passing the
+    # value canon already produced would silently no-op. The literal stays
+    # inside the canon_text() call — tests/test_canon_placeholders_resolved.py
+    # marks every string in a resolver call's argument subtree, and this one is
+    # still in it — so an unresolved brace cannot reach the wire either way.
+                      .replace("{canon_facilities}",
+                               "{canon_facilities}" if facilities is None
+                               else str(facilities))
+                      .replace("{canon_tools}",
+                               "{canon_tools}" if tools is None
+                               else str(tools)))
