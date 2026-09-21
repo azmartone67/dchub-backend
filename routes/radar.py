@@ -60,7 +60,29 @@ EDITIONS = [
     {"slug": "press",      "no": 4, "title": "Infra Press"},
 ]
 _BY_SLUG = {e["slug"]: e for e in EDITIONS}
-PAID = {"DEVELOPER", "PRO", "ENTERPRISE"}         # everyone else -> teaser
+def _derive_paid_upper(fallback):
+    """UPPERCASED paid plan names, from tier_registry.
+
+    ★2026-09-20 — `_resolve_caller_tier()` returns the signed `users.plan`
+    claim UPPERCASED, so the full plan vocabulary reaches this comparison —
+    not the FREE/IDENTIFIED/DEVELOPER/PRO/ENTERPRISE shortlist its docstring
+    used to promise. The literal this replaces was {"DEVELOPER","PRO","ENTERPRISE"}, so a paying FOUNDING, TEAM, STARTER or RESEARCH_SEED
+    customer was served the teaser.
+
+    ADMIN/INTERNAL are kept: they are gate words, and tier_registry excludes
+    `admin` from paid_plan_names() on purpose (a role, not a purchased plan).
+    Fails CLOSED to the previous literal so a broken import cannot widen the
+    gate.
+    """
+    try:
+        from tier_registry import paid_plan_names
+        got = {str(n).upper() for n in paid_plan_names()}
+        return (got | {"ADMIN", "INTERNAL"}) if got else set(fallback)
+    except Exception:
+        return set(fallback)
+
+
+PAID = _derive_paid_upper({"DEVELOPER", "PRO", "ENTERPRISE"})  # else -> teaser
 
 # ── the ONE clock (r-radarclock, 2026-07-29) ─────────────────────────────────
 # Every date-derived thing on the page — the edition slot, the featured-ISO

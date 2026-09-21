@@ -112,7 +112,43 @@ _DEFAULT_METERED_TOOLS = (
     "get_refined_queue,get_retirement_headroom,grid_transition_radar,"
     "get_fiber_intel,get_metro_fiber,get_fiber_readiness,plan_fiber_leadin"
 )
-_PAID_TIERS = {"developer", "pro", "starter", "enterprise", "founding", "research_seed"}
+def _paid_tiers():
+    """Tiers in `mcp_call_log.tier` that mean PAYING — do not bill them again.
+
+    ★2026-09-20 — the literal this replaces was
+        {"developer","pro","starter","enterprise","founding","research_seed"}
+    and it omitted `team`. The use below is
+        `if calls >= threshold and tier not in _PAID_TIERS` -> over-threshold
+    FREE user, which then writes a monetization decision row and a
+    `metered_grid_fiber_over_threshold` paywall event. So a paying Team
+    customer over the call threshold was queued for a metering pitch.
+
+    ★ THIS COLUMN IS NOT `users.plan`. `mcp_call_log.tier` is written from
+    `body.get("tier")` by the MCP call tracker (flask_mcp_endpoints), so it
+    carries whatever the caller reported — registry plan names AND the coarse
+    Node vocabulary. `paid` and `metered` both mean paying and neither is a
+    registry plan name, so the registry alone is NOT sufficient here: it is
+    unioned with the coarse words rather than trusted as the whole answer.
+
+    Direction of safety: a name wrongly INCLUDED here costs a missed free
+    over-user (a revenue signal); a name wrongly EXCLUDED pitches metering at
+    a customer who already pays. The second is worse, so unknown coarse words
+    that can only mean paying are kept.
+    """
+    # Not registry plan names. 'paid'/'metered' are the Node gate's words for
+    # paying; 'admin'/'internal' are ours and are never a billing target.
+    _COARSE_PAYING = {"paid", "metered", "admin", "internal"}
+    _FALLBACK = {"developer", "pro", "starter", "enterprise", "founding",
+                 "research_seed"}
+    try:
+        from tier_registry import paid_plan_names
+        got = {str(n).lower() for n in paid_plan_names()}
+        return (got | _COARSE_PAYING) if got else _FALLBACK
+    except Exception:
+        return _FALLBACK
+
+
+_PAID_TIERS = _paid_tiers()
 
 
 def _metered_tools() -> tuple:

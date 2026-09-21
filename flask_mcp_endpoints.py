@@ -1355,6 +1355,15 @@ def key_standing():
 # tier in ('paid','enterprise'). So validate MUST normalize granular plan
 # names (founding/pro/team/metered/…) to that vocabulary, or a paying
 # customer is gated. Mirrors the Stripe webhook's _paid_mcp_tier mapping.
+# ★2026-09-20 — NOT DERIVED, AND THAT IS CORRECT. These two sets are a RANK
+# MAPPING onto the Node vocabulary, not an answer to "which plans pay".
+# `starter` and `developer` are paid in tier_registry and are deliberately
+# absent from both: the docstring below places them BELOW 'paid' on purpose,
+# so they fall through to `norm.add(p)` and keep their own name. Deriving
+# either set from paid_plan_names() would silently promote both to the full
+# paid tool set — a pricing change wearing a refactor's clothes.
+# The sets also contain 'paid' and 'metered', which are Node words and not
+# plan names, so the registry could not supply them anyway.
 _ENT_PLANS  = {"enterprise", "research_seed", "admin"}
 _PAID_PLANS = {"paid", "pro", "founding", "team", "metered"}
 

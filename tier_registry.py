@@ -282,6 +282,32 @@ def is_paid(tier):
 # The rule the three fixes share: derive when the column is `users.plan`,
 # and read the COLUMN's own authority when it is not.
 #
+# ★2026-09-20, THIRD PASS — the sweep was widened and found eight more. Seven
+# were defects; one is correct and is pinned AS correct:
+#   routes/tier_gate._TIER_RANK          ← THE ROOT, and the worst of them.
+#       No `TEAM` row, and require_tier() reads _TIER_RANK.get(tier, 0), so a
+#       paying Team customer ranked FREE and got a 402 from every decorated
+#       route. Third instance of one defect — this table's own comments record
+#       FOUNDING and RESEARCH_SEED each missing and each fixed by typing one
+#       more row. Now derived through api_tier(), NOT through TIERS.rank: the
+#       gate uses a different scale and STARTER sits at IDENTIFIED's rank by a
+#       deliberate Phase BBB-3 decision that TIERS.rank would have overwritten.
+#   radar / deal_autopsy / grid_transition_radar  ← teaser instead of the full
+#       view. They typed uppercase sets off _resolve_caller_tier's docstring,
+#       which promised FREE/IDENTIFIED/DEVELOPER/PRO/ENTERPRISE and actually
+#       returns the signed users.plan claim uppercased. Docstring corrected.
+#   monthly_customer_report / customer_white_glove / customer_portal  ← the
+#       users.plan roster filters. white_glove's rows are CONFIRMED payers
+#       (stripe_customer_id + invoices_paid_count > 0), so every name it
+#       omitted was a paying customer dropped from white-glove contact.
+#   monetization_master_shell  ← `mcp_call_log.tier`, a MIXED column written
+#       from the caller's own `body.get("tier")`. Registry UNIONED with the
+#       coarse paying words ('paid', 'metered'), never trusted alone.
+#   flask_mcp_endpoints._PAID_PLANS/_ENT_PLANS  ← NOT a defect. A rank mapping
+#       onto the Node vocabulary in which starter/developer sit BELOW 'paid'
+#       by design. Deriving it would be a pricing change wearing a refactor's
+#       clothes, and a test now fails if anyone tries.
+#
 # `admin` is EXCLUDED. It is a role, not a purchased plan: resolve_effective_plan
 # reads `role == 'admin'` from its own column, and no account carries
 # plan='admin'. Including it would put a non-plan string into SQL that compares
