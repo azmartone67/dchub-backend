@@ -629,9 +629,9 @@ def test_every_door_serves_the_identical_block(
     Extended here rather than as a second guard so a fourth door has one
     assertion to join, not two to keep in step.
 
-    ★ Both llms bodies come from _served(): each door's ONE registration,
-    the one main.py wires. Identity between two handlers this file picked
-    proved nothing about the two production routes to.
+    ★ All three bodies come from _served(): each door's ONE registration,
+    the one main.py wires. Identity between handlers this file picked proved
+    nothing about the ones production routes to.
     """
     summary = _slice_policy(block, "/llms.txt")
     for door, served in ((_FULL_DOOR, full_block), (_AGENTS_DOOR, agents_block)):
@@ -690,12 +690,16 @@ def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
     )
 
 
-#: The doors ai_discovery_routes serves. /AGENTS.md is not here yet: it still
-#: has a dead second registration — see test_the_agents_door_duplicate_is_still_dead.
-_LLMS_PATHS = ("/llms.txt", _FULL_DOOR)
+#: Every door the policy block is published through, plus /agents.md (same
+#: handler as /AGENTS.md). /AGENTS.md and /agents.md joined 2026-09-21, when
+#: their dead copies on ai_agent_discovery's unregistered blueprint were deleted.
+_ONE_REGISTRATION_DOORS = ("/llms.txt", _FULL_DOOR, "/AGENTS.md", "/agents.md",
+                           # A2A cards: routes/agent_a2a.py serves both
+                           # (tests/test_agent_card_oauth2.py pins them identical)
+                           "/.well-known/agent.json", "/.well-known/agent-card.json")
 
 
-@pytest.mark.parametrize("door", _LLMS_PATHS)
+@pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
 def test_each_door_has_exactly_one_registration(door: str):
     """Two registrations of one public path IS the defect.
 
@@ -707,7 +711,7 @@ def test_each_door_has_exactly_one_registration(door: str):
     assert len(sites) == 1, _describe(door, sites)
 
 
-@pytest.mark.parametrize("door", _LLMS_PATHS)
+@pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
 def test_main_wires_the_registration(door: str):
     """Unique is not enough: it must also be REACHABLE from main.py.
 
@@ -720,6 +724,93 @@ def test_main_wires_the_registration(door: str):
     dead = [s for s in sites if not _main_wires(s)]
     assert not dead, "main.py never reaches: %s" % ", ".join(
         "%s:%d (%s %s)" % (s.rel, s.line, s.owner_kind, s.owner) for s in dead)
+
+
+@functools.lru_cache(maxsize=None)
+def _real_app_boot() -> tuple:
+    """(bodies, skip_reason, failure): each door requested through main.py's REAL app.
+
+    Booted by scripts/app_contract_gate.boot() (DB stubbed, repo state files
+    isolated), in a subprocess so main's import-time threads and state stay
+    out of this one. Nothing here chooses a handler: url_map precedence and
+    before_request hooks run exactly as in production. That last part is not
+    hypothetical: main.py's before_request answered /.well-known/agent.json
+    ahead of every rule until 2026-09-21, and no scan of route decorators can
+    see a hook.
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    out = Path(tempfile.mkdtemp()) / "bodies.json"
+    code = ("import json, sys\n"
+            "sys.path.insert(0, 'scripts')\n"
+            "import app_contract_gate as g\n"
+            "app, _ = g.boot()\n"
+            "c = app.test_client()\n"
+            "res = {}\n"
+            "for p in json.loads(sys.argv[2]):\n"
+            "    r = c.get(p)\n"
+            "    res[p] = [r.status_code, r.get_data(as_text=True)]\n"
+            "json.dump(res, open(sys.argv[1], 'w'))\n"
+            "import os; os._exit(0)\n")
+    proc = subprocess.run(
+        [sys.executable, "-c", code, str(out), json.dumps(_ONE_REGISTRATION_DOORS)],
+        cwd=_ROOT, capture_output=True, text=True, timeout=300)
+    if proc.returncode == 0 and out.exists():
+        return json.loads(out.read_text()), None, None
+    tail = "\n".join(proc.stderr.splitlines()[-8:])
+    # Same contract as tests/test_app_contract_gate.py: the unit-tests job
+    # installs a light dep set, so a missing module THERE is a thin
+    # environment. app-contract-gate installs requirements.txt, sets
+    # DCHUB_CONTRACT_GATE_STRICT=1 and runs this test, so there the skip
+    # cannot fire, and a missing module is a hard failure.
+    if "ModuleNotFoundError" in proc.stderr and os.environ.get(
+            "DCHUB_CONTRACT_GATE_STRICT") != "1":
+        missing = next((l.strip() for l in proc.stderr.splitlines()
+                        if "ModuleNotFoundError" in l), "a runtime dependency")
+        return None, ("the real app cannot boot in this environment (%s); "
+                      "app-contract-gate runs this test strictly" % missing), None
+    return None, None, ("could not boot the real app (rc=%s). That is NOT a "
+                        "pass: stderr tail:\n%s" % (proc.returncode, tail))
+
+
+def _through_the_real_app() -> dict:
+    bodies, skip, failure = _real_app_boot()
+    if skip:
+        pytest.skip(skip)
+    assert failure is None, failure
+    return bodies
+
+
+def _comparable(door: str, body: str):
+    """The body minus what is stamped per request, and nothing else."""
+    if door.endswith(".json"):
+        import json
+        card = json.loads(body)
+        card.pop("computed_at", None)
+        return card
+    return body
+
+
+@pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
+def test_the_real_app_serves_what_the_one_registration_serves(door: str):
+    """The scan and _served() read source. This reads the booted app.
+
+    If anything answers ahead of the one registration, the real app's body
+    differs from the one _served() renders, and this fails: a winning
+    duplicate, a before_request branch, or a catch-all. It also fails when
+    the door stops being served at all.
+    """
+    # _served() first: it performs this file's pinned repo walk, so a skip
+    # below (thin environment) cannot also report a false COVERAGE COLLAPSE.
+    ours = _served(door).test_client().get(door).get_data(as_text=True)
+    status, body = _through_the_real_app()[door]
+    assert status == 200, "the real app answers %s with %s" % (door, status)
+    assert _comparable(door, body) == _comparable(door, ours), (
+        "the REAL app serves %s differently (%d bytes) from its one "
+        "registration (%d bytes): something answers ahead of it."
+        % (door, len(body), len(ours)))
 
 
 def test_the_scan_can_see_what_it_exists_to_refuse(tmp_path):
@@ -765,68 +856,15 @@ def test_the_scan_can_see_what_it_exists_to_refuse(tmp_path):
 # ───────────────────────────────────────────────────────────────────────────
 
 
-def _agents_app():
-    """An app wired the way main.py wires THIS door.
-
-    ★ Not _served(): /AGENTS.md is still declared twice, as /llms-full.txt
-    was — ai_agent_discovery.py:358 (discovery_bp) and
-    routes/agents_md_fallback.py — so _served() refuses it. main.py's
-    `discovery_bp` is imported `from routes.discovery_routes import
-    (discovery_bp, init_discovery_routes, ...)` — the data-discovery
-    blueprint. ai_agent_discovery is never register_blueprint()'d there at
-    all; main.py imports exactly one name from it, identify_ai_platform.
-    Registering ai_agent_discovery's blueprint here would hand the guard its
-    1.1 KB AGENTS_MD_FALLBACK constant, which carries no policy block, and
-    fail while the live door was fine. Deleting that duplicate, as
-    /llms-full.txt's was, lets this become _served(_AGENTS_DOOR).
-
-    Confirmed from the outside rather than argued: live https://dchub.cloud/
-    AGENTS.md served 11,168 bytes on 2026-09-20 and named
-    routes/agents_md_fallback.py in its own header line.
-    """
-    flask = pytest.importorskip("flask")
-    from routes.agents_md_fallback import agents_md_fallback_bp
-
-    app = flask.Flask(__name__)
-    app.register_blueprint(agents_md_fallback_bp)  # main.py, the only one
-    return app
-
-
-def test_the_agents_door_duplicate_is_still_dead():
-    """Pins the premise _agents_app() rests on.
-
-    If ai_agent_discovery's blueprint is ever registered in main.py, its
-    /AGENTS.md rule is registered BEFORE routes/agents_md_fallback.py's and
-    wins, and the live door starts serving a 1.1 KB constant with no policy
-    block in it — silently, exactly as /llms-full.txt did after be#4996. This
-    guard is the tripwire for that, and it is the reason the fixture above may
-    register one blueprint without being a fixture that grades a door nobody
-    serves.
-
-    Deliberately NOT fixed here by patching that constant. The fix is to
-    delete the duplicate, as 2026-09-21 did for /llms-full.txt's; then this
-    door can join _LLMS_PATHS and test_each_door_has_exactly_one_registration.
-    """
-    main = Path(__file__).resolve().parents[1] / "main.py"
-    src = main.read_text()
-    assert "from ai_agent_discovery import discovery_bp" not in src, (
-        "main.py now registers ai_agent_discovery.discovery_bp. Its /AGENTS.md "
-        "rule is declared BEFORE routes/agents_md_fallback.py's and will win, "
-        "and it serves AGENTS_MD_FALLBACK (1,136 bytes, no policy block). "
-        "Either render policy_block() there too, or stop registering it."
-    )
-
-
 @pytest.fixture(scope="module")
 def agents_body() -> str:
-    """The REAL /AGENTS.md body, served through the blueprint that answers it."""
-    app = _agents_app()
+    """The REAL /AGENTS.md body, from the path's one registration."""
+    app = _served(_AGENTS_DOOR)
     r = app.test_client().get(_AGENTS_DOOR)
     assert r.status_code == 200, "%s -> %s" % (_AGENTS_DOOR, r.status_code)
     body = r.get_data(as_text=True)
     assert len(body) > 2000, (
-        "%s served only %d bytes — that is the 1.1 KB ai_agent_discovery "
-        "constant or a stub, not the rendered door, and every assertion below "
+        "%s served only %d bytes — a stub, not the rendered door, and every assertion below "
         "would be reading it instead." % (_AGENTS_DOOR, len(body))
     )
     assert "routes/agents_md_fallback.py" in body, (

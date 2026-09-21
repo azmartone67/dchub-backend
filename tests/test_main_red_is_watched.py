@@ -32,6 +32,8 @@ flag it was checking. Text assertions against a module with real docstrings
 would walk straight back into that: the word "unmeasured" appears in prose that
 describes the behaviour. Calling the function cannot match prose.
 """
+import fnmatch
+import glob
 import os
 
 import yaml
@@ -74,6 +76,129 @@ def _triaged_names():
         doc = yaml.safe_load(fh) or {}
     on = doc.get(True) or doc.get("on") or {}
     return set((on.get("workflow_run") or {}).get("workflows") or [])
+
+
+def _triggers(doc):
+    on = doc.get(True) or doc.get("on") or {}
+    if isinstance(on, str):
+        on = [on]
+    return on if isinstance(on, dict) else {k: None for k in on}
+
+
+def _push_to_main_starts_it(on):
+    """Can a push to main start this workflow at all (paths filters aside)?"""
+    if "push" not in on:
+        return False
+    push = on["push"] or {}
+    if "branches" in push:
+        return any(fnmatch.fnmatchcase("main", b) for b in push["branches"] or [])
+    if "branches-ignore" in push:
+        return not any(fnmatch.fnmatchcase("main", b)
+                       for b in push["branches-ignore"] or [])
+    return "tags" not in push and "tags-ignore" not in push
+
+
+def _carriers():
+    """{required context: workflow files with a job that reports under it}.
+
+    A check's context is its job's `name:`, else the job id. Read off every
+    workflow file, so a moved or renamed job, or a new carrier, is seen here
+    without anyone updating a list."""
+    carriers = {c: {} for c in _verdict_module().REQUIRED_CONTEXTS}
+    for path in sorted(glob.glob(os.path.join(WF, "*.y*ml"))):
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        for jid, job in (doc.get("jobs") or {}).items():
+            ctx = (job or {}).get("name") or jid
+            if ctx in carriers:
+                carriers[ctx][os.path.basename(path)] = _triggers(doc)
+    return carriers
+
+
+# main's required contexts as MEASURED 2026-09-21 (gh api .../branches/main/
+# protection). A FLOOR, not a copy: REQUIRED_CONTEXTS may grow past it, but the
+# carrier check below can only see contexts it is told are required, so trimming
+# the declaration would narrow that check silently. Lower this only with a fresh
+# measurement showing branch protection dropped the context.
+_MEASURED_REQUIRED_FLOOR = frozenset({
+    "substance-gate", "syntax-check", "unit-tests", "regression-lint",
+    "db-parity", "app-contract-gate", "contract"})
+
+
+def test_gating_covers_every_workflow_that_carries_a_required_context():
+    """★2026-09-21. Branch protection had grown a seventh required context,
+    `contract` (api-response-contract.yml), while GATING still named three
+    workflows "carrying main's six". stats.mw_coverage was removed, `contract`
+    went red on main at 84f4a441d, and four runs of main-branch-health beat
+    "all 3 gating workflow(s) green" to the board while that red blocked every
+    open PR — until #5039 fixed main.
+
+    The workflow set is DERIVED from the workflow files — whichever job reports
+    under each required context — never copied here. Dropping a GATING entry,
+    moving a required job into another file, or a required context whose last
+    main-side carrier goes PR-only: each one fails this."""
+    m = _verdict_module()
+    dropped = sorted(_MEASURED_REQUIRED_FLOOR - set(m.REQUIRED_CONTEXTS))
+    assert not dropped, (
+        f"REQUIRED_CONTEXTS no longer declares {dropped}, which branch "
+        "protection required when last measured. Every check below derives from "
+        "that tuple, so a trimmed entry is a context main-branch-health stops "
+        "watching with nothing going red. Re-measure before removing one.")
+    carriers = _carriers()
+    unmapped = sorted(c for c, wfs in carriers.items() if not wfs)
+    assert not unmapped, (
+        f"required context(s) {unmapped}: no job in .github/workflows reports "
+        "under them. A job was renamed, or REQUIRED_CONTEXTS has drifted from "
+        "branch protection — re-measure with the command above it.")
+
+    missing, judged = [], set()
+    for ctx, wfs in sorted(carriers.items()):
+        for wf, on in sorted(wfs.items()):
+            if _push_to_main_starts_it(on) or "schedule" in on:
+                judged.add(ctx)
+                if wf not in m.GATING:
+                    missing.append(f"{wf} (reports {ctx!r})")
+    assert not missing, (
+        "these workflows run on main and carry a REQUIRED check, but GATING "
+        "does not read them — so they can be red on main's HEAD while "
+        "main-branch-health beats success:\n"
+        + "".join(f"  {x}\n" for x in missing))
+
+    unjudged = sorted(set(carriers) - judged)
+    assert unjudged == sorted(m.PR_ONLY_CONTEXTS), (
+        f"required contexts with no run on main to judge: {unjudged}; "
+        f"PR_ONLY_CONTEXTS declares {sorted(m.PR_ONLY_CONTEXTS)}. A carrier "
+        "that lost its push/schedule trigger leaves main-branch-health blind "
+        "to that check without any GATING edit.")
+
+
+def test_gating_reads_only_workflows_that_carry_a_required_context():
+    """main_red tells the board every open PR is blocked, which is true only of
+    a required check. regression-lint.yml sat in GATING until 2026-09-21 because
+    its workflow `name:` equals a required context, but its job is `lint`; the
+    `regression-lint` context is pre-merge.yml's job of that name."""
+    carrying = {wf for wfs in _carriers().values() for wf, on in wfs.items()
+                if _push_to_main_starts_it(on) or "schedule" in on}
+    extra = sorted(set(_gating_workflow_files()) - carrying)
+    assert not extra, (
+        f"GATING reads {extra}, which carry no required context on main. A red "
+        "there blocks no PR, yet main-branch-health would beat main_red and say "
+        "every open PR is blocked.")
+
+
+def test_every_gating_workflow_runs_on_every_push_to_main():
+    """verdict() reads "no run for HEAD" as not-created-yet, never as
+    does-not-apply. A paths filter, or no push trigger at all, would make that
+    `pending` permanent: the monitor never beats and main-ci ages to overdue."""
+    bad = []
+    for fn in _gating_workflow_files():
+        with open(os.path.join(WF, fn), encoding="utf-8") as fh:
+            on = _triggers(yaml.safe_load(fh) or {})
+        push = on.get("push") or {}
+        if not _push_to_main_starts_it(on) or "paths" in push or "paths-ignore" in push:
+            bad.append(f"{fn}: push={on.get('push')!r}")
+    assert not bad, ("gating workflows a push to main does not always start:\n"
+                     + "".join(f"  {b}\n" for b in bad))
 
 
 def test_every_gating_workflow_is_triaged_when_it_fails():
@@ -119,6 +244,14 @@ def test_the_health_job_actually_scopes_to_main():
             "main-branch-health must scope its run query to main. An unscoped "
             "`gh run list` counts PR runs, which is why pre-merge.yml is not "
             "simply added to tools/deadman/watch.py instead. Got: %r" % (a,))
+        # api-response-contract.yml's schedule lane shares its concurrency group
+        # (api-contract-${{ github.ref }}, cancel-in-progress) with push, so on
+        # main a schedule run on HEAD cancels HEAD's push run. Filtering to
+        # --event push would judge that cancellation as red, and a HEAD merged
+        # with GITHUB_TOKEN (no push run at all) would stay pending for ever.
+        assert "--event" not in a, (
+            "main-branch-health must read every run on main, not only push "
+            "runs — see the comment above. Got: %r" % (a,))
 
 
 def test_an_unreadable_result_is_not_reported_as_green():

@@ -88,7 +88,6 @@ _SKIP = ("node_modules", "/.git/", "/tests/", "dchub-frontend/")
 _KNOWN_LATCHED = {
     'agent_hub.py': ['SALES_SYSTEM_PROMPT', 'SEO_POST_TEMPLATES',   # (09-13)
                      '_CANON_FAC'],
-    'ai_agent_discovery.py': ['AGENTS_MD_FALLBACK'],
     'ai_interconnection.py': ['_CANON_FAC'],
     'ai_outreach_agent.py': ['AI_PLATFORMS', 'MCP_SERVICE_HEADERS',  # (09-13)
                              'SOCIAL_PLATFORMS', '_CANON_FAC'],

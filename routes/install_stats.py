@@ -34,7 +34,11 @@ from mcp_calls_deloop import (
     internal_tag_regex_predicate,
     real_ua_predicate,
 )
-from routes.api_usage_tracker import STORED_PREFIX_LEN, TRACKED_KEY_PREFIX
+from routes.api_usage_tracker import (
+    SELF_SERVE_KEY_PREFIX,
+    STORED_PREFIX_LEN,
+    TRACKED_KEY_PREFIXES,
+)
 
 log = logging.getLogger("install_stats")
 install_stats_bp = Blueprint("install_stats", __name__)
@@ -388,21 +392,23 @@ def install_stats():
 #                     and routes/onboarding_page.py logs 'key_first_use' (a keyed
 #                     POST from the onboarding test button) and 'key_issued' (a
 #                     page view — the page was used, not the key).
-#   api_endpoint_log  per call, but keyed by the first STORED_PREFIX_LEN chars
-#                     of X-API-Key, and only when that key starts with
-#                     TRACKED_KEY_PREFIX (routes/api_usage_tracker.py). Every
-#                     self-serve key from /api/v1/keys/claim is `dch_live_…`, so
-#                     this tracker never records one — nor any `Authorization:
-#                     Bearer` key, whatever its shape.
+#   api_endpoint_log  per call, keyed by the first STORED_PREFIX_LEN chars of a
+#                     key whose shape is in TRACKED_KEY_PREFIXES
+#                     (routes/api_usage_tracker._recorded_as). Every self-serve
+#                     key from /api/v1/keys/claim is `dch_live_…`, recorded only
+#                     since 2026-09-21 — from X-API-Key or `Authorization:
+#                     Bearer`, and never on the MCP server's backend fan-out,
+#                     which carries X-Internal-Key and stays 'internal'.
 #   api_usage_meter   day grain. The same tracker writes the same prefix;
 #                     POST /track-usage writes a full key but has no caller.
 #   api_usage(_daily) keyed by api_keys.id — a dch_live_ key has no api_keys row,
 #                     so these cannot hold one. Not read.
 #
-# So the REST side is measured only through two narrow slices (bulk briefs,
-# onboarding test), and the endpoint says so from data: .instrument cross-checks
-# every keyed REST request that mcp_call_log DID record against the tracker's
-# tables, which should hold the same request if they could see the key.
+# Before 2026-09-21 the REST side was measured only through two narrow slices
+# (bulk briefs, onboarding test). The endpoint says what the tracker sees from
+# data, not from this comment: .instrument cross-checks every keyed REST request
+# that mcp_call_log DID record against the tracker's tables, which should hold
+# the same request if they could see the key.
 
 # mcp_call_log.event_type -> channel. Anything else is `unclassified`: counted
 # as use on NEITHER channel and published, so a new writer shows up as a number
@@ -433,7 +439,7 @@ _FIRST_USE_SQL = f"""
                     SELECT k.api_key,
                            k.metadata->>'client_name' AS client,
                            k.created_at,
-                           (starts_with(k.api_key, %s)
+                           (k.api_key ^@ ANY(%s)
                             AND LENGTH(k.api_key) >= %s)     AS tracker_sees_format
                       FROM mcp_dev_keys k
                      WHERE k.metadata->>'client_name' LIKE %s
@@ -502,7 +508,7 @@ _FIRST_USE_SQL = f"""
 def _first_use_params(prefix, exclude):
     """Bound parameters for _FIRST_USE_SQL, in the order its %s appear."""
     return (
-        TRACKED_KEY_PREFIX, STORED_PREFIX_LEN,           # pop.tracker_sees_format
+        list(TRACKED_KEY_PREFIXES), STORED_PREFIX_LEN,   # pop.tracker_sees_format
         prefix, exclude,                                 # population, minus probes
         list(_MCP_EVENT_TYPES),                          # channel: mcp
         _REST_EVENT_PATTERN, list(_REST_EVENT_TYPES),    # channel: rest
@@ -570,6 +576,8 @@ def _key_record(row):
         "tracker_sees_format": bool(tracker_sees_format),
         "in_endpoint_log": log_first is not None,
         "in_meter": meter_day is not None,
+        "endpoint_log_first": log_first,
+        "meter_first_day": meter_day,
         "rest_in_call_log": rest_first is not None,
         "mcp_any_row": mcp_any_row is not None,
         "rest_any_row": rest_any_row is not None,
@@ -677,12 +685,15 @@ def _instrument(all_recs, control_recs):
     live     it holds all of them — or, with no such key to test, rows exist
              for some key, so a zero elsewhere is at least a count
     unproven nothing to test against and nothing held
-    ★ Rows for OTHER keys never rescue a failed cross-check: the tracker is
-    live for dchub_ keys and still blind to every dch_live_ one.
+    ★ Rows for OTHER keys never rescue a failed cross-check: until 2026-09-21
+    the tracker was live for dchub_ keys and still blind to every dch_live_ one.
+    first_row_at is the earliest row the table holds for any checked key. REST
+    use before it reached no per-key table, so a key whose only REST request is
+    older stays unseen here.
     """
     known = [r for r in all_recs if r["rest_settled"]]
 
-    def _tracker_arm(field):
+    def _tracker_arm(field, first_field):
         seen = sum(1 for r in known if r[field])
         held = sum(1 for r in all_recs if r[field])
         if known:
@@ -690,10 +701,13 @@ def _instrument(all_recs, control_recs):
                        "partial" if seen < len(known) else "live")
         else:
             verdict = "live" if held else "unproven"
+        first = min((r[first_field] for r in all_recs if r[first_field] is not None),
+                    default=None)
         return {"verdict": verdict,
                 "keys_known_to_have_made_a_rest_request": len(known),
                 "of_those_seen_here": seen,
-                "keys_with_rows_here": held}
+                "keys_with_rows_here": held,
+                "first_row_at": None if first is None else first.isoformat()}
 
     mcp_live = any(r["mcp_any_row"] for r in all_recs)
     rest_live = any(r["rest_any_row"] for r in all_recs)
@@ -706,8 +720,8 @@ def _instrument(all_recs, control_recs):
             "verdict": "live" if rest_live else "unproven",
             "control_keys_with_rest_rows": sum(1 for r in control_recs if r["rest_any_row"]),
         },
-        "api_endpoint_log": _tracker_arm("in_endpoint_log"),
-        "api_usage_meter": _tracker_arm("in_meter"),
+        "api_endpoint_log": _tracker_arm("in_endpoint_log", "endpoint_log_first"),
+        "api_usage_meter": _tracker_arm("in_meter", "meter_first_day"),
         "keys_in_a_format_the_rest_tracker_records": sum(
             1 for r in all_recs if r["tracker_sees_format"]),
         "keys_checked": len(all_recs),
@@ -729,7 +743,12 @@ def _population_reading(pop, inst):
         "%d REST only, %d both." % (w["minted"], w["first_use_any"],
                                     w["mcp_only"], w["rest_only"], w["both"]))
     if rest_seen:
-        return head + " The per-call REST tracker sees keys of this kind, so the REST figures are counts."
+        return head + (
+            " The per-call REST tracker sees keys of this kind, so REST use from its "
+            "first row for them (%s) on is counted. Earlier REST use shows only on "
+            "the bulk-brief and onboarding-test slice of mcp_call_log, so REST "
+            "figures reaching back past that are a floor."
+            % inst["api_endpoint_log"]["first_row_at"])
     return head + (
         " REST figures here are a FLOOR: the per-call REST tracker is %s for these "
         "keys, so REST use is visible only on the bulk-brief and onboarding-test "
@@ -803,11 +822,19 @@ def install_first_use():
             },
             "rest_coverage": (
                 "routes/api_usage_tracker.py writes api_endpoint_log and "
-                "api_usage_meter only for an X-API-Key starting '"
-                + TRACKED_KEY_PREFIX + "'. Self-serve keys from "
-                "/api/v1/keys/claim are dch_live_ keys, and web-map sends its key "
-                "on REST, so most REST use by these populations reaches no per-key "
-                "table. .instrument measures this instead of assuming it."
+                "api_usage_meter per key, keyed by its first "
+                + str(STORED_PREFIX_LEN) + " chars, for a key starting "
+                + " or ".join("'" + p + "'" for p in TRACKED_KEY_PREFIXES)
+                + ". A '" + SELF_SERVE_KEY_PREFIX + "' key (every self-serve key "
+                "from /api/v1/keys/claim) is read from X-API-Key or, with none, "
+                "Authorization: Bearer — web-map sends both — and only when the "
+                "request carries no server credential: the MCP server's backend "
+                "fan-out sends X-Internal-Key beside the caller's key and is "
+                "recorded as the class 'internal', so MCP use never lands on the "
+                "REST arm. The tracker recorded no such key before 2026-09-21 "
+                "(.instrument.api_endpoint_log.first_row_at), and a response the "
+                "edge serves from cache never reaches it. .instrument measures "
+                "this instead of assuming it."
             ),
             "grain": (
                 "hours_call_grain is computed only where a per-call timestamp "

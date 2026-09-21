@@ -585,7 +585,13 @@ def test_repo_worker_is_canon_clean_and_current():
     # path, which is served by the frontend Pages worker and reports ITS version:
     #   curl -sI "https://dchub.cloud/mcp?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.71-capacity-source-on-mcp-get'" in src
+    # ★2026-09-21 4.9.72: /.well-known/agent.json returns /.well-known/agent-card.json
+    # (the A2A card) instead of an MCP card built here. ⚠ PASTE OUTSTANDING as of
+    # this commit: production serves 4.9.71 until worker.js is pasted into the CF
+    # dashboard, and check_zone_worker_version_drift files
+    # zone_worker_commit_not_pasted until then. Verify with (want 4.9.72-…):
+    #   curl -sI "https://dchub.cloud/mcp?_=$(date +%s)" | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.72-agent-json-serves-the-a2a-card'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

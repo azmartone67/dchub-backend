@@ -7661,8 +7661,7 @@ def handle_well_known():
             "problem_taxonomy": _canonical_problem_taxonomy(),
             "last_updated": "2026-07-31"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
-    if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":_canon_text("AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). {canon_facilities} distinct facilities, {canon_markets} markets, freshness SLAs published live."),"tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":_canon_text("Search and filter {canon_facilities} distinct facilities worldwide (live)")},{"id":"deal-tracker","name":"M&A Deal Tracker","description":_canon_text("{canon_deals} transactions, browsable + filterable")},{"id":"market-intelligence","name":"Market Intelligence","description":_canon_text("DCPI scores for {canon_markets} markets, recomputed 4x/day")},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+    # /.well-known/agent.json is not answered here: routes/agent_a2a.py serves it.
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -25353,6 +25352,13 @@ def _list_facilities_free():
     except Exception:
         pass
 
+    # P0-C (2026-09-21): the $10 pack as a measured /go/c checkout plus the
+    # ladder, not bare /pricing. See routes.checkout_click_tracker.rest_wall_ladder.
+    try:
+        from routes.checkout_click_tracker import rest_wall_ladder as _rest_wall_ladder
+        _wall = _rest_wall_ladder()
+    except Exception:  # noqa: BLE001
+        _wall = {'upgrade_url': 'https://dchub.cloud/pricing'}
     _free_payload = {
         'success': True,
         'data': facilities,
@@ -25360,7 +25366,7 @@ def _list_facilities_free():
         'total_matching': total_matching,
         'full_results_available': total_matching > FREE_LIMIT,
         'tier': 'free',
-        'upgrade_url': 'https://dchub.cloud/pricing',
+        **_wall,
         'note': f'Free tier: showing {len(facilities)} of {total_matching} matching facilities with basic fields. Upgrade for full data including capacity, coordinates, and detailed specs.'
     }
     # provenance-v1: collection-level block (once per response — fail-soft).
@@ -35822,25 +35828,8 @@ def _well_known_tool_gate(live_tool_count=0):
     }
 
 
-@app.route('/.well-known/agent.json', methods=['GET'])
-def well_known_agent():
-    return jsonify({
-        "name": "DC Hub Intelligence",
-        "description": _canon_text("Live intelligence layer for the global data center market. {canon_facilities} distinct facilities across {canon_countries} countries."),
-        "url": "https://dchub.cloud",
-        "version": "1.0.0",
-        "capabilities": {"streaming": True, "pushNotifications": False},
-        "skills": [
-            {"id": "facility-search", "name": "Data Center Search", "description": _canon_text("Search and filter {canon_facilities} distinct facilities worldwide")},
-            {"id": "deal-tracker", "name": "M&A Deal Tracker", "description": "Track transactions in real-time"},
-            {"id": "market-intelligence", "name": "Market Intelligence", "description": "AI-generated market reports"},
-            {"id": "site-scoring", "name": "Site Scoring", "description": "Evaluate locations for data center suitability"}
-        ],
-        "authentication": {"schemes": ["api_key"]},
-        "provider": {"organization": "DC Hub", "url": "https://dchub.cloud"},
-        "defaultInputModes": ["text"],
-        "defaultOutputModes": ["text"]
-    })
+# /.well-known/agent.json: routes/agent_a2a.py (one A2A card, every alias). The
+# copy that lived here was never served; the CF zone worker answers that path.
 
 @app.route('/.well-known/security.txt', methods=['GET'])
 def well_known_security():

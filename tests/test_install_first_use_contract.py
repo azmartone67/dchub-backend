@@ -125,7 +125,7 @@ def test_the_published_rows_never_carry_the_key():
 
 # ── the facts the coverage story rests on, read from the producers ──────────
 
-def _tracked_prefix(headers):
+def _tracked_prefix(headers, query_string=None):
     """Drive the REAL before/after_request hooks and return what they buffered."""
     app = flask.Flask(__name__)
 
@@ -140,7 +140,8 @@ def _tracked_prefix(headers):
         tracker.install_tracker(app)
         with tracker._BUFFER_LOCK:
             tracker._BUFFER.clear()
-        app.test_client().get("/api/v1/tracker-shape-probe", headers=headers)
+        app.test_client().get("/api/v1/tracker-shape-probe", headers=headers,
+                              query_string=query_string)
         with tracker._BUFFER_LOCK:
             got = [e["key_prefix"] for e in tracker._BUFFER]
             tracker._BUFFER.clear()
@@ -160,23 +161,56 @@ def _claim_key_literal_prefix():
     return None
 
 
-def test_the_tracker_records_exactly_the_shape_the_endpoint_says_it_does():
-    key = tracker.TRACKED_KEY_PREFIX + "a" * 30
-    assert _tracked_prefix({"X-API-Key": key}) == [key[:tracker.STORED_PREFIX_LEN]]
-    # Authorization: Bearer is never read — map.html sends its key that way.
-    assert _tracked_prefix({"Authorization": "Bearer " + key}) == []
+def test_the_tracker_records_exactly_the_shapes_the_endpoint_says_it_does():
+    """basis.rest_coverage is built from TRACKED_KEY_PREFIXES; every shape named
+    there must really be recorded, from the header the endpoint says."""
+    assert set(tracker.TRACKED_KEY_PREFIXES) == {
+        tracker.ACCOUNT_KEY_PREFIX, tracker.SELF_SERVE_KEY_PREFIX}
+    n = tracker.STORED_PREFIX_LEN
+    for shape in tracker.TRACKED_KEY_PREFIXES:
+        key = shape + "a" * 30
+        assert _tracked_prefix({"X-API-Key": key}) == [key[:n]], shape
+        assert _tracked_prefix({"X-API-Key": key[:n - 1]}) == [], shape
+    account = tracker.ACCOUNT_KEY_PREFIX + "a" * 30
+    # A dchub_ key is recorded exactly as before 2026-09-21: X-API-Key only,
+    # and even beside a server credential — partner-usage reads these rows.
+    assert _tracked_prefix({"Authorization": "Bearer " + account}) == []
+    assert _tracked_prefix({"X-API-Key": account, "X-Internal-Key": "k"}) == [account[:n]]
+    # Server credentials alone are a class, never a key (unchanged).
+    assert _tracked_prefix({"X-Internal-Key": "k"}) == ["internal"]
+    assert _tracked_prefix({}) == []
 
 
-def test_a_self_serve_claimed_key_is_invisible_to_the_tracker():
-    """The whole REST-coverage finding: /api/v1/keys/claim mints a key shape the
-    tracker drops. Built from the claim handler's own literal, then pushed
-    through the tracker's own hook."""
+def test_a_self_serve_claimed_key_is_recorded_on_rest_and_never_on_mcp_fan_out():
+    """/api/v1/keys/claim mints the key shape the whole first-use measurement
+    is about. Built from the claim handler's own literal, then pushed through
+    the tracker's own hooks. Before 2026-09-21 every line below returned []."""
     prefix = _claim_key_literal_prefix()
     assert prefix, "claim_key no longer builds api_key as '<literal>' + ..."
     claimed = prefix + secrets.token_hex(16)
-    assert _tracked_prefix({"X-API-Key": claimed}) == [], (
-        "the REST tracker now records self-serve keys — the endpoint's "
-        "rest_coverage basis and the 'blind' reading are out of date")
+    stored = [claimed[:tracker.STORED_PREFIX_LEN]]
+    # web-map: js/map.js sends X-API-Key, map.html sends Bearer
+    assert _tracked_prefix({"X-API-Key": claimed}) == stored
+    assert _tracked_prefix({"Authorization": "Bearer " + claimed}) == stored
+    assert _tracked_prefix({"X-API-Key": " " + claimed + " "}) == stored
+    # X-API-Key is the credential acted on; a Bearer beside it is not the caller
+    assert _tracked_prefix({"X-API-Key": "junk",
+                            "Authorization": "Bearer " + claimed}) == []
+    # The MCP server's callAPI() fan-out: X-Internal-Key WITH the caller's key.
+    # That is MCP use, so it must never land on the REST arm under the key.
+    fan_out = {"X-API-Key": claimed, "X-Internal-Key": "k",
+               "X-MCP-Platform": "claude", "X-MCP-Session": "s"}
+    assert _tracked_prefix(fan_out) == ["internal"]
+    # ... even when the server's credential is empty (DCHUB_INTERNAL_KEY unset)
+    assert _tracked_prefix({"X-API-Key": claimed, "X-Internal-Key": ""}) == []
+    assert _tracked_prefix({"Authorization": "Bearer " + claimed,
+                            "X-DC-Internal-Token": ""}) == []
+    assert _tracked_prefix({"X-API-Key": claimed}, "admin_key=") == []
+    assert _tracked_prefix({"X-API-Key": claimed, "X-Admin-Key": "k"}) == ["admin"]
+    assert _tracked_prefix({"X-API-Key": claimed, "X-Internal-Cron": "1"}) == ["cron"]
+    # never a JWT or a lowercase scheme the backend does not read as a key
+    assert _tracked_prefix({"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9." + "x" * 40}) == []
+    assert _tracked_prefix({"Authorization": "bearer " + claimed}) == []
 
 
 def test_mcp_event_types_are_the_track_writers_own_map():
@@ -328,3 +362,10 @@ def test_instrument_verdicts_are_derived():
     assert _instrument([seen], [])["api_endpoint_log"]["verdict"] == "live"
     assert _instrument([mcp], [])["api_endpoint_log"]["verdict"] == "unproven"
     assert _instrument([], [])["mcp_call_log.mcp"]["verdict"] == "unproven"
+    # first_row_at: the EARLIEST row held for any checked key, None when none
+    later = _key_record(_row(T0, log=T0 + 9 * H, tracker_ok=True))
+    assert _instrument([later, held, mcp], [])["api_endpoint_log"]["first_row_at"] == (
+        (T0 + H).isoformat())
+    assert _instrument([mcp], [])["api_endpoint_log"]["first_row_at"] is None
+    metered = [_key_record(_row(T0, meter=datetime.date(2026, 9, d))) for d in (5, 3)]
+    assert _instrument(metered, [])["api_usage_meter"]["first_row_at"] == "2026-09-03"

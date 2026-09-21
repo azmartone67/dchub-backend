@@ -24,6 +24,7 @@ Run:  python3 -m pytest tests/test_main_branch_verdict.py -v
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -119,7 +120,7 @@ def test_a_cancelled_or_timed_out_run_is_not_a_pass():
 def test_all_green_on_head_is_success():
     m = _mod()
     status, note = m.verdict(HEAD, _all([_done(HEAD, "success"), _done(OLD, "failure")]))
-    assert status == "success" and "3 gating" in note
+    assert status == "success" and "all %d gating" % len(m.GATING) in note
 
 
 # --------------------------------------------------------------------------
@@ -145,3 +146,46 @@ def test_one_unreadable_workflow_does_not_mask_a_measured_red():
     runs = {g[0]: [_done(HEAD, "failure")], g[1]: [], g[2]: [_done(HEAD, "success")]}
     status, _ = m.verdict(HEAD, runs)
     assert status == "main_red"
+
+
+# --------------------------------------------------------------------------
+# ★2026-09-21 — `contract` red on main, verdict green.
+# --------------------------------------------------------------------------
+
+RED_CONTRACT_HEAD = "84f4a441d8cdeb97f8e279f73c106bb6d10a6552"
+
+
+def test_a_red_contract_on_head_is_main_red():
+    """Replayed through collect() with GATING as shipped. main at 84f4a441d:
+    every other gating workflow green, api-response-contract.yml red
+    (stats.mw_coverage removed). main-branch-health said "all 3 gating
+    workflow(s) green" four times because collect() never asked for it."""
+    m = _mod()
+    runs = {wf: [_done(RED_CONTRACT_HEAD, "success")] for wf in m.GATING}
+    runs["api-response-contract.yml"] = [_done(RED_CONTRACT_HEAD, "failure")]
+
+    def fake_gh(args):
+        if args[:1] == ["api"]:
+            return RED_CONTRACT_HEAD + "\n"
+        return json.dumps(runs.get(args[args.index("--workflow") + 1], []))
+
+    m._gh = fake_gh
+    status, note = m.verdict(*m.collect("azmartone67/dchub-backend"))
+    assert status == "main_red" and "api-response-contract.yml" in note, (
+        status, note)
+
+
+def test_a_schedule_run_that_cancelled_heads_push_run_is_the_measurement():
+    """api-response-contract.yml groups concurrency by github.ref with
+    cancel-in-progress, so on main its schedule lane cancels HEAD's in-flight
+    push run and measures the same sha. The newest run on HEAD is the
+    measurement; the cancelled one under it is not a red."""
+    m = _mod()
+    runs = {wf: [_done(HEAD, "success")] for wf in m.GATING}
+    runs["api-response-contract.yml"] = [
+        dict(_done(HEAD, "success"), event="schedule"),
+        dict(_done(HEAD, "cancelled"), event="push"),
+    ]
+    assert m.verdict(HEAD, runs)[0] == "success"
+    runs["api-response-contract.yml"][0]["conclusion"] = "failure"
+    assert m.verdict(HEAD, runs)[0] == "main_red"

@@ -6,11 +6,12 @@ every single time — 0 successes in 60 runs. The failing step did:
     git commit -m "chore(facts): refresh servable mcp_facts.json [skip ci]"
     git push
 
-against dchub-backend's main, which requires 6 status checks. GitHub answers
+against dchub-backend's main, which has required status checks. GitHub answers
 GH006 "Protected branch update failed ... 6 of 6 required status checks are
-expected", and a `[skip ci]` commit reports NONE of them, so the push is
-rejected on principle rather than on permissions: `contents: write` is
-necessary but not sufficient. The step could not have worked on any day.
+expected" (quoted when main required six), and a `[skip ci]` commit reports
+NONE of them, so the push is rejected on principle rather than on
+permissions: `contents: write` is necessary but not sufficient. The step
+could not have worked on any day.
 
 ★ WHY IT WENT UNNOTICED FOR 17 DAYS. The step's own remediation text said the
 file "is not served by any route anyway", so every red run read as cosmetic.
@@ -110,7 +111,7 @@ def test_no_workflow_pushes_a_protected_main():
         "A bare `git push` from a protected repo's working directory targets a "
         "protected main and is rejected with GH006 on every run — the step is "
         "dead code that reports red forever. Create a branch and open a PR so "
-        "the 6 required checks can actually run:\n" + "\n".join(offenders))
+        "the required checks can actually run:\n" + "\n".join(offenders))
 
 
 def test_the_served_wellknown_allowlist_is_refreshed_by_the_exporter():

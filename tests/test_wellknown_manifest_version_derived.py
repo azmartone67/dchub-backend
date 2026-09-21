@@ -681,14 +681,23 @@ def test_ai_plugin_json_derives_its_description():
     )
 
 
-def test_agent_json_derives_its_description_and_version():
-    """agent.json carried BOTH halves: the frozen description AND version 2.5.0,
-    while the server card on the SAME worker served the derived 2.12.3 in the
-    same second. Fixing only ai-plugin.json would leave exactly the split-brain
-    test_worker_server_card_also_derives refuses one section up."""
+def test_agent_json_serves_the_agent_card():
+    """agent.json carried BOTH halves of the rot: a frozen description AND
+    version 2.5.0, while the server card on the SAME worker served the derived
+    2.12.3 in the same second.
+
+    ★ 2026-09-21 (owner's call): it no longer builds a card at all. It returns
+    /.well-known/agent-card.json, the A2A card (routes/agent_a2a.py, canon
+    resolved per request), so its version and description cannot freeze here
+    and cannot disagree with the other A2A path. The two literal fences stay:
+    reverting to a hand-built card is what they refuse.
+    """
     block = _worker_handler_block("/.well-known/agent.json")
-    assert "resolveManifestExtras(" in block, (
-        "agent.json no longer reads the origin's canon manifest at all"
+    # The URL must be the fetch() call's ARGUMENT. The branch's own comment and
+    # its 503 fallback both name agent-card.json, and a bare substring check
+    # passed with the fetch pointed at mcp.json (mutation-tested 2026-09-21).
+    assert re.search(r"fetch\(\s*[`'\"][^`'\"]*/\.well-known/agent-card\.json[`'\"]", block), (
+        "agent.json no longer fetches /.well-known/agent-card.json, the A2A card"
     )
     assert not re.search(r"\bdescription:\s*MCP_SERVER_INFO\.description", block), (
         "agent.json serves the MCP_SERVER_INFO description literal again"
@@ -697,8 +706,6 @@ def test_agent_json_derives_its_description_and_version():
         "agent.json serves the MCP_SERVER_INFO version literal again — it froze "
         "at 2.5.0 against a live 2.12.3"
     )
-    assert "agentExtras.description || MCP_SERVER_INFO.description" in block
-    assert "agentExtras.version || MCP_SERVER_INFO.version" in block
 
 
 def test_worker_card_literal_carries_no_population_count():
