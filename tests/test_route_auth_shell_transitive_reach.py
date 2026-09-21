@@ -21,6 +21,7 @@ Run:  python3 -m pytest tests/test_route_auth_shell_transitive_reach.py -q
 from __future__ import annotations
 
 import ast
+import functools
 import os
 import pathlib
 import re
@@ -335,9 +336,13 @@ _ALLOWED_UNGATED_INDEXNOW = {"main.py::daily_cron"}
 _INDEXNOW_SINK_NAMES = ("submit_to_indexnow", "ping_indexnow", "ping_new_facilities")
 
 
+@functools.lru_cache(maxsize=None)
 def _ungated_indexnow_reach():
     """{"<file>::<handler>"} for every route handler that reaches an IndexNow
-    submitter over the WHOLE scanned tree with no gate deciding first."""
+    submitter over the WHOLE scanned tree with no gate deciding first.
+
+    Computed once per process and shared, frozen, by the two tests that read
+    it: it runs the shell's reach analysis over the whole tree."""
     from routes.route_auth_master_shell import _scan_routes
     out = set()
     scan = _scan_routes()
@@ -347,7 +352,7 @@ def _ungated_indexnow_reach():
     for o in scan["l3"]:
         if any(n in o["sink"] for n in _INDEXNOW_SINK_NAMES):
             out.add(f"{o['file']}::{o['handler']}")
-    return out
+    return frozenset(out)
 
 
 def test_no_new_ungated_indexnow_reach():

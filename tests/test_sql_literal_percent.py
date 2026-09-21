@@ -42,17 +42,22 @@ SKIP = frozenset({".claude", "worktrees", "node_modules", ".git", "tests"})
 _BARE_PCT = re.compile(r"(?<!%)%(?![%s(diouxXeEfFgGcr])")
 
 
-@functools.lru_cache(maxsize=None)
 def _param_queries():
+    return _param_queries_under(ROOT)
+
+
+@functools.lru_cache(maxsize=None)
+def _param_queries_under(root):
     """(file, lineno, sql) for every execute()/executemany() call that passes a
     literal SQL string AND a params argument — the only shape where a literal
     percent is a bug.
 
-    Walked once per process and shared, as a tuple, by the three tests that
-    read it: the walk parses every .py in the repo."""
+    Walked once per root per process and shared, as a tuple, by the three
+    tests that read it: the walk parses every .py in the repo. Keyed on the
+    root, so a test that points ROOT elsewhere gets its own walk."""
     out = []
-    for f in ROOT.rglob("*.py"):
-        if SKIP & set(f.relative_to(ROOT).parts[:-1]):
+    for f in root.rglob("*.py"):
+        if SKIP & set(f.relative_to(root).parts[:-1]):
             continue
         if not f.stem.isidentifier():
             continue
@@ -70,12 +75,12 @@ def _param_queries():
                 continue
             q = n.args[0]
             if isinstance(q, ast.Constant) and isinstance(q.value, str):
-                out.append((f.relative_to(ROOT), n.lineno, q.value))
+                out.append((f.relative_to(root), n.lineno, q.value))
             elif isinstance(q, ast.JoinedStr):
                 parts = "".join(v.value for v in q.values
                                 if isinstance(v, ast.Constant)
                                 and isinstance(v.value, str))
-                out.append((f.relative_to(ROOT), n.lineno, parts))
+                out.append((f.relative_to(root), n.lineno, parts))
     return tuple(out)
 
 
