@@ -20743,8 +20743,7 @@ def get_market_stats(market):
             _stats_out['mw_reporting_count'] = int(_mw_reporting)
         try:
             from util.facility_count_basis import (
-                basis as _fc_basis, capacity_basis as _fc_capacity_basis,
-                mw_coverage_note as _fc_mw_note)
+                basis as _fc_basis, capacity_basis as _fc_capacity_basis)
             _stats_out['count_basis'] = _fc_basis(
                 'tracked', 'row', 'city',
                 note=("This route. /markets/<slug> and its .json twin publish "
@@ -20757,9 +20756,31 @@ def get_market_stats(market):
                       "number of counted rows that reported any capacity at "
                       "all. /markets/<slug> publishes sum_sites over the same "
                       "market and reads higher."))
-            _cov = _fc_mw_note(_mw_reporting, stats['facility_count'])
-            if _cov:
-                _stats_out['mw_coverage'] = _cov
+            # ── r-prose-leaks-the-gate (2026-09-21) ────────────────────
+            # NO mw_coverage_note() HERE. #5010 published one, and it walked
+            # straight through the free-tier gate carrying the two numbers the
+            # gate had just withheld. Measured live the same day, anonymous
+            # get_market_intel(market="dallas"):
+            #
+            #     facility_count      null
+            #     total_power_mw      null
+            #     mw_reporting_count  null
+            #     mw_coverage         "54 of 248 report MW"   <- both of them
+            #
+            # dchub-mcp-server's trim is key-pattern AND type based
+            # (_isMetricKey + `typeof v === 'number'`), so a STRING is invisible
+            # to it and "mw_coverage" matches none of its patterns. Any prose
+            # field that restates a figure is ungateable by construction — this
+            # is r-typed-preview (2026-09-03) inverted: there the trim nulled a
+            # number the same object printed, here it nulled numbers a sibling
+            # string reprinted.
+            #
+            # The number carries the meaning and the gate understands it:
+            # `mw_reporting_count` matches _count$ and is masked in lockstep
+            # with the total it qualifies. capacity_basis.note already tells the
+            # reader to read one beside the other. The six HTML painters keep
+            # using mw_coverage_note — prose is the point there, and no tier
+            # gate runs over a rendered page.
         except Exception as _basis_err:      # noqa: BLE001 - fail soft, see above
             logger.warning("market stats basis unavailable: %s", _basis_err)
 
