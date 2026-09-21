@@ -4180,11 +4180,20 @@ def _run_crm_outbound_flush():
     try:
         from routes.crm_reverse_etl import flush_outbound_queue as _flush
         d = _flush(limit=100) or {}
-        logger.info(
-            "📇 crm_outbound_flush: pushed=%s failed=%s provider=%s dry_run=%s",
-            d.get("pushed"), d.get("failed"),
-            d.get("provider"), d.get("dry_run"),
-        )
+        if d.get("ok") and not isinstance(d.get("skipped"), str):
+            logger.info(
+                "📇 crm_outbound_flush: pushed=%s failed=%s provider=%s dry_run=%s",
+                d.get("pushed"), d.get("failed"),
+                d.get("provider"), d.get("dry_run"),
+            )
+        else:
+            # A skip or a destination refusal logged as "pushed=None failed=None"
+            # reads as a quiet day. Name it.
+            logger.warning(
+                "📇 crm_outbound_flush: NOT delivering (%s) — %s",
+                d.get("skipped") or d.get("error") or "destination refused",
+                d.get("reason") or d,
+            )
     except Exception as e:
         logger.error("📇 crm_outbound_flush: error — %s", e)
 
