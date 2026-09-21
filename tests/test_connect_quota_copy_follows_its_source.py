@@ -15,6 +15,11 @@ were still typed by hand:
   * The page script's tier line fell back to typed figures. Those checks run the
     script in node: tests/test_connect_gated_mint_shows_bind_step.py, section 5.
 
+★ 2026-09-21 (P0-D, frontend#1535): step 4 sells the plans agents buy, the $10
+pack and Developer, and no longer tiles Pro. The quota it quotes is Developer's
+MCP quota, read through canon from tier_registry, and it is pinned the same way
+Pro's was: patched to values the defaults never take, between two renders.
+
 Rendered with mc._render_page. Figures are patched to values the defaults never
 take, and patched again between two renders, so a typed figure, or one read once
 and kept, goes red.
@@ -143,20 +148,20 @@ def test_tier_registry_gives_pro_a_finite_mcp_quota():
     assert isinstance(n, int) and n > 0, n
 
 
-def test_step_four_quotes_pro_s_mcp_quota_from_tier_registry(monkeypatch, stats_state):
-    want = f"Upgrade to Pro — gets you {tier_registry.calls_per_day('pro'):,} MCP calls/day"
+def test_step_four_quotes_developer_s_mcp_quota_from_tier_registry(monkeypatch, stats_state):
+    want = f"for {tier_registry.calls_per_day('developer'):,} MCP calls/day on every tool"
     assert want in _step4(mc._render_page("chatgpt", 4242))
     for n in (3141, 27182):
-        monkeypatch.setitem(tier_registry.TIER_LIMITS["pro"], "mcp_daily", n)
+        monkeypatch.setitem(tier_registry.TIER_LIMITS["developer"], "mcp_daily", n)
         copy = _step4(mc._render_page("chatgpt", 4242))
-        assert f"Upgrade to Pro — gets you {n:,} MCP calls/day" in copy, copy
+        assert f"for {n:,} MCP calls/day on every tool" in copy, copy
 
 
 @pytest.mark.parametrize("client", ALL_CLIENTS)
 def test_no_install_page_calls_pro_unlimited(client, stats_state):
     page = mc._render_page(client, 4242)
-    # Floor: the upgrade copy and the Pro tile are there to be read.
-    assert "Upgrade to Pro" in page and 'id="upg-monthly"' in page
+    # Floor: the upgrade copy and the paid tiles are there to be read.
+    assert "MCP calls/day on every tool" in _step4(page) and 'id="upg-developer"' in page
     assert "unlimited" not in page.lower(), (
         f"/connect/{client} calls Pro unlimited; tier_registry gives it "
         f"{tier_registry.calls_per_day('pro'):,} MCP calls a day")

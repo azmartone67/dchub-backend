@@ -465,10 +465,11 @@ def annual_offer(tier):
     than quoting a zero-percent "discount". Formatted here, beside
     price_display(), for the reason that function gives.
 
-    ★ NOT YET THE ONLY ANNUAL PREDICATE. routes/mcp_connect.py binds its install-
-    page tile to the Stripe link's own price (_ANNUAL_PRICE_USD), because that
-    page renders the link itself. Both answer "no annual" today; a restore has
-    to move both until they share one source.
+    ★ NOT YET THE ONLY ANNUAL PREDICATE. routes/mcp_connect.py keeps the annual
+    Stripe link's own price (_ANNUAL_PRICE_USD, _annual_save_html). Its install
+    pages no longer tile Pro at all (P0-D, 2026-09-21: the pack and Developer),
+    so a restore of an annual offer lands on /pricing; move both until they share
+    one source.
     """
     opt = ANNUAL_OPTIONS.get(_norm(tier)) or {}
     year = opt.get('annual_usd_year')
