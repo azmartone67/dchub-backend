@@ -11411,7 +11411,7 @@ def _gate_mcp_result(result_content, tool_name, tier):
                     "message": (
                         f"You've used all {_limit} calls for today on the free "
                         f"identified tier. Developer plan ($49/mo) gives you "
-                        f"1,000 calls/day with full data."
+                        f"{_dev_daily_phrase()} with full data."
                     ),
                     "calls_used": used,
                     "daily_limit": _limit,
@@ -11424,7 +11424,7 @@ def _gate_mcp_result(result_content, tool_name, tier):
                         "url": "https://dchub.cloud/pricing#developer",
                         "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
                         "price": "$49/mo",
-                        "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data"
+                        "includes": f"{_dev_daily_phrase()}, full facility data, coordinates, power specs, site scoring, grid data"
                     }
                 })
             }])
@@ -11924,7 +11924,7 @@ def _gate_facility_data(data, tool_name):
                 f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results "
                 f"with basic fields ({calls_remaining} free calls left today). "
                 f"Developer plan ($49/mo) unlocks all {total_count} results with "
-                f"coordinates, power capacity, connectivity, and 1,000 calls/day."
+                f"coordinates, power capacity, connectivity, and {_dev_daily_phrase()}."
             ),
             # r-streak (2026-07-18): free daily caps grow with the return
             # streak — surface the mechanism wherever quota state shows.
@@ -11968,7 +11968,7 @@ def _gate_facility_data(data, tool_name):
                     f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results "
                     f"with basic fields ({calls_remaining} free calls left today). "
                     f"Developer plan ($49/mo) unlocks all {total_count} results with "
-                    f"coordinates, power capacity, connectivity, and 1,000 calls/day."
+                    f"coordinates, power capacity, connectivity, and {_dev_daily_phrase()}."
                 ),
                 # r-streak (2026-07-18): same return-streak surfacing as the
                 # dict-shaped branch above.
@@ -25264,6 +25264,20 @@ def _honest_rest_wall(opens_on_rest='pro', mcp_tool=''):
         return rest_wall_ladder(opens_on_rest=opens_on_rest, mcp_tool=mcp_tool)
     except Exception:  # noqa: BLE001
         return {'upgrade_url': 'https://dchub.cloud/pricing'}
+
+
+def _dev_daily_phrase():
+    """Developer's daily MCP quota as /pricing sells it, read from
+    tier_registry. Four walls here used to type a thousand a day instead: the
+    REST rate_limit header value, which nothing enforces per day."""
+    try:
+        import tier_registry as _tr
+        n = _tr.calls_per_day('developer')
+        if n:
+            return f"{int(n):,} MCP calls/day"
+    except Exception:  # noqa: BLE001
+        pass
+    return "Developer's daily MCP allowance"
 
 
 def _plan_price_display(plan):

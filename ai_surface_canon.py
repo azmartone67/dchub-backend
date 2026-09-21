@@ -1143,13 +1143,13 @@ def _tier_price(tier) -> str:
 
 
 def _pack_offer() -> str:
-    """'$10 one-time = 1,000 API calls', from the constants the webhook grants
+    """'$10 one-time = 1,000 API credits', from the constants the webhook grants
     on (routes.mcp_conversion_plays). '' when they cannot be read — a surface
     then names no pack rather than a stale one."""
     try:
         from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
         if PACK10_PRICE_CENTS and PACK10_CREDITS:
-            return "$%d one-time = %s API calls" % (
+            return "$%d one-time = %s API credits" % (
                 int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ","))
     except Exception:
         pass

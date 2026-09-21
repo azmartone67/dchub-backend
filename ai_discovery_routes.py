@@ -125,8 +125,9 @@ def _llms_unlock_ladder() -> str:
         from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
         if PACK10_PRICE_CENTS and PACK10_CREDITS:
             agent.append(
-                "   - **$%d one-time = %s API calls** — credits don't expire, no "
-                "subscription. Finish one screen at full depth."
+                "   - **$%d one-time = %s API credits** — 1 per paid-tool call, 5 for the heavy "
+                "analysis tools; credits don't expire, no subscription. Finish one "
+                "screen at full depth."
                 % (int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")))
     except Exception:
         pass

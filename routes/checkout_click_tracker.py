@@ -349,7 +349,7 @@ def _pack_led_ladder() -> dict:
         from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
         if PACK10_PRICE_CENTS and PACK10_CREDITS:
             opts.append({"plan": "pack", "opens": "rest",
-                         "label": "$%d one-time = %s API calls; each full answer here uses one" % (
+                         "label": "$%d one-time = %s API credits; each full answer here uses one" % (
                              int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")),
                          "url": out["upgrade_url"]})
     except Exception:  # noqa: BLE001
@@ -411,7 +411,7 @@ def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
             from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
             if PACK10_PRICE_CENTS and PACK10_CREDITS:
                 opts.append({"plan": "pack", "opens": "mcp", "mcp_tool": mcp_tool,
-                             "label": "$%d one-time = %s API calls; %s" % (
+                             "label": "$%d one-time = %s API credits; %s" % (
                                  int(PACK10_PRICE_CENTS) // 100,
                                  format(int(PACK10_CREDITS), ","), via),
                              "url": checkout_url("metered")})
