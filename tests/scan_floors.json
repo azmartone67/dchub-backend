@@ -178,6 +178,9 @@
     "test_insert_counts_name_rows_inserted.py": {
       "walk": 78
     },
+    "test_install_first_use_contract.py": {
+      "walk": 70
+    },
     "test_iso_error_echo_scrubbed.py": {
       "glob": 20
     },
