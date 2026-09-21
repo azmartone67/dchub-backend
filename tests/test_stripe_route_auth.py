@@ -30,6 +30,7 @@ it, which is the only property that survives a detector's vocabulary going
 stale.
 """
 import ast
+import functools
 import pathlib
 
 import pytest
@@ -103,11 +104,21 @@ def _importable(path):
 
 
 def _stripe_routes():
+    return _stripe_routes_under(ROOT)
+
+
+@functools.lru_cache(maxsize=None)
+def _stripe_routes_under(root):
     """(path, file, lineno, source) for every Stripe-decorated handler.
-    `source` includes the decorators, so decorator-level gates are visible."""
+    `source` includes the decorators, so decorator-level gates are visible.
+
+    Walked ONCE per root per process and shared, as a tuple, by every test
+    here: the walk parses every .py in the repo, and the parametrized gate check
+    alone used to repeat it once per MUST_BE_GATED route (181 s of CI per run).
+    Keyed on the root, so a test that points ROOT elsewhere gets its own walk."""
     found = []
-    for f in ROOT.rglob("*.py"):
-        if _SKIP_DIRS & set(f.relative_to(ROOT).parts[:-1]):
+    for f in root.rglob("*.py"):
+        if _SKIP_DIRS & set(f.relative_to(root).parts[:-1]):
             continue
         if not _importable(f):
             continue
@@ -132,9 +143,9 @@ def _stripe_routes():
                         # open. Splice the decorator names back in.
                         decos = " ".join(ast.unparse(d) for d in n.decorator_list)
                         body = ast.get_source_segment(src, n) or ""
-                        found.append((a.value, f.relative_to(ROOT), n.lineno,
+                        found.append((a.value, f.relative_to(root), n.lineno,
                                       decos + "\n" + body))
-    return found
+    return tuple(found)
 
 
 def test_the_walk_finds_the_routes():

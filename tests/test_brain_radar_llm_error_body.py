@@ -26,6 +26,7 @@ Run:  python3 -m pytest tests/test_brain_radar_llm_error_body.py -v
 """
 
 import ast
+import functools
 import pathlib
 import sys
 
@@ -68,6 +69,13 @@ def _load(name: str, seed: dict | None = None):
 
 
 scan = _load(_CORE)
+
+
+@functools.lru_cache(maxsize=None)
+def _real_tree_findings():
+    """The detector's findings over the real tree, executed once per process:
+    it scans the whole repo, and two tests read the same result."""
+    return _load(_CHECK, {_CORE: scan})()
 
 
 _PRE_FIX = '''
@@ -167,7 +175,7 @@ def test_the_check_is_registered_in_the_sweep():
 
 def test_the_detector_runs_against_the_real_tree():
     """It must EXECUTE, not just parse — and return well-formed findings."""
-    findings = _load(_CHECK, {_CORE: scan})()
+    findings = _real_tree_findings()
     assert isinstance(findings, list)
     for f in findings:
         assert f["issue"] == "llm_error_body_discarded"
@@ -216,7 +224,7 @@ def test_only_functions_that_call_anthropic_are_in_scope():
 def test_the_tree_is_clean():
     """★ REGRESSION FENCE. Every Anthropic call site in this repo reports its
     HTTP failure body. A new one that does not will fail here by name."""
-    findings = _load(_CHECK, {_CORE: scan})()
+    findings = _real_tree_findings()
     sites = findings[0]["sites"] if findings else []
     assert sites == [], (
         "Anthropic call site(s) discarding the HTTP error body:\n  "

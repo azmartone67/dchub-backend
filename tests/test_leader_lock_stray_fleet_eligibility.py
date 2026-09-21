@@ -52,8 +52,10 @@ technique of tests/test_web_never_takes_leader_lock.py. Tests marked RED-on-main
 fail on origin/main by the named assertion, not by an import error.
 """
 import ast
+import bisect
 import os
 import pathlib
+import re
 import socket
 import sys
 import types
@@ -355,11 +357,19 @@ class TestKeepaliveIsGatedOnEligibility:
         """RED on main: the keepalive thread started for every bg-role process on
         Railway, stray or not."""
         src, tree = _main_src_and_tree()
+        # Only an If whose line span holds the marker can qualify, so only those
+        # pay for ast.get_source_segment, which re-splits all of main.py on every
+        # call: run on every If it took 65 s. The marker has no line break, so
+        # it sits on one physical line (counted as the tokenizer counts them).
+        marker = 'name="leader-keepalive"'
+        breaks = [m.end() for m in re.finditer(r"\r\n|\r|\n", src)]
+        marked = {bisect.bisect_right(breaks, m.start()) + 1
+                  for m in re.finditer(re.escape(marker), src)}
         tests = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.If):
+            if isinstance(node, ast.If) and any(node.lineno <= n <= node.end_lineno for n in marked):
                 body = "\n".join(ast.get_source_segment(src, b) or "" for b in node.body)
-                if 'name="leader-keepalive"' in body:
+                if marker in body:
                     tests.append(ast.get_source_segment(src, node.test))
         assert tests, "the leader-keepalive thread start was not found"
         assert all("_LEADER_ELIGIBLE" in t for t in tests), \

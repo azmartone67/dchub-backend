@@ -22,7 +22,10 @@ durable if the shared module and the map keep reading ONE pair of knobs;
 test_reads_the_maps_own_env_knobs fails if either side is renamed.
 """
 import ast
+import bisect
+import functools
 import os
+import re
 import sys
 import pathlib
 
@@ -233,8 +236,32 @@ GATED_HANDLERS = ('facility_by_slug', 'get_facilities', 'get_facility_by_id',
                   'search_facilities', 'get_facility_by_slug')
 
 
+@functools.lru_cache(maxsize=None)
 def _main_tree():
+    """Parsed once per process: every test here only reads the tree."""
     return ast.parse((ROOT / 'main.py').read_text(encoding='utf-8'))
+
+
+# The two class-wide guards below look only at defs whose source holds all
+# three of these. ast.get_source_segment re-splits all of main.py on every call,
+# and paying that for each of its thousands of defs cost ~35 s, so a def is
+# only measured once its physical lines hold all three (a necessary condition:
+# none of them contains a line break).
+_CLASS_MARKERS = ('discovered_facilities', 'power_mw', 'latitude')
+
+
+def _marker_lines(src, markers=_CLASS_MARKERS):
+    breaks = [m.end() for m in re.finditer(r"\r\n|\r|\n", src)]
+    return [sorted({bisect.bisect_right(breaks, m.start()) + 1
+                    for m in re.finditer(re.escape(k), src)}) for k in markers]
+
+
+def _spans_all(node, marker_lines):
+    for lines in marker_lines:
+        i = bisect.bisect_left(lines, node.lineno)
+        if i == len(lines) or lines[i] > node.end_lineno:
+            return False
+    return True
 
 
 def _func(tree, name):
@@ -362,11 +389,15 @@ def test_no_handler_in_the_class_is_left_ungated():
         '_admin_dedup_facilities_soft',
     }
     tree = _main_tree()
+    main_src = (ROOT / 'main.py').read_text(encoding='utf-8')
+    marker_lines = _marker_lines(main_src)
     offenders = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
-        src = ast.get_source_segment((ROOT / 'main.py').read_text(encoding='utf-8'), node) or ''
+        if not _spans_all(node, marker_lines):
+            continue
+        src = ast.get_source_segment(main_src, node) or ''
         # A handler is in the class if it SELECTs power_mw alongside coordinates
         # out of the registry table.
         sql_like = 'discovered_facilities' in src and 'power_mw' in src
@@ -446,8 +477,11 @@ def test_every_returned_record_in_a_class_handler_is_gated():
     IN_PLACE_GATES = {'_apply_record_gate', 'apply_record_gate'}
 
     offenders = []
+    marker_lines = _marker_lines(src)
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
+            continue
+        if not _spans_all(node, marker_lines):
             continue
         fsrc = ast.get_source_segment(src, node) or ''
         if not ('discovered_facilities' in fsrc and 'power_mw' in fsrc
