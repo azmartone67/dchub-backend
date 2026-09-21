@@ -806,6 +806,17 @@ _GAS_STATS_CACHE = BoundedCache(max_size=1, ttl=3600)
 _GAS_STATS_RETRY = {'at': 0.0}
 
 
+def _rest_wall():
+    """The free wall's upgrade fields: a measured /go/c pack checkout plus the
+    ladder (routes.checkout_click_tracker.rest_wall_ladder). Falls back to the
+    pricing page, never to nothing: a wall with no way through is worse."""
+    try:
+        from routes.checkout_click_tracker import rest_wall_ladder
+        return rest_wall_ladder()
+    except Exception:  # noqa: BLE001
+        return {'upgrade_url': 'https://dchub.cloud/pricing'}
+
+
 def _get_transactions_free():
     """Freemium transactions -- 3 most recent deals, basic fields only. PG first, SQLite fallback."""
     _hit = _FREE_TX_CACHE.get('payload')
@@ -901,7 +912,7 @@ def _get_transactions_free():
         'data_source': 'live' if loaded_from_db else 'fallback_seed',
         'provenance': _deals_provenance('live' if loaded_from_db else 'fallback_seed'),
         'tier': 'free',
-        'upgrade_url': 'https://dchub.cloud/pricing',
+        **_rest_wall(),
         'note': f'Free tier: showing {len(basic_deals)} of {total_matching} transactions with basic fields. Upgrade for full data including deal values, MW capacity, and detailed analytics.'
     }
     # Only memoize LIVE results — a transient DB failure must not pin the
