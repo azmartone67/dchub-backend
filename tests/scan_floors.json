@@ -206,6 +206,7 @@
     "test_loop_scoring_honesty_0918.py": {
       "pglob": 670
     },
+    "test_main_red_is_watched.py": {"glob": 140},
     "test_no_import_time_heartbeat.py": {
       "pglob": 2160
     },
