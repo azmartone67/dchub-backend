@@ -89,7 +89,47 @@ def _set_cached(key, value):
 # response boundary (one blueprint after_request) so it covers the cache-hit
 # returns too. Single-plant /detail and /summary stay free as the discovery
 # hook. Tier detection is cookie/key-aware and fails closed to anonymous.
-_PP_PAID = {'pro', 'enterprise', 'founding', 'internal', 'admin'}
+def _pp_paid_tiers():
+    """Tiers `_pp_tier()` may report that must NOT be teased.
+
+    ★2026-09-20 — the literal this replaces was
+        {'pro', 'enterprise', 'founding', 'internal', 'admin'}
+    and it omitted `starter`, `team` and `research_seed`, which TIERS marks
+    paid. That was not a harmless omission here, because the fallthrough is
+    NOT "treated as free" — it is `_PP_PREVIEW.get(tier, 3)`, and those three
+    names are absent from _PP_PREVIEW too. So a paying Team customer was
+    capped at THREE rows on every list endpoint below while an anonymous
+    caller got 100000. The paid tier was the punished one.
+
+    It is reachable through the logged-in web UI specifically:
+    map_tier_gating._detect_caller_tier resolves an API key through an alias
+    map ('team' -> 'pro', 'research_seed' -> 'enterprise'), but its JWT/cookie
+    branch returns `payload['plan']` RAW, unaliased. So an API-key caller on
+    the Team plan was fine and the same customer signed into the dashboard
+    was capped at 3.
+
+    This column is a UNION, not one vocabulary: raw `users.plan` names from
+    the JWT branch, plus the gate's own coarse words. So the registry's paid
+    set is necessary but not sufficient — the coarse extras are kept below.
+    """
+    # Gate words, not plan names, so they cannot come from the registry:
+    # 'internal' is _detect_caller_tier's own source label and 'admin' is a
+    # role (tier_registry excludes it from paid_plan_names deliberately —
+    # no account carries plan='admin'). 'paid' is mcp_dev_keys.tier's word
+    # for paying. Each can only mean "do not tease", so each is kept.
+    _GATE_WORDS = {'internal', 'admin', 'paid'}
+    _FALLBACK = {'pro', 'enterprise', 'founding', 'internal', 'admin'}
+    try:
+        from tier_registry import paid_plan_names
+        got = set(paid_plan_names())
+        return (got | _GATE_WORDS) if got else _FALLBACK
+    except Exception:
+        # Fail CLOSED to the previous literal: on a broken import, tease
+        # exactly who was teased before rather than opening the data up.
+        return _FALLBACK
+
+
+_PP_PAID = _pp_paid_tiers()
 # r-tune 2026-06-11: uncapped — feeds the public land-power map's power layers
 # (a growth surface). Monetize via the MCP/API data paywalls, not by gutting the
 # public map. Dial specific tiers down if a harder wall is wanted later.
