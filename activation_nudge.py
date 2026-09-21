@@ -30,7 +30,40 @@ logger = logging.getLogger("activation_nudge")
 # a paying customer (marvinvitcu@gmail.com, subscribed 2026-06-18, 0 calls in a
 # month+) sat stranded because their users.plan label 'starter' wasn't a "paid"
 # plan to this job. Include it and its variants.
-PAID_PLANS = ('starter', 'developer', 'pro', 'paid', 'enterprise', 'founding')
+def _paid_plans():
+    """Paid `users.plan` values, DERIVED from tier_registry rather than typed.
+
+    ★2026-09-20 — the literal this replaces was
+        ('starter', 'developer', 'pro', 'paid', 'enterprise', 'founding')
+    and it omitted `team` and `research_seed`, which TIERS marks paid. The
+    query below is `WHERE u.plan IN %s`, so those two customers were invisible
+    to the activation nudge for the same reason `starter` was in the note
+    above: not a policy decision, a list that stopped being updated. A paying
+    Team account that never made a call simply never got the one email whose
+    whole job is to rescue it.
+
+    `users.plan` speaks exactly the registry's vocabulary, which is why
+    deriving is right HERE and is wrong for a column that does not —
+    routes/warm_key_cohort.py reads `mcp_dev_keys.tier` (free/identified/
+    paid/enterprise) and derives from this same canon at its peril.
+
+    Fails CLOSED to the previous literal: if the registry cannot be imported,
+    nudge exactly who was nudged before rather than nobody.
+    """
+    # Not a registry plan name. Retained because it was in the list this
+    # replaces and removing it would silently shrink the population; it can
+    # only ever mean "paying", so keeping it cannot admit a free account.
+    _LEGACY = ('paid',)
+    _FALLBACK = ('starter', 'developer', 'pro', 'paid', 'enterprise', 'founding')
+    try:
+        from tier_registry import paid_plan_names
+        got = tuple(paid_plan_names())
+        return (got + _LEGACY) if got else _FALLBACK
+    except Exception:
+        return _FALLBACK
+
+
+PAID_PLANS = _paid_plans()
 EMAIL_KEY = 'activation_nudge'
 
 

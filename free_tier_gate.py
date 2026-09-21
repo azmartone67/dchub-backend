@@ -103,7 +103,31 @@ METERED_MAP_PREFIXES = [
     '/api/v1/site-planner',
 ]
 
-_PAID_PLANS = ('pro', 'enterprise', 'founding')
+def _paid_plans():
+    """Paid `users.plan` values, DERIVED from tier_registry rather than typed.
+
+    ★2026-09-20 — the literal this replaces was ('pro', 'enterprise',
+    'founding'): THREE of the seven plans TIERS marks paid. It is compared
+    against `user['plan']`, and get_user_from_jwt() fills that straight from
+    `SELECT id, email, plan FROM users` — raw `users.plan`, the registry's own
+    vocabulary. So a signed-in Starter, Developer, Team or Research customer
+    failed the paid bypass and was metered as a free user: one map session,
+    then HTTP 403 "Your free map session has been used. Upgrade to Pro."
+    /api/v1/usage-status reported them free to the dashboard at the same time.
+
+    Fails CLOSED to the previous literal, so a broken import cannot hand the
+    gate a wider bypass than it had before.
+    """
+    _FALLBACK = ('pro', 'enterprise', 'founding')
+    try:
+        from tier_registry import paid_plan_names
+        got = tuple(paid_plan_names())
+        return got if got else _FALLBACK
+    except Exception:
+        return _FALLBACK
+
+
+_PAID_PLANS = _paid_plans()
 
 # Never gated
 ALWAYS_OPEN_PREFIXES = [
@@ -260,8 +284,21 @@ def get_user_from_jwt(token, get_db_conn):
 
 
 # Phase TT (2026-05-14): map mcp_dev_keys.tier values onto the web
-# user `plan` vocabulary the gate checks (PAID_PLANS). Free keys are
+# user `plan` vocabulary the gate checks (_PAID_PLANS). Free keys are
 # intentionally NOT here — a free key is not a paid bypass.
+#
+# ★2026-09-20 — THIS MAP IS CORRECT AND IS DELIBERATELY NOT DERIVED FROM
+# tier_registry. `mcp_dev_keys.tier` holds a COARSER vocabulary than
+# `users.plan` does — measured live 2026-09-17: free 113 · identified 540 ·
+# paid 47 · enterprise 6. The literal string 'paid' is not a plan name, so
+# reading the registry's plan canon for this column is the exact inversion
+# that put 26 paying customers into warm_key_cohort.mailable. The authority
+# on what a column holds is the column.
+#
+# The registry IS consulted one hop further down, in _plan_for_key_value(),
+# because the api_keys fallback below reads `users.plan` — a DIFFERENT column
+# that does speak the registry's vocabulary. Same canon, different column,
+# different right answer.
 _PAID_KEY_TIERS = {
     'pro': 'pro', 'paid': 'pro', 'developer': 'pro',
     'enterprise': 'enterprise', 'ent': 'enterprise',
@@ -269,10 +306,35 @@ _PAID_KEY_TIERS = {
 }
 
 
+def _plan_for_key_value(value):
+    """Resolve ONE key/plan column value to the plan the gate should grant.
+
+    ★2026-09-20 — the api_keys fallback below reads THREE columns and they do
+    not share a vocabulary: `ak.rate_limit_tier` is coarse, `ak.plan` is
+    mixed, and `u.plan` is `users.plan` — the registry's own plan names. It
+    resolved all three through _PAID_KEY_TIERS alone, which knows six words
+    and not `starter`, `team` or `research_seed`. A paying Team customer's
+    dashboard key therefore resolved to None, was read as "free-tier key —
+    not a bypass", and got 401 on every map data endpoint. That is the 2026-
+    07-01 two-key-systems gap reopened for the plans nobody added to the map.
+
+    Coarse map FIRST so the words that are not plan names ('paid', 'ent')
+    keep their existing meaning; the registry only ever adds names the map
+    has never heard of, and only ones TIERS positively marks paid, so an
+    unknown string still resolves to None and still does not bypass.
+    """
+    v = (value or '').lower().strip()
+    if not v:
+        return None
+    coarse = _PAID_KEY_TIERS.get(v)
+    if coarse:
+        return coarse
+    return v if v in _PAID_PLANS else None
+
+
 def _user_from_api_key(api_key, get_db_conn):
     """Resolve an X-API-Key to a pseudo-user dict IF it's an active
-    paid (pro/enterprise/founding) dev key. Returns None for unknown,
-    inactive, or free-tier keys — the gate then falls through to its
+    key on a paid plan. Returns None for unknown, inactive, or free-tier keys — the gate then falls through to its
     normal JWT / free-session logic. Best-effort: any DB error → None."""
     api_key = (api_key or '').strip()
     if not api_key:
@@ -318,7 +380,7 @@ def _user_from_api_key(api_key, get_db_conn):
             return None
         plan = None
         for _p in (arow[2], arow[1], arow[0]):  # users.plan wins, then ak.plan, then tier
-            plan = plan or _PAID_KEY_TIERS.get((_p or '').lower().strip())
+            plan = plan or _plan_for_key_value(_p)
         if not plan:
             return None  # free-tier key — not a bypass
         return {'id': f'apikey:{api_key[:18]}', 'email': arow[3] or '',
@@ -610,8 +672,6 @@ def init_free_tier_gate(app, get_db_conn):
                 except Exception:
                     pass
 
-    PAID_PLANS = ('pro', 'enterprise', 'founding')
-
     @app.before_request
     def enforce_free_tier():
         if not GATE_ENABLED:
@@ -764,7 +824,7 @@ def init_free_tier_gate(app, get_db_conn):
                 'login_url': 'https://dchub.cloud/login?redirect=/land-power-map'
             }), 401
 
-        if user.get('plan') in PAID_PLANS:
+        if user.get('plan') in _PAID_PLANS:
             g.current_user = user
             return None
 
@@ -794,7 +854,7 @@ def init_free_tier_gate(app, get_db_conn):
             resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
             return resp
 
-        if user.get('plan') in PAID_PLANS:
+        if user.get('plan') in _PAID_PLANS:
             resp = jsonify({
                 'authenticated': True,
                 'plan': user['plan'],
@@ -865,7 +925,7 @@ def init_free_tier_gate(app, get_db_conn):
         if not user:
             return jsonify({'error': 'authentication_required'}), 401
 
-        if user.get('plan') in PAID_PLANS:
+        if user.get('plan') in _PAID_PLANS:
             return jsonify({'status': 'ok', 'unlimited': True})
 
         increment_usage(user['id'], 'toggle', get_db_conn)

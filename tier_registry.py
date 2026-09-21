@@ -264,6 +264,24 @@ def is_paid(tier):
 # dunning window, still live for those two plans. mcp_key_email_verification
 # simply could not confirm their binding at all.
 #
+# ★2026-09-20, SECOND PASS — all three of the above now call paid_plan_names().
+# A sweep for the same shape found three more, of which two were defects:
+#   free_tier_gate._PAID_PLANS      pro enterprise founding          ← FIXED
+#       compared against users.plan via get_user_from_jwt; a signed-in
+#       Starter/Developer/Team/Research customer failed the paid bypass and
+#       was metered as free (403 after one map session).
+#   power_plant_intel._PP_PAID      pro enterprise founding + gate words ← FIXED
+#       its fallthrough is _PP_PREVIEW.get(tier, 3), and the missing plans are
+#       absent there too, so a paying Team customer was capped at 3 rows while
+#       anonymous callers got 100000.
+#   free_tier_gate._PAID_KEY_TIERS  ← NOT a defect, deliberately NOT derived.
+#       It reads `mcp_dev_keys.tier`, a COARSER vocabulary (free/identified/
+#       paid/enterprise). Reading this plan canon for that column is the
+#       inversion that put 26 paying customers in warm_key_cohort.mailable.
+#
+# The rule the three fixes share: derive when the column is `users.plan`,
+# and read the COLUMN's own authority when it is not.
+#
 # `admin` is EXCLUDED. It is a role, not a purchased plan: resolve_effective_plan
 # reads `role == 'admin'` from its own column, and no account carries
 # plan='admin'. Including it would put a non-plan string into SQL that compares
