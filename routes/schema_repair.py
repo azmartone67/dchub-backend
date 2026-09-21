@@ -1460,6 +1460,48 @@ from mcp_signal_canonical import SIGNAL_CLASSES, signal_class  # noqa: E402
 from ai_platform_canon import BYO_MCP_PLATFORMS  # noqa: E402
 
 
+def _click_to_pay(c, cur, days: int) -> dict:
+    """frontend#1534 (c): click→pay per plan and per path. Never raises.
+    A column that could not be read is None (unmeasured), never zeros."""
+    from routes import handoff_definition as H
+    iv = "%d days" % int(days)
+    plans = H.CLICK_TO_PAY_PLANS
+    out = {"window_days": int(days), "basis": H.click_to_pay_basis(),
+           "mcp_go_c": None, "cold_go_p": None, "chatgpt_upgrade_h": None}
+    try:
+        cur.execute("SELECT to_regclass('pricing_checkout_clicks') IS NOT NULL")
+        has_cold = bool((cur.fetchone() or [False])[0])
+        cur.execute(H.click_to_pay_by_plan_sql(iv, include_cold=has_cold))
+        paths = {"mcp_go_c": {}, **({"cold_go_p": {}} if has_cold else {})}
+        for path, plan, clicks, paid in cur.fetchall():
+            row = paths.setdefault(path, {})
+            cell = row.setdefault(plan if plan in plans else "other", {"clicks": 0, "paid": 0})
+            cell["clicks"] += int(clicks or 0)
+            cell["paid"] += int(paid or 0)
+        for row in paths.values():
+            for p in plans:
+                row.setdefault(p, {"clicks": 0, "paid": 0})
+            for cell in row.values():
+                cell["click_to_pay_pct"] = (round(100.0 * cell["paid"] / cell["clicks"], 1)
+                                            if cell["clicks"] else None)
+        out.update(paths)
+        if not has_cold:
+            out["cold_go_p_note"] = ("pricing_checkout_clicks does not exist yet: "
+                                     "GET /go/p/<plan> has not run its DDL here")
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    try:
+        cur.execute(H.chatgpt_relay_stages_sql(iv))
+        walls, views, ident, paid = (int(x or 0) for x in (cur.fetchone() or (0, 0, 0, 0)))
+        out["chatgpt_upgrade_h"] = {"plan": "metered", "walls": walls, "views": views,
+                                    "identified": ident, "paid": paid}
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    return out
+
+
 @schema_repair_bp.route("/api/v1/admin/funnel/leakage", methods=["GET"])
 def funnel_leakage():
     """Per-tool, per-stage drop-off in the MCP conversion funnel.
@@ -1911,6 +1953,10 @@ def funnel_leakage():
                 "drop_codes_to_conversions_pct",  # unfiltered codes vs real conversions
                 "drop_conversions_to_paid_pct",   # real conversions vs unfiltered keys
             ]
+            # frontend#1534 (c): click→pay per plan AND per path (MCP /go/c,
+            # cold /go/p, ChatGPT /upgrade/h). Last, and rollback-guarded, so
+            # it cannot cost the stages above.
+            out["click_to_pay"] = _click_to_pay(c, cur, days)
 
         return jsonify(ok=True, **out)
     finally:

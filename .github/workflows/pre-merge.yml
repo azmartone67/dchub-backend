@@ -1000,6 +1000,29 @@ jobs:
             echo "::error::the paid_attributed SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── click→pay per plan and per path (frontend#1534 (c)), same Postgres ─
+      # routes/handoff_definition credits a paid Checkout Session to the latest
+      # qualifying click on its ref, per plan, on two click paths (/go/c and
+      # /go/p), and counts the ChatGPT relay page's wall → view → identify →
+      # pay sessions. Only a real Postgres shows the latest-click pick, the
+      # lookback and the operator and ChatGPT exclusions. Owns nothing outside
+      # its own throwaway schema, so no other lane's tables are touched.
+      - name: click→pay per plan and path SQL against a real Postgres
+        env:
+          CLICK_TO_PAY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_click_to_pay_by_path_sql.py -v --tb=short
+
+      - name: Prove the click→pay SQL test actually RAN
+        env:
+          CLICK_TO_PAY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_click_to_pay_by_path_sql.py \
+            -q -rs --tb=no > ctp.txt 2>&1 || { cat ctp.txt; exit 1; }
+          cat ctp.txt
+          if grep -qi "skipped" ctp.txt; then
+            echo "::error::the click→pay SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── keys_used_day2 on the /connect stats, against the same Postgres ─
       # One read joins the key an install page minted to the MCP call log on
       # or after day 2, 4 and 7 (keys_used_day2, keys_used_by_day) and says how
@@ -1211,6 +1234,7 @@ jobs:
             cs.txt
             ar.txt
             fu.txt
+            ctp.txt
             ut.txt
             fl.txt
           )
