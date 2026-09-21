@@ -24,11 +24,27 @@ fingerprint dedup, which `override` never reaches. Pressing it would re-POST,
 pass a gate that was not blocking, hit the identical dedup and decline again.
 
 ★ THE ACTUAL INSIGHT. Step 1 refused because the DIRECTIVE was too vague. The
-spec written in step 2 exists precisely to make it concrete — its unchecked
-`- [ ]` items are the implementation steps a human was meant to follow. So the
-fix is not to force the old directive through; it is to re-drive the SAME code
-drafter with the spec's own obligations as the directive. New input, not a
-bypassed guard.
+spec written in step 2 carries the content that was missing, so the fix is not
+to force the old directive through — it is to re-drive the SAME code drafter
+with the spec's own words. New input, not a bypassed guard.
+
+★★★ CORRECTED 2026-09-21, BY THE DRY RUN, BEFORE ANYTHING WAS ARMED. The first
+version of this module took that content from the spec's unchecked `- [ ]`
+items. That was wrong. Measured over all 380 landed specs: of the 242 with
+unchecked obligations, **242 carry ONLY a 4-line template and ZERO carry a
+real implementation step.** The directive it produced for agenda-41 read "Make
+the smallest real code change that satisfies: 1. Confirm this is still worth
+doing" — not a task. Driving the drafter with that 242 times would have
+produced 242 refusals or 242 bad edits.
+
+The real content is `## The approved recommendation`: present in 242 of 242,
+median 375 characters. That is what the drafter now receives. The checklist is
+stripped (see _BOILERPLATE_OBLIGATIONS) and only genuinely non-template items
+are appended.
+
+★ Specs whose triage recorded BLOCKED are SKIPPED. Their boxes are unchecked
+on purpose — they wait on an owner decision, not on engineering. Only 1 of 242
+today, but it is the OLDEST, so an age-ordered sweep hits it first.
 
 READ-PATH REUSE. Classification comes from `brain_spec_debt` (Phase 0,
 read-only, mutation-tested) rather than a second copy of the rules — two
@@ -63,6 +79,35 @@ _UNCHECKED_ITEM_RE = re.compile(r"^\s*[-*]\s+\[ \]\s*(.+?)\s*$", re.M)
 #: produces a refusal that looks like the drafter's judgement.
 _MIN_OBLIGATION_CHARS = 12
 
+#: ★★★ THE CHECKLIST IS BOILERPLATE. Measured over all 380 landed specs on
+#: origin/main 2026-09-21: of the 242 carrying unchecked obligations, **242
+#: contain ONLY these lines and ZERO contain a real implementation step.**
+#: The first version of this module built the directive from the checklist, on
+#: the premise that the spec makes the refused directive concrete. The premise
+#: was FALSE and the dry run is what caught it — the directive produced for
+#: agenda-41 read "Make the smallest real code change that satisfies: 1.
+#: Confirm this is still worth doing", which is not a task.
+#:
+#: The real content is `## The approved recommendation` — present in 242 of
+#: 242, median 375 characters. That is what the drafter gets.
+_BOILERPLATE_OBLIGATIONS = frozenset({
+    "confirm this is still worth doing",
+    "scope it to a concrete change (file(s) + approach)",
+    "implement + verify",
+    "or close this pr if superseded / not worth it",
+    "or discard this pr if superseded / not worth it",
+})
+
+#: The section carrying the actual recommendation.
+_REC_RE = re.compile(
+    r"^##\s+The approved recommendation\s*$(.*?)(?=^##\s|\Z)", re.M | re.S)
+
+#: A spec whose triage recorded BLOCKED left its boxes unchecked ON PURPOSE —
+#: it is waiting on an owner decision, not on engineering. Driving a code
+#: drafter at a funding call is worse than doing nothing. Rare (1 of 242) but
+#: it is the oldest item, so a sweep ordered by age hits it FIRST.
+_BLOCKED_RE = re.compile(r"\bBLOCKED\b")
+
 #: Hard ceiling per call. The debt book holds 238 open obligations; an
 #: unbounded sweep would open hundreds of PRs on one button press.
 _MAX_PER_CALL = 3
@@ -93,12 +138,40 @@ def unchecked_obligations(text: str) -> list:
         # identifier is a wrong edit, not a cosmetic slip. Markdown emphasis
         # via underscore is rare in these docs; snake_case is everywhere.
         item = re.sub(r"[*`]+", "", item).strip()
-        if len(item) >= _MIN_OBLIGATION_CHARS:
-            out.append(item)
+        if len(item) < _MIN_OBLIGATION_CHARS:
+            continue
+        # ★ Drop the template. Keeping it produced directives whose steps were
+        # "Confirm this is still worth doing" — see _BOILERPLATE_OBLIGATIONS.
+        if item.lower() in _BOILERPLATE_OBLIGATIONS:
+            continue
+        out.append(item)
     return out
 
 
-def build_directive(spec_name: str, title: str, obligations: list) -> str:
+def approved_recommendation(text: str) -> str:
+    """The spec's `## The approved recommendation` body — the real content.
+
+    "" when the section is absent, which the caller must treat as
+    not-implementable rather than as an empty instruction.
+    """
+    m = _REC_RE.search(text or "")
+    if not m:
+        return ""
+    body = m.group(1)
+    # Drop blockquote framing and the _Filed stamp; keep the prose.
+    lines = [ln.strip() for ln in body.splitlines()]
+    lines = [ln for ln in lines
+             if ln and not ln.startswith(">") and not ln.startswith("_Filed")]
+    return " ".join(lines).strip()
+
+
+def is_blocked(text: str) -> bool:
+    """True when triage recorded BLOCKED — unchecked ON PURPOSE."""
+    return bool(_BLOCKED_RE.search(text or ""))
+
+
+def build_directive(spec_name: str, title: str, recommendation: str,
+                    obligations: list) -> str:
     """The directive handed to the CODE drafter.
 
     ★ It says IMPLEMENT and names the spec. The original directive failed
@@ -107,17 +180,23 @@ def build_directive(spec_name: str, title: str, obligations: list) -> str:
     acceptable answer — the spec fallback is exactly what produced the loop,
     and without this line the drafter's cheapest exit is to re-file one.
     """
-    steps = "\n".join(f"{i}. {o}" for i, o in enumerate(obligations[:12], 1))
-    return (
+    body = (
         f"IMPLEMENT the already-approved spec docs/brain-proposals/{spec_name}"
         f"{(' — ' + title) if title else ''}.\n\n"
         f"The spec is MERGED and its design is settled; what is missing is the "
-        f"code. Make the smallest real code change that satisfies these "
-        f"outstanding obligations:\n\n{steps}\n\n"
-        f"Do NOT file another spec or design document — one already exists and "
-        f"filing a second is what this task exists to stop. If you cannot "
-        f"express this as a concrete code edit, refuse and say which "
-        f"obligation blocks you."
+        f"code.\n\nTHE APPROVED RECOMMENDATION:\n{recommendation.strip()}\n\n"
+    )
+    # Only real steps reach the directive; the 4-line template is stripped
+    # upstream, so `obligations` is usually empty and this block is skipped.
+    if obligations:
+        steps = "\n".join(f"{i}. {o}" for i, o in enumerate(obligations[:12], 1))
+        body += f"OUTSTANDING OBLIGATIONS:\n{steps}\n\n"
+    return body + (
+        "Make the smallest real code change that delivers that recommendation. "
+        "Do NOT file another spec or design document — one already exists and "
+        "filing a second is what this task exists to stop. If the "
+        "recommendation needs a decision rather than an edit, or you cannot "
+        "express it as a concrete code change, refuse and say why."
     )
 
 
@@ -145,22 +224,35 @@ def plan_for_spec(spec_name: str, corpus=None) -> dict:
 
     state = classify_doc_text(text)
     obligations = unchecked_obligations(text)
+    recommendation = approved_recommendation(text)
     title = ""
     for line in text.splitlines():
         if line.startswith("# "):
             title = line[2:].strip()
             break
-    if state != "open" or not obligations:
-        return {"ok": True, "spec": spec_name, "state": state,
-                "obligations": obligations, "would_act": False,
-                "reason": ("spec has no unchecked obligations — nothing to "
-                           "implement" if state != "open" else
-                           "obligations present but all below the "
-                           f"{_MIN_OBLIGATION_CHARS}-char floor (headings, "
-                           "not steps)")}
-    return {"ok": True, "spec": spec_name, "state": state, "title": title,
-            "obligations": obligations, "would_act": True,
-            "directive": build_directive(spec_name, title, obligations)}
+    common = {"ok": True, "spec": spec_name, "state": state, "title": title,
+              "obligations": obligations,
+              "recommendation_chars": len(recommendation)}
+    if state != "open":
+        return {**common, "would_act": False,
+                "reason": "spec has no unchecked obligations — nothing to do"}
+    if is_blocked(text):
+        # ★ Unchecked ON PURPOSE. This is the one refusal that must not be
+        # read as a failure of the actuator.
+        return {**common, "would_act": False, "blocked": True,
+                "reason": ("triage recorded BLOCKED — this spec waits on an "
+                           "owner decision, not on code")}
+    if not recommendation:
+        # ★ NOT "nothing to implement". A spec we cannot read the
+        # recommendation out of is UNMEASURED; saying otherwise would let a
+        # heading rename silently empty the queue.
+        return {**common, "would_act": False,
+                "reason": ("no '## The approved recommendation' section — "
+                           "cannot build a directive from this spec")}
+    return {**common, "would_act": True,
+            "recommendation": recommendation,
+            "directive": build_directive(spec_name, title, recommendation,
+                                         obligations)}
 
 
 def implement_spec(spec_name: str, kind: str = "spec", item_id: int = 0,
