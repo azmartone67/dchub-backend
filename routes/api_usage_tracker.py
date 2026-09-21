@@ -35,9 +35,12 @@ Cost characteristics
 
 Identification
 --------------
-  We track when X-API-Key is present and starts with 'dchub_'. Anonymous
-  traffic is NOT tracked (intentional — keeps cardinality bounded). For
-  anonymous-traffic counts use cron_observability or brain_http_capture.
+  We track a key of a shape in TRACKED_KEY_PREFIXES: a 'dchub_' X-API-Key,
+  and — since 2026-09-21 — a self-serve 'dch_live_' key sent as X-API-Key or
+  Authorization: Bearer by a caller that is not the server itself (see
+  _recorded_as). Anonymous traffic is NOT tracked (intentional — keeps
+  cardinality bounded). For anonymous-traffic counts use cron_observability or
+  brain_http_capture.
 
 Privacy
 -------
@@ -94,13 +97,27 @@ _FLUSH_INTERVAL_SEC = int(os.environ.get("USAGE_FLUSH_INTERVAL_SEC", "30"))
 _BUFFER_MAX        = int(os.environ.get("USAGE_BUFFER_MAX", "10000"))
 _RETENTION_DAYS    = int(os.environ.get("USAGE_RETENTION_DAYS", "90"))
 
-# The X-API-Key shape this tracker records, and how much of it it keeps. Named
-# so a reader that joins on the stored prefix (routes/install_stats.py) derives
-# the same prefix and the same eligibility instead of retyping them. A key NOT of
-# this shape — every self-serve `dch_live_` key from /api/v1/keys/claim — is
-# never written to api_endpoint_log or api_usage_meter by this tracker.
-TRACKED_KEY_PREFIX = "dchub_"
-STORED_PREFIX_LEN  = 24
+# The key shapes this tracker records per key, and how much of a key it keeps.
+# Named so a reader that joins on the stored prefix (routes/install_stats.py)
+# derives the same prefix and the same eligibility instead of retyping them.
+#   ACCOUNT_KEY_PREFIX     api_keys / partner keys. Recorded from X-API-Key only,
+#                          exactly as since 2026-06-03 — partner-usage reports
+#                          read these rows, so nothing about them changed.
+#   SELF_SERVE_KEY_PREFIX  every mcp_dev_keys key: /api/v1/keys/claim, the
+#                          usage-based checkout, redeem, ... Recorded since
+#                          2026-09-21; before that no per-key table held one.
+ACCOUNT_KEY_PREFIX    = "dchub_"
+SELF_SERVE_KEY_PREFIX = "dch_live_"
+TRACKED_KEY_PREFIXES  = (ACCOUNT_KEY_PREFIX, SELF_SERVE_KEY_PREFIX)
+STORED_PREFIX_LEN     = 24
+
+# Headers that mean the SERVER is calling — recorded as a credential CLASS,
+# never as a key. In precedence order.
+_SERVER_CREDENTIAL_CLASSES = (
+    ("admin",    ("X-Admin-Key", "X-Admin-Token")),
+    ("cron",     ("X-Internal-Cron", "X-DC-Internal-Cron")),
+    ("internal", ("X-Internal-Key", "X-DC-Internal-Token")),
+)
 
 # Paths we never track (would inflate volume or feedback-loop)
 _SKIP_PATH_PREFIXES = (
@@ -356,6 +373,66 @@ def _ensure_flusher_running() -> None:
         _FLUSHER_STARTED_THIS_PROCESS = True
 
 
+# === Identification ==================================================
+
+def _bearer(headers) -> str:
+    auth = headers.get("Authorization") or ""
+    return auth[7:].strip() if auth.startswith("Bearer ") else ""
+
+
+def _recorded_as(headers, args):
+    """What one request is recorded under: a key's first STORED_PREFIX_LEN
+    chars, a credential-class marker, or None (not recorded)."""
+    ak = (headers.get("X-API-Key") or "").strip()
+    if ak.startswith(ACCOUNT_KEY_PREFIX) and len(ak) >= STORED_PREFIX_LEN:
+        return ak[:STORED_PREFIX_LEN]
+    # r-admin-observability (2026-07-27): ADMIN traffic was invisible.
+    # _record() below tracks a request only if it carries an X-API-Key,
+    # and admin/cron calls authenticate with X-Admin-Key or
+    # X-Internal-Key instead — so NONE of them were ever logged. Live
+    # proof: api_endpoint_log held 56 admin rows out of 548,096, and 0
+    # of ~50 admin reindex calls made on 2026-07-27.
+    #
+    # That blindness is not cosmetic. It made "which destructive admin
+    # endpoint has NEVER actually run?" unanswerable, and Shell #37
+    # lane 1 had to be rebuilt around it — `purge-noise` had a
+    # catastrophically wrong predicate and survived only because
+    # nobody happened to call it. You cannot audit a surface you
+    # cannot see.
+    #
+    # ★ The marker is a CREDENTIAL CLASS, never the secret. Storing a
+    # hash would still be needless key material in a 90-day table; the
+    # question this answers is "was this endpoint ever invoked, and by
+    # what kind of caller", which a class answers completely.
+    # ★ It deliberately does NOT start with "dchub_", so it can never
+    # collide with a real partner prefix — partner-usage reporting
+    # filters `WHERE api_key_prefix = <dchub_...>` and stays exact.
+    # ★ Query-string creds (?admin_key=) are detected but NEVER logged:
+    # _collapse_path() records request.path only, which excludes the
+    # query string.
+    if args.get("admin_key"):
+        return "admin"
+    for marker, names in _SERVER_CREDENTIAL_CLASSES:
+        if any(headers.get(n) for n in names):
+            return marker
+    # r-self-serve-rest (2026-09-21): a self-serve key was never recorded, so
+    # REST use by every /api/v1/keys/claim key reached no per-key table — web-map
+    # sends its key as X-API-Key (js/map.js) AND as Bearer (map.html →
+    # /api/auth/me). Both are read now, X-API-Key first, as the backend resolves
+    # them. ★ Only when NO server credential is present, even an empty one: the
+    # MCP server's callAPI()/callAPIWrite() (dchub-mcp-server server.mjs) send
+    # X-Internal-Key WITH the caller's X-API-Key on every tool's backend fan-out.
+    # Recording that under the key would count MCP use as REST use; it stays
+    # "internal", exactly as before this change.
+    if "admin_key" in args or any(
+            n in headers for _, names in _SERVER_CREDENTIAL_CLASSES for n in names):
+        return None
+    key = ak or _bearer(headers)
+    if key.startswith(SELF_SERVE_KEY_PREFIX) and len(key) >= STORED_PREFIX_LEN:
+        return key[:STORED_PREFIX_LEN]
+    return None
+
+
 # === Wire-in =========================================================
 
 def install_tracker(app) -> dict:
@@ -373,43 +450,9 @@ def install_tracker(app) -> dict:
         _ensure_flusher_running()
         g._usage_start_ns = time.time_ns()
         # Capture key + decide trackability cheaply
-        ak = (request.headers.get("X-API-Key") or "").strip()
-        if (ak and ak.startswith(TRACKED_KEY_PREFIX)
-                and len(ak) >= STORED_PREFIX_LEN):
-            g._usage_key_prefix = ak[:STORED_PREFIX_LEN]
-        else:
-            # r-admin-observability (2026-07-27): ADMIN traffic was invisible.
-            # _record() below tracks a request only if it carries an X-API-Key,
-            # and admin/cron calls authenticate with X-Admin-Key or
-            # X-Internal-Key instead — so NONE of them were ever logged. Live
-            # proof: api_endpoint_log held 56 admin rows out of 548,096, and 0
-            # of ~50 admin reindex calls made on 2026-07-27.
-            #
-            # That blindness is not cosmetic. It made "which destructive admin
-            # endpoint has NEVER actually run?" unanswerable, and Shell #37
-            # lane 1 had to be rebuilt around it — `purge-noise` had a
-            # catastrophically wrong predicate and survived only because
-            # nobody happened to call it. You cannot audit a surface you
-            # cannot see.
-            #
-            # ★ The marker is a CREDENTIAL CLASS, never the secret. Storing a
-            # hash would still be needless key material in a 90-day table; the
-            # question this answers is "was this endpoint ever invoked, and by
-            # what kind of caller", which a class answers completely.
-            # ★ It deliberately does NOT start with "dchub_", so it can never
-            # collide with a real partner prefix — partner-usage reporting
-            # filters `WHERE api_key_prefix = <dchub_...>` and stays exact.
-            # ★ Query-string creds (?admin_key=) are detected but NEVER logged:
-            # _collapse_path() records request.path only, which excludes the
-            # query string.
-            _h = request.headers
-            if (_h.get("X-Admin-Key") or _h.get("X-Admin-Token")
-                    or request.args.get("admin_key")):
-                g._usage_key_prefix = "admin"
-            elif _h.get("X-Internal-Cron") or _h.get("X-DC-Internal-Cron"):
-                g._usage_key_prefix = "cron"
-            elif _h.get("X-Internal-Key") or _h.get("X-DC-Internal-Token"):
-                g._usage_key_prefix = "internal"
+        recorded_as = _recorded_as(request.headers, request.args)
+        if recorded_as:
+            g._usage_key_prefix = recorded_as
         # paths to skip — short-circuit
         p = request.path or ""
         for pfx in _SKIP_PATH_PREFIXES:
