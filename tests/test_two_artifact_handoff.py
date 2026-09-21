@@ -10,6 +10,7 @@ since — but nothing ever called make_relay_token(). Its docstring delegates
 the mint to "the mcp-server's for_your_human builder", and server.mjs has no
 such builder. The bridge was documented, routed and measured, never built.
 """
+import ast
 import os
 import re
 
@@ -19,6 +20,33 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _src(*p) -> str:
     with open(os.path.join(ROOT, *p), encoding="utf-8") as fh:
         return fh.read()
+
+
+def _paywall_tree():
+    return ast.parse(_src("utils", "paywall_response.py"))
+
+
+def _for_your_human_literal():
+    """The dict actually assigned to base['for_your_human'], as source text.
+
+    Read from the AST, not a character window around the name. A ±2000-char
+    window also swallows the COMMENTS around the field — and on 2026-09-20 an
+    assertion here passed because "redeeming one cannot consume the other" in a
+    nearby comment contained the phrase it was looking for, while the shipped
+    field had been reworded. A comment about the guarantee is not the guarantee.
+    """
+    for node in ast.walk(_paywall_tree()):
+        if not isinstance(node, ast.Assign):
+            continue
+        for t in node.targets:
+            if (isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant)
+                    and t.slice.value == "for_your_human"):
+                # The dict holds variables too (_human_url, tool_name), so it is
+                # not literal_eval-able. Collect the STRING CONSTANTS — that is
+                # the prose we ship, which is what this asserts on.
+                return [n.value for n in ast.walk(node.value)
+                        if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    raise AssertionError("base['for_your_human'] is no longer assigned here")
 
 
 # ── 1. the human artifact is actually minted ──────────────────────────
@@ -37,8 +65,14 @@ def test_human_artifact_is_independent_of_the_agent_claim():
     claim token, redeeming would consume it and we are back to 410 Gone."""
     src = _src("utils", "paywall_response.py")
     i = src.index("for_your_human")
-    block = src[i - 2000:i + 1200]
-    assert "NOT consumed" in block or "not consumed" in block
+    # 2026-09-20: was a phrase match over a ±2000-char window. It pinned one
+    # SPELLING, and the window included comments — so it stayed green when the
+    # shipped wording changed, satisfied by "cannot consume the other" in a
+    # comment nearby. Read the value we actually send.
+    why = " ".join(_for_your_human_literal()).lower()
+    assert re.search(r"not\s+consume|does\s+not\s+consume", why), (
+        "the for_your_human field no longer tells the reader that redeeming "
+        "the agent's claim does not consume this link")
     # the relay mint must not be fed the claim/pair code
     m = re.search(r"_mk_relay\(([^)]*)\)", src)
     assert m, "relay mint call not found"
@@ -52,8 +86,17 @@ def test_human_artifact_is_independent_of_the_agent_claim():
 def test_relay_url_is_relayed_in_prose_not_only_structured():
     """A client that drops structuredContent must still carry the sentence."""
     src = _src("utils", "paywall_response.py")
-    assert "FOR YOUR HUMAN" in src
-    assert "human_message" in src[src.index("for_your_human"):]
+    # 2026-09-20: was `"FOR YOUR HUMAN" in src` — a banner string, not the
+    # guarantee. The banner was reworded (it read as an instruction to the
+    # model); what has to hold is that the relay URL reaches human_message at
+    # all, which is what a structuredContent-dropping client relays.
+    i = src.index("_human_url = ")
+    tail = src[i:]
+    assert "human_message" in tail, "the relay URL never reaches the prose"
+    assert re.search(r"human_message'\]\s*\+=.{0,400}_human_url", tail,
+                     re.S), (
+        "human_message is mentioned after the mint but the relay URL is not "
+        "appended to it")
 
 
 def test_paywall_never_500s_when_the_relay_fails():
@@ -61,8 +104,34 @@ def test_paywall_never_500s_when_the_relay_fails():
     one with no link."""
     src = _src("utils", "paywall_response.py")
     i = src.index("from routes.human_relay import make_relay_token")
-    tail = src[i:i + 2200]
-    assert "except Exception:" in tail and "pass" in tail
+    # 2026-09-20: was src[i:i + 2200]. A FIXED SLICE measures length, not
+    # content: adding a comment inside the try block pushed `except Exception:`
+    # past character 2200 and the test went red while the fail-soft was intact
+    # and untouched. Bound it by STRUCTURE — everything up to the next
+    # top-level def — so the guarantee is what is measured.
+    # 2026-09-20: was `"except Exception:" in tail and "pass" in tail` over a
+    # fixed 2200-char slice. Two faults. The slice measured LENGTH — a comment
+    # added inside the try pushed the except past it and went red while the
+    # fail-soft was untouched. And `"pass" in tail` is satisfied by ANY pass in
+    # the window, so replacing the handler body with `raise` kept it green.
+    # Find the try that mints the relay and assert on its HANDLER.
+    _mint = None
+    for node in ast.walk(_paywall_tree()):
+        if isinstance(node, ast.Try) and "make_relay_token" in ast.dump(node):
+            _mint = node
+            break
+    assert _mint is not None, "the relay mint is no longer inside a try"
+    assert _mint.handlers, "the relay mint's try has no except"
+    for h in _mint.handlers:
+        assert all(isinstance(st, ast.Pass) for st in h.body), (
+            "the relay mint's except does something other than swallow — a "
+            "paywall that raises because a link could not be built is worse "
+            "than one with no link")
+    tail = ""
+    assert True, (
+        "the relay mint is no longer wrapped in a fail-soft except/pass; a "
+        "paywall that 500s because a link could not be built is worse than "
+        "one with no link")
 
 
 # ── 2. the free key is worth claiming ─────────────────────────────────
