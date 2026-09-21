@@ -780,6 +780,29 @@ jobs:
             echo "::error::the had_pack SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The exact-location meter, against the same Postgres ─────────────
+      # The monthly limit, the free re-view, the month reset and — the part a
+      # fake cannot show — that two reveals racing at used=9 grant exactly one
+      # (without its advisory lock the month ends at 11). Also the reveal
+      # endpoint's operator-withheld query against the registry's SQL
+      # functions. Owns and recreates only facility_location_reveals and the
+      # schema reveal_redaction_test.
+      - name: Location-reveal meter SQL against a real Postgres
+        env:
+          LOCATION_METER_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_location_meter_sql.py -v --tb=short
+
+      - name: Prove the location-meter SQL test actually RAN
+        env:
+          LOCATION_METER_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_location_meter_sql.py \
+            -q -rs --tb=no > lm.txt 2>&1 || { cat lm.txt; exit 1; }
+          cat lm.txt
+          if grep -qi "skipped" lm.txt; then
+            echo "::error::the location-meter SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── The EIA-860M retirement refresh, against the same Postgres ───────
       # Unit tests pin the gate and the fetch guards with no database. Only a
       # real Postgres shows the refresh landing as ONE transaction: a withdrawn

@@ -24343,7 +24343,23 @@ def _resolve_record_tier(local_plan, resolved, has_credential):
     return resolved
 
 
-def _apply_record_gate(resp, tier):
+def _meter_record_location(resp, tier, src_table):
+    """Spend the caller's monthly exact-location allowance on this record.
+
+    Returns the `exact_location` flag for _apply_record_gate and stamps
+    `_location_allowance` on the response. Policy and meter both live in
+    util/location_meter.py (one meter for web, REST and MCP); this is only the
+    call. Anything that fails means False — the record keeps its tier's
+    normal precision.
+    """
+    try:
+        from util.location_meter import meter_rest_record
+        return meter_rest_record(resp, tier, src_table)
+    except Exception:
+        return False
+
+
+def _apply_record_gate(resp, tier, exact_location=False):
     """Delegates to util.facility_tier_gate.apply_record_gate.
 
     Kept as a one-line indirection so every call site in this file names the
@@ -24352,7 +24368,7 @@ def _apply_record_gate(resp, tier):
     """
     try:
         from util.facility_tier_gate import apply_record_gate
-        return apply_record_gate(resp, tier)
+        return apply_record_gate(resp, tier, exact_location=exact_location)
     except Exception:
         # PULL, never ITERATE — same note as the util module's fallback.
         from util.facility_tier_gate import MINIMAL_ANON_FIELDS
@@ -24517,7 +24533,13 @@ def facility_by_slug(slug):
                 # vocabulary, gated LAST for the same reason — normalize_
                 # coordinates must see raw values and verified_flag() reads
                 # is_duplicate, which the allow-list drops.
-                _apply_record_gate(_resp_id, _fg_tier_of_request())
+                # r-reveal-meter (2026-09-21): a free/starter caller with an
+                # account spends one monthly exact-location allowance here —
+                # BEFORE the gate, which needs to know, and which then keeps
+                # exact coordinates + address and still masks the rest.
+                _t_id = _fg_tier_of_request()
+                _apply_record_gate(_resp_id, _t_id, exact_location=_meter_record_location(
+                    _resp_id, _t_id, 'discovered_facilities'))
                 return jsonify(_resp_id)
             return jsonify({'success': False, 'error': 'Facility not found', 'id': slug}), 404
         except Exception as _e_id:
@@ -24586,6 +24608,7 @@ def facility_by_slug(slug):
         #             Coords absent (596 slugs) -> cannot disprove sameness -> include.
         # Verified: 7ffa852b now 685 carriers (was 1); AWS slug stays at 4 co-located
         # kin, not 169. Server-side median 0.16 -> 0.23 ms, worst case 2.34 ms.
+        _src_tbl = 'discovered_facilities'   # which table served the row (meter)
         c.execute("""
             WITH sib AS (
                 SELECT id, name, provider, city, state, country, market,
@@ -24667,6 +24690,7 @@ def facility_by_slug(slug):
             # single-valued fields, carriers UNIONed across co-located kin.
             # `facilities.id` is already the hex text space cfp.dchub_facility_id
             # holds, so kin ids join directly with no cast on either side.
+            _src_tbl = 'facilities'
             c.execute("""
                 WITH sib AS (
                     SELECT id, name, provider, city, state, country, market,
@@ -24772,7 +24796,10 @@ def facility_by_slug(slug):
         # see the raw values, and verified_flag() reads `is_duplicate`, which
         # the allow-list drops. Gating earlier would silently turn every
         # verified row into 'tracked'.
-        _apply_record_gate(_resp_slug, _fg_tier_of_request())
+        # r-reveal-meter (2026-09-21): see the numeric branch above.
+        _t_slug = _fg_tier_of_request()
+        _apply_record_gate(_resp_slug, _t_slug, exact_location=_meter_record_location(
+            _resp_slug, _t_slug, _src_tbl))
         return jsonify(_resp_slug)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -38917,6 +38944,7 @@ def get_facility_by_id(facility_id):
         conn = get_read_db()
         cur = conn.cursor()
         from routes.facility_slug import hash_sql
+        _fid_tbl = 'discovered_facilities'   # which table served the row (meter)
         # Try integer id first, then hex merged_facility_id
         try:
             int_id = int(facility_id)
@@ -38957,6 +38985,7 @@ def get_facility_by_id(facility_id):
         if not row:
             # Fallback: composite paid-tier IDs come from the `facilities` table directly
             # (text PK), not discovered_facilities. Try a direct lookup there before 404'ing.
+            _fid_tbl = 'facilities'
             cur.execute("""
                 SELECT id, name, provider, city, state, country, region,
                        latitude, longitude, power_mw, status, address, source,
@@ -39039,8 +39068,15 @@ def get_facility_by_id(facility_id):
         # and /api/v1/facilities/<id>/ served different free surfaces from the
         # same row, and it gave a free claimed key nothing to buy. One envelope
         # now, in util.facility_tier_gate, shared with facility_by_slug.
+        # r-reveal-meter (2026-09-21): a free/starter caller with an account
+        # spends one monthly exact-location allowance on this record (channel
+        # 'api') — decided BEFORE the gate, which then keeps exact coordinates +
+        # street address and still masks every other paid field.
+        _fid_resp = {'success': True, 'data': full_data}
         return jsonify(_apply_record_gate(
-            {'success': True, 'data': full_data}, caller_plan or 'anon'))
+            _fid_resp, caller_plan or 'anon',
+            exact_location=_meter_record_location(
+                _fid_resp, caller_plan or 'anon', _fid_tbl)))
     except Exception as e:
         import traceback
         return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-300:]}), 500
@@ -41373,11 +41409,21 @@ def create_press_release():
 
 @app.route('/api/v1/geo', methods=['GET'])
 def map_geo_pins():
+    """Map pins — every `facilities` row with coordinates, for a signed-in caller.
+
+    ★ r-geo-gate (2026-09-21): the only check here was that SOME Authorization
+    header or dchub_token cookie was PRESENT — never that it was valid — and
+    the answer was the whole table with exact coordinates and power_mw. Any
+    made-up header unlocked it. The presence check stays (no credential at all
+    is still a 401), but the rows now go through the same tier gate as every
+    other facility list: the credential is RESOLVED (get_request_tier), and a
+    tier that is not exact gets the ladder. An exact tier's response is
+    byte-identical to before — no rows touched, no marker keys added.
+    """
     from flask import request as _req
     token = _req.headers.get('Authorization','') or _req.cookies.get('dchub_token','')
     if not token:
         return jsonify({'error':'Login required','redirect':'/login'}), 401
-    """Public map pins — all facilities with coordinates, no auth required."""
     conn = None
     try:
         conn = get_read_db()
@@ -41390,7 +41436,27 @@ def map_geo_pins():
             ORDER BY power_mw DESC NULLS LAST
         """)
         pins = [dict_from_row(r) for r in c.fetchall()]
-        return jsonify({'success': True, 'facilities': pins, 'count': len(pins)})
+        # Fail CLOSED: a gate that cannot load serves the minimal anonymous
+        # fields (no coordinates, no power) — never the full rows.
+        try:
+            from util.facility_tier_gate import gate_records as _geo_gate
+            from util.facility_tier_gate import coord_dp_for_tier as _geo_dp_for
+            from api_tier_gating import get_request_tier as _geo_tier
+            _geo_t = (_geo_tier() or 'anon').lower()
+            pins, _geo_n = _geo_gate(pins, _geo_t)
+            _geo_dp = _geo_dp_for(_geo_t)
+            _geo_gated = bool(_geo_n) or _geo_dp is not None
+        except Exception:
+            from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _geo_min
+            pins = [{k: v for k, v in p.items() if k in _geo_min} for p in pins]
+            _geo_t, _geo_dp, _geo_gated = 'anon', None, True
+        payload = {'success': True, 'facilities': pins, 'count': len(pins)}
+        if _geo_gated:
+            payload['_gated'] = True
+            payload['tier'] = _geo_t
+            if _geo_dp is not None:
+                payload['_coord_precision_dp'] = _geo_dp
+        return jsonify(payload)
     except Exception as e:
         logger.error(f'map_geo_pins error: {e}')
         return jsonify({'error': str(e)}), 503
@@ -47009,6 +47075,15 @@ try:
     print("[main] facility_scrape_quality_bp registered: /api/v1/admin/facility-scrape/{analyze,apply,undo}", flush=True)
 except Exception as _sq_e:
     print(f"[main] facility_scrape_quality register skipped: {_sq_e}", file=sys.stderr)
+
+# r-reveal-meter (2026-09-21): GET/POST /api/v1/facility/<slug>/location — the
+# monthly exact-location allowance (routes/facility_location_reveal.py).
+try:
+    from routes.facility_location_reveal import facility_location_reveal_bp
+    app.register_blueprint(facility_location_reveal_bp)
+    print("[main] facility_location_reveal_bp registered: /api/v1/facility/<slug>/location", flush=True)
+except Exception as _flr_e:
+    print(f"[main] facility_location_reveal register skipped: {_flr_e}", file=sys.stderr)
 
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a

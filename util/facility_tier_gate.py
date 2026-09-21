@@ -10,11 +10,22 @@ facility route reuses it, and it works: no `power_mw`, no `source`, no
 
 The COORDINATE half was never extracted. It lives inline in `main.py`'s
 `/api/v1/map` handler as `_MAP_ANON_COORD_DP` / `_MAP_FREE_COORD_DP` — a
-deliberate, documented ladder (r-signupladder 2026-08-10):
+deliberate, documented ladder (r-signupladder 2026-08-10). For a single
+facility RECORD the ladder is now (owner decision 2026-09-21):
 
-    anonymous   MAP_ANON_COORD_DP   2dp  ~1.1 km   city block
-    free/ident  MAP_FREE_COORD_DP   3dp  ~110 m    the building
-    paid        exact
+    anonymous       MAP_ANON_COORD_DP   2dp  ~1.1 km   city block
+    free/identified MAP_FREE_COORD_DP   2dp  ~1.1 km   same as anonymous ...
+                    + EXACT location (coordinates + street address) for up to
+                      FREE_EXACT_LOCATIONS_PER_MONTH distinct facilities per
+                      UTC month, one meter across web, REST and MCP
+                      (util/location_meter.py)
+    starter         full field set, location metered exactly like free
+    developer+      exact everywhere (EXACT_LOCATION_TIERS)
+
+The free rung used to be 3dp (~110 m) "the building". It is not any more: a
+free account buys exact location for a few facilities a month instead of a
+sharper blur for all of them. `exact_location=True` on gate_record /
+apply_record_gate is how a caller spends that allowance on one record.
 
 and `FACILITY_VISIBLE_FIELDS['anon']` contains `latitude` and `longitude` with
 **no precision constraint at all**. So every route that reuses the field mask
@@ -57,6 +68,7 @@ become a gate that passes.
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 
 # Last-resort allow-list. Used when tier resolution or the field-mask import
 # raises — never as a normal path. Deliberately smaller than
@@ -78,15 +90,89 @@ PASSTHROUGH_KEYS = frozenset({
     'coordinates_status', 'connectivity_note',
 })
 
-# Tiers that pay. Everything else is coarsened.
-PAID_TIERS = frozenset({'developer', 'pro', 'enterprise', 'admin', 'starter'})
+# ── who gets what ────────────────────────────────────────────────────────────
+# The tier strings here are whatever api_tier_gating.get_request_tier() returns:
+# raw `users.plan` values (the registry's own vocabulary), 'identified' for
+# trial keys, 'admin' for the role / internal key, and 'anon'. So the paid sets
+# are DERIVED from tier_registry.paid_plan_names() — the house rule for a
+# users.plan column (tests/test_paid_plan_lists_derived.py). The literal this
+# replaced omitted founding, team and research_seed, all of which TIERS marks
+# paid, and so served paying customers the free preview.
+#
+# ★ 'admin' is added by hand because paid_plan_names() deliberately excludes it
+# (a role, not a purchasable plan) and the resolver does return it.
+#
+# ★ The coarse key words 'paid' and 'metered' are NOT added, on purpose.
+# get_request_tier() cannot return either: validate_api_key() maps
+# mcp_dev_keys.tier 'paid' -> 'pro' and anything unknown -> 'free', and
+# _resolve_key_tier() maps 'paid' -> 'developer' and has no 'metered' entry.
+# A $10 call-pack buyer resolves to their key's own tier ('free' for a pack-
+# minted key) — the pack lives in mcp_topups, not in any tier column — so the
+# pack's exact-location entitlement is decided by credit balance in
+# util/location_meter.pack_active(), not by a word in these sets.
+_ROLE_TIERS = frozenset({'admin'})
+
+# Paid plans whose EXACT LOCATION is metered like a free account's while every
+# other paid field stays theirs (owner decision 2026-09-21: the $9 Starter plan).
+METERED_LOCATION_PAID_TIERS = frozenset({'starter'})
+
+# What each set falls back to if the registry cannot be imported. Fail CLOSED:
+# the full-record set falls back to the literal it replaced (never wider), and
+# the exact-location set to NOBODY — "no exact", never "everyone exact".
+_PAID_TIERS_FALLBACK = frozenset({'developer', 'pro', 'enterprise', 'admin', 'starter'})
+_EXACT_LOCATION_FALLBACK = frozenset()
+
+
+def _paid_plan_names():
+    try:
+        from tier_registry import paid_plan_names
+        return frozenset(paid_plan_names())
+    except Exception:
+        return frozenset()
+
+
+def _derive_paid_tiers():
+    got = _paid_plan_names()
+    return (got | _ROLE_TIERS) if got else _PAID_TIERS_FALLBACK
+
+
+def _derive_exact_location_tiers():
+    got = _paid_plan_names()
+    if not got:
+        return _EXACT_LOCATION_FALLBACK
+    return (got - METERED_LOCATION_PAID_TIERS) | _ROLE_TIERS
+
+
+# Tiers that pay: the FULL FIELD SET (power, operator, source, ...).
+PAID_TIERS = _derive_paid_tiers()
+
+# Tiers whose coordinates and street address are exact on EVERY record.
+EXACT_LOCATION_TIERS = _derive_exact_location_tiers()
 
 # Tiers that have identified themselves but do not pay — the middle rung.
 IDENTIFIED_TIERS = frozenset({'free', 'identified', 'trial', 'trial_taste'})
 
+# Tiers that may spend the monthly exact-location allowance: every identified
+# tier, plus any paid tier that is not exact everywhere. Derived from the two
+# sets above so it cannot drift from them — a tier that loses exact location
+# gains the allowance by construction rather than falling to "never exact".
+LOCATION_ALLOWANCE_TIERS = IDENTIFIED_TIERS | (PAID_TIERS - EXACT_LOCATION_TIERS)
+
 # Coordinate keys, across every naming convention in the corpus.
 _LAT_KEYS = ('latitude', 'lat')
 _LON_KEYS = ('longitude', 'longitude_deg', 'lon', 'lng')
+
+# The street address, across the spellings a facility record can carry. Kept
+# only where the location is exact; dropped from a full-field record whose
+# location is not (starter).
+STREET_ADDRESS_KEYS = ('address', 'address1', 'address2', 'street',
+                       'street_address', 'full_address', 'postal_code',
+                       'postcode', 'zip', 'zip_code', 'zipcode')
+
+# Raw upstream records carry the address and coordinates verbatim (PeeringDB
+# address1/zipcode/latitude/longitude), so a record whose location is metered
+# never carries them, even when the allowance makes this one record exact.
+RAW_LOCATION_KEYS = ('raw_data',)
 
 
 def _env_dp(name: str, default: int) -> int:
@@ -96,18 +182,34 @@ def _env_dp(name: str, default: int) -> int:
         return default
 
 
+def norm_tier(tier) -> str:
+    """Lower-cased tier string; None / '' / non-strings read as 'anon'."""
+    try:
+        t = (tier or 'anon')
+        return t.lower() if isinstance(t, str) else 'anon'
+    except Exception:
+        return 'anon'
+
+
 def coord_dp_for_tier(tier) -> int | None:
     """Decimal places this tier's coordinates are rounded to. None = exact.
+
+    Exact ONLY for EXACT_LOCATION_TIERS. Every other tier that has identified
+    itself — free/identified, and starter, which keeps its other paid fields —
+    is rounded at MAP_FREE_COORD_DP, whose record default is now 2dp: the same
+    ~1.1 km as anonymous (owner decision 2026-09-21). What a free account buys
+    is exact location for a few facilities a month (gate_record's
+    exact_location), not a sharper blur for every one.
 
     Reads MAP_ANON_COORD_DP / MAP_FREE_COORD_DP — the map's knobs, on purpose.
     MAP_ANON_COORD_DP=6 remains the no-deploy kill switch it already was, and
     now disables coarsening on every surface, not just the map.
     """
-    t = (tier or 'anon').lower()
-    if t in PAID_TIERS:
+    t = norm_tier(tier)
+    if t in EXACT_LOCATION_TIERS:
         return None
-    if t in IDENTIFIED_TIERS:
-        return _env_dp('MAP_FREE_COORD_DP', 3)
+    if t in IDENTIFIED_TIERS or t in PAID_TIERS:
+        return _env_dp('MAP_FREE_COORD_DP', 2)
     # ★ ONE knob, two DEFAULTS, and the difference is load-bearing.
     #
     # The map defaults anonymous to 3 dp and that is deliberate: no caller
@@ -118,8 +220,10 @@ def coord_dp_for_tier(tier) -> int | None:
     #
     # None of that applies to a single RECORD. Nobody renders a map from
     # /api/v1/facility/<slug>, so the rendering constraint that justifies 3 dp
-    # on the map buys nothing here, while 3 dp would make anonymous and free
-    # IDENTICAL and collapse the signup rung the ladder exists to create.
+    # on the map buys nothing here: a record is ~1.1 km (2 dp) for anonymous
+    # AND for free callers. The signup rung on a record is no longer precision
+    # — anonymous and free round identically by design since 2026-09-21 — it
+    # is the exact-location allowance (util/location_meter.py).
     #
     # Setting MAP_ANON_COORD_DP still moves BOTH — production sets it to 2, so
     # the two agree there today. The defaults differ only where the surfaces
@@ -151,34 +255,151 @@ def visible_fields_for_tier(tier) -> frozenset | None:
 
 
 def _round_coords(rec: dict, dp: int) -> int:
-    """Round this record's coordinates in place. Returns values changed."""
+    """Round this record's coordinates in place. Returns values changed.
+
+    ★ Decimal is a coordinate too. A NUMERIC column comes back from psycopg2
+    as decimal.Decimal, and this used to round only int/float — so a NUMERIC
+    latitude passed every gate at full precision while the tally said nothing
+    was there to round. It is rounded like any number and becomes a float, the
+    type every JSON consumer of these routes already receives.
+    """
     n = 0
     for key in _LAT_KEYS + _LON_KEYS:
         if key not in rec:
             continue
         v = rec[key]
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
+        if isinstance(v, bool) or not isinstance(v, (int, float, Decimal)):
             continue
-        r = round(float(v), dp)
+        try:
+            f = float(v)
+            r = round(f, dp)
+        except (OverflowError, ValueError):
+            continue
         # Count only a real change, so the returned tally cannot be inflated by
         # values that were already coarse. A payload of 2dp coordinates gated
-        # at 2dp must report 0 roundings and that must be the truth.
-        if r != v:
+        # at 2dp must report 0 roundings and that must be the truth. Compared
+        # as floats: Decimal('39.02') != 39.02 exactly, and an already-coarse
+        # Decimal must not count as a redaction either.
+        if r != f:
             rec[key] = r
             n += 1
+        elif isinstance(v, Decimal):
+            rec[key] = r        # same value, as the float the other rows carry
     return n
 
 
-def gate_record(rec, tier) -> tuple[dict, int]:
-    """Gate ONE facility record. Returns (new_record, values_redacted)."""
+def location_is_exact(tier, exact_location=False) -> bool:
+    """Whether this tier's record carries exact coordinates + street address.
+
+    Always for EXACT_LOCATION_TIERS. For LOCATION_ALLOWANCE_TIERS only when the
+    caller has spent (or already holds) this facility's monthly allowance and
+    says so with exact_location=True. NEVER for anonymous or an unknown tier
+    string, whatever the flag says — the flag is an allowance, and only a
+    caller with an account can hold one.
+    """
+    t = norm_tier(tier)
+    if t in EXACT_LOCATION_TIERS:
+        return True
+    return bool(exact_location) and t in LOCATION_ALLOWANCE_TIERS
+
+
+def _is_value(v) -> bool:
+    return v not in (None, '', [], {})
+
+
+def _rounded_copy(obj, dp, memo=None):
+    """(copy of obj with every coordinate at any depth rounded, values rounded).
+
+    Containers are COPIED, never mutated, so the caller's nested objects are
+    untouched; scalars are shared. Cycle-safe."""
+    if memo is None:
+        memo = {}
+    if isinstance(obj, dict):
+        if id(obj) in memo:
+            return memo[id(obj)], 0
+        out = {}
+        memo[id(obj)] = out
+        n = 0
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                out[k], m = _rounded_copy(v, dp, memo)
+                n += m
+            else:
+                out[k] = v
+        n += _round_coords(out, dp)
+        return out, n
+    if isinstance(obj, list):
+        if id(obj) in memo:
+            return memo[id(obj)], 0
+        out = []
+        memo[id(obj)] = out
+        n = 0
+        for v in obj:
+            c, m = _rounded_copy(v, dp, memo)
+            out.append(c)
+            n += m
+        return out, n
+    return obj, 0
+
+
+def _gate_metered_location_record(rec, dp, exact):
+    """A paid tier whose LOCATION is metered (starter): every field it pays for,
+    except where the facility is.
+
+    Drops the raw upstream record always (it carries the address and the
+    coordinates verbatim) and the street address unless `exact`. Rounds the
+    record's own coordinates unless `exact`, and every NESTED coordinate
+    always — a nested object describes something other than this facility, and
+    the allowance only ever buys this one."""
+    drop = set(RAW_LOCATION_KEYS)
+    if not exact:
+        drop |= set(STREET_ADDRESS_KEYS)
+    out = {}
+    rounded = 0
+    for k, v in rec.items():
+        if k in drop:
+            continue
+        if isinstance(v, (dict, list)):
+            out[k], m = _rounded_copy(v, dp)
+            rounded += m
+        else:
+            out[k] = v
+    dropped = sum(1 for k, v in rec.items() if k in drop and _is_value(v))
+    own = 0 if exact else _round_coords(out, dp)
+    if own:
+        out['coordinates_status'] = COORDS_APPROX_FMT.format(dp=dp)
+    return out, dropped + rounded + own
+
+
+def gate_record(rec, tier, exact_location=False) -> tuple[dict, int]:
+    """Gate ONE facility record. Returns (new_record, values_redacted).
+
+    exact_location=True spends nothing by itself — the caller has already
+    charged the monthly allowance (util/location_meter.py) — and is honoured
+    only for LOCATION_ALLOWANCE_TIERS: the record then keeps its EXACT
+    coordinates and street address while every other field the tier does not
+    pay for stays withheld. The default, False, is today's behaviour.
+    """
     if not isinstance(rec, dict):
         return rec, 0
     try:
         visible = visible_fields_for_tier(tier)
-        dp = coord_dp_for_tier(tier)
+        exact = location_is_exact(tier, exact_location)
+        dp = None if exact else coord_dp_for_tier(tier)
         if visible is None:
-            return rec, 0          # paid: full record, exact coordinates
+            if norm_tier(tier) in EXACT_LOCATION_TIERS:
+                return rec, 0      # paid: full record, exact coordinates
+            # Paid, but the location is metered (starter). The nested
+            # coordinates round at the tier's own precision even when this
+            # record is exact, hence coord_dp_for_tier, not `dp`.
+            return _gate_metered_location_record(
+                rec, coord_dp_for_tier(tier), exact)
         keep = set(visible) | set(PASSTHROUGH_KEYS)
+        if exact:
+            # The allowance buys the location — the coordinates are in the
+            # visible set already; this adds the street address — and nothing
+            # else the tier does not pay for.
+            keep |= set(STREET_ADDRESS_KEYS)
         out = {k: v for k, v in rec.items() if k in keep}
         # A dropped key counts as a redaction only if it carried a value. A
         # None or empty field was never the secret, and counting it would let a
@@ -269,9 +490,9 @@ def coarsen_coords_deep(obj, tier) -> int:
 # The 8-field one was `get_facility_by_id`'s hardcoded tuple — the THIRD copy of
 # the field policy, the one its own comment called out for omitting the
 # coordinate ladder. Withholding coordinates entirely reads as "tighter", but it
-# collapses the anon->free rung this module exists to create: under the ladder a
-# free key sharpens 2dp (~1.1km) to 3dp (~110m), and a route that serves no
-# coordinates at all gives a claimed key nothing to buy.
+# collapses the anon->free rung this module exists to create — then a sharper
+# blur, since 2026-09-21 the exact-location allowance — and a route that serves
+# no coordinates at all gives a claimed key nothing to buy.
 #
 # So the envelope lives HERE, once, and the routes call it. A route that builds
 # its own is how the drift happened; there is no second copy to keep in step.
@@ -280,8 +501,100 @@ UPGRADE_CHECKOUT_URL = 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c'
 UPGRADE_PRICING_URL = 'https://dchub.cloud/pricing'
 UPGRADE_PRICE = '$49/mo'
 
+# ── the offer, stated per caller ─────────────────────────────────────────────
+# Every sentence below is assembled from the tier and the meter's own limit, so
+# the copy cannot promise an allowance the meter does not grant (or a precision
+# the gate did not apply): FREE_EXACT_LOCATIONS_PER_MONTH=0 removes the
+# allowance sentence everywhere, and the precision phrase follows the dp.
+_PRECISION_PHRASES = {0: '~110 km', 1: '~11 km', 2: '~1.1 km', 3: '~110 m',
+                      4: '~11 m', 5: '~1 m'}
 
-def apply_record_gate(resp, tier) -> dict:
+
+def _precision_phrase(dp) -> str:
+    return _PRECISION_PHRASES.get(dp, f'{dp} decimal places')
+
+
+def _monthly_allowance() -> int:
+    """The meter's monthly limit; 0 (promise nothing) if it cannot be read."""
+    try:
+        from util.location_meter import monthly_limit
+        return max(0, int(monthly_limit()))
+    except Exception:
+        return 0
+
+
+def _allowance_sentence(t, n) -> str:
+    if n <= 0 or t in EXACT_LOCATION_TIERS:
+        return ''
+    noun = 'facility' if n == 1 else 'facilities'
+    if t in PAID_TIERS:
+        return f'Your plan includes exact location for {n} {noun} a month.'
+    if t in IDENTIFIED_TIERS:
+        return f'Your account includes exact location for {n} {noun} a month.'
+    return f'A free account unlocks exact location for {n} {noun} a month.'
+
+
+def _developer_offer(t) -> str:
+    if t in PAID_TIERS:
+        # A metered-location paid plan already has power, source and the rest.
+        return f'Developer ({UPGRADE_PRICE}) unlocks exact location everywhere.'
+    return (f'Developer ({UPGRADE_PRICE}) unlocks exact location everywhere plus '
+            'power capacity, source and nearby infrastructure.')
+
+
+def location_offer(tier) -> str:
+    """What exact location costs THIS caller, in one sentence. '' when their
+    location is exact already. For an anonymous caller:
+
+      "A free account unlocks exact location for 10 facilities a month;
+       Developer ($49/mo) unlocks exact location everywhere plus power
+       capacity, source and nearby infrastructure."
+    """
+    t = norm_tier(tier)
+    if t in EXACT_LOCATION_TIERS:
+        return ''
+    allowance = _allowance_sentence(t, _monthly_allowance())
+    offer = _developer_offer(t)
+    return f'{allowance[:-1]}; {offer}' if allowance else offer
+
+
+def _upgrade_cta(t, exact) -> str:
+    if t in PAID_TIERS:
+        withheld = ('Raw upstream records' if exact
+                    else 'Exact coordinates and street address')
+    elif t in IDENTIFIED_TIERS:
+        withheld = ('Power capacity, on-site fiber and source' if exact
+                    else 'Exact coordinates, street address, power capacity, '
+                         'on-site fiber and source')
+    else:
+        withheld = ('Exact coordinates, street address, power capacity, '
+                    'operator and on-site fiber')
+    allowance = _allowance_sentence(t, _monthly_allowance())
+    return (f'{withheld} require a Developer key — dchub.cloud/pricing.'
+            + (f' {allowance}' if allowance else ''))
+
+
+def _user_facing_note(t, dp, exact) -> str:
+    where = ('this exact location is from your monthly allowance' if exact
+             else f'coordinates are rounded to {_precision_phrase(dp)}')
+    lead = ('\U0001f4a1 ' + where[0].upper() + where[1:] if t in PAID_TIERS
+            else '\U0001f4a1 This is a free preview from DC Hub — ' + where)
+    return f'{lead}. {location_offer(t).rstrip(".")} — dchub.cloud/pricing'
+
+
+def _upgrade_message(t) -> str:
+    offer = _developer_offer(t)
+    n = _monthly_allowance()
+    if t in PAID_TIERS or t in IDENTIFIED_TIERS:
+        allowance = _allowance_sentence(t, n)
+        return offer + (f' {allowance}' if allowance else '')
+    noun = 'facility' if n == 1 else 'facilities'
+    return offer + (' A free account first adds provider, operator, market and '
+                    'region' + (f', and exact location for {n} {noun} a month.'
+                                if n > 0 else '.'))
+
+
+def apply_record_gate(resp, tier, exact_location=False) -> dict:
     """Gate resp['data'] IN PLACE and attach the tier markers. Returns resp.
 
     Takes the response the route already built rather than returning a fresh
@@ -304,16 +617,23 @@ def apply_record_gate(resp, tier) -> dict:
 
     Paid tiers get the full record and NO markers — `_upgrade` being absent is
     the documented signal that nothing was withheld.
+
+    exact_location=True: the caller has charged this facility to the monthly
+    exact-location allowance (util/location_meter.py). Passed straight to
+    gate_record, which honours it only for LOCATION_ALLOWANCE_TIERS; the
+    markers then report `_coord_precision_dp: None` (exact) while naming what
+    is still withheld. The caller stamps `_location_allowance` itself.
     """
     if not isinstance(resp, dict):
         return resp
     rec = resp.get('data')
     if not isinstance(rec, dict):
         return resp
-    tier_s = (tier or 'anon').lower()
+    tier_s = norm_tier(tier)
     try:
-        data, n = gate_record(rec, tier_s)
-        dp = coord_dp_for_tier(tier_s)
+        data, n = gate_record(rec, tier_s, exact_location=exact_location)
+        exact = location_is_exact(tier_s, exact_location)
+        dp = None if exact else coord_dp_for_tier(tier_s)
     except Exception:
         # Fail CLOSED. An import or tier-resolution raise must never be the
         # thing that serves the full record.
@@ -349,28 +669,17 @@ def apply_record_gate(resp, tier) -> dict:
                        if k not in data and v not in (None, '', [], {}))
     if _withheld:
         resp['_withheld_fields'] = _withheld
-    resp['_upgrade_cta'] = (
-        'Power capacity, operator, on-site fiber and exact coordinates '
-        'require a Developer key — dchub.cloud/pricing')
+    resp['_upgrade_cta'] = _upgrade_cta(tier_s, exact)
     resp['_pricing_url'] = UPGRADE_PRICING_URL
     # Published key, kept deliberately. get_facility_by_id emitted this before
     # the routes were unified, and the contract baseline recorded it. Because
     # this endpoint's response is now built by a call rather than a dict
     # literal, the static guard can no longer see its keys — so dropping this
     # would have been an invisible removal of a public key. Additive only.
-    resp['_user_facing_note'] = (
-        '\U0001f4a1 This is a free preview from DC Hub — coordinates are '
-        'rounded to ~1.1 km for anonymous callers and ~110 m with a free key. '
-        'Full data with exact coordinates, power capacity and connectivity '
-        'specs is available at dchub.cloud/developers')
+    resp['_user_facing_note'] = _user_facing_note(tier_s, dp, exact)
     resp['_upgrade'] = {
         'tier': tier_s,
-        'message': (
-            'Developer plan ($49/mo) unlocks exact coordinates, power capacity, '
-            'source, address, and nearby infrastructure.'
-            + ('' if tier_s != 'anon' else
-               ' A free key first sharpens coordinates from ~1.1 km to ~110 m '
-               'and adds provider, operator, market and region.')),
+        'message': _upgrade_message(tier_s),
         'url': UPGRADE_PRICING_URL + '#developer',
         'checkout': UPGRADE_CHECKOUT_URL,
         'price': UPGRADE_PRICE,
