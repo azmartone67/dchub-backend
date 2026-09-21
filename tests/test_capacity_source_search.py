@@ -141,9 +141,29 @@ def _ilike(value, pattern):
     return re.fullmatch("".join(out), value, re.I | re.S) is not None
 
 
+def _demo_row(row):
+    """routes.exclusive_listings._DEMO_EXCLUDE_SQL evaluated against a row.
+
+    Written from the SQL's own semantics -- detail->>'demo' as text, and the
+    two LOWER(slug) tests -- rather than by calling el._is_demo_listing(), so
+    the stand-in cannot agree with the production rule by construction.
+    """
+    detail = row.get("detail") or {}
+    flag = detail.get("demo")
+    flag = "" if flag is None else (flag if isinstance(flag, str) else json.dumps(flag))
+    if flag.lower() in ("true", "t", "1", "yes"):
+        return True
+    slug = (row.get("slug") or "").lower()
+    return slug.startswith("sample-listing-") or slug.endswith("-demo")
+
+
 def _known_predicates():
     return {
         "status IN ('public', 'pocket')": (0, lambda row, p: row["status"] in ("public", "pocket")),
+        # A demo listing is not supply: excluded from the feed, its counts and
+        # the summary. Keyed by the module's own constant so a change to the
+        # rule shows up here as a failure rather than as silent non-coverage.
+        el._DEMO_EXCLUDE_SQL: (0, lambda row, p: not _demo_row(row)),
         "(expires_at IS NULL OR expires_at > NOW())": (
             0, lambda row, p: row["expires_at"] is None or row["expires_at"] > datetime.now(timezone.utc)),
         "LOWER(market) = LOWER(%s)": (

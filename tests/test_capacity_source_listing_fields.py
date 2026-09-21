@@ -797,7 +797,15 @@ def test_the_filters_are_bound_parameters_of_the_listing_query(monkeypatch):
     assert where.count("%s") == 4
     assert "detail->>'delivery_type' = %s" in where
     assert "jsonb_array_elements(" in where and "<= %s)" in where
-    assert plain_params == ["TX", 7] and "detail" not in plain_sql.split(" WHERE ", 1)[1]
+    # The control names the two FILTER predicates it expects to be absent. It
+    # used to test for the substring "detail", which stopped meaning "no filter
+    # predicate" the moment the always-on demo exclusion (_DEMO_EXCLUDE_SQL)
+    # put a detail->>'demo' test in every live WHERE clause. That predicate
+    # binds no parameter, which is what `plain_params` above still proves.
+    plain_where = plain_sql.split(" WHERE ", 1)[1]
+    assert plain_params == ["TX", 7]
+    assert "detail->>'delivery_type'" not in plain_where
+    assert "jsonb_array_elements(" not in plain_where
 
 
 # ── site, update_cadence, capacity_kw and region (2026-09-15) ─────────────

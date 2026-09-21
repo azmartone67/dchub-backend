@@ -664,8 +664,68 @@ def _fetch(sql, params, cols):
 
 # The listings the public feed shows. Every read of live listings filters on
 # these, so the feed, its counts and the summary describe the same set.
+# A demo listing is not supply. The sample rows exist to show the SHAPE of a
+# listing while the marketplace is still being onboarded, so they must never be
+# counted as live capacity, indexed, or opened for a deal registration — there
+# is no provider behind one to accept it. Measured 2026-09-21: the DFW pair
+# (sample-listing-dfw-40-mw-powered-shell-demo, 40 MW +
+# sample-listing-dfw-1-2-mw-colocation-demo, 1.2 MW) was published by
+# get_market_intel as `capacity_source: {live_listings: 2, mw: 41.2}` under a
+# note inviting a deal registration, and both carry status 'pocket' — the SAME
+# status as the one real listing, so status alone can never separate them.
+#
+# detail.demo is the canonical marker. Those two rows predate it and carry no
+# flag at all, so the slug convention they were actually named with is
+# recognised too; a rule that is correct in principle and still admits the only
+# rows it was written for is not a fix. Recognising both lets a backfill land
+# later without this predicate changing.
+#
+# NO `%` ANYWHERE, deliberately. This string has two consumers that escape it
+# oppositely: _fetch() passes a params sequence, so psycopg2 unescapes `%%`,
+# while the sitemap builder in main.py executes the joined clause with NO
+# params, where `%%` would survive literally and break the match. STRPOS/RIGHT
+# are the same test with no character that either path rewrites.
+#
+# Holds no " AND " at any level (callers split the joined clause on " AND " to
+# recover the predicates) and carries no SQL comment, for the reason _size_sql
+# spells out.
+# ONE definition of "this row is a demo", in three tokens. The SQL predicate
+# below and _is_demo_listing() are both BUILT from them, so the feed and the
+# registration gate cannot come to disagree about which rows are demos — the
+# failure mode where a listing is hidden from the catalogue and still
+# registrable by slug.
+_DEMO_SLUG_PREFIX = "sample-listing-"
+_DEMO_SLUG_SUFFIX = "-demo"
+_DEMO_DETAIL_TRUE = ("true", "t", "1", "yes")
+
+_DEMO_EXCLUDE_SQL = (
+    "NOT (LOWER(COALESCE(detail->>'demo', '')) IN ("
+    + ", ".join(f"'{v}'" for v in _DEMO_DETAIL_TRUE) + ") "
+    f"OR STRPOS(LOWER(slug), '{_DEMO_SLUG_PREFIX}') = 1 "
+    f"OR RIGHT(LOWER(slug), {len(_DEMO_SLUG_SUFFIX)}) = '{_DEMO_SLUG_SUFFIX}')")
+
+
+def _is_demo_listing(row) -> bool:
+    """The same rule as _DEMO_EXCLUDE_SQL, for a row already in hand.
+
+    Used by the registration gate: _db_get_listing() reads by slug with NO
+    liveness filter, so excluding demos from the feed alone would leave them
+    registrable by anyone who knows the slug — and the demo slugs are public
+    on the teaser cards.
+    """
+    if not row:
+        return False
+    detail = row.get("detail")
+    if isinstance(detail, dict):
+        flag = str(detail.get("demo", "")).strip().lower()
+        if flag in _DEMO_DETAIL_TRUE:
+            return True
+    slug = str(row.get("slug") or "").strip().lower()
+    return slug.startswith(_DEMO_SLUG_PREFIX) or slug.endswith(_DEMO_SLUG_SUFFIX)
+
 _LIVE_WHERE = ("status IN ('public', 'pocket')",
-               "(expires_at IS NULL OR expires_at > NOW())")
+               "(expires_at IS NULL OR expires_at > NOW())",
+               _DEMO_EXCLUDE_SQL)
 
 
 # ── search predicates ─────────────────────────────────────────────────────
@@ -3438,7 +3498,8 @@ def get_listing(slug_or_id):
     except Exception as exc:
         logger.warning("[pocket-listings] detail failed: %s", exc)
         return jsonify(ok=False, error="listing_unavailable", caller_tier=v["tier"]), 200
-    if not row or row.get("status") not in ("pocket", "public"):
+    if (not row or row.get("status") not in ("pocket", "public")
+            or _is_demo_listing(row)):
         return _err(404, "not_found", "No such listing.")
 
     return_path = _return_path(row.get("slug"))
@@ -3547,7 +3608,8 @@ def request_intro(slug_or_id):
     except Exception as exc:
         logger.warning("[pocket-listings] intro lookup failed: %s", exc)
         return _err(503, "listing_unavailable", "Listings are unavailable right now.")
-    if not row or row.get("status") not in ("pocket", "public"):
+    if (not row or row.get("status") not in ("pocket", "public")
+            or _is_demo_listing(row)):
         return _err(404, "not_found", "No such listing.")
     result = _register_lead(row)
     if "_error" in result:

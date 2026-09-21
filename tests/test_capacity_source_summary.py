@@ -104,6 +104,8 @@ class _Store:
             elif predicate == _EXPIRY:
                 now = datetime.now(timezone.utc)
                 rows = [r for r in rows if r["expires_at"] is None or r["expires_at"] > now]
+            elif predicate == el._DEMO_EXCLUDE_SQL:
+                rows = [r for r in rows if not _demo_row(r)]
             else:
                 raise AssertionError(f"unexpected predicate: {predicate}")
         if m.group("order"):
@@ -123,6 +125,22 @@ class _Store:
 
     def summary_reads(self):
         return [s for s in self.statements if "detail->>'delivery_type'," in s]
+
+
+def _demo_row(row):
+    """routes.exclusive_listings._DEMO_EXCLUDE_SQL evaluated against a row.
+
+    Written from the SQL's own semantics -- detail->>'demo' as text, and the
+    two LOWER(slug) tests -- rather than by calling el._is_demo_listing(), so
+    the stand-in cannot agree with the production rule by construction.
+    """
+    detail = row.get("detail") or {}
+    flag = detail.get("demo")
+    flag = "" if flag is None else (flag if isinstance(flag, str) else json.dumps(flag))
+    if flag.lower() in ("true", "t", "1", "yes"):
+        return True
+    slug = (row.get("slug") or "").lower()
+    return slug.startswith("sample-listing-") or slug.endswith("-demo")
 
 
 def _predicates(statement):
