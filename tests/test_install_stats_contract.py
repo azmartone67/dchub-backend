@@ -35,6 +35,7 @@ THE CONTRACT being guarded
 NO NETWORK, NO DB. The handler is exercised through Flask's test client on the
 no-DSN branch; the SQL is read as text.
 """
+import ast
 import os
 import re
 
@@ -57,6 +58,30 @@ _MAIN = os.path.join(_ROOT, "main.py")
 def _src():
     with open(_SRC, encoding="utf-8") as fh:
         return fh.read()
+
+
+def _sql_literals():
+    """Every string the MODULE evaluates, f-string segments included.
+
+    Comments and docstrings that merely talk about SQL are not SQL. A
+    FormattedValue directly after a segment ending in `LIKE` IS a pattern being
+    interpolated rather than bound, so that is reported as an inlined operand
+    instead of being skipped for want of a following token.
+    """
+    out = []
+    for n in ast.walk(ast.parse(_src())):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.append(n.value)
+        elif isinstance(n, ast.JoinedStr):
+            parts = []
+            for v in n.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    parts.append(v.value)
+                else:
+                    # mark the interpolation so a trailing `LIKE` is caught
+                    parts.append("<<interpolated>>")
+            out.append("".join(parts))
+    return out
 
 
 def _app():
@@ -87,16 +112,22 @@ def test_registration_lives_in_the_safe_zone_not_late_line():
 
 
 def test_like_pattern_is_bound_never_inlined():
-    """A literal % beside params raises unsupported-format-character and 500s."""
+    """A literal % beside params raises unsupported-format-character and 500s.
+
+    ★ 2026-09-20: this scanned the raw source and so read PROSE as SQL. The
+    sentence "It carries NO LIKE" then "# wildcard" in a comment matched the
+    operand `#` and failed the guard on a module whose
+    every pattern was correctly bound. It now walks string literals only — the
+    guard has to look at SQL to be a guard about SQL.
+    """
     assert _INSTALL_PREFIX == "install-%"
-    src = _src()
-    # every LIKE in the SQL must compare against a placeholder, not a literal
-    for m in re.finditer(r"LIKE\s+(\S+)", src):
-        operand = m.group(1).strip().rstrip(",")
-        assert operand.startswith("%s"), (
-            f"LIKE compares against {operand!r} — inline the pattern and the "
-            "route 500s. Bind it as a parameter instead."
-        )
+    for sql in _sql_literals():
+        for m in re.finditer(r"LIKE\s+(\S+)", sql):
+            operand = m.group(1).strip().rstrip(",")
+            assert operand.startswith("%s"), (
+                f"LIKE compares against {operand!r} — inline the pattern and the "
+                "route 500s. Bind it as a parameter instead."
+            )
 
 
 def test_no_dsn_degrades_to_503_not_a_crash():
@@ -221,7 +252,6 @@ def test_scoring_is_on_keys_not_sessions_or_ips():
 # These assert on the AST, not on the docstring — the docstring is what was
 # wrong.
 # ─────────────────────────────────────────────────────────────────────────────
-import ast  # noqa: E402
 
 from routes.install_stats import _CONTROL_PREFIX  # noqa: E402
 
@@ -330,4 +360,218 @@ def test_an_empty_control_downgrades_the_reading():
     )
     assert '"observed" if _instrument_live else "hypothesis"' in src, (
         "evidence_status for the control must downgrade when the control empties"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THE PROBE IS NOT AN INSTALL (2026-09-20)
+#
+# Measured on production that morning, this endpoint published:
+#     minted: 1, clients_tracked: 1, by_client: [install-verify-durability]
+# which is OUR OWN end-to-end mint probe (minted 2026-09-01, 0 calls, 0 returns)
+# published keyless, to anyone we asked to cite the number. The true count of
+# keys ever claimed from an /install/<client> page was 0. dchub-mcp-server's
+# registry-discover.yml had named that key as ours since 2026-09-07; the public
+# surface had not.
+#
+# These assertions read the AST, not the text, on purpose: this module quotes
+# `install-verify`, `_NOT_A_PROBE` and `install-%` inside long comments, so a
+# substring test could be satisfied by the commentary describing the bug.
+# ══════════════════════════════════════════════════════════════════════════════
+
+from routes.install_stats import (  # noqa: E402
+    _EXCLUDE_NOTHING,
+    _NOT_A_PROBE,
+    _PROBE_PREFIX,
+    _ledger,
+)
+
+
+def _formatted_names(node):
+    """Names interpolated into an f-string node (empty for a plain string)."""
+    if not isinstance(node, ast.JoinedStr):
+        return set()
+    return {v.value.id for v in node.values
+            if isinstance(v, ast.FormattedValue) and isinstance(v.value, ast.Name)}
+
+
+def _module_assign(tree, name):
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in n.targets):
+            return n.value
+    return None
+
+
+def test_the_probe_namespace_is_narrower_than_the_install_namespace():
+    """install-verify-% must select a strict SUBSET of install-%.
+
+    Widen it to install-% and the endpoint reports every install as a probe;
+    that mutation is caught by this pair, not by any count assertion.
+    """
+    assert _PROBE_PREFIX != _INSTALL_PREFIX
+    assert _PROBE_PREFIX.startswith(_INSTALL_PREFIX.rstrip("%")), (
+        "the probe namespace must live INSIDE install-, or excluding it cannot "
+        "clean the install figures"
+    )
+    assert len(_PROBE_PREFIX) > len(_INSTALL_PREFIX), (
+        "a probe pattern no narrower than install-% excludes the whole ledger"
+    )
+    # The sentinel used to exclude nothing must be unable to match anything.
+    # Both LIKE wildcards. `_` matches any single character, so a sentinel of
+    # underscores excludes every client_name of that length — this assertion
+    # caught exactly that in the first draft.
+    assert not set("%_") & set(_EXCLUDE_NOTHING), (
+        "_EXCLUDE_NOTHING carries a LIKE wildcard (% or _) — it would silently "
+        "drop real rows from the population it claims to leave alone"
+    )
+
+
+def test_both_counting_queries_carry_the_one_exclusion_clause():
+    """The ledger and the windowed mint count must exclude probes from the SAME
+    string. Two hand-written copies is how one painter starts counting the probe
+    while the other does not — by_client 0 beside minted_by_window 1."""
+    tree = _tree()
+    ledger_sql = _module_assign(tree, "_LEDGER_SQL")
+    assert ledger_sql is not None, "_LEDGER_SQL is no longer a module constant"
+    assert "_NOT_A_PROBE" in _formatted_names(ledger_sql), (
+        "the ledger SQL does not interpolate _NOT_A_PROBE — it counts probes as "
+        "installs"
+    )
+
+    windowed = [
+        n for n in ast.walk(_fn(tree, "install_stats"))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute) and n.func.attr == "execute"
+    ]
+    assert len(windowed) == 1, (
+        "expected exactly one inline cur.execute (the windowed mint count); the "
+        "ledger runs through _ledger()"
+    )
+    sql, params = windowed[0].args[0], windowed[0].args[1]
+    assert "_NOT_A_PROBE" in _formatted_names(sql), (
+        "the windowed mint count does not carry the exclusion, so "
+        "minted_by_window would report a probe the by_client rows exclude"
+    )
+    bound = {e.id for e in ast.walk(params) if isinstance(e, ast.Name)}
+    assert "_PROBE_PREFIX" in bound, (
+        "the windowed query interpolates the clause but never binds the probe "
+        "pattern to its %s — psycopg2 would raise, or worse, bind the wrong arg"
+    )
+
+
+def test_the_clause_is_a_real_sql_predicate_not_a_label():
+    """_NOT_A_PROBE has to be the actual NOT LIKE, bound, on the client_name."""
+    assert _NOT_A_PROBE.strip().startswith("AND ")
+    assert "NOT LIKE %s" in _NOT_A_PROBE
+    assert "client_name" in _NOT_A_PROBE
+    # The alias the windowed query adopted so one string can serve both queries.
+    assert _NOT_A_PROBE.count("k.") == 1
+
+
+def test_ledger_excludes_probes_by_default_and_probes_opt_out_explicitly():
+    """_ledger's default must be the SAFE one: a new caller that forgets the
+    third argument gets install figures WITHOUT probes."""
+    import inspect
+    sig = inspect.signature(_ledger)
+    assert sig.parameters["exclude"].default == _PROBE_PREFIX, (
+        "_ledger must default to excluding probes; a defaulted-open exclusion "
+        "re-publishes them the next time someone adds a call site"
+    )
+    tree = _tree()
+    calls = [n for n in ast.walk(_fn(tree, "install_stats"))
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_ledger"]
+    assert len(calls) == 3, "expected three ledgers: installs, probes, control"
+    opted_out = [c for c in calls
+                 if any(isinstance(a, ast.Name) and a.id == "_EXCLUDE_NOTHING"
+                        for a in c.args)]
+    assert len(opted_out) == 1, (
+        "exactly one ledger — the probes block — may exclude nothing"
+    )
+    assert any(isinstance(a, ast.Name) and a.id == "_PROBE_PREFIX"
+               for a in opted_out[0].args), (
+        "the exclude-nothing ledger must be the one reading _PROBE_PREFIX, or it "
+        "is publishing the install population with probes back in it"
+    )
+
+
+def test_probes_are_published_separately_and_never_summed_into_installs():
+    src = _src()
+    assert "probes=probes," in src, (
+        "the probes block must reach the response — an exclusion nobody can see "
+        "is indistinguishable from a query that found nothing"
+    )
+    assert "totals=tot," in src, "the install totals must stay the install totals"
+    assert re.search(r'"totals":\s*probe_tot', src), (
+        "the probes block must carry the probe counts, measured by the same SQL"
+    )
+    # No path may fold probe counts back into the install totals.
+    assert not re.search(r"\btot\b\s*\[[^\]]*\]\s*[+\-]?=\s*[^\n]*probe", src), (
+        "probe counts are being added into the published install totals"
+    )
+    assert not re.search(r"\btot\b\s*\.update\(\s*probe", src)
+
+
+def test_the_control_reading_does_not_assert_an_emptiness_it_did_not_check():
+    """The old sentence said "an empty install-% result is a real zero" while
+    the result was NOT empty — it held the probe. The claim must be derived."""
+    src = _src()
+    assert 'if tot["minted"] == 0' in src or "if tot['minted'] == 0" in src, (
+        "control.reading must decide 'it is empty' from the measured count"
+    )
+
+
+def test_basis_says_client_name_is_self_declared():
+    """The population is what a caller CLAIMED, not verified provenance — the
+    property that let our own curl mint into the install namespace at all."""
+    src = _src()
+    assert '"self_declared"' in src, "basis must publish the self-declared caveat"
+    region = _response_region()
+    assert "attests" in region and "not verified provenance" in region, (
+        "the caveat must ship inside the response, not sit in a comment"
+    )
+
+
+# ── the rule has TWO consumers (2026-09-20) ───────────────────────────────────
+# /api/v1/ops/install-stats was not the only surface counting the probe as an
+# install: flask_mcp_endpoints.py's `install_artifact_30d` ladder runs its own
+# hand-written `LIKE 'install-%'` (inlined, deliberately — it passes no params),
+# and it published the same single probe row as "1 key minted". Fixing one
+# surface and leaving the other is how the wrong number survives on the busier
+# hop, so the exclusion is enforced across every inlined consumer.
+#
+# install_stats.py itself BINDS its patterns, so it does not appear in this scan
+# by construction — test_both_counting_queries_carry_the_one_exclusion_clause
+# and test_ledger_excludes_probes_by_default… are its copy of this rule.
+_REPO_PY = ("flask_mcp_endpoints.py", "main.py")
+
+
+def test_every_inlined_install_filter_excludes_the_probe_namespace():
+    found = 0
+    for rel in _REPO_PY:
+        path = os.path.join(_ROOT, rel)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        for node in ast.walk(ast.parse(src)):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            sql = node.value
+            if "LIKE 'install-%'" not in sql or "client_name" not in sql:
+                continue
+            found += 1
+            assert "NOT LIKE 'install-verify-%'" in sql, (
+                f"{rel} line {node.lineno}: filters client_name on "
+                f"'install-%' without excluding the reserved 'install-verify-%' "
+                f"probe namespace, so it counts our own mint probes as somebody "
+                f"else's installs — which is the defect this rule exists for"
+            )
+    # ★ A scan that can silently find nothing is not a guard. The inlined
+    # consumer exists (flask_mcp_endpoints.install_artifact_30d); if this floor
+    # trips, the query was renamed or moved and the rule now covers nobody.
+    assert found >= 1, (
+        "no inlined install-% client_name filter found in %s — the scan no "
+        "longer reaches the consumer it was written for" % (_REPO_PY,)
     )

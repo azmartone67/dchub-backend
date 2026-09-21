@@ -140,3 +140,68 @@ def test_clients_matches_the_frontend_directory_when_it_is_available():
     assert not extra, (
         f"CLIENTS names pages that no longer exist in the frontend; a sitemap "
         f"URL that 404s is worse than an unlisted one: {sorted(extra)}")
+
+
+# ── the reserved probe namespace (2026-09-20) ─────────────────────────────────
+# /api/v1/ops/install-stats now excludes `install-verify-%` from every install
+# figure, because the ONE key in that population was our own durability probe
+# and the endpoint published it as somebody's install. That exclusion is only
+# safe while no page slug can land inside the reserved namespace: ship
+# /install/verify-foo and its real mints would be filed as ours and disappear
+# from the ledger. Both the roster and the frontend directory are checked, so
+# this holds whether or not the hardcoded tuple is current.
+_RESERVED_SLUG_PREFIX = "verify-"
+
+
+def test_no_install_page_slug_enters_the_reserved_probe_namespace():
+    bad = [c for c in CLIENTS if c.startswith(_RESERVED_SLUG_PREFIX)]
+    assert not bad, (
+        f"/install/{bad} would mint install-{_RESERVED_SLUG_PREFIX}… , which "
+        f"install_stats.py reserves for our own probes and subtracts from the "
+        f"install totals — a real install channel would be counted as ours")
+
+
+def test_the_frontend_directory_also_stays_out_of_the_reserved_namespace():
+    """Same rule, measured against the real canon rather than the tuple."""
+    d = _frontend_install_dir()
+    if d is None:
+        import pytest
+        pytest.skip(
+            "dchub-frontend not checked out — the reserved-namespace rule was "
+            "checked against CLIENTS only, not against the real directory.")
+    bad = sorted(f[:-5] for f in os.listdir(d)
+                 if f.endswith(".html") and f.startswith(_RESERVED_SLUG_PREFIX))
+    assert not bad, (
+        f"install pages exist whose slug is inside the reserved probe namespace "
+        f"install-{_RESERVED_SLUG_PREFIX}…: {bad}. Either rename them or drop "
+        f"the exclusion in routes/install_stats.py — as it stands their mints "
+        f"are subtracted from the published install figures.")
+
+
+def test_the_funnel_surface_names_the_same_pages_as_this_roster():
+    """flask_mcp_endpoints.install_artifact_30d publishes a `pages` list beside
+    its install ladder. It read five of the twelve for 13 days — the SAME stale
+    roster bug this file was rewritten for on 2026-09-07, in a second place.
+    Pin the literal to CLIENTS so the two cannot drift apart again."""
+    import ast
+    src_path = os.path.join(ROOT, "flask_mcp_endpoints.py")
+    with open(src_path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    published = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = [k.value for k in node.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+        if "ladder" not in keys or "pages" not in keys:
+            continue
+        for k, v in zip(node.keys, node.values):
+            if isinstance(k, ast.Constant) and k.value == "pages":
+                published = [e.value for e in v.elts if isinstance(e, ast.Constant)]
+    assert published is not None, (
+        "the install ladder's `pages` literal is gone or no longer a list of "
+        "string constants — this guard now checks nothing")
+    assert set(published) == set(CLIENTS), (
+        "install_artifact_30d.pages disagrees with the install page roster: "
+        f"only there {sorted(set(published) - set(CLIENTS))}, "
+        f"missing {sorted(set(CLIENTS) - set(published))}")
