@@ -1264,3 +1264,122 @@ RELAYED_CHECKOUT_PROVENANCE_BASIS = (
     "minted_link_clicks_deloopable and reads 0 until the MCP server mints that "
     "field; a non-zero is the first sign that keyed clicks carry a session the "
     "exclusion can test.")
+
+
+# ── click→pay per plan and per path (2026-09-21, frontend#1534 (c)) ─────────
+# Grok's constraint for P0-C: measure click→pay per PLAN, and give each path
+# its own column, so a leak is located on the path where it happens:
+#   mcp_go_c           a signed /go/c link an agent relayed (mcp_checkout_clicks)
+#   cold_go_p          a /pricing button via /go/p/<plan> (pricing_checkout_clicks)
+#   chatgpt_upgrade_h  the ChatGPT/OpenAI relay page: wall → view → identify → pay
+# The two click paths carry the plan on the click row. A payment is credited to
+# the LATEST qualifying click on its ref, at or before it and inside
+# PAID_RELAYED_CHECKOUT_LOOKBACK: the rule paid_attributed applies, so the two
+# figures cannot credit one payment to two different clicks.
+# ★ ChatGPT/OpenAI sessions are left out of mcp_go_c. The relay page's keyed
+#   button is itself a /go/c link, and a payment in two columns is two payments
+#   on the board.
+CLICK_TO_PAY_PLANS = ("metered", "developer", "pro")
+# The MCP server's _isCleanPlatform: ctx.platform contains 'chatgpt' or
+# 'openai'. signalPaywall stores that platform as mcp_upgrade_signals.mcp_client.
+CHATGPT_PLATFORM_RE = "(chatgpt|openai)"
+
+
+def chatgpt_session_predicate(sid_expr: str) -> str:
+    """TRUE when session `sid_expr` hit a paywall from a ChatGPT/OpenAI client.
+    A regex, never LIKE: no literal percent sign (external_session_predicate)."""
+    return ("exists (select 1 from mcp_upgrade_signals sg where sg.session_id = "
+            + sid_expr + " and sg.mcp_client ~* '" + CHATGPT_PLATFORM_RE + "')")
+
+
+def _click_rows_sql(interval_sql: str, include_cold: bool) -> str:
+    """Every qualifying click in the window, as (path, plan, ref, clicked_at, id).
+    mcp_go_c: signed, real UA, not operator traffic, not a ChatGPT session.
+    cold_go_p: a plan /pricing sells (known_plan), real UA. It has no session,
+    so the operator exclusion cannot apply there, and the basis says so."""
+    rows = [
+        ("SELECT 'mcp_go_c'::text AS path, cc.plan, cc.ref, cc.clicked_at, cc.id"
+         " FROM mcp_checkout_clicks cc WHERE cc.clicked_at > now() - interval '"
+         + interval_sql + "' AND " + relayed_checkout_signed()
+         + " AND " + relayed_checkout_real_ua()
+         + " AND " + _external_session_predicate(RELAYED_CHECKOUT_SESSION_ID)
+         + " AND NOT " + chatgpt_session_predicate(RELAYED_CHECKOUT_SESSION_ID)),
+    ]
+    if include_cold:
+        rows.append(
+            "SELECT 'cold_go_p'::text AS path, pc.plan, pc.ref, pc.clicked_at, pc.id"
+            " FROM pricing_checkout_clicks pc WHERE pc.clicked_at > now() - interval '"
+            + interval_sql + "' AND pc.known_plan IS TRUE AND "
+            + _real_ua_predicate("pc.user_agent"))
+    return " UNION ALL ".join(rows)
+
+
+def click_to_pay_by_plan_sql(interval_sql: str, *, include_cold: bool = True) -> str:
+    """Rows (path, plan, clicks, paid) over `interval_sql`.
+    clicks: qualifying presses. paid: distinct paid Checkout Sessions credited
+    to the latest qualifying click on the same ref (at or before the payment,
+    inside PAID_RELAYED_CHECKOUT_LOOKBACK), under that click's plan.
+    `include_cold=False` leaves out pricing_checkout_clicks, for a database
+    where GET /go/p/<plan> has not created it yet."""
+    return (
+        "WITH clk AS (" + _click_rows_sql(interval_sql, include_cold) + "),"
+        " credited AS (SELECT DISTINCT ON (pay.stripe_session_id) clk.path, clk.plan"
+        " FROM " + _paid_payments_sql(interval_sql)
+        + " JOIN clk ON clk.ref = pay.client_reference_id"
+        " AND clk.clicked_at <= pay.paid_at AND clk.clicked_at > pay.paid_at - interval '"
+        + PAID_RELAYED_CHECKOUT_LOOKBACK + "'"
+        " ORDER BY pay.stripe_session_id, clk.clicked_at DESC, clk.id DESC)"
+        " SELECT k.path, k.plan, k.clicks, coalesce(p.paid, 0) AS paid"
+        " FROM (SELECT path, plan, count(*) AS clicks FROM clk GROUP BY 1, 2) k"
+        " LEFT JOIN (SELECT path, plan, count(*) AS paid FROM credited GROUP BY 1, 2) p"
+        " USING (path, plan) ORDER BY 1, 2")
+
+
+def chatgpt_relay_stages_sql(interval_sql: str) -> str:
+    """One row (walls, views, identified, paid) over `interval_sql`: DISTINCT
+    ChatGPT/OpenAI sessions that hit a paywall, and of those, the ones that
+    opened /upgrade/h (a valid token, real UA), bound an email (either writer of
+    `identified`), and paid (any lane of paid_attributed). Each stage is read
+    from the stage's own canonical lanes, so a session counts at a stage it
+    reached even when it skipped the one before it: the page sells the $10 pack
+    and a keyed caller's button goes straight to /go/c."""
+    chat = ("SELECT DISTINCT sg.session_id AS sid FROM mcp_upgrade_signals sg"
+            " WHERE sg.created_at > now() - interval '" + interval_sql + "'"
+            " AND sg.mcp_client ~* '" + CHATGPT_PLATFORM_RE + "'"
+            " AND coalesce(sg.session_id,'') <> ''"
+            " AND " + _external_session_predicate("sg.session_id"))
+    views = ("SELECT ro.session_id AS sid FROM relay_opens ro"
+             " WHERE ro.ts > now() - interval '" + interval_sql + "'"
+             " AND ro.valid IS TRUE AND " + _real_ua_predicate("ro.user_agent"))
+    identified = " UNION ".join(_identified_lanes(interval_sql))
+    paid = " UNION ".join(_paid_session_row_lanes(interval_sql)
+                          + [_paid_relayed_checkout_lane(interval_sql)])
+    return ("WITH chat AS (" + chat + ")"
+            " SELECT (SELECT count(*) FROM chat),"
+            " (SELECT count(DISTINCT v.sid) FROM (" + views + ") v JOIN chat USING (sid)),"
+            " (SELECT count(DISTINCT i.sid) FROM (" + identified + ") i JOIN chat USING (sid)),"
+            " (SELECT count(DISTINCT p.sid) FROM (" + paid + ") p JOIN chat USING (sid))")
+
+
+def click_to_pay_basis() -> dict:
+    """What each column counts, published beside the numbers."""
+    return {
+        "mcp_go_c": ("signed, real-UA /go/c clicks (mcp_checkout_clicks), operator "
+                     "sessions and ChatGPT/OpenAI sessions excluded; paid = paid "
+                     "Checkout Sessions (mcp_checkout_payments, livemode not false) "
+                     "credited to the latest such click on the same ref within "
+                     + PAID_RELAYED_CHECKOUT_LOOKBACK + ", under that click's plan"),
+        "cold_go_p": ("/pricing button presses through /go/p/<plan> "
+                      "(pricing_checkout_clicks, a plan /pricing sells, real UA); "
+                      "no session, so operator presses are NOT excluded; paid as "
+                      "for mcp_go_c, on the page's attribution ref"),
+        "chatgpt_upgrade_h": ("DISTINCT ChatGPT/OpenAI sessions (mcp_upgrade_signals."
+                              "mcp_client ~* '" + CHATGPT_PLATFORM_RE + "', the MCP "
+                              "server's clean-platform rule; DCHUB_CLEAN_PLATFORMS "
+                              "additions are not mirrored) at each stage, operator "
+                              "sessions excluded: walls, views (relay_opens, valid, "
+                              "real UA), identified and paid (their canonical lanes)"),
+        "plan_credit": ("a session ref can sit on a $10 link and a subscription "
+                        "link at once; the payment takes the plan of the latest "
+                        "qualifying click, not the plan it bought"),
+    }
