@@ -20597,9 +20597,11 @@ def get_market_stats(market):
                 COUNT(*) as facility_count,
                 COALESCE(SUM(power_mw), 0) as total_power,
                 COALESCE(AVG(power_mw), 0) as avg_power,
-                COUNT(DISTINCT provider) as provider_count
+                COUNT(DISTINCT provider) as provider_count,
+                COUNT(*) FILTER (WHERE power_mw > 0) as mw_reporting_count,
+                MAX(discovered_at) as newest_discovered_at
             FROM discovered_facilities 
-            WHERE ({where_clause})
+            WHERE ({where_clause}) AND {_MKT_DEDUP}
             {country_guard}
             {RAILWAY_EXCLUSION}
         """, params)
@@ -20612,7 +20614,7 @@ def get_market_stats(market):
         c.execute(f"""
             SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
             FROM discovered_facilities 
-            WHERE ({where_clause}) AND provider != ''
+            WHERE ({where_clause}) AND {_MKT_DEDUP} AND provider != ''
             {country_guard}
             {RAILWAY_EXCLUSION}
             GROUP BY provider
@@ -20626,7 +20628,7 @@ def get_market_stats(market):
         c.execute(f"""
             SELECT status, COUNT(*) as count
             FROM discovered_facilities 
-            WHERE ({where_clause})
+            WHERE ({where_clause}) AND {_MKT_DEDUP}
             {country_guard}
             {RAILWAY_EXCLUSION}
             GROUP BY status
@@ -20652,7 +20654,7 @@ def get_market_stats(market):
         c.execute(f"""
             SELECT id, name, provider, city, power_mw, status, discovered_at
             FROM discovered_facilities 
-            WHERE ({where_clause})
+            WHERE ({where_clause}) AND {_MKT_DEDUP}
             {country_guard}
             {RAILWAY_EXCLUSION}
             ORDER BY discovered_at DESC NULLS LAST
@@ -20689,6 +20691,79 @@ def get_market_stats(market):
                 f"{market_name} data center market power capacity",
                 corpus=["market_narratives", "news_articles", "deals"], k=4,
             )
+        # ── r-market-grain (2026-09-20) ────────────────────────────────────
+        # This response published two bare numbers and no date, and it is the
+        # row `get_market_intel` proxies (the MCP tool calls it with ?rag=1).
+        # Measured live 2026-09-20, Dallas:
+        #
+        #     /api/v1/markets/dallas   308 facilities   3,690 MW   (this route)
+        #     /markets/dallas          386 facilities   7,067 MW   (the page)
+        #
+        # Both readings are correct and they answer different questions —
+        # util/facility_count_basis.py has said exactly that since 2026-08-01
+        # — but only ONE of the two declared its grain (the page, through
+        # util/market_entity), so an agent that called the tool and also
+        # crawled the page read a contradiction rather than two axes. A source
+        # that contradicts itself does not get cited.
+        #
+        # Two of the three axes CLOSE here rather than being documented:
+        #   * the fleet filter now applies. /api/v1/markets, 300 lines up, has
+        #     deduped since 2026-07-28 (_MKT_DEDUP) while this route counted
+        #     the same building once per keeper row.
+        #   * SUM(power_mw) now travels with its denominator. power_mw is NULL
+        #     for 94.9% of discovered_facilities and the SUM COALESCEs that to
+        #     0, so a bare total states a market figure the rows cannot carry.
+        # The third (unit: this route counts rows, the page counts distinct
+        # sites) is DECLARED, not changed — collapsing identities here would
+        # rescore nothing but would silently drop genuinely separate buildings
+        # that share an identity key.
+        #
+        # Fail-soft: a basis we cannot build is OMITTED. This route backs the
+        # public market pages, and an ImportError must not 500 that path.
+        _stats_out = {
+            'facility_count': stats['facility_count'],
+            'total_power_mw': round(stats['total_power'], 1),
+            'avg_power_mw': (round(stats['avg_power'], 1) if _mk_paid else None),
+            'provider_count': stats['provider_count'],
+        }
+        _mw_reporting = stats.get('mw_reporting_count')
+        if _mw_reporting is not None:
+            _stats_out['mw_reporting_count'] = int(_mw_reporting)
+        try:
+            from util.facility_count_basis import (
+                basis as _fc_basis, capacity_basis as _fc_capacity_basis,
+                mw_coverage_note as _fc_mw_note)
+            _stats_out['count_basis'] = _fc_basis(
+                'tracked', 'row', 'city',
+                note=("This route. /markets/<slug> and its .json twin publish "
+                      "tracked / distinct_site / market_slug and read HIGHER "
+                      "on the same market — a wider grouping and a collapsed "
+                      "unit, not more facilities."))
+            _stats_out['capacity_basis'] = _fc_capacity_basis(
+                'tracked', 'sum_rows', 'city',
+                note=("Read mw_reporting_count beside this total: it is the "
+                      "number of counted rows that reported any capacity at "
+                      "all. /markets/<slug> publishes sum_sites over the same "
+                      "market and reads higher."))
+            _cov = _fc_mw_note(_mw_reporting, stats['facility_count'])
+            if _cov:
+                _stats_out['mw_coverage'] = _cov
+        except Exception as _basis_err:      # noqa: BLE001 - fail soft, see above
+            logger.warning("market stats basis unavailable: %s", _basis_err)
+
+        # ── as_of ──────────────────────────────────────────────────────────
+        # The MCP envelope stamped `as_of: null` on every get_market_intel
+        # response and told the agent so in as_of_basis ("UNMEASURED - this
+        # response carries no source timestamp"), because nothing in this
+        # payload carried a date at all. It does now, and it claims only what
+        # it can prove: the newest observation in THIS cut, not a re-check of
+        # every row in it. discovered_facilities has no updated_at, so a
+        # market whose rows are re-verified without a new discovery reads
+        # older than it is - which is the safe direction for a stamp an agent
+        # is told to cite with the number.
+        _as_of = stats.get('newest_discovered_at')
+        _as_of = str(_as_of)[:19] if _as_of else None
+
         resp = jsonify({
             'success': True,
             'market': {
@@ -20701,12 +20776,13 @@ def get_market_stats(market):
                 'name': market_name,
                 'cities': cities
             },
-            'stats': {
-                'facility_count': stats['facility_count'],
-                'total_power_mw': round(stats['total_power'], 1),
-                'avg_power_mw': (round(stats['avg_power'], 1) if _mk_paid else None),
-                'provider_count': stats['provider_count']
-            },
+            'stats': _stats_out,
+            'as_of': _as_of,
+            'as_of_basis': (
+                'MAX(discovered_at) over the facilities this response counts '
+                '- the newest observation in this cut, not a re-verification '
+                'of every row in it.' if _as_of else
+                'UNMEASURED - no row in this cut carries a discovery date.'),
             'top_providers': top_providers,
             'by_status': by_status,
             'recent_facilities': recent,
