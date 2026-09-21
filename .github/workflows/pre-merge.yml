@@ -1006,6 +1006,28 @@ jobs:
             echo "::error::the alias-repoint SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Install first-use by channel, against the same Postgres ─────────
+      # The install-stats first-use endpoint joins mcp_dev_keys to three usage
+      # tables on three different key derivations (full key, 24-char prefix,
+      # day-grain meter). Only a real Postgres shows each join returning a row
+      # for its positive control and the probe exclusion holding. Owns and
+      # drops only its private schema install_first_use_t.
+      - name: Install first-use SQL against a real Postgres
+        env:
+          INSTALL_FIRST_USE_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_install_first_use_sql.py -v --tb=short
+
+      - name: Prove the install first-use SQL test actually RAN
+        env:
+          INSTALL_FIRST_USE_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_install_first_use_sql.py \
+            -q -rs --tb=no > fu.txt 2>&1 || { cat fu.txt; exit 1; }
+          cat fu.txt
+          if grep -qi "skipped" fu.txt; then
+            echo "::error::the install first-use SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1053,6 +1075,7 @@ jobs:
             kd.txt
             cs.txt
             ar.txt
+            fu.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
