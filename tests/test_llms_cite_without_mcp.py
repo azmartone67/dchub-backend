@@ -278,15 +278,34 @@ def test_the_policy_does_not_send_agents_to_canon_phrases_for_a_price(
 _FULL_DOOR = "/llms-full.txt"
 
 
-@pytest.fixture(scope="module")
-def full_body() -> str:
-    """The REAL /llms-full.txt body, served through the real blueprint."""
+def _door_app():
+    """An app wired like main.py, in main.py's ORDER.
+
+    ★ 2026-09-21 — THIS FIXTURE WAS THE BUG, the second time around. It
+    registered ai_agent_discovery.discovery_bp ALONE and read /llms-full.txt off
+    it. Production registers register_discovery_routes(app) FIRST (main.py:10302)
+    and discovery_bp only at main.py:28846, and BOTH declare /llms-full.txt — so
+    the rule that actually answers is ai_discovery_routes.serve_llms_full_txt,
+    which be#4996 never touched. Measured on the origin at 01:15Z on 2026-09-21,
+    after that commit deployed SUCCESS: the live door still had no policy block,
+    while this file was green. A guard that builds its own app decides which
+    handler it grades; build it the way production does, or it grades a handler
+    no request reaches.
+    """
     flask = pytest.importorskip("flask")
-    import os
+    from ai_discovery_routes import register_discovery_routes
     from ai_agent_discovery import discovery_bp
 
     app = flask.Flask(__name__)
-    app.register_blueprint(discovery_bp)
+    register_discovery_routes(app)        # main.py:10302 — wins the path
+    app.register_blueprint(discovery_bp)  # main.py:28846
+    return app
+
+
+@pytest.fixture(scope="module")
+def full_body() -> str:
+    """The REAL /llms-full.txt body, from the handler production serves."""
+    app = _door_app()
     # load_file() resolves 'llms-full.txt' relative to CWD first, then to the
     # module's own directory — the latter is what makes this work off-repo-root.
     r = app.test_client().get(_FULL_DOOR)
@@ -394,3 +413,45 @@ def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
         "%s served %d unresolved canon placeholder(s) to an agent: %s"
         % (_FULL_DOOR, len(left), sorted(set(left)))
     )
+
+
+def test_every_registered_handler_for_the_full_door_renders_the_block():
+    """Not just the one that wins today.
+
+    /llms-full.txt is declared twice — ai_discovery_routes.serve_llms_full_txt
+    (@app.route) and ai_agent_discovery.serve_llms_full (discovery_bp). Which one
+    answers depends on registration ORDER in main.py, which is not a thing this
+    file can see. So grade them all: then an order flip, a third copy, or a
+    deleted duplicate cannot quietly un-ship the policy.
+    """
+    app = _door_app()
+    endpoints = [r.endpoint for r in app.url_map.iter_rules()
+                 if r.rule == _FULL_DOOR]
+    assert endpoints, (
+        "no handler at all is registered for %s — this guard is grading nothing"
+        % _FULL_DOOR
+    )
+    checked = []
+    for ep in endpoints:
+        view = app.view_functions[ep]
+        with app.test_request_context(_FULL_DOOR):
+            rv = view()
+        body = rv.get_data(as_text=True) if hasattr(rv, "get_data") else str(rv)
+        assert len(body) > 2000, (
+            "%s served only %d bytes — it found no document, so an assertion on "
+            "its body would pass vacuously" % (ep, len(body))
+        )
+        assert _HEADING in body, (
+            "%s answers %s without the policy block. If it is the rule that wins "
+            "in main.py, the live door ships without the rule — which is exactly "
+            "what happened after be#4996." % (ep, _FULL_DOOR)
+        )
+        assert _slice_policy(body, ep) == _slice_policy(
+            _door_app().test_client().get("/llms.txt").get_data(as_text=True),
+            "/llms.txt"), (
+            "%s renders a DIFFERENT policy block than /llms.txt — the two are "
+            "supposed to be one rendering of agent_door_policy.policy_block()"
+            % ep
+        )
+        checked.append(ep)
+    assert len(checked) == len(endpoints)
