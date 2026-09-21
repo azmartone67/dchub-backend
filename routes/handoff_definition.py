@@ -1272,6 +1272,9 @@ RELAYED_CHECKOUT_PROVENANCE_BASIS = (
 #   mcp_go_c           a signed /go/c link an agent relayed (mcp_checkout_clicks)
 #   cold_go_p          a /pricing button via /go/p/<plan> (pricing_checkout_clicks)
 #   chatgpt_upgrade_h  the ChatGPT/OpenAI relay page: wall → view → identify → pay
+#   rest_wall_go_c     a caller-independent /go/c link on a cached REST wall
+#                      (rest_wall_ladder): no ref, so nothing
+#                      reaches Stripe to join on and its paid is UNMEASURABLE
 # The two click paths carry the plan on the click row. A payment is credited to
 # the LATEST qualifying click on its ref, at or before it and inside
 # PAID_RELAYED_CHECKOUT_LOOKBACK: the rule paid_attributed applies, so the two
@@ -1294,7 +1297,13 @@ def chatgpt_session_predicate(sid_expr: str) -> str:
 
 def _click_rows_sql(interval_sql: str, include_cold: bool) -> str:
     """Every qualifying click in the window, as (path, plan, ref, clicked_at, id).
-    mcp_go_c: signed, real UA, not operator traffic, not a ChatGPT session.
+    mcp_go_c: signed, real UA, carries a ref (every link the MCP server mints
+    does: a session, a key hash or an anon offer id), not operator traffic, not
+    a ChatGPT session.
+    rest_wall_go_c: signed, real UA, no ref: in practice the caller-independent
+    link rest_wall_ladder puts on a cached REST payload. Counted apart, because a
+    click that can never join a payment would drag mcp_go_c's rate down. Together
+    the two lanes take every signed real-UA click exactly once (ref or no ref).
     cold_go_p: a plan /pricing sells (known_plan), real UA. It has no session,
     so the operator exclusion cannot apply there, and the basis says so."""
     rows = [
@@ -1302,8 +1311,14 @@ def _click_rows_sql(interval_sql: str, include_cold: bool) -> str:
          " FROM mcp_checkout_clicks cc WHERE cc.clicked_at > now() - interval '"
          + interval_sql + "' AND " + relayed_checkout_signed()
          + " AND " + relayed_checkout_real_ua()
+         + " AND coalesce(cc.ref,'') <> ''"
          + " AND " + _external_session_predicate(RELAYED_CHECKOUT_SESSION_ID)
          + " AND NOT " + chatgpt_session_predicate(RELAYED_CHECKOUT_SESSION_ID)),
+        ("SELECT 'rest_wall_go_c'::text AS path, cc.plan, cc.ref, cc.clicked_at, cc.id"
+         " FROM mcp_checkout_clicks cc WHERE cc.clicked_at > now() - interval '"
+         + interval_sql + "' AND " + relayed_checkout_signed()
+         + " AND " + relayed_checkout_real_ua()
+         + " AND coalesce(cc.ref,'') = ''"),
     ]
     if include_cold:
         rows.append(
@@ -1379,6 +1394,10 @@ def click_to_pay_basis() -> dict:
                               "additions are not mirrored) at each stage, operator "
                               "sessions excluded: walls, views (relay_opens, valid, "
                               "real UA), identified and paid (their canonical lanes)"),
+        "rest_wall_go_c": ("signed, real-UA /go/c clicks with no ref: in practice "
+                           "the caller-independent link rest_wall_ladder puts on a "
+                           "cached REST payload. No ref reaches Stripe, so a payment "
+                           "cannot be joined to it: paid is null (unmeasurable), not 0"),
         "plan_credit": ("a session ref can sit on a $10 link and a subscription "
                         "link at once; the payment takes the plan of the latest "
                         "qualifying click, not the plan it bought"),
