@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1488,
+  "python_files_scanned": 1489,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
@@ -25245,7 +25245,7 @@
     "main"
    ],
    "phantom_sources": [
-    "deal_scraper.py:706"
+    "deal_scraper.py:691"
    ]
   },
   "POST /api/discovery/apis/learn": {
