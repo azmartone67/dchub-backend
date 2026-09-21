@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1483,
+  "python_files_scanned": 1485,
   "endpoints_total": 1804,
   "endpoints_resolved": 1288,
   "endpoints_partial": 66,
@@ -11469,7 +11469,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/embed/<slug>": {
-   "source": "routes/dcpi.py:9747",
+   "source": "routes/dcpi.py:9777",
    "handler": "embed_widget_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11577,7 +11577,7 @@
    ]
   },
   "GET /api/v1/dcpi/history": {
-   "source": "routes/dcpi.py:9120,routes/dcpi_temporal.py:53",
+   "source": "routes/dcpi.py:9150,routes/dcpi_temporal.py:53",
    "handler": "api_history",
    "resolution": "resolved",
    "open_at": [
@@ -11747,35 +11747,35 @@
    ]
   },
   "GET /api/v1/dcpi/og/<slug>": {
-   "source": "routes/dcpi.py:9743",
+   "source": "routes/dcpi.py:9773",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/og/<slug>.svg": {
-   "source": "routes/dcpi.py:9743",
+   "source": "routes/dcpi.py:9773",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page": {
-   "source": "routes/dcpi.py:9734",
+   "source": "routes/dcpi.py:9764",
    "handler": "public_dashboard_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page/<slug>": {
-   "source": "routes/dcpi.py:9738",
+   "source": "routes/dcpi.py:9768",
    "handler": "public_market_page_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/press": {
-   "source": "routes/dcpi.py:9751",
+   "source": "routes/dcpi.py:9781",
    "handler": "press_kit_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11926,7 +11926,7 @@
    ]
   },
   "GET /api/v1/dcpi/ticker.html": {
-   "source": "routes/dcpi.py:9195",
+   "source": "routes/dcpi.py:9225",
    "handler": "ticker_widget",
    "resolution": "opaque",
    "open_at": [],
@@ -11948,7 +11948,7 @@
    ]
   },
   "GET /api/v1/dcpi/trending": {
-   "source": "routes/dcpi.py:9166",
+   "source": "routes/dcpi.py:9196",
    "handler": "api_trending",
    "resolution": "resolved",
    "open_at": [
@@ -17540,7 +17540,7 @@
    "keys": []
   },
   "GET /api/v1/mcp/upgrade-handoff/stats": {
-   "source": "routes/upgrade_handoff.py:655",
+   "source": "routes/upgrade_handoff.py:653",
    "handler": "upgrade_handoff_stats",
    "resolution": "resolved",
    "open_at": [
@@ -28912,7 +28912,7 @@
    ]
   },
   "POST /api/v1/dcpi/lite-recompute": {
-   "source": "main.py:47254,routes/dcpi.py:9759",
+   "source": "main.py:47254,routes/dcpi.py:9789",
    "handler": "_v216_dcpi_lite_recompute",
    "resolution": "resolved",
    "open_at": [
