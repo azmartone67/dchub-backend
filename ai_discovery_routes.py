@@ -1425,12 +1425,28 @@ learn the tools existed but not how to install them anywhere.
     # =========================================================================
     @app.route('/llms-full.txt')
     def serve_llms_full_txt():
+        # ★★★ THIS is the handler production serves for /llms-full.txt, and
+        # be#4996 patched the OTHER one. Measured on the origin at 01:15Z on
+        # 2026-09-21, after 9e71714 deployed SUCCESS: the door still carried no
+        # policy block. ai_agent_discovery.serve_llms_full registers the same
+        # path on discovery_bp (main.py:28846), but register_discovery_routes()
+        # runs FIRST (main.py:10302) so this rule wins — and main.py:25780 says
+        # so out loud: "OLD llms-full.txt route REMOVED -- now served by
+        # ai_discovery_routes.py (inline)".
+        #
+        # #4996 existed because "the guard read one of the two DOORS it
+        # publishes". Its own fixture then registered one of the two HANDLERS —
+        # the one no request reaches — and proved the block on that. Same shape,
+        # one level up. The guard now builds the app the way main.py does and
+        # asserts every registered handler for this path renders the block, so
+        # neither a registration order flip nor a third copy can un-ship it.
         content = canon_text("""# DC Hub — Data Center Intelligence Platform
 # Full API Documentation for AI Agents & LLM Systems
 # Base URL: https://dchub.cloud
 # API Base: https://dchub.cloud/api
 # Contact: info@dchub.cloud
 
+""" + policy_block() + """
 ================================================================================
 ## MCP AGENTS — START HERE: call execute_plan first (the orchestration front door)
 If the question spans more than one capability — site selection, market ranking,
