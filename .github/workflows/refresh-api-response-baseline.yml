@@ -20,13 +20,13 @@
 #
 # ★ THE SAFETY GATE — why this cannot launder a key deletion
 # ----------------------------------------------------------
-# `check` runs FIRST and the refresh only happens on exit 0. That matters more
-# than it looks: the guard's own check context is `contract`, and `contract` is
-# NOT one of main's required checks (substance-gate, syntax-check, unit-tests,
-# regression-lint, db-parity, app-contract-gate). Auto-merge lands on required
-# checks only, so a PR that removes a public key CAN reach main with this guard
-# red. If this job regenerated unconditionally it would then rewrite the
-# baseline around that removal and erase the only remaining evidence.
+# `check` runs FIRST and the refresh only happens on exit 0. `contract` IS a
+# required check on main now (7 contexts, measured 2026-09-21 via
+# .../protection/required_status_checks), but branch protection is
+# strict:false, so a PR can still land a key removal on a green that was
+# computed before main moved. If this job regenerated unconditionally it would
+# then rewrite the baseline around that removal and erase the only remaining
+# evidence.
 #
 #   exit 0  no key removed        -> regenerate, open the PR
 #   exit 1  a key was removed     -> REFUSE. Leave the baseline as the record.
@@ -35,6 +35,45 @@
 # Removals that are deliberate are not blocked by this — they go in
 # contracts/api_response_exceptions.json, which makes `check` exit 0 and lets
 # the refresh proceed. Audited removals flow; silent ones jam the lane.
+#
+# ★ A REFRESH IS A SNAPSHOT OF ONE TREE — it must not land on another
+# --------------------------------------------------------------------
+# 2026-09-21: #5026 was generated on 4ef4fc37e, where GET /api/v1/markets/
+# <market> still served `stats.mw_coverage`. #5022 removed that key at 02:44Z.
+# #5026's checks had passed on its OLD merge ref; strict:false does not require
+# an up-to-date branch and nothing re-runs a PR's checks when main moves (a
+# re-run replays the stored merge SHA), so it squash-merged at 03:15Z and main's
+# baseline asserted a key main did not serve. `contract` went red on main and on
+# every open PR, and the gate above then refused to regenerate: main could not
+# heal itself. A generated file never conflicts textually with the code change
+# that invalidates it, so git gives no warning either.
+#
+# So every place this lane acts, it asks `verify-against`: "if this baseline
+# landed on main as main is RIGHT NOW, would it be main's surface?" (the merge
+# tree is built in a throwaway worktree; equality is on keys, resolution and
+# open levels — `source` line churn is not staleness):
+#
+#   1. it builds on LIVE origin/main, not the commit that triggered the run —
+#      a run queued behind this concurrency group would otherwise regenerate a
+#      main that has already moved;
+#   2. it CLOSES every open refresh PR that is no longer main's surface, on
+#      every run (each push to main, and the schedule). Keyed on the SURFACE,
+#      not the base SHA: of the first 11 refresh PRs, 9 landed on a main that
+#      had moved during CI, but only 2 saw the surface move (#5020 additively,
+#      #5026 the break). Closing on SHA would have starved the lane;
+#   3. it re-verifies against a fresh fetch of main before pushing, and opens
+#      nothing if main moved under it.
+#
+# api-response-contract.yml runs the same verification as part of the
+# required `contract` check on any PR that changes the baseline.
+#
+# WHAT THIS CANNOT DO: make the merge itself conditional on main. strict:false
+# lets any PR merge on a green computed before main moved, merge queue is not
+# available to a user-owned repo, and this repo has mergers besides auto-merge.
+# A surface-changing merge that lands after this lane's last verification and
+# before the refresh merges — i.e. inside one reaction of this workflow — can
+# still land stale. This shrinks that window from the refresh's whole CI run
+# (~40 min) to the time between a push to main and this run closing the PR.
 
 name: refresh-api-response-baseline
 
@@ -65,6 +104,16 @@ jobs:
         with:
           fetch-depth: 0   # the extractor uses `git ls-files`
 
+      # (1) Main as it is NOW. The triggering commit can be minutes old by the
+      # time a queued run starts, and a refresh built on it is stale at birth.
+      - name: Move to live main
+        id: live
+        run: |
+          set -euo pipefail
+          git fetch -q origin +refs/heads/main:refs/remotes/origin/main
+          git checkout -q --detach origin/main
+          echo "building against main $(git rev-parse --short=9 HEAD) (event sha ${GITHUB_SHA::9})"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -77,14 +126,87 @@ jobs:
       # If the self-test is broken, `check` returning 0 means nothing and the
       # safety gate below is decorative.
       - name: Self-test — the guard must be able to FAIL and to say UNMEASURED
+        id: selftest
         run: python3 scripts/api_response_contract_selftest.py
+
+      # (2) A refresh PR that is no longer main's surface must not stay
+      # mergeable. Closing is the one hold nothing in this repo re-arms:
+      # disabling auto-merge is not (see auto-enable-automerge.yml, and PRs
+      # here have merged after a verified disable). Runs even when the lane is
+      # disabled — it only ever removes a way to break main. It also runs when
+      # the self-test or the fetch of main failed, and then it FAILS CLOSED:
+      # a CURRENT verdict from a guard that just failed its self-test, or
+      # against a main we could not fetch, is not evidence.
+      - name: Close refresh PRs whose baseline is no longer main's surface
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+          LIVE: ${{ steps.live.outcome }}
+          SELFTEST: ${{ steps.selftest.outcome }}
+        run: |
+          # `run:` is `bash -e` by default: without +e the first STALE verdict
+          # would abort the loop instead of closing the PR.
+          set +e -uo pipefail
+          PRS=$(gh pr list --state open --limit 100 --json number,headRefName \
+                  --jq '.[] | select(.headRefName | startswith("chore/api-baseline-")) | .number') || {
+            echo "::error::cannot list open PRs — cannot tell whether a stale refresh is mergeable"
+            exit 1
+          }
+          FAILED=0
+          for N in $PRS; do
+            if [ "${LIVE:-}" != "success" ] || [ "${SELFTEST:-}" != "success" ]; then
+              echo "UNMEASURED — cannot verify #$N: fetch of live main=${LIVE:-absent}, guard self-test=${SELFTEST:-absent}" > "/tmp/verify-$N.txt"
+              RC=2
+            elif ! git fetch -q origin "+refs/pull/$N/head:refs/remotes/pr/$N"; then
+              echo "UNMEASURED — cannot fetch the head of #$N, so it cannot be verified" > "/tmp/verify-$N.txt"
+              RC=2
+            else
+              python3 scripts/api_response_contract.py verify-against \
+                --main origin/main --candidate "refs/remotes/pr/$N" > "/tmp/verify-$N.txt" 2>&1
+              RC=$?
+            fi
+            cat "/tmp/verify-$N.txt"
+            if [ "$RC" = "0" ]; then
+              echo "#$N is still main's surface — leaving it open"
+              continue
+            fi
+            {
+              echo "Closed by \`refresh-api-response-baseline\` (\`verify-against\` exit $RC)."
+              echo
+              if [ "$RC" = "1" ]; then
+                echo "If this baseline landed on main now ($(git rev-parse --short=9 origin/main)) it"
+                echo "would not be main's surface: main moved under it after it was generated."
+              else
+                echo "It could not be verified against current main (unmeasured, does not merge"
+                echo "cleanly, or the guard could not run — see below). An unverified baseline"
+                echo "is not left mergeable."
+              fi
+              echo "The next run regenerates from current main."
+              echo
+              echo '```'
+              tail -n 60 "/tmp/verify-$N.txt"
+              echo '```'
+            } > "/tmp/close-$N.md"
+            gh pr merge "$N" --disable-auto >/dev/null 2>&1 || true
+            gh pr comment "$N" --body-file "/tmp/close-$N.md" || true
+            if gh pr close "$N" --delete-branch; then
+              echo "::warning::closed stale refresh #$N (verify-against exit $RC)"
+            else
+              echo "::error::#$N is STALE and could not be closed — it can still land"
+              FAILED=1
+            fi
+          done
+          exit "$FAILED"
 
       - name: Check the contract BEFORE touching the baseline
         id: contract
         env:
           GATE: ${{ vars.API_BASELINE_AUTOHEAL_DISABLE }}
         run: |
-          set -uo pipefail
+          # +e: `run:` is `bash -e` by default, which exited on a non-zero
+          # `check` before CODE=$? — the annotations below never printed and
+          # `code` was never written.
+          set +e -uo pipefail
           if [ "${GATE:-0}" = "1" ]; then
             echo "disabled via API_BASELINE_AUTOHEAL_DISABLE"
             echo "code=disabled" >> "$GITHUB_OUTPUT"
@@ -180,7 +302,7 @@ jobs:
           BR="chore/api-baseline-$(git rev-parse --short HEAD)"
           git config user.name "dchub-api-baseline"
           git config user.email "api@dchub.cloud"
-          git switch -c "$BR"
+          git switch -q -c "$BR"
           git add contracts/api_response_surface.json
           git commit -F - <<EOF
           contracts: refresh the API response baseline — handlers moved under it
@@ -193,6 +315,21 @@ jobs:
           contracts/api_response_exceptions.json. Everything else here is
           additive and line-shift churn.
           EOF
+
+          # (3) Main may have moved while this ran. Open nothing that would
+          # not be main's surface if it landed now; the push that moved main
+          # has its own run queued, and that run regenerates from it.
+          git fetch -q origin +refs/heads/main:refs/remotes/origin/main
+          set +e
+          python3 scripts/api_response_contract.py verify-against \
+            --main origin/main --candidate HEAD
+          RC=$?
+          set -e
+          if [ "$RC" != "0" ]; then
+            echo "::warning::main moved to $(git rev-parse --short=9 origin/main) while this refresh was built and it is no longer main's surface (verify-against exit $RC) — not opening it"
+            exit 0
+          fi
+
           git push -u origin HEAD
           gh pr create --fill
           gh pr merge --auto --squash
