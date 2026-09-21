@@ -39,7 +39,7 @@ SRC = (ROOT / "routes" / "audience_export.py").read_text(encoding="utf-8")
 import routes.audience_export as ae            # noqa: E402
 import routes.warm_key_cohort as wk            # noqa: E402
 from routes._audience_identity import (        # noqa: E402
-    is_operator_email, normalize_email)
+    INTERNAL_MARKERS, is_internal_email, is_operator_email, normalize_email)
 from tier_registry import TIERS, paid_plan_names  # noqa: E402
 
 
@@ -210,6 +210,35 @@ def test_the_env_override_can_only_widen_the_operator_set(monkeypatch):
     assert is_operator_email("teammate@dchub.io") is True
 
 
+# ── the rest of "ours" ────────────────────────────────────────────────────
+def test_the_internal_rule_is_one_object_in_every_export():
+    """★ 2026-09-21: the free-users export applied the named operator rule and
+    none of the markers, and 21 of its 149 live rows were ours. One object,
+    borrowed everywhere. audience_keys_export takes `wk._is_internal` by
+    identity, which is why the move re-exported the name instead of renaming."""
+    assert wk._is_internal is is_internal_email
+    assert wk._INTERNAL_MARKERS is INTERNAL_MARKERS
+    assert ae.is_internal_email is is_internal_email
+
+
+def test_the_internal_markers_are_imported_by_both_not_copied():
+    for name in ("audience_export", "warm_key_cohort"):
+        src = (ROOT / "routes" / f"{name}.py").read_text(encoding="utf-8")
+        copied = [t for t in _code_string_literals(src) if t in INTERNAL_MARKERS]
+        assert not copied, f"{name} carries a live copy of a marker: {copied}"
+    # ...and the check can see one when it is there.
+    assert set(_code_string_literals('M = ("dchub.cloud", "test@")\n')) == {
+        "dchub.cloud", "test@"}
+
+
+def test_a_stranger_whose_address_contains_test_is_not_ours():
+    """The marker is `test@`, never bare `test` — widening it to catch one
+    of our own test mailboxes would swallow these strangers with it."""
+    for addr in ("attestation@acmepower.com", "tester1@acmepower.com",
+                 "testing.team@bigco.com"):
+        assert is_internal_email(addr) is False, addr
+
+
 # ── end to end, through the real SQL ──────────────────────────────────────
 # The fixture mirrors the live vocabulary. `paid_conversion` marks the rows
 # that the 2026-09-20 CRM cross-join found in the send.
@@ -223,6 +252,8 @@ USERS_FIXTURE = [
     ("noplan@acmepower.com", "Nora None",   "Acme",   None,            "2026-07-06"),
     ("azmartone@gmail.com",  "Operator",    "",       "free",          "2026-07-07"),
     ("bounced@acmepower.com", "Bo Unce",    "Acme",   "free",          "2026-07-08"),
+    ("admin@dchub.cloud",    "Admin",       "",       "free",          "2026-07-09"),
+    ("attestation@acmepower.com", "Tess Station", "Acme", "free",      "2026-07-10"),
 ]
 PAID_CONVERSIONS = {"dev1@bigco.com", "start1@bigco.com"}
 SUPPRESSED = {"bounced@acmepower.com"}
@@ -300,7 +331,8 @@ def test_the_export_returns_no_paying_customer(gathered):
 def test_the_export_returns_exactly_the_rows_that_qualify(gathered):
     rows, _ = gathered
     assert {r["email"] for r in rows} == {"free1@acmepower.com",
-                                          "noplan@acmepower.com"}
+                                          "noplan@acmepower.com",
+                                          "attestation@acmepower.com"}
 
 
 def test_no_shipped_row_is_labelled_free_without_being_free(gathered):
@@ -317,6 +349,33 @@ def test_the_suppressed_and_operator_rows_are_removed_and_counted(gathered):
     assert "azmartone@gmail.com" not in shipped
     assert meta["suppressed_excluded"] == 1
     assert meta["operator_excluded"] == 1
+
+
+def test_our_own_mailboxes_are_removed_and_counted(gathered):
+    """★ THE REGRESSION (2026-09-21): admin@, security@, root@ and test@ on
+    dchub.cloud shipped in the free-users send — 21 of 149 rows were ours."""
+    rows, meta = gathered
+    assert "admin@dchub.cloud" not in {r["email"] for r in rows}
+    assert meta["internal_excluded"] == 1
+    # The operator row is counted once, under its own rule — never twice.
+    assert meta["operator_excluded"] == 1
+
+
+def test_both_routes_publish_the_internal_count(monkeypatch):
+    """A caller who only downloads the CSV must see the count too."""
+    from flask import Flask
+    monkeypatch.setattr(ae, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(ae, "_return", lambda c, error=False: None)
+    monkeypatch.setattr(ae, "_admin_ok", lambda: True)
+    app = Flask(__name__)
+    app.register_blueprint(ae.audience_export_bp)
+    client = app.test_client()
+    r = client.get("/api/v1/admin/audience/free-users.csv")
+    assert r.status_code == 200
+    assert r.headers["X-Internal-Excluded"] == "1"
+    assert "admin@dchub.cloud" not in r.get_data(as_text=True)
+    j = client.get("/api/v1/admin/audience/free-users?format=json").get_json()
+    assert j["internal_excluded"] == 1
 
 
 def test_the_excluded_bucket_names_every_plan_that_was_removed(gathered):
