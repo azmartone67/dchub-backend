@@ -256,27 +256,34 @@ def _hero(page):
 
 
 def test_the_first_lines_state_operator_address_and_status(fpp):
+    """r-location-gate (2026-09-21): the address line states the street NAME;
+    the house number is paid-only and this page is the cached anonymous view."""
     hero = _hero(_render(fpp))
     assert re.findall(
         r'<li><span class="fact-label">(\w+)</span> ([^<]+)</li>', hero) == [
         ("Operator", "Bothell Data Services"),
-        ("Address", "3301 Monte Villa Parkway"),
+        ("Street", "Monte Villa Parkway"),
         ("Status", "Operational")]
     assert hero.index("<h1>") < hero.index('class="facts"') < \
         hero.index('class="loc"')
 
 
 def test_a_stored_non_address_appears_nowhere_on_the_page(fpp):
+    street_line = ('<span class="loc-k">Street</span> '
+                   '<span class="loc-v">Monte Villa Parkway</span>')
     page = _render(fpp, address="Arizona through")
     assert "Arizona through" not in page
-    assert 'stat-label">Address<' not in page
+    assert '<span class="fact-label">Street</span>' not in page
+    assert '<span class="loc-k">Street</span>' not in page
     assert "streetAddress" not in page
-    # the anchor: a real address reaches every one of those surfaces
+    # the anchor: a real address reaches every one of those surfaces — as its
+    # street NAME since r-location-gate (2026-09-21); the number reaches none
     page = _render(fpp)
-    assert 'stat-label">Address<' in page
-    assert '"streetAddress": "3301 Monte Villa Parkway"' in page
-    assert page.count("3301 Monte Villa Parkway") >= 4, \
-        "hero, tile, JSON-LD and the meta description at least"
+    assert street_line in page
+    assert '"streetAddress": "Monte Villa Parkway"' in page
+    assert page.count("Monte Villa Parkway") >= 4, \
+        "hero, Location, JSON-LD and the meta description at least"
+    assert "3301" not in page, "the house number is paid-only"
 
 
 def test_the_placeholder_operator_is_never_printed_as_a_name(fpp):
