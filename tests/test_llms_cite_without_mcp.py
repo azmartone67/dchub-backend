@@ -727,8 +727,8 @@ def test_main_wires_the_registration(door: str):
 
 
 @functools.lru_cache(maxsize=None)
-def _through_the_real_app() -> dict:
-    """{door: [status, body]}: each door requested through main.py's REAL app.
+def _real_app_boot() -> tuple:
+    """(bodies, skip_reason, failure): each door requested through main.py's REAL app.
 
     Booted by scripts/app_contract_gate.boot() (DB stubbed, repo state files
     isolated), in a subprocess so main's import-time threads and state stay
@@ -757,10 +757,30 @@ def _through_the_real_app() -> dict:
     proc = subprocess.run(
         [sys.executable, "-c", code, str(out), json.dumps(_ONE_REGISTRATION_DOORS)],
         cwd=_ROOT, capture_output=True, text=True, timeout=300)
-    assert proc.returncode == 0 and out.exists(), (
-        "could not boot the real app (rc=%s). That is NOT a pass: stderr tail:\n%s"
-        % (proc.returncode, "\n".join(proc.stderr.splitlines()[-8:])))
-    return json.loads(out.read_text())
+    if proc.returncode == 0 and out.exists():
+        return json.loads(out.read_text()), None, None
+    tail = "\n".join(proc.stderr.splitlines()[-8:])
+    # Same contract as tests/test_app_contract_gate.py: the unit-tests job
+    # installs a light dep set, so a missing module THERE is a thin
+    # environment. app-contract-gate installs requirements.txt, sets
+    # DCHUB_CONTRACT_GATE_STRICT=1 and runs this test, so there the skip
+    # cannot fire, and a missing module is a hard failure.
+    if "ModuleNotFoundError" in proc.stderr and os.environ.get(
+            "DCHUB_CONTRACT_GATE_STRICT") != "1":
+        missing = next((l.strip() for l in proc.stderr.splitlines()
+                        if "ModuleNotFoundError" in l), "a runtime dependency")
+        return None, ("the real app cannot boot in this environment (%s); "
+                      "app-contract-gate runs this test strictly" % missing), None
+    return None, None, ("could not boot the real app (rc=%s). That is NOT a "
+                        "pass: stderr tail:\n%s" % (proc.returncode, tail))
+
+
+def _through_the_real_app() -> dict:
+    bodies, skip, failure = _real_app_boot()
+    if skip:
+        pytest.skip(skip)
+    assert failure is None, failure
+    return bodies
 
 
 def _comparable(door: str, body: str):
@@ -782,9 +802,11 @@ def test_the_real_app_serves_what_the_one_registration_serves(door: str):
     duplicate, a before_request branch, or a catch-all. It also fails when
     the door stops being served at all.
     """
+    # _served() first: it performs this file's pinned repo walk, so a skip
+    # below (thin environment) cannot also report a false COVERAGE COLLAPSE.
+    ours = _served(door).test_client().get(door).get_data(as_text=True)
     status, body = _through_the_real_app()[door]
     assert status == 200, "the real app answers %s with %s" % (door, status)
-    ours = _served(door).test_client().get(door).get_data(as_text=True)
     assert _comparable(door, body) == _comparable(door, ours), (
         "the REAL app serves %s differently (%d bytes) from its one "
         "registration (%d bytes): something answers ahead of it."
