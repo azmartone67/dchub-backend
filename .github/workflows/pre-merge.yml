@@ -1188,6 +1188,26 @@ jobs:
             echo "::error::the usage tracker SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # The claim door's unused-key cap decides "unused" in its WHERE clause —
+      # last_used_at (MCP) and the REST tracker's api_endpoint_log — and the
+      # stub-cursor tests serve their rows whatever that clause says. Only a real
+      # Postgres shows which keys it counts. Owns its own schema, dropped after.
+      - name: Claim unused-key cap SQL against a real Postgres
+        env:
+          CLAIM_CAP_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_claim_unused_key_cap_sql.py -v --tb=short
+
+      - name: Prove the claim cap SQL test actually RAN
+        env:
+          CLAIM_CAP_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_claim_unused_key_cap_sql.py \
+            -q -rs --tb=no > cc2.txt 2>&1 || { cat cc2.txt; exit 1; }
+          cat cc2.txt
+          if grep -qi "skipped" cc2.txt; then
+            echo "::error::the claim cap SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # crm_flush_last is the row the CRM health endpoint reads to describe the
       # process that actually flushes. Its recorder never raises, so SQL that
       # Postgres refuses (an ON CONFLICT target with no unique constraint) would
@@ -1259,6 +1279,7 @@ jobs:
             fu.txt
             ctp.txt
             ut.txt
+            cc2.txt
             fl.txt
             lm.txt
           )

@@ -189,9 +189,10 @@ class _Req:
         return self._body
 
 
-def _run(*, body, cur, ip="9.9.9.9"):
-    """Execute the real claim_key against the stub cursor. Returns (json, status,
-    cur)."""
+def _run(*, body, cur, ip="9.9.9.9", pool=None):
+    """Execute the real claim_key against the stub cursor — or against `pool`, a
+    real database (tests/test_claim_unused_key_cap_sql.py). Returns (json,
+    status, cur)."""
     req = _Req(body=body, ip=ip)
     # a no-op stand-in for the confirmation-email module imported inside the fn
     fake_verif = types.ModuleType("routes.mcp_key_email_verification")
@@ -205,7 +206,7 @@ def _run(*, body, cur, ip="9.9.9.9"):
         "os": types.SimpleNamespace(environ={}),
         "jsonify": lambda **kw: dict(kw),        # (dict, status) tuples come back raw
         "_kc_re": _re,
-        "_pool": _Pool(cur),
+        "_pool": pool or _Pool(cur),
         "secrets": _secrets,
         "json": _json,
         "datetime": _dt.datetime,
@@ -426,3 +427,46 @@ def test_a_workspace_past_the_gate_carries_its_count_into_the_new_key():
         f"the workspace's carried count did not reach the minted key "
         f"(validate_calls={meta.get('validate_calls')!r}); a workspace past "
         f"the gate would re-mint its way to a fresh allowance")
+
+
+# ── the unused-key cap must not merge partner workspaces ─────────────────────
+#
+# Over the cap, the handler hands back the newest unused key from the caller's
+# IP. Behind a partner's single egress that key belongs to ANOTHER workspace.
+# The stub cursor serves its primed rows to any cap query whatever the WHERE
+# clause says, so only the handler's own decision can keep workspace 4 off them.
+# (Which keys the cap counts is proven against Postgres in
+# tests/test_claim_unused_key_cap_sql.py.)
+
+def _three_unused_keys():
+    """Newest first, shaped like the cap's SELECT: key, tier, count, client."""
+    return [("dch_live_" + c * 32, "identified", 3, "agent-" + c) for c in "CBA"]
+
+
+def test_a_fourth_partner_workspace_gets_its_own_new_key():
+    unused = _three_unused_keys()
+    cur = _Cur(unused=unused)
+    j, status, cur = _run(body={"client_name": "anythingmcp/ws4"}, cur=cur,
+                          ip=PARTNER_IP)
+    assert status == 200
+    assert j["api_key"] not in {r[0] for r in unused}, (
+        "a verified partner workspace was handed a key minted for another caller")
+    assert j.get("gate") != "unused_key_cap"
+    assert cur.inserted, "the workspace was not minted a key of its own"
+    assert j["api_key"] == cur.inserted[0][0]
+    assert _minted_metadata(cur)["client_name"] == "anythingmcp/ws4"
+
+
+@pytest.mark.parametrize("client_name, ip", [
+    ("someone-else", PARTNER_IP),        # the partner's address, not its name
+    ("anythingmcp/ws4", "203.0.113.9"),  # its name, not its address
+    ("a-new-agent", "9.9.9.9"),          # neither
+], ids=["partner-address-only", "partner-name-only", "no-partner"])
+def test_a_non_partner_caller_still_hits_the_cap(client_name, ip):
+    unused = _three_unused_keys()
+    cur = _Cur(unused=unused)
+    j, status, cur = _run(body={"client_name": client_name}, cur=cur, ip=ip)
+    assert status == 200
+    assert j.get("gate") == "unused_key_cap"
+    assert j["api_key"] == unused[0][0], "must return the NEWEST unused key"
+    assert not cur.inserted, "over the cap must reuse, not mint"
