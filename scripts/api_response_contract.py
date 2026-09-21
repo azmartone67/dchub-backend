@@ -1144,13 +1144,17 @@ def verify_baseline(baseline_path: str | None = None, verbose: bool = True,
             "that was attributed.", "VERDICT: UNMEASURED")
         return 2
 
-    diff = _fingerprint_diff(base, surface)
-    if not diff:
+    # The verdict is fingerprint equality; the itemized diff only explains it.
+    # (Deciding on the diff would let a fingerprint field the report forgets to
+    # compare pass silently — a mutation found exactly that.)
+    if contract_fingerprint(base) == contract_fingerprint(surface):
         s = surface["stats"]
         say(f"CURRENT — the committed baseline is this tree's surface "
             f"({s['endpoints_total']} endpoints, {s['keys_total']} keys).",
             "VERDICT: CURRENT")
         return 0
+    diff = _fingerprint_diff(base, surface) or [
+        "the contract fingerprints differ in a field this report does not itemize"]
     say("STALE — the committed baseline is NOT this tree's surface. It was",
         "generated against a different tree; landing it would publish that",
         "tree's contract as this one's.", "", *diff, "",
