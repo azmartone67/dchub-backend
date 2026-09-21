@@ -115,6 +115,16 @@ def _carriers():
     return carriers
 
 
+# main's required contexts as MEASURED 2026-09-21 (gh api .../branches/main/
+# protection). A FLOOR, not a copy: REQUIRED_CONTEXTS may grow past it, but the
+# carrier check below can only see contexts it is told are required, so trimming
+# the declaration would narrow that check silently. Lower this only with a fresh
+# measurement showing branch protection dropped the context.
+_MEASURED_REQUIRED_FLOOR = frozenset({
+    "substance-gate", "syntax-check", "unit-tests", "regression-lint",
+    "db-parity", "app-contract-gate", "contract"})
+
+
 def test_gating_covers_every_workflow_that_carries_a_required_context():
     """★2026-09-21. Branch protection had grown a seventh required context,
     `contract` (api-response-contract.yml), while GATING still named three
@@ -128,6 +138,12 @@ def test_gating_covers_every_workflow_that_carries_a_required_context():
     moving a required job into another file, or a required context whose last
     main-side carrier goes PR-only: each one fails this."""
     m = _verdict_module()
+    dropped = sorted(_MEASURED_REQUIRED_FLOOR - set(m.REQUIRED_CONTEXTS))
+    assert not dropped, (
+        f"REQUIRED_CONTEXTS no longer declares {dropped}, which branch "
+        "protection required when last measured. Every check below derives from "
+        "that tuple, so a trimmed entry is a context main-branch-health stops "
+        "watching with nothing going red. Re-measure before removing one.")
     carriers = _carriers()
     unmapped = sorted(c for c, wfs in carriers.items() if not wfs)
     assert not unmapped, (
