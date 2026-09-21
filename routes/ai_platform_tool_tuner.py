@@ -559,7 +559,11 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
                 # which made delta-mode lint treat a pre-existing urlopen as a
                 # new violation — and the rule is right, so it is converted
                 # rather than suppressed.
-                r = requests.post(url, json=payload, headers={
+                # 2026-09-20: through the spend ledger. Same response object,
+                # same exceptions — the status-code fallback ladder below
+                # (404/400 → next rung) is untouched.
+                from routes.brain_llm_spend import instrumented_post as _llm_post
+                r = _llm_post("ai_platform_tool_tuner", url, json=payload, headers={
                     "X-API-Key": api_key,
                     "User-Agent": "dchub-tool-tuner/1.0",
                     "Anthropic-Version": "2023-06-01",

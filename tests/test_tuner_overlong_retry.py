@@ -140,17 +140,28 @@ def test_the_retry_actually_asks_the_corrective_prompt():
 
 
 def test_the_model_call_uses_requests_not_urllib():
-    """scripts/regression_lint.py enforces `urllib-request-on-railway`."""
+    """scripts/regression_lint.py enforces `urllib-request-on-railway`.
+
+    2026-09-20: the call now goes through brain_llm_spend.instrumented_post so
+    it lands in the spend ledger. That wrapper IS requests.post underneath —
+    the anti-urllib property this test exists for is unchanged, and the call
+    is now measured as well. Only the shape the assertion matches moved:
+    `requests.post(...)` is an ast.Attribute call, `_llm_post(...)` an
+    ast.Name one. The urlopen assertion below is untouched and is still the
+    half that would catch a genuine regression.
+    """
     src = SRC.read_text(encoding="utf-8")
     code = re.sub(r"#[^\n]*", "", src)
     code = re.sub(r'"""(?:.|\n)*?"""', "", code)
     assert "urllib.request.urlopen" not in code, (
         "urllib.request.urlopen is back; the lint blocks it repo-wide")
     ask = _fn("_ask", parent="_claude_rewrite")
+    _LEDGER = ("_llm_post", "instrumented_post")
     posts = [c for c in ast.walk(ask)
-             if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
-             and c.func.attr == "post"]
-    assert posts, "_ask makes no requests.post call"
+             if isinstance(c, ast.Call)
+             and ((isinstance(c.func, ast.Attribute) and c.func.attr == "post")
+                  or (isinstance(c.func, ast.Name) and c.func.id in _LEDGER))]
+    assert posts, "_ask makes no requests.post / instrumented_post call"
 
 
 def test_the_error_body_is_passed_to_the_detail_helper():

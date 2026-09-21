@@ -1755,24 +1755,45 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
         shipped_context=shipped_ctx,
         live_tools_context=live_tools_ctx,
     )
-    body = json.dumps({
+    # dict, not pre-encoded bytes: brain_llm_spend._model_of() reads
+    # kwargs["json"]["model"] to label the ledger row, and a data= payload
+    # would have recorded this call with a BLANK model — wired but unlabelled,
+    # which is the shape of measurement that looks present and says nothing.
+    body = {
         "model": model,
         "max_tokens": 4000,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        anthropic_messages_url(),
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-API-Key": ANTHROPIC_API_KEY,
-            "User-Agent": "dchub-brain/1.0",
-            "Anthropic-Version": "2023-06-01",
-        },
-    )
+    }
+    # ★2026-09-20: urllib → instrumented_post. This call was invisible to the
+    # spend ledger because the ledger wraps requests.post, and it ALSO tripped
+    # regression_lint's `urllib-request-on-railway` rule.
+    #
+    # ★THE ERROR SEMANTICS ARE NOT THE SAME, so the 4xx/5xx branch is rewritten
+    # rather than moved: urlopen RAISES HTTPError on a non-2xx, requests does
+    # NOT — it returns a response with .status_code. Leaving the old
+    # `except urllib.error.HTTPError` in place would have made every 429 and
+    # 529 fall through to the success path and be reported as
+    # `no_json_in_response`, turning a throttle into a parse failure. The
+    # status check below reproduces the old message byte-for-byte:
+    # `http_<code>: <reason> <detail>`, with .reason supplying the same status
+    # phrase urllib's e.reason did.
+    from routes.brain_llm_spend import instrumented_post as _llm_post
     try:
-        with urllib.request.urlopen(req, timeout=45) as r:
-            payload = json.loads(r.read().decode("utf-8"))
+        r = _llm_post(
+            "brain_layer23_lifecycle",
+            anthropic_messages_url(),
+            json=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": ANTHROPIC_API_KEY,
+                "User-Agent": "dchub-brain/1.0",
+                "Anthropic-Version": "2023-06-01",
+            },
+            timeout=45)
+        if r.status_code >= 400:
+            return None, (f"http_{r.status_code}: {r.reason} "
+                          f"{http_error_detail(r)}").strip()
+        payload = r.json()
         text_parts = payload.get("content") or []
         text = "".join(p.get("text", "") for p in text_parts if isinstance(p, dict))
         # Extract first JSON object
@@ -1784,9 +1805,6 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
             except Exception:
                 return None, f"parse_fail: {text[:200]}"
         return None, f"no_json_in_response: {text[:200]}"
-    except urllib.error.HTTPError as e:
-        # e.reason is the status phrase ("Too Many Requests"), never the cause.
-        return None, f"http_{e.code}: {e.reason} {http_error_detail(e)}".strip()
     except Exception as e:
         return None, f"{type(e).__name__}: {str(e)[:120]}"
 
@@ -1852,24 +1870,35 @@ def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
         proposal_json=json.dumps(proposal, indent=2)[:2000],
         audit_summary=audit_summary[:1500],
     )
-    body = json.dumps({
+    # dict, not bytes — see the note on the sibling call above.
+    body = {
         "model": model,
         "max_tokens": 2000,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        anthropic_messages_url(),
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-API-Key": ANTHROPIC_API_KEY,
-            "User-Agent": "dchub-brain/1.0",
-            "Anthropic-Version": "2023-06-01",
-        },
-    )
+    }
+    # ★2026-09-20: urllib → instrumented_post; see the note on the sibling
+    # call above. Same semantics change, same reason the 4xx branch is
+    # rewritten rather than moved — requests does not raise on a non-2xx, so
+    # the old `except urllib.error.HTTPError` would have let every throttle
+    # fall through and be misreported as `no_json`.
+    from routes.brain_llm_spend import instrumented_post as _llm_post
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            payload = json.loads(r.read().decode("utf-8"))
+        r = _llm_post(
+            "brain_layer23_challenger",
+            anthropic_messages_url(),
+            json=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": ANTHROPIC_API_KEY,
+                "User-Agent": "dchub-brain/1.0",
+                "Anthropic-Version": "2023-06-01",
+            },
+            timeout=30)
+        if r.status_code >= 400:
+            _d = http_error_detail(r)
+            return {"ok": False, "model": model,
+                    "error": f"http_{r.status_code}" + (f": {_d}" if _d else "")}
+        payload = r.json()
         text_parts = payload.get("content") or []
         text = "".join(p.get("text", "") for p in text_parts if isinstance(p, dict))
         import re as _re
@@ -1890,10 +1919,6 @@ def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
             "critique":    str(parsed.get("critique") or "")[:1000],
             "improvement": str(parsed.get("improvement") or "")[:500],
         }
-    except urllib.error.HTTPError as e:
-        _d = http_error_detail(e)
-        return {"ok": False, "model": model,
-                "error": f"http_{e.code}" + (f": {_d}" if _d else "")}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}",
                 "model": model}

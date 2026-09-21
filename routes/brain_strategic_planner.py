@@ -1184,7 +1184,14 @@ def _call_claude(prompt: str) -> Optional[dict]:
                         "system":     _SYSTEM_PROMPT,
                         "messages":   [{"role": "user", "content": prompt}],
                     }
-                return requests.post(
+                # 2026-09-20: through the spend ledger. Returns the SAME
+                # response object and re-raises requests' exceptions, so the
+                # structured-output retry and the chain-walk below are
+                # unchanged. L6 is the heaviest reasoning layer in the brain
+                # (32000 max_tokens on fable) and was entirely unmeasured.
+                from routes.brain_llm_spend import instrumented_post as _llm_post
+                return _llm_post(
+                    "brain_strategic_planner",
                     _url,
                     headers={
                         "x-api-key":         _ANTHROPIC_KEY,

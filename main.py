@@ -21367,9 +21367,13 @@ def _ai_demo_ask():
         f"reader to a specific DC Hub surface (e.g. /dcpi, /grid-intelligence, "
         f"/land-power-map, /pipeline, /mcp) that would deepen the answer."
     )
-    import requests
+    import requests  # noqa: F401 — other call sites in this module use it
     try:
-        r = requests.post(
+        # 2026-09-20: through the spend ledger. Same response object, same
+        # exceptions — the handling below is unchanged.
+        from routes.brain_llm_spend import instrumented_post as _llm_post
+        r = _llm_post(
+            'main_persona_ask',
             anthropic_messages_url(),
             json={
                 'model': 'claude-sonnet-5',
