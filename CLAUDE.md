@@ -42,12 +42,12 @@ minute. **Never disable a guard to make your own change land.**
 ### Why the hook exists when branch protection already does this
 
 `main` requires **seven** checks — `substance-gate`, `syntax-check`,
-`unit-tests`, `regression-lint`, `db-parity`, `app-contract-gate` and
-`contract` (measured 2026-09-21) — and GitHub enforces them on direct pushes
-too: the push is rejected with `GH006: Protected branch update failed`.
-This line said six while `contract` was already required; main-branch-health
-now compares the live list with `REQUIRED_CONTEXTS` in
-`tools/deadman/main_branch_verdict.py` on every run and goes red on drift.
+`unit-tests`, `regression-lint`, `db-parity`, `app-contract-gate` and `contract`
+(`.github/workflows/api-response-contract.yml`; measured 2026-09-21) — and GitHub
+enforces them on direct pushes too: the push is rejected with
+`GH006: Protected branch update failed`. main-branch-health compares the live
+list with `REQUIRED_CONTEXTS` in `tools/deadman/main_branch_verdict.py` on every
+run and goes red on drift.
 
 ★ **`enforce_admins` is `true`**, so that applies to the repo admin as well.
 This section used to say `false`, and recorded **137 of 223 commits (61%)
@@ -89,6 +89,14 @@ git revert follows as an ordinary PR. See `docs/ROLLBACK-RUNBOOK.md`.
 
 That removed the last argument for keeping `enforce_admins: false`, and it has
 since been flipped to `true` — the open question recorded here is closed.
+
+★ **A red `contract` on `main` blocks every open PR until it is fixed on
+`main`.** The check runs on each PR's merge ref, so it inherits main's break,
+and `enforce_admins` leaves no `--admin` escape. Land the main-side fix, then
+rebase and push the blocked PR — re-running its old check replays the stale
+merge ref and fails again. Measured 2026-09-21: the `stats.mw_coverage` removal
+blocked every open PR, #5041 included (`contract` red at 05:29Z, green on its
+first run after #5039 landed at 05:52Z).
 
 ## Working tree
 

@@ -264,9 +264,14 @@ def _card():
     return out
 
 
-# NOTE: /.well-known/agent.json is owned by ai_agent_discovery.py
-# (registered first via discovery_bp). Our richer A2A card lives at
-# alternate aliases so it's discoverable without the shadow conflict.
+# ★ 2026-09-21: /.well-known/agent.json is served HERE too. This note used to
+# say that path was "owned by ai_agent_discovery.py (registered first via
+# discovery_bp)", so the live card stayed off it to avoid a shadow conflict.
+# That blueprint was never registered by main.py. The conflict never existed,
+# and A2A 0.2.x clients reading /.well-known/agent.json got some other card.
+# At the public edge the zone worker (worker.js) answers that path by
+# returning /.well-known/agent-card.json, i.e. this handler. One card, every alias.
+@agent_a2a_bp.route("/.well-known/agent.json", methods=["GET"])
 @agent_a2a_bp.route("/.well-known/agent-card.json", methods=["GET"])
 @agent_a2a_bp.route("/.well-known/a2a.json", methods=["GET"])
 @agent_a2a_bp.route("/agent.json", methods=["GET"])

@@ -113,7 +113,7 @@
   },
   "GET /.well-known/agent.json": {
    "modules": [
-    "main"
+    "routes.agent_a2a"
    ]
   },
   "GET /.well-known/ai-agents.json": {
@@ -3181,6 +3181,16 @@
     "routes.answer_prober"
    ]
   },
+  "GET /api/v1/admin/audience/crm-keys": {
+   "modules": [
+    "routes.audience_keys_export"
+   ]
+  },
+  "GET /api/v1/admin/audience/crm-keys.csv": {
+   "modules": [
+    "routes.audience_keys_export"
+   ]
+  },
   "GET /api/v1/admin/audience/free-users": {
    "modules": [
     "routes.audience_export"
@@ -3199,6 +3209,16 @@
   "GET /api/v1/admin/audience/state": {
    "modules": [
     "routes.audience_master_shell"
+   ]
+  },
+  "GET /api/v1/admin/audience/warm-keys": {
+   "modules": [
+    "routes.warm_key_cohort"
+   ]
+  },
+  "GET /api/v1/admin/audience/warm-keys.csv": {
+   "modules": [
+    "routes.warm_key_cohort"
    ]
   },
   "GET /api/v1/admin/audit-closure": {
@@ -3296,6 +3316,11 @@
     "routes.brain_bug_squash"
    ]
   },
+  "GET /api/v1/admin/brain/cant-fail-signals": {
+   "modules": [
+    "routes.brain_null_signal_detector"
+   ]
+  },
   "GET /api/v1/admin/brain/code-scanner/preview": {
    "modules": [
     "routes.brain_code_scanner"
@@ -3359,6 +3384,16 @@
   "GET /api/v1/admin/brain/feature-proposer/preview": {
    "modules": [
     "routes.brain_feature_proposer"
+   ]
+  },
+  "GET /api/v1/admin/brain/findings/stale-sweep": {
+   "modules": [
+    "routes.brain_stale_finding_sweep"
+   ]
+  },
+  "GET /api/v1/admin/brain/frontend-fix-lane/preflight": {
+   "modules": [
+    "routes.brain_frontend_fix_lane"
    ]
   },
   "GET /api/v1/admin/brain/lane-driver/state": {
@@ -4346,6 +4381,11 @@
     "routes.media_fact_check_guard"
    ]
   },
+  "GET /api/v1/admin/media/jev-shadow": {
+   "modules": [
+    "routes.media_editorial_jev_shadow"
+   ]
+  },
   "GET /api/v1/admin/media/master-state": {
    "modules": [
     "routes.media_master_shell"
@@ -4941,6 +4981,11 @@
     "routes.surveillance_sweep"
    ]
   },
+  "GET /api/v1/admin/sentinel/fiber-audit": {
+   "modules": [
+    "routes.surveillance_sweep"
+   ]
+  },
   "GET /api/v1/admin/sentinel/master-tick/last": {
    "modules": [
     "routes.sentinel_master_orchestrator"
@@ -4959,6 +5004,11 @@
   "GET /api/v1/admin/site-analysis-rendertest": {
    "modules": [
     "routes.site_analysis_rendertest"
+   ]
+  },
+  "GET /api/v1/admin/slug/groups": {
+   "modules": [
+    "routes.facility_slug_freeze"
    ]
   },
   "GET /api/v1/admin/slug/status": {
@@ -6598,6 +6648,11 @@
    ]
   },
   "GET /api/v1/cf/purge/frontend-static": {
+   "modules": [
+    "routes.cf_purge"
+   ]
+  },
+  "GET /api/v1/cf/purge/market-pages": {
    "modules": [
     "routes.cf_purge"
    ]
@@ -11810,12 +11865,27 @@
     "routes.mcp_connect"
    ]
   },
+  "GET /connect/deepseek": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/deepseek-harness": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
   "GET /connect/gemini": {
    "modules": [
     "routes.mcp_connect"
    ]
   },
   "GET /connect/grok": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/harness": {
    "modules": [
     "routes.mcp_connect"
    ]
@@ -14859,6 +14929,11 @@
     "routes.brain_bug_squash"
    ]
   },
+  "POST /api/v1/admin/brain/cant-fail-signals": {
+   "modules": [
+    "routes.brain_null_signal_detector"
+   ]
+  },
   "POST /api/v1/admin/brain/code-scanner/run": {
    "modules": [
     "routes.brain_code_scanner"
@@ -14892,6 +14967,16 @@
   "POST /api/v1/admin/brain/feature-proposer/run": {
    "modules": [
     "routes.brain_feature_proposer"
+   ]
+  },
+  "POST /api/v1/admin/brain/findings/stale-sweep": {
+   "modules": [
+    "routes.brain_stale_finding_sweep"
+   ]
+  },
+  "POST /api/v1/admin/brain/frontend-fix-lane/run": {
+   "modules": [
+    "routes.brain_frontend_fix_lane"
    ]
   },
   "POST /api/v1/admin/brain/lane-driver/tick": {
@@ -15409,6 +15494,11 @@
     "routes.funnel_leads"
    ]
   },
+  "POST /api/v1/admin/funnel/self-traffic/reresolve": {
+   "modules": [
+    "routes.schema_repair"
+   ]
+  },
   "POST /api/v1/admin/gaps/master-tick": {
    "modules": [
     "routes.gap_master_shell"
@@ -15505,6 +15595,11 @@
    ]
   },
   "POST /api/v1/admin/ingest-runs/purge": {
+   "modules": [
+    "routes.ingest_runs"
+   ]
+  },
+  "POST /api/v1/admin/ingest-runs/served-table-freshness": {
    "modules": [
     "routes.ingest_runs"
    ]
@@ -16064,6 +16159,11 @@
     "routes.qa_superuser_dashboard"
    ]
   },
+  "POST /api/v1/admin/qa-superuser/auto-propose": {
+   "modules": [
+    "routes.qa_superuser_dashboard"
+   ]
+  },
   "POST /api/v1/admin/qa-superuser/beat": {
    "modules": [
     "routes.qa_superuser_dashboard"
@@ -16224,6 +16324,11 @@
     "routes.surveillance_sweep"
    ]
   },
+  "POST /api/v1/admin/sentinel/fiber-audit": {
+   "modules": [
+    "routes.surveillance_sweep"
+   ]
+  },
   "POST /api/v1/admin/sentinel/master-tick": {
    "modules": [
     "routes.sentinel_master_orchestrator"
@@ -16250,6 +16355,11 @@
    ]
   },
   "POST /api/v1/admin/slug/alias-resolve": {
+   "modules": [
+    "routes.facility_slug_freeze"
+   ]
+  },
+  "POST /api/v1/admin/slug/disambiguate": {
    "modules": [
     "routes.facility_slug_freeze"
    ]
@@ -17060,6 +17170,16 @@
     "routes.brain_smoke_regression"
    ]
   },
+  "POST /api/v1/brain/spec-debt/finding-evidence": {
+   "modules": [
+    "routes.brain_spec_debt"
+   ]
+  },
+  "POST /api/v1/brain/spec-debt/implement": {
+   "modules": [
+    "routes.brain_spec_implementer"
+   ]
+  },
   "POST /api/v1/brain/squasher/actuate/<cls>": {
    "modules": [
     "routes.squasher_action_classes"
@@ -17146,6 +17266,11 @@
    ]
   },
   "POST /api/v1/cf/purge/frontend-static": {
+   "modules": [
+    "routes.cf_purge"
+   ]
+  },
+  "POST /api/v1/cf/purge/market-pages": {
    "modules": [
     "routes.cf_purge"
    ]
@@ -18995,6 +19120,11 @@
   "POST /unlock/<token>": {
    "modules": [
     "routes.unlock_page"
+   ]
+  },
+  "POST /upgrade/h/<token>": {
+   "modules": [
+    "routes.human_relay"
    ]
   },
   "PUT /api/auth/update": {

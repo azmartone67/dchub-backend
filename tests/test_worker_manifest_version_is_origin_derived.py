@@ -47,7 +47,10 @@ WORKER = os.path.join(ROOT, "worker.js")
 
 # The whole point of the guard is that this set GROWS. A new manifest handler
 # that hardcodes the version reds here without anyone remembering to come back.
-_MIN_SERVED_VERSION_SITES = 4
+# 4 -> 3 on 2026-09-21: /.well-known/agent.json stopped building a card in the
+# zone worker. It returns /.well-known/agent-card.json, so it has no `version:`
+# site of its own. Lowered in the PR that removed the site.
+_MIN_SERVED_VERSION_SITES = 3
 
 
 def _src():

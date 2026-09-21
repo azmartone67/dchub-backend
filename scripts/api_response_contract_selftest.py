@@ -62,6 +62,21 @@ def run(baseline: dict, current: dict) -> tuple[int, str]:
         os.unlink(path)
 
 
+def run_verify(baseline: dict, current: dict) -> tuple[int, str]:
+    """Run the real verify_baseline() with an injected current surface."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(baseline, fh)
+        path = fh.name
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = G.verify_baseline(baseline_path=path, verbose=True,
+                                     surface=current)
+        return code, buf.getvalue()
+    finally:
+        os.unlink(path)
+
+
 def first_strict_key(surface: dict) -> tuple[str, str]:
     """An endpoint + key whose removal must produce a hard FAIL (parent level
     is not `open`, so the key genuinely cannot be hiding)."""
@@ -172,6 +187,77 @@ def main() -> int:
                buf.getvalue())
     finally:
         G.extract_surface = real
+
+    # ══ verify-baseline — "is this baseline the surface of THIS tree?" ═════
+    # The question a PR that COMMITS a baseline has to answer, asked against
+    # main as it is now. check() answers a different one, and answered it
+    # "yes" on #5026's merge ref while #5022 was about to remove a key #5026
+    # was freezing (see verify_baseline in the guard).
+
+    # ── 11. IDENTITY — the tree's own surface is current.
+    code, out = run_verify(base, copy.deepcopy(base))
+    expect("verify: identical surface -> CURRENT", PASS, code, "CURRENT", out)
+
+    # ── 12. LINE CHURN — every edit above a handler moves `source`. A refresh
+    #        must not read as stale because main.py grew a comment.
+    mut = copy.deepcopy(base)
+    for rec in mut["endpoints"].values():
+        rec["source"] = rec["source"] + "0"
+    mut["stats"] = dict(mut["stats"], python_files_scanned=-1)
+    code, out = run_verify(base, mut)
+    expect("verify: source/stats churn only -> CURRENT", PASS, code, "CURRENT",
+           out)
+
+    # ── 13. THE #5026 SHAPE — the baseline names a key the tree does not
+    #        serve. Must go red, in the direction that breaks `check` on main.
+    mut = copy.deepcopy(base)
+    mut["endpoints"][eid]["keys"] = [k for k in mut["endpoints"][eid]["keys"]
+                                     if k != key]
+    code, out = run_verify(base, mut)
+    expect("verify: baseline asserts a key the tree no longer serves -> STALE",
+           FAIL, code, "ASSERTED BUT NOT SERVED", out)
+    expect("verify: ... and names the key", FAIL, code, key, out)
+
+    # ── 14. GENERATED AGAINST AN OLDER TREE — the tree serves a key the
+    #        baseline never recorded. Harmless to `check`, but it is still not
+    #        this tree's baseline, and a refresh exists to make it one.
+    mut = copy.deepcopy(base)
+    mut["endpoints"][eid]["keys"] = sorted(
+        mut["endpoints"][eid]["keys"] + ["brand_new_field_xyz"])
+    code, out = run_verify(base, mut)
+    expect("verify: tree serves a key the baseline lacks -> STALE", FAIL, code,
+           "brand_new_field_xyz", out)
+
+    # ── 15. RESOLUTION MOVED — resolved -> opaque makes `check` UNMEASURED on
+    #        main; a baseline that still says resolved is stale.
+    mut = copy.deepcopy(base)
+    mut["endpoints"][eid]["resolution"] = "opaque"
+    mut["endpoints"][eid]["keys"] = []
+    code, out = run_verify(base, mut)
+    expect("verify: resolution changed -> STALE", FAIL, code, "resolution", out)
+
+    # ── 16. VACUOUS CURRENT — an empty surface must never certify a baseline.
+    mut = copy.deepcopy(base)
+    mut["endpoints"] = {}
+    code, out = run_verify(base, mut)
+    expect("verify: EMPTY surface -> UNMEASURED, never CURRENT", UNMEASURED,
+           code, "EMPTY", out)
+
+    # ── 17. NO ATTRIBUTION — an unattributed surface differs from any real
+    #        baseline for reasons unrelated to staleness.
+    mut = copy.deepcopy(base)
+    mut["url_map"] = dict(mut["url_map"], available=False)
+    code, out = run_verify(base, mut)
+    expect("verify: url_map unavailable -> UNMEASURED", UNMEASURED, code,
+           "url_map", out)
+
+    # ── 18. MISSING BASELINE.
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = G.verify_baseline(baseline_path="/nonexistent/surface.json",
+                                 verbose=True, surface=base)
+    expect("verify: missing baseline -> UNMEASURED", UNMEASURED, code,
+           "baseline missing", buf.getvalue())
 
     # ── verdict ────────────────────────────────────────────────────────────
     bad = [c for ok, c, _ in _results if not ok]

@@ -92,6 +92,7 @@ ACTIVATION_SAMPLE_FLOOR = int(os.environ.get("LOOP_CLOSURE_ACTIVATION_FLOOR", "2
 NEGATIVE_SAMPLE_FLOOR = int(os.environ.get("LOOP_CLOSURE_NEGATIVE_FLOOR", "20"))
 INERT_TICKS = int(os.environ.get("LOOP_CLOSURE_INERT_TICKS", "5"))
 SPEC_RETRY_COOLDOWN_DAYS = int(os.environ.get("LOOP_CLOSURE_SPEC_COOLDOWN_DAYS", "7"))
+_SPEC_SCAN_CAP = 400  # the corpus is ~380 specs; this bounds a runaway, not the scan
 
 
 # ── auth / gates (house pattern, mirrors reliability_master_shell) ────
@@ -333,6 +334,51 @@ def applied_weight_for(pattern: str):
         return None
 
 
+_WEIGHT_TOLERANCE = 0.03
+
+
+def expected_weight_for(rate: float, samples: int):
+    """What the ranker's OWN formula gives a class with these outcomes.
+
+    ★ The first live tick (2026-09-21 06:55Z) showed why this exists. The
+    worst class was brain_spec_pr: 8 of 44 failed, an 82% success rate, and
+    the ranker applied 1.1545. An earlier verdict of `applied < 1.0` reported
+    that as "the negative never reached the ranker" — but _soft_greedy maps the
+    NEUTRAL rate 0.625 to 1.0, so a class above it is SUPPOSED to be boosted.
+    The honest question is whether the applied weight is what the formula
+    prescribes for the measured outcomes, not which side of 1.0 it sits on.
+    """
+    try:
+        from routes.brain_work_selector import _soft_greedy
+        return round(float(_soft_greedy(rate, samples)), 4)
+    except Exception:
+        return None
+
+
+def outcomes_reached_verdict(applied, expected):
+    """(reached, why). True when the ranker applies what its formula gives.
+
+    None, never False, when the answer is unknowable: an unread ranker, an
+    uncomputable expectation, or an expectation so close to NEUTRAL that a
+    missed read (which falls back to NEUTRAL) would look identical.
+    """
+    if applied is None:
+        return None, "could not read the ranker's applied weight"
+    if expected is None:
+        return None, "could not compute the ranker's expected weight"
+    try:
+        from routes.brain_work_selector import WORK_NEUTRAL as neutral
+    except Exception:
+        neutral = 1.0
+    if abs(expected - float(neutral)) <= _WEIGHT_TOLERANCE:
+        return None, ("expected weight is within tolerance of NEUTRAL, so a "
+                      "missed read would look the same")
+    if abs(applied - expected) <= _WEIGHT_TOLERANCE:
+        return True, "applied weight matches the ranker's formula for these outcomes"
+    return False, (f"applied {applied} but the formula gives {expected} for "
+                   f"these outcomes — they are not reaching the ranker")
+
+
 def _worst_class():
     """The fix class the ranker should down-weight hardest — read with the
     RANKER'S OWN columns and window (brain_work_selector._read_class_rate:
@@ -376,14 +422,16 @@ def _worst_class():
     if not row:
         return {"available": False,
                 "why": "no class has 5 graded outcomes in the window"}
+    graded, failed = int(row[1]), int(row[2])
+    rate = (graded - failed) / float(graded) if graded else None
     applied = applied_weight_for(row[0])
-    return {"available": True, "klass": row[0], "graded": int(row[1]),
-            "failed": int(row[2]), "applied_weight": applied,
-            # NEUTRAL 1.0 on a class that fails most of the time means the
-            # outcomes never reached the ranker. None = could not read the
-            # ranker, a different fact that must not be reported as False.
-            "negative_reached_ranker": (None if applied is None
-                                        else bool(applied < 1.0))}
+    expected = None if rate is None else expected_weight_for(rate, graded)
+    reached, why = outcomes_reached_verdict(applied, expected)
+    return {"available": True, "klass": row[0], "graded": graded,
+            "failed": failed,
+            "success_rate": None if rate is None else round(rate, 4),
+            "applied_weight": applied, "expected_weight": expected,
+            "outcomes_reached_ranker": reached, "verdict_basis": why}
 
 
 def lane_negative(effectiveness: dict | None = None) -> dict:
@@ -555,22 +603,47 @@ def lane_spec_debt(scan: dict | None = None, attempted=None) -> dict:
     if attempted is None:
         attempted = _attempted_docs([r.get("doc") for r in obligations
                                      if isinstance(r, dict)])
-    target = next((r for r in obligations
-                   if isinstance(r, dict) and r.get("doc")
-                   and r.get("doc") not in attempted), None)
-    if target is None:
-        out["why_not_actionable"] = "every open obligation was driven recently"
-        return out
-
     try:
         from routes.brain_spec_implementer import _armed as _impl_armed
         from routes.brain_spec_implementer import _disabled as _impl_disabled
+        from routes.brain_spec_implementer import plan_for_spec
         impl_disabled, impl_armed = _impl_disabled(), _impl_armed()
     except Exception as e:
         out["why_not_actionable"] = f"implementer unavailable: {str(e)[:120]}"
         return out
     if impl_disabled:
         out["why_not_actionable"] = "SPEC_IMPLEMENTER_DISABLE=1"
+        return out
+
+    # ★ The oldest open spec the implementer would ACT on — asked of the
+    # implementer itself, never inferred. The first live tick targeted
+    # agenda-41, the oldest open spec, which the implementer declines:
+    # "triage recorded BLOCKED — this spec waits on an owner decision, not on
+    # code" (1 of 242 open specs). Armed, the lane would have spent each day's
+    # single action on it. A BLOCKED spec is the owner's lever, so it is
+    # skipped AND named, never silently passed over.
+    target, blocked, scanned = None, [], 0
+    for r in obligations:
+        if not isinstance(r, dict) or not r.get("doc") or r.get("doc") in attempted:
+            continue
+        if scanned >= _SPEC_SCAN_CAP:
+            break
+        scanned += 1
+        try:
+            plan = plan_for_spec(r["doc"])
+        except Exception:
+            plan = {}
+        plan = plan if isinstance(plan, dict) else {}
+        if plan.get("blocked"):
+            blocked.append(r["doc"])
+        elif plan.get("would_act") and target is None:
+            target = r
+    out.update(specs_scanned=scanned, blocked_on_owner_count=len(blocked),
+               blocked_on_owner=blocked[:10])
+    if target is None:
+        out["why_not_actionable"] = (
+            f"no open spec the implementer would act on ({scanned} scanned, "
+            f"{len(blocked)} blocked on an owner decision)")
         return out
     out["target"] = {"doc": target.get("doc"), "title": target.get("title"),
                      "age_days": target.get("age_days"),
@@ -752,6 +825,10 @@ def run_tick(dry_override: bool = None) -> dict:
     started = datetime.now(timezone.utc)
     armed = _armed() if dry_override is None else (not dry_override)
     dry = not armed
+    # ★ Before inert_check reads the history. On the first live tick the table
+    # did not exist yet, so the check reported "snapshot history unreadable"
+    # when the truth was "no history yet".
+    _ensure_tables()
 
     negative = lane_negative()
     lanes = {

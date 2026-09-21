@@ -14,9 +14,10 @@ minimal local Flask app that registers ONLY the relevant blueprint.
 """
 import json
 
+import pytest
+
 from flask import Flask
 
-import ai_agent_discovery
 import routes.agent_a2a as agent_a2a
 
 from workos_authkit import authkit_domain, AUTHKIT_SCOPES
@@ -88,31 +89,42 @@ def test_agent_card_marketplace_marker_and_tool_total():
         "https://dchub.cloud/.well-known/mcp.json"
 
 
-def test_agent_card_route_serves_oauth2():
-    resp = _agent_a2a_client().get("/.well-known/agent-card.json")
+#: Both A2A discovery paths: agent-card.json (A2A 0.3) and agent.json (0.2.x).
+_A2A_PATHS = ("/.well-known/agent-card.json", "/.well-known/agent.json")
+
+
+@pytest.mark.parametrize("path", _A2A_PATHS)
+def test_agent_card_route_serves_oauth2(path):
+    resp = _agent_a2a_client().get(path)
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["auth"]["oauth2"]["registration_endpoint"] == f"{WORKOS}/oauth2/register"
     assert body["auth"]["default"] == "none"
 
 
-# ── /.well-known/agent.json (ai_agent_discovery.py — A2A 0.2.1 alias) ─────────
-def test_discovery_card_oauth2_scheme_added_additively():
-    schemes = ai_agent_discovery.A2A_AGENT_CARD["authentication"]["schemes"]
-    names = [s["scheme"] for s in schemes]
-    # apiKey scheme MUST remain (free tier keyless), oauth2 added alongside.
-    assert "apiKey" in names
-    assert "oauth2" in names
-    apikey = next(s for s in schemes if s["scheme"] == "apiKey")
-    assert apikey["name"] == "X-API-Key"
-    oauth = next(s for s in schemes if s["scheme"] == "oauth2")
-    assert oauth["flow"] == "authorizationCode"
-    assert oauth["issuer"] == WORKOS
-    assert oauth["authorizationUrl"] == f"{WORKOS}/oauth2/authorize"
-    assert oauth["tokenUrl"] == f"{WORKOS}/oauth2/token"
-    assert oauth["registrationUrl"] == f"{WORKOS}/oauth2/register"
-    assert oauth["scopes"] == EXPECTED_SCOPES
+# ── /.well-known/agent.json — the SAME card, not an alias of its own ─────────
+def test_agent_json_is_the_same_card_as_agent_card_json():
+    """One handler and one body behind both A2A discovery paths.
 
+    ★ 2026-09-21. The OAuth2 scheme this file used to assert for agent.json
+    lived on ai_agent_discovery.A2A_AGENT_CARD, on a blueprint main.py never
+    registered. The public path meanwhile served an MCP server card with no
+    auth block. Pinning the IDENTITY of the two paths means the OAuth2 fields
+    asserted above cannot be true of one path and false of the other.
+    """
+    app = Flask(__name__)
+    app.register_blueprint(agent_a2a.agent_a2a_bp)
+    adapter = app.url_map.bind("dchub.cloud")
+    endpoints = {p: adapter.match(p)[0] for p in _A2A_PATHS}
+    assert len(set(endpoints.values())) == 1, endpoints
 
-def test_discovery_card_serializable():
-    json.dumps(ai_agent_discovery.A2A_AGENT_CARD)
+    client = app.test_client()
+    card, alias = (client.get(p) for p in _A2A_PATHS)
+    assert card.status_code == alias.status_code == 200
+    card, alias = card.get_json(), alias.get_json()
+    # computed_at is stamped per request; it is the ONLY field that may differ.
+    assert "computed_at" in card and "computed_at" in alias
+    card.pop("computed_at"), alias.pop("computed_at")
+    assert alias == card, (
+        "/.well-known/agent.json and /.well-known/agent-card.json serve "
+        "different cards — two A2A cards again")
