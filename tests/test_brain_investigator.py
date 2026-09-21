@@ -85,6 +85,15 @@ def _no_db_evidence(monkeypatch):
     therefore never reported it red."""
     monkeypatch.setattr(inv, "gather_evidence", lambda: list(_STUB_EVIDENCE))
     monkeypatch.setattr(inv, "gather_targeted_evidence", lambda _q: [])
+    # Source 9 (routes.brain_shipped_state) is default-ON and fetches the live
+    # MCP registry and GitHub's merged PRs. The tests that call the REAL
+    # gather_evidence reached dchub.cloud and api.github.com, and a full serial
+    # run hid it only because an earlier file paid the refused fetch and the
+    # module's 120 s failure cache answered for this one. Out of that order (a
+    # shard, an xdist worker, a slow runner) the no-network step failed here.
+    # Its own kill switch, read at call time, keeps every test here offline;
+    # none of them asserts on shipped-state items.
+    monkeypatch.setenv("BRAIN_SHIPPED_STATE_DISABLE", "1")
 
 
 # ── the 5-step chain ────────────────────────────────────────────────
