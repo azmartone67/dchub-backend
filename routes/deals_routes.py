@@ -521,6 +521,10 @@ def get_deals():
         _deals_paid = caller_is_privileged('PRO')
     except Exception:
         _deals_paid = False
+    # frontend#1534: the wall's fields, computed once and written as explicit keys
+    # below. The API contract guard reads upgrade_url from the dict literal, and a
+    # ** splat would make it invisible there.
+    _dw = None if _deals_paid else _rest_wall()
 
     # r-deals-rowcap (2026-07-10): match the /api/v1/transactions freemium cap
     # (3 newest). Previously /api/deals + /api/v1/deals masked $/MW but still
@@ -554,7 +558,8 @@ def get_deals():
             'cached': True,
             'provenance': _deals_provenance('cached'),
             'tier': ('paid' if _deals_paid else 'free'),
-            'upgrade_url': (None if _deals_paid else 'https://dchub.cloud/pricing'),
+            'upgrade_url': (_dw or {}).get('upgrade_url'),
+            'upgrade_options': (_dw or {}).get('upgrade_options'),
             'note': (None if _deals_paid else 'Free: deal $ values + MW are Pro. Upgrade at https://dchub.cloud/pricing for confirmed values + capacity.'),
         })
     
@@ -724,7 +729,8 @@ def get_deals():
         'stats_by_type': (stats_by_type if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_type.items()}),
         'stats_by_year': (stats_by_year if _deals_paid else {k: {'count': v['count'], 'value': None} for k, v in stats_by_year.items()}),
         'tier': ('paid' if _deals_paid else 'free'),
-        'upgrade_url': (None if _deals_paid else 'https://dchub.cloud/pricing'),
+        'upgrade_url': (_dw or {}).get('upgrade_url'),
+        'upgrade_options': (_dw or {}).get('upgrade_options'),
         'deal_types': {
             'ma': 'M&A / Acquisitions',
             'equity': 'Equity Investments',
