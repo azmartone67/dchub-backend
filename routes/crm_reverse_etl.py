@@ -46,7 +46,9 @@ import os
 import json
 import logging
 import datetime
+import functools
 import hashlib
+import inspect
 import re
 from typing import Any, Callable
 
@@ -172,6 +174,12 @@ BEGIN
                 DEFAULT (NOW() AT TIME ZONE 'UTC')::date;
     END IF;
 END$$;
+-- 2026-09-21: the last flush each process ROLE ran, readable by every service.
+CREATE TABLE IF NOT EXISTS crm_flush_last (
+    role     TEXT PRIMARY KEY,
+    ran_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    summary  JSONB NOT NULL
+);
 """
 
 
@@ -878,6 +886,187 @@ def _stored_push_result(last_error, crm_response) -> dict:
 UNSENT_STATUSES = ("queued", "queued_export")
 
 
+# ── which process flushed, and what did ITS env say? ─────────────────
+#
+# ★2026-09-21. /crm/health is served by dchub-backend (DCHUB_ROLE=web) and could
+# only describe THAT process's CRM env. The scheduled flush never runs there:
+# crawler_scheduler starts only where main._ROLE_RUNS_BG — dchub-worker — and
+# the two services carry separate env. Measured the same day: health said
+# provider 'hubspot', "does not start with 'pat-'"; the worker's 07:01Z flush
+# logged "CRM_PROVIDER='stub' and no credential is set". Fixing the key on web
+# alone would have turned health green while the worker kept skipping.
+#
+# So every flush records what it did and what its own env decided — one row
+# per process role in crm_flush_last — and health reads the flusher's row next
+# to its own view.
+
+# Every role but 'web' runs the scheduler (main._ROLE_RUNS_BG); on Railway only
+# DCHUB_ROLE=worker leads, so its row wins over an 'all' process's.
+_FLUSHER_ROLES = ("worker", "all")
+
+
+def _host_identity() -> dict:
+    """Non-secret identity of this process: DCHUB_ROLE as main.py resolves it
+    (unset means 'all'), plus Railway's service name and replica id."""
+    return {
+        "role": (os.environ.get("DCHUB_ROLE") or "").strip().lower() or "all",
+        "service": (os.environ.get("RAILWAY_SERVICE_NAME") or "").strip() or None,
+        "replica": (os.environ.get("RAILWAY_REPLICA_ID") or "").strip()[:8] or None,
+    }
+
+
+def _config_facts() -> dict:
+    """What THIS process's CRM env decides, with nothing secret in it. Same keys
+    on every service, so two services' answers compare field by field."""
+    configured, gap = _destination_state()
+    return {"provider": CRM_PROVIDER, "disable": DISABLE, "dry_run": DRY_RUN,
+            "destination_configured": configured, "config_gap": gap}
+
+
+def flush_slot_status(summary) -> str:
+    """The dead-man status one flush earned (<= 40 chars; routes.ingest_runs
+    reads anything outside _OK_STATUS as a failed run). The ONE classifier: the
+    scheduler beats it, and /crm/health judges the flusher's last row with it.
+
+    ★ _run_crm_outbound_flush never raises, so the guard beat 'success' for a
+    flush that skipped — the public board read the job healthy while it
+    delivered nothing.
+
+    Stub is the default config, so "not configured" alone is not a failure:
+    with nothing unsent there is nothing stranded, and it beats `skipped` (OK).
+    With leads waiting — or a count that could not be taken — it is a stall.
+    The kill switch is an operator's decision: `skipped`. Transient errors fail
+    the run only when nothing got through; with pushes landing the destination
+    works, and those rows retry next run."""
+    s = summary if isinstance(summary, dict) else {}
+    if s.get("error"):
+        return f"error: {s['error']}"[:40]
+    skipped = s.get("skipped")
+    if skipped == "disabled":
+        return "skipped"
+    if skipped == "destination_not_configured":
+        return ("skipped" if s.get("unsent") == 0
+                else "stalled: destination_not_configured")
+    if isinstance(skipped, str) or "pushed" not in s:
+        return "error: unrecognised flush summary"
+    if s.get("config_errors"):
+        return "refused: destination config"
+    if s.get("transient_errors") and not s.get("pushed"):
+        return "degraded: transient push errors"
+    return "success"
+
+
+_FLUSH_LAST_UPSERT = """
+    INSERT INTO crm_flush_last (role, ran_at, summary)
+    VALUES (%s, NOW(), %s::jsonb)
+    ON CONFLICT (role) DO UPDATE
+       SET ran_at = EXCLUDED.ran_at, summary = EXCLUDED.summary"""
+
+
+def _record_flush(summary: dict, trigger: str) -> dict | None:
+    """Store one flush as this role's row: the summary, who ran it, what its env
+    decided, and how many rows are still unsent afterwards. Returns the stored
+    record, or None when it could not be stored. Never raises — the record
+    describes the flush and must not be able to fail it."""
+    rec = dict(summary or {})
+    rec.update(trigger=trigger, host=_host_identity(), config=_config_facts())
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        _ensure_schema(c)
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT COUNT(*) FROM crm_outbound_queue
+                    WHERE status = ANY(%s)""",
+                (list(UNSENT_STATUSES),))
+            row = cur.fetchone()
+            rec["unsent"] = int(row[0]) if row and row[0] is not None else None
+            cur.execute(_FLUSH_LAST_UPSERT,
+                        (rec["host"]["role"], json.dumps(rec, default=str)))
+        c.commit()
+        return rec
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        logger.warning("[crm_etl] flush summary not recorded: %s", e)
+        return None
+    finally:
+        _return(c)
+
+
+def _read_last_flushes() -> dict:
+    """role -> the last flush that role recorded, plus ran_at and age_hours.
+    {} when unreadable: health must still answer."""
+    c = _conn()
+    if c is None:
+        return {}
+    out = {}
+    try:
+        _ensure_schema(c)
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT role, ran_at,
+                          EXTRACT(EPOCH FROM (NOW() - ran_at))/3600.0,
+                          summary
+                     FROM crm_flush_last""")
+            for role, ran_at, age_h, summary in cur.fetchall():
+                rec = dict(summary if isinstance(summary, dict)
+                           else json.loads(summary or "{}"))
+                rec["ran_at"] = _iso(ran_at)
+                rec["age_hours"] = (round(float(age_h), 1)
+                                    if age_h is not None else None)
+                out[role] = rec
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        logger.warning("[crm_etl] last flush unreadable: %s", e)
+        return {}
+    finally:
+        _return(c)
+    return out
+
+
+def _who(host) -> str:
+    """'dchub-worker[worker]' — service[role], the shape main.py stamps."""
+    h = host if isinstance(host, dict) else {}
+    return f"{h.get('service') or '?'}[{h.get('role') or '?'}]"
+
+
+def _config_diff(here: dict, there) -> dict:
+    """field -> both values, for every config fact the two processes disagree on."""
+    there = there if isinstance(there, dict) else {}
+    return {k: {"this_process": v, "flusher": there.get(k)}
+            for k, v in here.items() if there.get(k) != v}
+
+
+def _records_its_summary(flush):
+    """Record EVERY exit of the flush — skip, refusal, no DB, a normal run, an
+    exception. A record call per `return` is one new early return away from a
+    silent gap.
+
+    functools.wraps sets __wrapped__, so inspect.getsource() — which the AST
+    guards on the flush read — still returns the flush's own body. The
+    wrapper's real signature is pinned, or inspect.signature() would follow
+    __wrapped__ too and hide `trigger`."""
+    @functools.wraps(flush)
+    def flush_and_record(limit: int = 100, trigger: str = "direct") -> dict:
+        try:
+            out = flush(limit)
+        except Exception as e:
+            _record_flush({"ok": False, "error": f"exception: {e}"[:200]}, trigger)
+            raise
+        rec = _record_flush(out, trigger)
+        out["recorded"] = rec is not None
+        if rec is not None:
+            out["unsent"] = rec["unsent"]
+        return out
+    flush_and_record.__signature__ = inspect.signature(
+        flush_and_record, follow_wrapped=False)
+    return flush_and_record
+
+
+@_records_its_summary
 def flush_outbound_queue(limit: int = 100) -> dict:
     """Push undelivered rows to the configured CRM. Returns a summary.
 
@@ -886,7 +1075,11 @@ def flush_outbound_queue(limit: int = 100) -> dict:
     recorded in last_error / crm_response and spends nothing.
 
     Runs only when _destination_state() — the predicate /crm/health publishes
-    as destination_configured — says a real destination will be reached."""
+    as destination_configured — says a real destination will be reached.
+
+    Called as flush_outbound_queue(limit, trigger=...): every exit is stored as
+    this process role's row in crm_flush_last (see _records_its_summary), and
+    the result gains `recorded` and `unsent`."""
     if DISABLE:
         return {"ok": True, "skipped": "disabled"}
     # ★2026-09-21: the flush used to check DISABLE and the DB, then push every
@@ -1251,9 +1444,36 @@ def admin_health():
             logger.warning("[crm_etl] health failed: %s", e)
         finally:
             _return(c)
-    configured, config_gap = _destination_state()
+    here = _config_facts()
+    configured, config_gap = here["destination_configured"], here["config_gap"]
+    me = _host_identity()
+    # ★2026-09-21: this process is usually web, which never runs the scheduled
+    # flush. Judge the FLUSHER's last run — with the same classifier its slot
+    # beats — and say where its env differs from ours.
+    flushes = _read_last_flushes()
+    last_flush = next((dict(flushes[r]) for r in _FLUSHER_ROLES
+                       if r in flushes), None)
+    diff = {}
+    if last_flush is not None:
+        last_flush["slot_status"] = flush_slot_status(last_flush)
+        diff = _config_diff(here, last_flush.get("config"))
     queued = sum(v for k, v in counts.items() if k in UNSENT_STATUSES)
-    if queued and not configured:
+    if queued and last_flush is not None and last_flush["slot_status"] != "success":
+        why = (last_flush.get("reason") or last_flush.get("error")
+               or f"skipped={last_flush.get('skipped')}")
+        stalled_reason = (
+            f"{queued} lead(s) queued and the flusher is not delivering them: "
+            f"its last run, on {_who(last_flush.get('host'))} at "
+            f"{last_flush.get('ran_at')} ({last_flush.get('age_hours')}h ago), "
+            f"was {last_flush['slot_status']!r} — {why}")
+        if diff:
+            stalled_reason += (
+                f". This process ({_who(me)}) has different CRM env "
+                f"({', '.join(sorted(diff))}), so its own "
+                f"destination_configured={configured} does not describe the "
+                f"flusher — set the env where the flush runs.")
+    elif queued and last_flush is None and not configured:
+        # No flush recorded by a scheduler role yet: our own env is all we have.
         stalled_reason = (f"{queued} lead(s) queued and nothing will push "
                           f"them: {config_gap}")
     elif refused:
@@ -1284,6 +1504,14 @@ def admin_health():
         stalled=bool(stalled_reason),
         stalled_reason=stalled_reason,
         config_gap=config_gap,
+        # destination_configured / config_gap / provider describe THIS process
+        # (this_process). The scheduled flush runs where last_flush says, and
+        # `stalled` follows that row whenever one is recorded.
+        this_process=me,
+        last_flush=last_flush,
+        last_flush_by_role=flushes,
+        flusher_config_mismatch=(bool(diff) if last_flush is not None else None),
+        flusher_config_diff=diff,
         destination_refusing=bool(refused),
         config_errors={
             "unsent_rows": sum(refused.values()),
@@ -1311,7 +1539,7 @@ def admin_flush():
         return jsonify(ok=False, error="unauthorized"), 401
     limit = int(request.args.get("limit") or 100)
     limit = max(1, min(1000, limit))
-    return jsonify(flush_outbound_queue(limit))
+    return jsonify(flush_outbound_queue(limit, trigger="admin"))
 
 
 @crm_reverse_etl_bp.route("/api/v1/admin/crm/requeue-config-failures",

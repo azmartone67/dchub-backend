@@ -340,6 +340,25 @@ class TestRunWithGuardBeats:
         assert [(f, kw["status"]) for f, kw in sink] == [("worker:news", "error: boom")]
         assert ns["_run_history"][-1]["status"] == "error: boom"
 
+    def test_a_job_can_beat_an_honest_status_without_raising(self, monkeypatch):
+        """_run_crm_outbound_flush never raises; a skipped flush beat 'success'."""
+        monkeypatch.delenv("DCHUB_WORKER_DEADMAN_BEATS", raising=False)
+        sink = []
+        guard, ns = _guard(monkeypatch, sink)
+        guard("news", lambda: {"slot_status": "stalled: nothing reached"})
+        assert [(f, kw["status"]) for f, kw in sink] == [("worker:news", "stalled: nothing reached")]
+        assert ns["_run_history"][-1]["status"] == "stalled: nothing reached"
+
+    def test_any_other_return_value_still_beats_success(self, monkeypatch):
+        """Only the {"slot_status": ...} shape is read, so no job's existing
+        return value can change what it beats."""
+        monkeypatch.delenv("DCHUB_WORKER_DEADMAN_BEATS", raising=False)
+        for ret in ("stalled", {"pushed": 0}, {"slot_status": ""}, {"slot_status": None}, 0, ["x"]):
+            sink = []
+            guard, _ = _guard(monkeypatch, sink)
+            guard("news", lambda ret=ret: ret)
+            assert [kw["status"] for _, kw in sink] == ["success"], ret
+
     def test_a_hard_timeout_lands_worker_job_timeout(self, monkeypatch):
         import time as _time
         monkeypatch.delenv("DCHUB_WORKER_DEADMAN_BEATS", raising=False)

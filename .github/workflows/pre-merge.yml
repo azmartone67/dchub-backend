@@ -1028,6 +1028,27 @@ jobs:
             echo "::error::the install first-use SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # crm_flush_last is the row the CRM health endpoint reads to describe the
+      # process that actually flushes. Its recorder never raises, so SQL that
+      # Postgres refuses (an ON CONFLICT target with no unique constraint) would
+      # read as "no flush recorded" in production. Only a real Postgres runs
+      # the upsert. Owns and drops only its private schema crm_flush_last_t.
+      - name: CRM flush-record SQL against a real Postgres
+        env:
+          CRM_FLUSH_LAST_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_crm_flush_last_sql.py -v --tb=short
+
+      - name: Prove the CRM flush-record SQL test actually RAN
+        env:
+          CRM_FLUSH_LAST_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_crm_flush_last_sql.py \
+            -q -rs --tb=no > fl.txt 2>&1 || { cat fl.txt; exit 1; }
+          cat fl.txt
+          if grep -qi "skipped" fl.txt; then
+            echo "::error::the CRM flush-record SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1076,6 +1097,7 @@ jobs:
             cs.txt
             ar.txt
             fu.txt
+            fl.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
