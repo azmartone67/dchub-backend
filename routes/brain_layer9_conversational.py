@@ -23,8 +23,11 @@ Context fed to Claude:
   - Last 24h commits
   - The L8 orchestrator's most recent plan (if any)
 
-No admin gate — read-only Q&A on already-public brain state. Rate-
-limited by ANTHROPIC_API_KEY budget; default ~$0.01 per question.
+Admin-key gated — the same check as routes.brain_qa (X-Admin-Key,
+X-Internal-Key or ?admin_key=). Every question is an LLM call billed to the
+owner's Anthropic key, over internal brain state plus semantic recall, so the
+gate runs first and a caller without the key gets a bare 401. The admin chat
+UI (/admin/ask-brain) already sends ?admin_key=.
 
 rag-gap-l9: answers were grounded ONLY in the shallow live snapshot above
 (4 internal endpoints) — zero recall of the brain's own corpus. Now each
@@ -42,6 +45,7 @@ import datetime as _dt
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
+from routes.brain_qa import _admin_ok
 
 logger = logging.getLogger(__name__)
 brain_layer9_bp = Blueprint("brain_layer9", __name__)
@@ -198,6 +202,11 @@ def _grounding_block(items, lessons) -> str:
 @brain_layer9_bp.route("/api/v1/brain/ask", methods=["POST", "GET"])
 def ask():
     """Natural-language Q&A against full brain state."""
+    # First, before the key check and before q is read: a caller without the
+    # admin key gets the same bare 401 whatever it sent.
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+
     if not _ANTHROPIC_KEY:
         return jsonify(ok=False, error="ANTHROPIC_API_KEY not set"), 503
 
@@ -213,14 +222,6 @@ def ask():
             error="missing q parameter",
             usage=("POST {q: 'your question'} or GET ?q=your+question. "
                    "Brain calls Claude with full current state as context."),
-            example_questions=[
-                "Why are MCP calls declining?",
-                "Should I ship L7 proposal #2?",
-                "What's the highest-leverage thing to do tonight?",
-                "Has Rich Miller replied yet?",
-                "Which 3 detectors fire most often this week?",
-                "Is the publisher backlog growing or shrinking?",
-            ],
         ), 400
 
     ctx = _gather_full_context()
