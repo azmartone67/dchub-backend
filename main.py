@@ -46,6 +46,7 @@ from routes.outreach import outreach_bp
 from dotenv import load_dotenv
 from internal_auth import (is_valid_internal_key, get_internal_key_for_client,
                            require_internal_or_admin)
+from partner_egress import partner_for_ip
 from csp_report import csp_report_bp
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
@@ -13302,6 +13303,13 @@ _tier_rate_limits = {
     'developer':  {'per_minute': 300,  'per_hour': 5000},
     'starter':    {'per_minute': 120,  'per_hour': 2000},
     'identified': {'per_minute': 90,   'per_hour': 1000},
+    # r-partner-egress (2026-09-21): KEYLESS traffic from a partner's DECLARED
+    # egress (partner_egress.py) — one hosted catalogue, every one of its
+    # customers behind one address. Without this they shared the 'free' per-IP
+    # bucket below. Keyed calls keep their per-key buckets; an undeclared
+    # address stays on the IP bucket. Rate only: _get_request_tier feeds this
+    # table and nothing else, so no paywall or tier gate sees 'partner'.
+    'partner':    {'per_minute': 120,  'per_hour': 5000},
 }
 
 _tier_requests = defaultdict(list)
@@ -13444,6 +13452,11 @@ def _get_request_tier():
     ip = request.headers.get('CF-Connecting-IP') or \
          request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
          request.remote_addr or 'unknown'
+    # ...unless the IP is a partner's declared egress: that one address carries
+    # every keyless customer of the partner, so it gets the partner's bucket.
+    _partner = partner_for_ip(ip)
+    if _partner:
+        return f"partner_{_partner}", 'partner'
     return f"ip_{hashlib.md5(ip.encode()).hexdigest()[:16]}", 'free'
 
 @app.before_request
