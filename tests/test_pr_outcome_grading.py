@@ -187,3 +187,102 @@ def test_the_like_pattern_is_psycopg2_safe():
     silently. That is the inert state this fix exists to end."""
     sel = _grade_select()
     assert "'[brain-l5%%'" in sel, "LIKE pattern is not %%-escaped"
+
+
+# ── No DB connection may be held across GitHub I/O (2026-09-21) ──────────
+#
+# main.get_pg_connection() force-closes any checkout held > ~60s. reclassify
+# held one while fetching 150 PRs; production logged
+#   FORCED RECLAIM: Connection ... held 61s ... Checkout stack: ... reclassify
+# and the UPDATE then ran on the dead connection -> HTTP 500. These tests pin
+# the invariant BEHAVIOURALLY: a fake pool counts open checkouts and the fake
+# GitHub call fails if any is open when it runs.
+
+class _Pool:
+    def __init__(self):
+        self.open = 0
+        self.checkouts = 0
+        self.writes = []
+
+    def get(self):
+        pool = self
+        pool.open += 1
+        pool.checkouts += 1
+
+        class _Cur:
+            rowcount = 1
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, params=None):
+                if sql.lstrip().upper().startswith("UPDATE"):
+                    pool.writes.append(params)
+            def fetchall(self):
+                return [(4202, "unknown"), (4567, "unknown")]
+
+        class _Conn:
+            def cursor(self): return _Cur()
+            def commit(self): pass
+            def close(self): pool.open -= 1
+        return _Conn()
+
+
+def _load_grader(pool, gh_bodies):
+    names = ("_NoDatabase", "_db_read", "_db_write", "extract_finding",
+             "recurrence_plan", "grade_recurrences")
+    pieces = []
+    for node in ast.parse(SRC).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names:
+            pieces.append(ast.get_source_segment(SRC, node))
+        elif isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id in ("_FINDING_LINE_RE", "_GRADE_MAX")
+                for t in node.targets):
+            pieces.append(ast.get_source_segment(SRC, node))
+
+    def _gh_api(path):
+        assert pool.open == 0, (
+            f"{pool.open} DB connection(s) checked out during a GitHub call — "
+            "the pool reaper force-closes connections held > ~60s")
+        return gh_bodies[int(path.rsplit("/", 1)[1])]
+
+    import logging
+    ns = {"re": re, "_get_db": pool.get, "_gh_api": _gh_api,
+          "_GITHUB_REPO": "o/r", "logger": logging.getLogger("t")}
+    exec(compile("\n\n".join(pieces), MOD, "exec"), ns)
+    for n in names:
+        assert n in ns, f"AST extraction missed {n}"
+    return ns["grade_recurrences"]
+
+
+_BODIES = {
+    4202: {"body": "**Finding:** `cf_cache_rate_low`\n",
+           "created_at": "2026-09-08T04:31:29Z", "merged_at": "2026-09-08T04:54:26Z"},
+    4567: {"body": "**Finding:** `cf_cache_rate_low`\n",
+           "created_at": "2026-09-13T12:34:07Z", "merged_at": "2026-09-13T21:35:52Z"},
+}
+
+
+def test_no_connection_is_held_while_github_is_called():
+    pool = _Pool()
+    out = _load_grader(pool, _BODIES)(apply=True)
+    assert out["ok"], out
+    assert pool.open == 0, "a connection was never released"
+
+
+def test_the_write_uses_a_fresh_checkout_after_the_fetches():
+    """The measured failure: the write path reused the connection taken
+    before the fetches. It must check out a new one afterwards."""
+    pool = _Pool()
+    out = _load_grader(pool, _BODIES)(apply=True)
+    assert out["applied"] == 1 and len(pool.writes) == 1, out
+    assert pool.checkouts == 2, (
+        f"{pool.checkouts} checkout(s) — expected one to read and a separate "
+        "one to write, so no connection spans the GitHub fetches")
+
+
+def test_reclassify_never_checks_out_directly():
+    """reclassify is a Flask route, so it is pinned structurally: it must go
+    through _db_read/_db_write, and write only after it has fetched."""
+    seg = ast.get_source_segment(SRC, _fn("reclassify"))
+    assert "_get_db()" not in seg, "reclassify checks out a connection directly again"
+    assert seg.index("_db_write(") > seg.index("_gh_api("), (
+        "reclassify writes before it fetches — the checkout would span the fetch")
