@@ -96,6 +96,20 @@ DEFAULT_INCENTIVES = [
 # Base values by abbr, for recording what an override was written against.
 _DEFAULTS_BY_ABBR = {s['abbr']: s for s in DEFAULT_INCENTIVES}
 
+# The dict the routes below serve (DEFAULT_INCENTIVES with admin overrides
+# layered on), published for in-process readers that are not routes — see
+# util/tax_incentives.py. None until setup_tax_incentive_routes() runs, and
+# forever in a process that never registers these routes (dchub_mcp_server.py),
+# where readers get the module defaults instead.
+_SERVED = [None]
+
+
+def served_incentives():
+    """abbr -> row, as GET /api/v1/tax-incentives would serve it right now.
+    Read-only: the rows are the live ones, not copies."""
+    live = _SERVED[0]
+    return live if live is not None else _DEFAULTS_BY_ABBR
+
 
 def setup_tax_incentive_routes(app, db=None):
     """
@@ -124,6 +138,7 @@ def setup_tax_incentive_routes(app, db=None):
     # aliased the module-level dicts, so a PUT mutated DEFAULT_INCENTIVES in
     # place for the life of the process.
     incentives_data = {s['abbr']: dict(s) for s in DEFAULT_INCENTIVES}
+    _SERVED[0] = incentives_data
     next_refresh_at = [0.0]   # 0.0 == stale; the first matching request loads
     schema_ready = [False]
     announced = [False]

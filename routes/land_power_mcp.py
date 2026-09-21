@@ -289,21 +289,20 @@ def _build_analysis(lat: float, lon: float, state: str,
                     pass
 
                 # ── Tax incentives ──
+                # util.tax_incentives, not tax_incentives_neon: the table
+                # froze on 2026-03-17 and reads nine changed programs as open.
                 try:
-                    cur.execute("""
-                        SELECT sales_tax_exempt, property_tax_abatement,
-                               data_center_specific,
-                               LEFT(COALESCE(incentive_details, ''), 240) AS detail
-                          FROM tax_incentives_neon
-                         WHERE state_abbr = %s LIMIT 1
-                    """, (state.upper(),))
-                    r = cur.fetchone()
+                    from util.tax_incentives import state_incentive
+                    r = state_incentive(cur, state)
                     if r:
                         result["tax"] = {
                             "sales_tax_exempt":      bool(r.get("sales_tax_exempt")),
                             "property_tax_abatement": bool(r.get("property_tax_abatement")),
                             "data_center_specific":   bool(r.get("data_center_specific")),
-                            "detail":                 r.get("detail"),
+                            "detail":                 (r.get("incentive_details") or "")[:240],
+                            "status":                 r.get("status"),
+                            "last_verified":          r.get("last_verified"),
+                            "source_url":             r.get("source_url"),
                         }
                 except Exception:
                     pass

@@ -2215,6 +2215,15 @@ def serve_gates() -> dict:
         gates["capacity_pipeline"] = _cp_ok()
     except Exception:
         gates["capacity_pipeline"] = "coalesce(data_flag,'') = ''"
+    # tax_incentives_neon froze on 2026-03-17 and this corpus is insert-only,
+    # so a state whose program has since changed keeps its old embedded text
+    # (OH "100% sales tax exempt" after the 2026-05-27 pause). Drop every state
+    # the registry supersedes; if the registry cannot be read, drop them all.
+    try:
+        from util.tax_incentives import snapshot_serve_gate
+        gates["tax_incentives_neon"] = snapshot_serve_gate()
+    except Exception:
+        gates["tax_incentives_neon"] = "FALSE"
     return gates
 
 

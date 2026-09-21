@@ -436,33 +436,30 @@ def _section_iso_breakdown(cur, full_name: str, markets: list[dict]) -> list[dic
 
 
 def _section_policy(cur, abbr: str) -> dict | None:
-    """Section (PRO+): state tax incentives. Reuses the
-    tax_incentives_neon schema from site_brief._tax_for_state."""
+    """Section (PRO+): state tax incentives. Same record and read path as
+    site_brief._tax_for_state (util.tax_incentives)."""
     if not abbr:
         return None
     try:
-        cur.execute("""
-            SELECT state_name, sales_tax_exempt, property_tax_abatement,
-                   data_center_specific, qualifying_investment,
-                   incentive_details
-              FROM tax_incentives_neon
-             WHERE state_abbr = %s LIMIT 1
-        """, (abbr.upper(),))
-        row = cur.fetchone()
+        from util.tax_incentives import state_incentive
+        rec = state_incentive(cur, abbr)
     except Exception:
         return None
-    if not row:
+    if not rec:
         return None
-    summary = row[5]
+    summary = rec.get("incentive_details")
     if summary and len(summary) > 480:
         summary = summary[:480] + "…"
     return {
-        "state_name":             row[0],
-        "sales_tax_exempt":       row[1],
-        "property_tax_abatement": row[2],
-        "data_center_specific":   row[3],
-        "qualifying_investment":  row[4],
+        "state_name":             rec.get("state_name"),
+        "sales_tax_exempt":       rec.get("sales_tax_exempt"),
+        "property_tax_abatement": rec.get("property_tax_abatement"),
+        "data_center_specific":   rec.get("data_center_specific"),
+        "qualifying_investment":  rec.get("qualifying_investment"),
         "summary":                summary,
+        "status":                 rec.get("status"),
+        "last_verified":          rec.get("last_verified"),
+        "source_url":             rec.get("source_url"),
     }
 
 

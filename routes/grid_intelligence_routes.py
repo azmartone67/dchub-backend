@@ -529,23 +529,24 @@ def _get_tax_incentives(states, conn=None):
             conn = _get_conn()
             close_conn = True
         cur = conn.cursor()
+        # util.tax_incentives, not tax_incentives_neon: the table froze on
+        # 2026-03-17 and reads nine changed programs as still available.
+        from util.tax_incentives import state_incentive
         for st in states:
             try:
-                cur.execute("""
-                    SELECT state_name, sales_tax_exempt, property_tax_abatement,
-                           data_center_specific, qualifying_investment, incentive_details
-                    FROM tax_incentives_neon
-                    WHERE state_abbr = %s
-                """, (st,))
-                row = cur.fetchone()
-                if row:
+                rec = state_incentive(cur, st)
+                if rec:
+                    detail = rec.get('incentive_details')
                     incentives[st] = {
-                        'state_name': row[0],
-                        'sales_tax_exempt': row[1],
-                        'property_tax_abatement': row[2],
-                        'data_center_specific': row[3],
-                        'qualifying_investment': row[4],
-                        'summary': row[5][:200] + '...' if row[5] and len(row[5]) > 200 else row[5]
+                        'state_name': rec.get('state_name'),
+                        'sales_tax_exempt': rec.get('sales_tax_exempt'),
+                        'property_tax_abatement': rec.get('property_tax_abatement'),
+                        'data_center_specific': rec.get('data_center_specific'),
+                        'qualifying_investment': rec.get('qualifying_investment'),
+                        'summary': detail[:200] + '...' if detail and len(detail) > 200 else detail,
+                        'status': rec.get('status'),
+                        'last_verified': rec.get('last_verified'),
+                        'source_url': rec.get('source_url'),
                     }
             except Exception as e:
                 logger.warning(f"[grid_intel] Tax incentive query failed for {st}: {e}")
