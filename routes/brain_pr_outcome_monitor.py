@@ -55,6 +55,7 @@ import datetime as _dt
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 from typing import Any, Optional
@@ -496,26 +497,45 @@ def monitor_recent_prs(days: int = 1,
             row["sentinel_before_grade"] = before_grade
             row["sentinel_after_grade"] = after_grade
 
-            if before_grade is None or after_grade is None:
-                row["outcome"] = "unknown"
-                row["deploy_status"] = "no_baseline"
-            elif after_grade < before_grade - 5:
-                row["outcome"] = "regression"
-                row["deploy_status"] = "deployed"
-                row["regression_details"] = (
-                    f"sentinel grade {before_grade:.1f} → "
-                    f"{after_grade:.1f} on {endpoint}")
-                _file_regression_finding(
-                    pr_number, endpoint or "?", before_grade, after_grade)
-            else:
-                row["outcome"] = "success"
-                row["deploy_status"] = "deployed"
+            # ★★★ 2026-09-21 — THE SENTINEL NO LONGER GRADES. IT COULD NOT.
+            #
+            # `sentinel_before` is snapshotted when THIS MONITOR RUN starts,
+            # which is up to 24h AFTER the PR merged and deployed — it is never
+            # a pre-merge baseline. And unless wait_for_deploy is set,
+            # `sentinel_after IS sentinel_before`, the same dict. So every
+            # comparison below this line measured a page against itself.
+            #
+            # Measured on 2026-09-21: 88 of 88 merged rows were `unknown` /
+            # `no_baseline`, but only because _extract_endpoint_from_files()
+            # guesses a module name (`routes/claim_ledger.py` -> `/claim-ledger`)
+            # and 0 of 54 such guesses exist as a sentinel page path. The
+            # `unknown` was an accident of a broken join. Fix the join and every
+            # PR would have graded `success` against itself — and L6
+            # (brain_strategic_planner), which computes its success rate from
+            # these rows, would have learned that everything it ships works.
+            #
+            # So the grades are still RECORDED (observability) but never turned
+            # into an outcome. Real outcomes come from grade_recurrences(), which
+            # has a genuine before/after: was the same finding targeted again
+            # after this PR merged?
+            row["outcome"] = "unknown"
+            row["deploy_status"] = ("no_pre_merge_baseline" if endpoint
+                                    else "no_page_touched")
 
             _upsert_pr_outcome(row)
             results[row["outcome"]] = results.get(row["outcome"], 0) + 1
             detail_rows.append(row)
         except Exception as e:
             logger.warning("pr_outcome_monitor: pr loop exc: %s", e)
+
+    # Grade by recurrence on every run, so outcomes stay current without
+    # anyone remembering to call an endpoint. It only ever upgrades `unknown`
+    # to `recurred` on positive evidence, and it cannot break this run.
+    try:
+        _graded = grade_recurrences(apply=True)
+    except Exception as _ge:  # noqa: BLE001
+        _graded = {"ok": False, "error": str(_ge)[:200]}
+    results["recurred"] = (_graded or {}).get("applied", 0)
 
     finished = _dt.datetime.now(_dt.timezone.utc)
     return {
@@ -546,6 +566,125 @@ def monitor_now():
     wait = _truthy(request.args.get("wait", "0"))
     out = monitor_recent_prs(days=days, wait_for_deploy=wait)
     return jsonify(out)
+
+
+# ─── Outcome grading by RECURRENCE (2026-09-21) ────────────────────
+#
+# The sentinel cannot grade (see the note in monitor_recent_prs). This is the
+# signal that CAN: a brain PR names the finding it targets — brain_backlog_admin
+# writes `**Finding:** `<issue_key>`` into the body — so if the SAME finding is
+# targeted again by a PR opened AFTER this one merged, this fix did not hold.
+#
+# Measured over all 14 merged [brain-l5 draft] PRs: 4 name a finding, 1
+# recurred — #4202 fixed cf_cache_rate_low, and #4567 re-targeted it five days
+# later. Small, but it is a genuine before/after, and the first real outcome
+# L6 has had.
+#
+# ★ WHAT THIS DELIBERATELY DOES NOT DO:
+#   · It never grades `success`. "Not re-targeted" is absence of evidence —
+#     true of every PR merged yesterday — and turning it into success is the
+#     exact inflation this module just stopped. Only a positive signal grades.
+#   · It never overwrites a real grade: only `unknown` becomes `recurred`.
+#   · Reverts are NOT detected. Reverts in this repo are hand-written prose —
+#     #4505 "Revert the /api/cron/daily gate" undoes #4432 and names it only in
+#     a sentence — so a detector would report "not reverted" for PRs that were.
+
+_FINDING_LINE_RE = re.compile(r"^\*\*Finding:\*\*\s*`([^`]+)`", re.M)
+_GRADE_MAX = 150
+
+
+def extract_finding(body) -> str:
+    """The `**Finding:** `<key>`` a brain PR names, or "" if it names none."""
+    m = _FINDING_LINE_RE.search(body or "")
+    return m.group(1).strip() if m else ""
+
+
+def recurrence_plan(prs) -> dict:
+    """{pr_number: later_pr_number} for each MERGED PR whose finding was
+    targeted again by a PR OPENED after it merged. Pure.
+
+    prs: [{number, finding, created_at, merged_at}] — ISO-8601 UTC strings,
+    which compare correctly as strings. The later PR may be open or merged:
+    being opened at all is the finding coming back.
+    """
+    groups = {}
+    for p in prs or []:
+        f = (p.get("finding") or "").strip()
+        if f:
+            groups.setdefault(f, []).append(p)
+    out = {}
+    for group in groups.values():
+        for p in group:
+            merged = p.get("merged_at")
+            if not merged:
+                continue
+            later = sorted((q for q in group
+                            if q is not p and (q.get("created_at") or "") > merged),
+                           key=lambda q: q.get("created_at") or "")
+            if later:
+                out[p["number"]] = later[0]["number"]
+    return out
+
+
+def grade_recurrences(apply: bool = False, limit: int = _GRADE_MAX) -> dict:
+    """Grade brain PRs by recurrence. Dry run unless apply=True. Never raises."""
+    c = _get_db()
+    if c is None:
+        return {"ok": False, "state": "UNMEASURED", "error": "no database"}
+    try:
+        with c.cursor() as cur:
+            cur.execute("""SELECT pr_number, outcome FROM brain_pr_outcomes
+                            WHERE brain_authored = TRUE
+                            ORDER BY pr_number DESC LIMIT %s""",
+                        (max(1, min(int(limit), _GRADE_MAX)),))
+            stored = {int(r[0]): r[1] for r in cur.fetchall() or []}
+        prs, unfetched = [], []
+        for n in stored:
+            pr = _gh_api(f"/repos/{_GITHUB_REPO}/pulls/{n}")
+            if not isinstance(pr, dict) or not pr:
+                unfetched.append(n)
+                continue
+            prs.append({"number": n, "finding": extract_finding(pr.get("body")),
+                        "created_at": pr.get("created_at"),
+                        "merged_at": pr.get("merged_at")})
+        plan = recurrence_plan(prs)
+        # Only `unknown` is ever upgraded — a real grade is never overwritten.
+        todo = {n: l for n, l in plan.items() if stored.get(n) == "unknown"}
+        applied = 0
+        if apply and todo:
+            with c.cursor() as cur:
+                for n, later in todo.items():
+                    f = next((p["finding"] for p in prs if p["number"] == n), "")
+                    cur.execute("""UPDATE brain_pr_outcomes
+                                      SET outcome = 'recurred',
+                                          regression_details = %s
+                                    WHERE pr_number = %s AND outcome = 'unknown'""",
+                                (f"finding {f[:120]} re-targeted by #{later} "
+                                 f"after this PR merged", n))
+                    applied += cur.rowcount or 0
+            c.commit()
+        return {"ok": True, "apply": bool(apply), "checked": len(stored),
+                "naming_a_finding": sum(1 for p in prs if p["finding"]),
+                "recurred": len(todo), "applied": applied,
+                "recurred_prs": {str(k): v for k, v in list(todo.items())[:100]},
+                "unfetched": unfetched[:50]}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("pr_outcome_monitor: grade_recurrences failed: %s", e)
+        return {"ok": False, "error": str(e)[:200]}
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+@brain_pr_outcome_monitor_bp.route(
+    "/api/v1/admin/brain/pr-outcomes/grade", methods=["POST"])
+def grade_endpoint():
+    """Inspect or run recurrence grading. Dry run by default; ?apply=1 writes."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    return jsonify(grade_recurrences(apply=_truthy(request.args.get("apply", "0"))))
 
 
 @brain_pr_outcome_monitor_bp.route(
@@ -620,7 +759,7 @@ def summary():
         total = sum(by_outcome.values())
         merged = sum(by_outcome.get(k, 0)
                      for k in ("success", "regression", "unknown",
-                               "deploy_fail"))
+                               "deploy_fail", "recurred"))
         success = by_outcome.get("success", 0)
         regression = by_outcome.get("regression", 0)
         return jsonify(

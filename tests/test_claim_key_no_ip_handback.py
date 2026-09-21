@@ -69,6 +69,12 @@ def _module_fn(name):
     for node in TREE.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
+        # r-partner-meter: a helper can read a module-level CONSTANT, which is an
+        # Assign, not a FunctionDef — _partner_egress reads
+        # _PARTNER_EGRESS_DEFAULT. Supply those the same way.
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return node
     raise AssertionError(f"{name} not found in flask_mcp_endpoints.py")
 
 
@@ -183,10 +189,10 @@ class _Req:
         return self._body
 
 
-def _run(*, body, cur):
+def _run(*, body, cur, ip="9.9.9.9"):
     """Execute the real claim_key against the stub cursor. Returns (json, status,
     cur)."""
-    req = _Req(body=body)
+    req = _Req(body=body, ip=ip)
     # a no-op stand-in for the confirmation-email module imported inside the fn
     fake_verif = types.ModuleType("routes.mcp_key_email_verification")
     fake_verif.offer_confirmation = lambda *a, **k: None
@@ -209,7 +215,11 @@ def _run(*, body, cur):
         "_streak_ladder_text": lambda: "",
     }
     mod = ast.Module(
-        body=[_module_fn("_advertised_daily"), _claim_fn()],
+        body=[_module_fn("_advertised_daily"),
+              _module_fn("_PARTNER_EGRESS_DEFAULT"),
+              _module_fn("_partner_egress"),
+              _module_fn("_partner_meter_scope"),
+              _claim_fn()],
         type_ignores=[])
     exec(compile(mod, str(SRC), "exec"), ns)      # noqa: S102 — the point
     try:
@@ -310,3 +320,109 @@ def test_the_removed_escape_select_stays_removed():
     # unique to the removed handback.
     assert "validate_calls')::int, 0) >= %s" not in TEXT, (
         "the ip-only gated-return SELECT predicate is back in the source")
+
+
+# ── r-partner-meter: per-WORKSPACE allowance for a verified partner ──────────
+#
+# A hosted catalogue proxies every customer through one egress, so an IP-metered
+# allowance is shared by all of them: customer #1 works, everyone after is born
+# gated. For AnythingMCP — client_name `anythingmcp/<workspace-id>`, egress
+# 104.248.242.235 — the carry must scope to the workspace instead.
+#
+# Asserted on the query the REAL handler issues and what it binds. Per-workspace
+# isolation lives in the WHERE clause; if the carry is keyed on client_name,
+# workspace B cannot inherit workspace A's count, whatever those counts are.
+
+PARTNER_IP = "104.248.242.235"
+WS_A = "anythingmcp/clx1a2b3c4d5e6f7"
+
+
+def _carry_queries(cur):
+    return [(q, p) for q, p in cur.queries
+            if "max(coalesce((metadata->>'validate_calls')" in q]
+
+
+def _trial_queries(cur):
+    return [(q, p) for q, p in cur.queries
+            if "max(coalesce(call_count, 0))" in q]
+
+
+def test_verified_partner_traffic_is_metered_per_workspace():
+    cur = _Cur()
+    _run(body={"client_name": WS_A}, cur=cur, ip=PARTNER_IP)
+    carry = _carry_queries(cur)
+    assert carry, "no carry query ran at all"
+    q, params = carry[0]
+    assert "metadata->>'client_name' = %s" in q, (
+        "verified partner traffic was not scoped to its workspace")
+    assert "metadata->>'ip' = %s" not in q, (
+        "the partner carry still keys on the shared egress IP — every "
+        "workspace behind it draws on one allowance")
+    assert WS_A in params and PARTNER_IP not in params
+
+
+def test_partner_traffic_skips_the_ip_hashed_trial_carry():
+    """auto_trial_keys can only be matched by IP. Matching the partner's shared
+    egress there would re-import exactly the collapse this removes."""
+    cur = _Cur()
+    _run(body={"client_name": WS_A}, cur=cur, ip=PARTNER_IP)
+    assert not _trial_queries(cur), (
+        "partner traffic still reads the IP-keyed trial carry")
+
+
+def test_the_prefix_alone_from_any_other_address_is_not_trusted():
+    """Otherwise anyone could send 'anythingmcp/x' and draw on — or burn — an
+    allowance attached to the partner's name."""
+    cur = _Cur()
+    _run(body={"client_name": WS_A}, cur=cur, ip="203.0.113.9")
+    q, params = _carry_queries(cur)[0]
+    assert "metadata->>'ip' = %s" in q, (
+        "a partner prefix from an undeclared address was trusted")
+    assert "203.0.113.9" in params
+
+
+def test_a_bare_prefix_with_no_workspace_id_is_not_partner_traffic():
+    cur = _Cur()
+    _run(body={"client_name": "anythingmcp/"}, cur=cur, ip=PARTNER_IP)
+    q, _ = _carry_queries(cur)[0]
+    assert "metadata->>'ip' = %s" in q, (
+        "a prefix with no workspace id was scoped as a workspace")
+
+
+def test_a_non_partner_name_from_the_partner_address_is_metered_by_ip():
+    """The address alone is not the credential either."""
+    cur = _Cur()
+    _run(body={"client_name": "someone-else"}, cur=cur, ip=PARTNER_IP)
+    q, _ = _carry_queries(cur)[0]
+    assert "metadata->>'ip' = %s" in q
+
+
+def test_the_key_records_which_meter_it_was_carried_from():
+    """Auditable: a key must say whether its allowance came from a workspace
+    or from an IP, or a metering dispute cannot be settled from the row."""
+    cur = _Cur()
+    _run(body={"client_name": WS_A}, cur=cur, ip=PARTNER_IP)
+    assert _minted_metadata(cur).get("meter_scope") == "partner:anythingmcp/"
+    cur2 = _Cur()
+    _run(body={"client_name": "someone-else"}, cur=cur2, ip="9.9.9.9")
+    assert _minted_metadata(cur2).get("meter_scope") == "ip"
+
+
+def test_a_workspace_past_the_gate_carries_its_count_into_the_new_key():
+    """The query being scoped correctly is not enough — its RESULT has to land.
+
+    Written after a real bug in the first draft of this change: an automated
+    re-indent left `_cf_live = ...` inside the non-partner branch. The partner
+    carry query still ran, bound to the right client_name — so every
+    query-shape test above passed — but `_cf_live` was never assigned on that
+    path, `max(_cf_live, _cf_trial)` raised NameError, the broad `except` turned
+    it into a carry of 0, and a workspace already past the gate was reborn with
+    a fresh allowance on every re-mint. It compiled. It passed. It was wrong.
+    """
+    cur = _Cur(carry_live=GATE + 2)
+    _run(body={"client_name": WS_A}, cur=cur, ip=PARTNER_IP)
+    meta = _minted_metadata(cur)
+    assert meta.get("validate_calls") == GATE + 2, (
+        f"the workspace's carried count did not reach the minted key "
+        f"(validate_calls={meta.get('validate_calls')!r}); a workspace past "
+        f"the gate would re-mint its way to a fresh allowance")
