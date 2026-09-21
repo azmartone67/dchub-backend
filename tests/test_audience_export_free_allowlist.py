@@ -142,6 +142,19 @@ def test_the_operator_address_is_not_a_prospect_in_either_export():
         "a marker now matches it — this test no longer pins what it claims")
 
 
+def test_the_operator_test_mailbox_is_named_not_matched():
+    """Found in the live free-users export 2026-09-21 and confirmed ours. A
+    separate mailbox, so normalisation cannot reach it and no marker does —
+    the named set is the only thing that catches it."""
+    addr = "azmartonetest1@gmail.com"
+    assert normalize_email(addr) != normalize_email("azmartone@gmail.com")
+    assert not any(m in addr for m in INTERNAL_MARKERS), (
+        "a marker now matches it — this test no longer pins what it claims")
+    for variant in (addr, "AzMartoneTest1+x@googlemail.com", "azmartone.test1@gmail.com"):
+        assert is_operator_email(variant) is True, variant
+        assert wk._is_internal(variant) is True, variant
+
+
 @pytest.mark.parametrize("addr", [
     "AZMartone@Gmail.com", " azmartone+news@gmail.com ",
     "azm.artone@googlemail.com", "azmartone+qa@GOOGLEMAIL.com"])

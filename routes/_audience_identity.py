@@ -31,7 +31,13 @@ import os
 
 # Ours, by name. Not a marker, not a domain — the specific mailboxes that must
 # never be counted as a lead in any export this repo produces.
-_DEFAULT_OPERATOR_EMAILS = frozenset({"azmartone@gmail.com"})
+# `azmartonetest1@gmail.com` is the operator's test account (confirmed by the
+# operator 2026-09-21, after it turned up in the live free-users export). It is
+# a DIFFERENT mailbox, not a plus-tag or dot variant, and no marker sees it:
+# `test@` does not match `test1@`, and a bare `test` marker would swallow
+# strangers. Naming it is the only rule that catches it and nothing else.
+_DEFAULT_OPERATOR_EMAILS = frozenset({"azmartone@gmail.com",
+                                      "azmartonetest1@gmail.com"})
 
 # Providers that ignore dots in the local part. Plus-tags are stripped for
 # every provider (near-universal); dots only for these, where it is the
