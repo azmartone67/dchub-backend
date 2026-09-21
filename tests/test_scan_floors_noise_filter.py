@@ -17,9 +17,20 @@ the guard never reads propped up its floor. Three incidents, one cause:
 _counted() now skips noise segments when COUNTING. This file pins that it skips
 the right things, counts the right things, and — the part that matters most —
 that it still hands the caller every item unchanged.
+
+★ It also pins WHERE the segments are matched: below the checkout root, never
+against the checkout's own ancestors. A checkout under .claude/worktrees/ (where
+Claude Code puts them) once counted as all noise, so every pinned scanner went
+red with "performed NO repo scan at all this run" on a pristine main.
 """
+import json
 import os
 import pathlib
+import shutil
+import subprocess
+import sys
+
+import pytest
 
 from tests import _scan_floors
 
@@ -64,6 +75,90 @@ def test_pathlib_paths_are_handled():
 def test_an_unrecognised_item_still_counts():
     """Fail OPEN into being measured, never silently uncounted."""
     assert _scan_floors._is_noise(object(), "glob") is False
+
+
+def test_this_checkout_is_measured_wherever_it_lives():
+    """In situ: the root the filter strips IS this checkout, and nothing at or
+    under it is noise unless a noise segment sits below it.
+
+    Only proves the fix when run from a checkout whose path carries a noise
+    segment; the next test makes one, so it proves it everywhere.
+    """
+    root = _scan_floors._ROOT
+    assert os.path.isfile(os.path.join(root, "tests", "_scan_floors.py")), root
+    assert not _scan_floors._is_noise((root, ["routes"], ["main.py"]), "walk")
+    assert not _scan_floors._is_noise(os.path.join(root, "routes", "x.py"), "glob")
+    assert _scan_floors._is_noise(
+        os.path.join(root, ".claude", "worktrees", "y", "main.py"), "glob")
+
+
+# Runs in a child interpreter so the copy's install() never touches this
+# session's meter. argv: <path to the module copy> <root to scan>.
+_PROBE = r"""
+import importlib.util, json, os, pathlib, sys
+spec = importlib.util.spec_from_file_location("_scan_floors", sys.argv[1])
+sf = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sf)
+sf.install()
+sf.set_current_file("walk-probe")
+walked = len(list(os.walk(sys.argv[2])))
+sf.set_current_file("rglob-probe")
+globbed = len(list(pathlib.Path(sys.argv[2]).rglob("*.py")))
+print(json.dumps({"observations": sf.observations,
+                  "yielded": {"walk": walked, "rglob": globbed}}))
+"""
+
+
+@pytest.mark.parametrize("spelling", ["direct", "via-symlink"])
+def test_a_checkout_under_claude_worktrees_is_counted(tmp_path, spelling):
+    """★ The must-fail test: a checkout living where Claude Code puts one.
+
+    The real module is copied into a miniature checkout under a real
+    .claude/worktrees/<x>/, so it derives its root from its own location
+    exactly as it does in a worktree. Matched against the absolute path, every
+    item there is noise and the scan records nothing. A nested .claude/ copy
+    INSIDE the checkout must still be excluded, so a "fix" that stops
+    filtering .claude fails too.
+
+    via-symlink: the module is loaded through a symlink to the checkout while
+    the scan uses the resolved path, as scanners building paths with
+    Path.resolve() do — the root must be recognised in both spellings.
+    """
+    root = tmp_path / ".claude" / "worktrees" / "session-x"
+    (root / "routes" / "__pycache__").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "main.py").write_text("")
+    (root / "routes" / "a.py").write_text("")
+    (root / "routes" / "__pycache__" / "a.cpython-313.pyc").write_text("")
+    nested = root / ".claude" / "worktrees" / "inner" / "routes"
+    nested.mkdir(parents=True)
+    (nested / "a.py").write_text("")
+    shutil.copy(_scan_floors.__file__, root / "tests" / "_scan_floors.py")
+
+    loaded_from = root
+    if spelling == "via-symlink":
+        loaded_from = tmp_path / "link"
+        loaded_from.symlink_to(root, target_is_directory=True)
+
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", _PROBE,
+         str(loaded_from / "tests" / "_scan_floors.py"), str(root)],
+        cwd=str(root), capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    got = json.loads(proc.stdout)
+    obs = got["observations"]
+
+    # Counted: the root, routes/, tests/ | main.py, routes/a.py, the copy.
+    # Not counted: __pycache__ and all four nested .claude/ directories.
+    assert obs.get("walk-probe", {}).get("walk") == 3, (
+        f"walk of a checkout under .claude/worktrees/ counted {obs}; expected "
+        "3. None = every item matched as noise, because the filter read the "
+        "checkout's ancestors. 7 = the nested .claude/ copy stopped being "
+        "noise.")
+    assert obs.get("rglob-probe", {}).get("prglob") == 3, (
+        f"rglob counted {obs}; expected 3 (the nested copy's a.py excluded)")
+    # ...and the wrapper still handed the caller every item, noise included.
+    assert got["yielded"] == {"walk": 8, "rglob": 4}, got["yielded"]
 
 
 def test_the_wrapper_is_transparent(tmp_path):
