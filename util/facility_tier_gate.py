@@ -8,9 +8,11 @@ The registry gate was built twice, in two places, and only one half travelled.
 facility route reuses it, and it works: no `power_mw`, no `source`, no
 `raw_data` reaches an anonymous caller through it.
 
-The COORDINATE half was never extracted. It lives inline in `main.py`'s
+The COORDINATE half was never extracted: it lived inline in `main.py`'s
 `/api/v1/map` handler as `_MAP_ANON_COORD_DP` / `_MAP_FREE_COORD_DP` — a
-deliberate, documented ladder (r-signupladder 2026-08-10). For a single
+deliberate, documented ladder (r-signupladder 2026-08-10). Since 2026-09-21 the
+map keeps only its anonymous rung (MAP_ANON_COORD_DP, map default 3dp) and takes
+exactness and every other rung from coord_dp_for_tier below. For a single
 facility RECORD the ladder is now (owner decision 2026-09-21):
 
     anonymous       MAP_ANON_COORD_DP   2dp  ~1.1 km   city block

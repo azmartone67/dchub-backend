@@ -7157,15 +7157,19 @@ def api_v1_map():
         #     the frontend sends bbox on zoom; MAP_ANON_COORD_DP=6 disables this
         #     entirely and restores the previous behaviour with no deploy.
         #   • genuine viewport (small bbox) → row-capped to MAP_ANON_BBOX_ROWS
-        #     so bbox cannot be walked as a paging workaround, AND coords are
-        #     rounded the same as the global path unless MAP_ANON_BBOX_EXACT=1.
+        #     so bbox cannot be walked as a paging workaround, and coords are
+        #     rounded exactly as on the global path.
         #     r-anonbbox (2026-08-01): the bbox exemption originally kept exact
         #     coords, but NO legitimate caller sends bbox today (see above), so
         #     it only served harvesters — ~335 tiles of ≤25 deg² re-extracted
-        #     the registry's exact locations at 500 rows/tile. Flip
-        #     MAP_ANON_BBOX_EXACT=1 (no deploy) to restore exact-bbox coords
-        #     once the frontend viewport PR lands.
-        # Paid tiers (developer+) are untouched on both paths — precise bulk
+        #     the registry's exact locations at 500 rows/tile.
+        #     ★ 2026-09-21: MAP_ANON_BBOX_EXACT is RETIRED and no longer read.
+        #     All it could ever do was hand exact coordinates to a tier that is
+        #     not entitled to them, and under the exact-location policy no path
+        #     may do that; an exact tier is exact on every path already, so the
+        #     knob had nothing left to switch. Setting it has no effect (pinned
+        #     in tests/test_anon_bulk_exposure.py).
+        # Exact tiers (developer+) are untouched on both paths — precise bulk
         # access is what they pay for.
         _MAP_TIER_CAP = {'anonymous': 50000, 'free': 50000, 'identified': 50000, 'developer': 50000}
         _map_full = _map_tier in ('pro', 'enterprise', 'founding', 'internal', 'admin')
@@ -7175,41 +7179,53 @@ def api_v1_map():
         # view, small enough that sweeping the globe at this size costs ~2,600
         # requests instead of one.
         _MAP_ANON_BBOX_MAX_DEG2 = float(os.environ.get('MAP_ANON_BBOX_MAX_DEG2', '25'))
-        # r-anonbbox: default OFF — bbox results are rounded like the global
-        # sweep. Set to '1' to restore the exact-coords bbox exemption.
-        _MAP_ANON_BBOX_EXACT = os.environ.get('MAP_ANON_BBOX_EXACT', '') == '1'
-        # ★ r-signupladder (2026-08-10): coordinate precision is now a LADDER,
-        # not a flag. Every non-paying tier previously got the SAME rounding, so
-        # creating a free account bought literally nothing on the map — and the
-        # map is the crown-jewel surface. Measured the same day: 14 of 19 real
-        # paying customers had never made a call, 114 free keys had 4 active in
-        # 30d, and 376 identified keys existed with no reason to have been
-        # claimed. There was no rung between "curious" and "customer".
-        #
-        # Rows stay uncapped for every tier (the public SEO map must render
-        # complete — see r-anonbulk above); what improves as you identify
-        # yourself is WHERE the dot is:
-        #     anonymous   MAP_ANON_COORD_DP     (2dp, ~1.1km) — city block
-        #     free/ident  MAP_FREE_COORD_DP     (3dp, ~110m)  — the building
-        #     paid        exact
-        # That gives signup a concrete, visible payoff without paywalling the
-        # SEO asset or handing survey-grade coordinates to an anonymous sweep.
-        _MAP_FREE_COORD_DP = int(os.environ.get('MAP_FREE_COORD_DP', '3'))
-        _map_identified_tier = _map_tier in ('free', 'identified')
-        # Only the non-paying tiers are coarsened.
-        _map_coarsen_tier = _map_tier in ('anonymous', 'free', 'identified', '')
-        _map_effective_dp = (_MAP_FREE_COORD_DP if _map_identified_tier
+        # ★ r-signupladder (2026-08-10) → r-reveal-meter (2026-09-21): ONE LADDER.
+        # Precision used to be decided HERE, from a map-local copy of the free
+        # rung (MAP_FREE_COORD_DP defaulting to 3dp, "the building") and a
+        # hand-typed list of tiers to coarsen that left 'starter' — and any tier
+        # it did not name — with EXACT dots. It is now read from the record
+        # gate's ladder, util.facility_tier_gate.coord_dp_for_tier, so the map
+        # and every facility record agree about who is exact:
+        #     exact             coord_dp_for_tier(tier) is None (developer+)
+        #     anonymous         MAP_ANON_COORD_DP — the MAP's own default, 3dp,
+        #                       kept on purpose (no caller sends bbox, see
+        #                       above); production sets 2
+        #     free/identified/  coord_dp_for_tier(tier) — MAP_FREE_COORD_DP,
+        #     trial/starter     2dp by default, the same as a record
+        #     anything else     coarsened as anonymous (fail closed)
+        # What a free account buys is EXACT location for a few facilities a
+        # month through the per-facility routes (util/location_meter.py), not a
+        # sharper blur on the whole-map sweep. A $10 call-pack buyer resolves to
+        # 'free' here and stays on the free rung ON PURPOSE: "exact on every
+        # call" is a per-facility lookup entitlement, and the map is a sweep of
+        # the whole registry, not a call about one facility.
+        # The map resolver speaks its own dialect: 'anonymous' for no credential
+        # and, defensively, 'internal' for the internal key.
+        _map_ladder_tier = {'anonymous': 'anon', '': 'anon',
+                            'internal': 'admin'}.get(_map_tier, _map_tier)
+        try:
+            from util.facility_tier_gate import coord_dp_for_tier as _map_ladder_dp
+            from util.facility_tier_gate import LOCATION_ALLOWANCE_TIERS as _map_allowance
+            _map_tier_dp = _map_ladder_dp(_map_ladder_tier)
+        except Exception:
+            # Fail CLOSED, never blank: without the ladder nothing below
+            # _map_full is exact, and the dots still render.
+            _map_allowance, _map_tier_dp = frozenset(), _MAP_ANON_COORD_DP
+        _map_coarsen_tier = _map_tier_dp is not None
+        _map_identified_tier = _map_ladder_tier in _map_allowance
+        _map_effective_dp = (_map_tier_dp if _map_identified_tier
                              else _MAP_ANON_COORD_DP)
         _map_viewport = _bbox_deg2 is not None and _bbox_deg2 <= _MAP_ANON_BBOX_MAX_DEG2
         _map_exact_coords = True
         if not _map_full:
             if _map_coarsen_tier and _map_viewport:
                 limit = min(limit, _MAP_ANON_BBOX_ROWS)
-                _map_exact_coords = _MAP_ANON_BBOX_EXACT
             else:
                 limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
-                if _map_coarsen_tier:
-                    _map_exact_coords = False
+            # No path — global sweep, viewport, oversized box — gives a tier
+            # that is not exact on the ladder an exact coordinate.
+            if _map_coarsen_tier:
+                _map_exact_coords = False
 
             # ★ r-anonharvest (2026-08-10): the precision gate above controls
             # WHAT a global sweep returns; nothing controlled HOW OFTEN. Measured
@@ -7381,9 +7397,8 @@ def api_v1_map():
                             _lon = float(f['longitude'])
                             # r-anonbulk (2026-08-01): quantize on the global-sweep
                             # path so a bulk pull yields ~1.1km dots instead of a
-                            # parcel-grade coordinate list. r-anonbbox: the viewport
-                            # path is rounded too unless MAP_ANON_BBOX_EXACT=1 —
-                            # see the tier block above.
+                            # parcel-grade coordinate list. The viewport path is
+                            # rounded too — see the tier block above.
                             if not _map_exact_coords:
                                 _lat = round(_lat, _map_effective_dp)
                                 _lon = round(_lon, _map_effective_dp)
@@ -7410,16 +7425,20 @@ def api_v1_map():
                 # coords — an agent consuming this needs to know the precision
                 # it actually got, and the bbox path is a documented way up.
                 payload['_coord_precision_dp'] = _map_effective_dp
-                # r-anonbbox: only advertise the bbox route to exact coords
-                # when the exemption is actually on — the default note pointed
-                # harvesters straight at the hole.
+                # r-anonbbox: the note never advertises bbox as a way to exact
+                # coordinates — there is none. It states the caller's own offer,
+                # from the same sentence the facility records use.
+                try:
+                    from util.facility_tier_gate import location_offer as _map_offer
+                    _map_offer_s = _map_offer(_map_ladder_tier).rstrip('.')
+                except Exception:
+                    _map_offer_s = ''
                 payload['_coord_note'] = (
                     f"Coordinates rounded to {_map_effective_dp} decimal places "
-                    + (f"on global queries. Pass bbox=W,S,E,N for a "
-                       f"viewport-scoped query to get exact coordinates."
-                       if _MAP_ANON_BBOX_EXACT else
-                       f"for anonymous/free access. Upgrade for exact "
-                       f"coordinates — dchub.cloud/pricing"))
+                    f"on every map query. "
+                    + ((_map_offer_s + " — ") if _map_offer_s
+                       else "Upgrade for exact coordinates — ")
+                    + "dchub.cloud/pricing")
                 payload['_upgrade_cta'] = (
                     f"Showing all {total} facilities with name + approximate "
                     f"location. Upgrade for exact coordinates, power capacity, "
@@ -25648,24 +25667,35 @@ def search_facilities():
         except Exception:
             pass  # Never let badge enrichment crash the response
 
+        # ── search row gate ─────────────────────────────────────────────────
         # r-search-field-mask (2026-06-22): these rows are SELECT * from
         # discovered_facilities — power_mw, exact coords, investment_usd,
         # confidence_score + INTERNAL columns (raw_data, merged_facility_id,
         # is_duplicate, source_id, source_url). The CF-injected Referer let anon
-        # vacuum the full table via protect_data's bypass (audit leak #3). Strip
-        # each row to the tier's allowlist (FACILITY_VISIBLE_FIELDS — the SAME one
-        # gate_facilities_response uses) for anon/free; developer/pro/enterprise/
-        # admin keep full (matches the tier line). get_request_tier() is
-        # referer-proof. Fail-CLOSED: any error → strip to the minimal anon set.
+        # vacuum the full table via protect_data's bypass (audit leak #3).
+        # get_request_tier() is referer-proof.
+        #
+        # ★ r-reveal-meter (2026-09-21): the rows now go through gate_records —
+        # the SAME gate as every facility record — instead of a local
+        # FACILITY_VISIBLE_FIELDS.get(tier) mask. That lookup returned None, i.e.
+        # the FULL row, for every tier it did not name: correct for developer+,
+        # but it also handed 'starter' street addresses and raw upstream records
+        # (address + exact coordinates verbatim), and gave an unrecognised plan
+        # string the whole row. gate_records keeps every paid field for starter
+        # while metering its location (2dp, no street address, no raw_data),
+        # returns an exact tier's rows untouched, and treats an unknown tier as
+        # anonymous. Fail-CLOSED: if the gate cannot load, the minimal anon set.
         try:
-            from api_tier_gating import get_request_tier, FACILITY_VISIBLE_FIELDS
+            from api_tier_gating import get_request_tier
             _splan = (get_request_tier() or 'anon').lower()
-            _svisible = FACILITY_VISIBLE_FIELDS.get(_splan)  # None for paid/admin → full
         except Exception:
-            _splan, _svisible = 'anon', {'name', 'city', 'country', 'status', 'slug'}
-        if _svisible:
-            _skeep = set(_svisible) | {'slug', 'profile_url', 'confidence_badge'}
-            facilities = [{k: v for k, v in f.items() if k in _skeep} for f in facilities]
+            _splan = 'anon'
+        try:
+            from util.facility_tier_gate import gate_records as _fg_rows
+            facilities, _s_redacted = _fg_rows(facilities, _splan)
+        except Exception:
+            _s_min = {'name', 'city', 'country', 'status', 'slug'}
+            facilities = [{k: v for k, v in f.items() if k in _s_min} for f in facilities]
         # ★ r-corpusgate (2026-09-19): the field mask above is not the whole
         # gate. FACILITY_VISIBLE_FIELDS['anon'] CONTAINS latitude/longitude with
         # no precision constraint, so this route was measured serving anonymous
@@ -25674,8 +25704,7 @@ def search_facilities():
         # coordinate ladder existed only inside /api/v1/map's handler. Apply it
         # here from the shared module, on the same env knobs, so anon gets the
         # same ~1.1 km dot it gets on the map. Runs for EVERY tier (the helper
-        # is a no-op for paid) so a tier that stops being in _svisible does not
-        # silently regain exact coordinates.
+        # is a no-op for an exact tier) as defence in depth behind the gate.
         try:
             from util.facility_tier_gate import coarsen_coords_deep as _sc_deep
             _sc_deep(facilities, _splan)
@@ -25684,6 +25713,7 @@ def search_facilities():
                 for _sk in ('latitude', 'longitude'):
                     if isinstance(_sf.get(_sk), (int, float)):
                         _sf[_sk] = round(float(_sf[_sk]), 2)
+        # ── end search row gate ─────────────────────────────────────────────
 
         return jsonify({
             'success': True,
@@ -38911,22 +38941,23 @@ def get_facility_by_slug(slug):
         if not row:
             return jsonify({'success': False, 'error': 'Facility not found'}), 404
         cols = [desc[0] for desc in c.description]
-        _sl_data = dict(zip(cols, row))
+        _sl_resp = {'success': True, 'data': dict(zip(cols, row))}
         # ★ r-corpusgate (2026-09-19): the FIFTH route in this class, and the
         # one the hand audit missed — tests/test_facility_tier_gate.py's
-        # coverage assertion found it. Measured live, anonymous, no key:
-        #   GET /api/v1/facilities/slug/microsoft-...-ed53212e
-        #     -> {"power_mw": 2300.0, "provider": "Microsoft", ...}
-        # Its docstring says "Public facility lookup" and it is genuinely a
-        # public route — public was never supposed to mean priced fields.
-        try:
-            from util.facility_tier_gate import gate_record as _sl_gate
-            from api_tier_gating import get_request_tier as _sl_tier
-            _sl_data, _sl_n = _sl_gate(_sl_data, (_sl_tier() or 'anon').lower())
-        except Exception:
-            from util.facility_tier_gate import MINIMAL_ANON_FIELDS as _sl_min
-            _sl_data = {k: v for k, v in _sl_data.items() if k in _sl_min}
-        return jsonify({'success': True, 'data': _sl_data})
+        # coverage assertion found it. Measured live, anonymous, no key, a
+        # public lookup returned power_mw and provider. Its docstring says
+        # "Public facility lookup" and it is genuinely a public route — public
+        # was never supposed to mean priced fields.
+        # ★ r-reveal-meter (2026-09-21): the third live single-record route, so
+        # the same path as facility_by_slug and get_facility_by_id: a free/
+        # starter caller with an account spends one monthly exact-location
+        # allowance (channel 'api') BEFORE the shared envelope gates the record.
+        # It used to call gate_record itself, which also meant no _gated /
+        # _upgrade markers — the envelope adds them now (additive).
+        _t_sl = _fg_tier_of_request()
+        _apply_record_gate(_sl_resp, _t_sl, exact_location=_meter_record_location(
+            _sl_resp, _t_sl, 'discovered_facilities'))
+        return jsonify(_sl_resp)
     except Exception as e:
         import traceback
         return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}), 500

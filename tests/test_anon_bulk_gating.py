@@ -172,29 +172,48 @@ def test_declared_anonymous_record_cap_is_still_50():
 # Rows stay uncapped for all tiers (the SEO map must render complete); what
 # improves as you identify yourself is WHERE the dot is.
 
+def _map_fn():
+    import ast
+    tree = ast.parse(_src("main.py"))
+    return next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "api_v1_map")
+
+
 def test_map_precision_is_a_ladder_not_a_flag():
-    s = _src("main.py")
-    i = s.index("def api_v1_map")
-    body = s[i:i + 14000]
-    assert "MAP_FREE_COORD_DP" in body, \
-        "free/identified must get better coordinates than anonymous"
-    assert "_map_effective_dp" in body, \
+    """Precision resolves per tier. Asserted on the CODE (AST), not on text: a
+    comment naming a knob must not be able to satisfy this."""
+    import ast
+    fn = _map_fn()
+    names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+    assert "_map_effective_dp" in names, \
         "precision must resolve per tier, not from the anon constant"
-    assert "_lat = round(_lat, _MAP_ANON_COORD_DP)" not in body, \
-        "rounding still hardcoded to the anonymous constant — signup buys nothing"
+    body = ast.unparse(fn)
+    assert "round(_lat, _MAP_ANON_COORD_DP)" not in body, \
+        "rounding hardcoded to the anonymous constant — every tier gets one rung"
 
 
-def test_signup_actually_improves_precision():
-    """anonymous must be strictly coarser than free/identified, or the ladder
-    has no rung and there is still no reason to create an account."""
-    import os
-    anon = int(os.environ.get("MAP_ANON_COORD_DP", "3"))
-    free = int(os.environ.get("MAP_FREE_COORD_DP", "3"))
-    s = _src("main.py")
-    assert "_MAP_FREE_COORD_DP if _map_identified_tier" in s, \
-        "the identified tiers must select the finer precision"
-    # defaults shipped in code: anon 3 (overridden to 2 in prod), free 3
-    assert free >= anon, "free must never be coarser than anonymous"
+def test_the_map_takes_its_rungs_from_the_one_ladder():
+    """2026-09-21 (owner decision): a free account's map dots round like a
+    facility record's — util.facility_tier_gate.coord_dp_for_tier — and what
+    the account buys is exact location for a few facilities a month, not a
+    sharper map. The map used to carry its own free rung (MAP_FREE_COORD_DP,
+    default 3dp) and its own list of tiers to coarsen, which left 'starter'
+    exact. One reader of the ladder now; the map may not read the free knob
+    itself, or the map and the records can disagree again."""
+    import ast
+    fn = _map_fn()
+    imported = {(n.module, a.name) for n in ast.walk(fn)
+                if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert ("util.facility_tier_gate", "coord_dp_for_tier") in imported, \
+        "the map does not read the shared coordinate ladder"
+    env_reads = {n.args[0].value for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "get"
+                 and n.args and isinstance(n.args[0], ast.Constant)
+                 and isinstance(n.args[0].value, str) and n.args[0].value.startswith("MAP_")}
+    assert "MAP_FREE_COORD_DP" not in env_reads, \
+        "the map reads its own copy of the free rung again"
+    assert "MAP_ANON_BBOX_EXACT" not in env_reads, \
+        "the retired exact-viewport knob is read again"
 
 
 def test_paid_tiers_still_get_exact_coordinates():

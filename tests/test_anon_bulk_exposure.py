@@ -79,23 +79,27 @@ def test_small_viewport_is_rounded_by_default_and_row_capped(tier):
     harvesters (no legitimate caller sends bbox — map.html fetches
     ?all=true&limit=25000, land-power-app.js pages by offset), and ~335 tiles
     of ≤25 deg² re-extracted the registry's exact locations at 500 rows/tile.
-    Default is now rounded; MAP_ANON_BBOX_EXACT=1 restores the exemption."""
+    The viewport is rounded like the global sweep, always (the exemption knob
+    was retired 2026-09-21 — see the next test)."""
     rows, exact, _ = _run(tier, SMALL_VIEWPORT)
     assert exact is False, f"{tier} viewport leaks exact coords — tile-sweeping re-extracts the registry"
     assert rows <= 500, f"{tier} viewport not row-capped — bbox is walkable as a pager"
 
 
-@pytest.mark.parametrize("tier", ["anonymous", "free", "identified"])
-def test_bbox_exact_env_restores_viewport_exemption_but_keeps_row_cap(tier):
-    """MAP_ANON_BBOX_EXACT=1 is the no-deploy switch for when the frontend
-    starts sending bbox on zoom. It must NOT lift the row cap."""
+@pytest.mark.parametrize("tier", ["anonymous", "free", "identified", "starter"])
+def test_the_retired_bbox_exact_knob_cannot_unround_a_viewport(tier):
+    """MAP_ANON_BBOX_EXACT=1 used to hand exact viewport coordinates to the
+    non-paying tiers. Retired 2026-09-21: under the exact-location policy no
+    path may give a tier that is not exact on the ladder an exact coordinate,
+    and an exact tier needs no switch. Setting it must change nothing — the
+    rounding AND the row cap both hold."""
     rows, exact, _ = _run(tier, SMALL_VIEWPORT, env={"MAP_ANON_BBOX_EXACT": "1"})
-    assert exact is True, f"{tier} viewport exemption not restored by MAP_ANON_BBOX_EXACT=1"
-    assert rows <= 500, f"{tier} bbox row cap lost when the exemption is on"
+    assert exact is False, f"{tier} got exact viewport coordinates from a retired knob"
+    assert rows <= 500, f"{tier} bbox row cap lost"
 
 
 def test_bbox_exact_env_does_not_unround_global_or_oversized_sweeps():
-    """The switch re-opens ONLY the genuine-viewport path."""
+    """Nor any other path."""
     _, exact_global, _ = _run("anonymous", GLOBAL_SWEEP, env={"MAP_ANON_BBOX_EXACT": "1"})
     assert exact_global is False, "MAP_ANON_BBOX_EXACT leaked into the global sweep"
     _, exact_huge, _ = _run("anonymous", HUGE_BBOX, env={"MAP_ANON_BBOX_EXACT": "1"})

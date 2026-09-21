@@ -358,11 +358,22 @@ def test_module_reads_the_maps_own_env_knobs(monkeypatch, knob, tier, probe):
 def test_main_still_reads_the_same_two_knobs():
     """The map half of the contract. If main.py renames its knob, the corpus
     and the map can disagree about what 'anonymous' means again — which is the
-    entire defect this module was extracted to remove."""
+    entire defect this module was extracted to remove.
+
+    Since 2026-09-21 the map reads MAP_ANON_COORD_DP itself (its anonymous rung
+    keeps the map's own 3dp default) and takes every other rung from
+    coord_dp_for_tier — so MAP_FREE_COORD_DP has exactly ONE reader, this
+    module, and the map cannot drift from the records on the free rung."""
     main_src = (ROOT / 'main.py').read_text(encoding='utf-8')
-    for knob in ('MAP_ANON_COORD_DP', 'MAP_FREE_COORD_DP'):
-        assert f"environ.get('{knob}'" in main_src, (
-            f"main.py no longer reads {knob} from the environment")
+    assert "environ.get('MAP_ANON_COORD_DP'" in main_src, (
+        "main.py no longer reads MAP_ANON_COORD_DP from the environment")
+    fn = _func(_main_tree(), 'api_v1_map')
+    imported = {(n.module, a.name) for n in ast.walk(fn)
+                if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert ('util.facility_tier_gate', 'coord_dp_for_tier') in imported, (
+        "the map no longer takes its rungs from coord_dp_for_tier")
+    assert "environ.get('MAP_FREE_COORD_DP'" not in (ast.get_source_segment(main_src, fn) or ''), (
+        "the map reads its own copy of the free rung again")
 
 
 def test_the_free_rung_survives_an_unset_environment(monkeypatch):
@@ -394,8 +405,10 @@ def test_no_handler_in_the_class_is_left_ungated():
     # Verified live 2026-09-19, anonymous, no key and no cookie. An exemption
     # here is a MEASUREMENT, not an opinion: re-probe before adding to it.
     EXEMPT = {
-        # Self-gated: carries its own tier resolution AND its own copy of the
-        # coordinate ladder (the original of the one in facility_tier_gate).
+        # Self-gated: carries its own tier resolution and field mask; since
+        # 2026-09-21 its coordinate rungs come from coord_dp_for_tier (pinned by
+        # test_main_still_reads_the_same_two_knobs and
+        # tests/test_location_policy_every_surface.py).
         # Probed: tier=anonymous, _coord_precision_dp=2, no power_mw, no provider.
         'api_v1_map',
         # Probed: HTTP 402 for anonymous callers.

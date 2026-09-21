@@ -234,7 +234,8 @@ def _func(tree, name):
     raise AssertionError(f'{name} not found in main.py')
 
 
-@pytest.mark.parametrize('fn,expected_calls', [('facility_by_slug', 2), ('get_facility_by_id', 1)])
+@pytest.mark.parametrize('fn,expected_calls', [('facility_by_slug', 2), ('get_facility_by_id', 1),
+                                                ('get_facility_by_slug', 1)])
 def test_every_single_record_branch_meters_before_it_gates(fn, expected_calls):
     """Each `_apply_record_gate(...)` in the route must receive
     exact_location=<the result of _meter_record_location(...)>, so a record is
