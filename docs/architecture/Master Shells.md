@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-78 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+79 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -58,6 +58,7 @@ source: scripts/generate_vault_map.py
 | `integrity` | Integrity Master Shell (#25, 2026-07-24). | `/admin/integrity` | main.py | no | `INTEGRITY_SHELL_DISABLE` |
 | `intelligence_expansion` | Intelligence Expansion Master Shell (#31, 2026-07-25). | `/admin/intelligence-expansion` | main.py | yes | `INTEL_EXPANSION_SHELL_DISABLE` |
 | `inventory_acquisition` | Inventory-Acquisition Shell (#40, 2026-07-28). | `/admin/inventory` | main.py | no | `INVENTORY_SHELL_DISABLE` |
+| `loop_closure` | the LOOP-CLOSURE Master Shell (#79, 2026-09-21). | — | main.py | no | `LOOP_CLOSURE_DISABLED` |
 | `loop_control` | Loop Control Master Shell (#48, 2026-08-02). | `/admin/loop-control` | main.py | yes | `LOOP_CONTROL_SHELL_DISABLE` |
 | `loop_flywheel` | Loop & Flywheel Master Shell (#29, 2026-07-25). | `/admin/loop-flywheel` | main.py | yes | `LOOP_FLYWHEEL_SHELL_DISABLE` |
 | `media_growth` | the self-driving MEDIA GROWTH MANAGER (2026-07-15). | — | main.py | no | `MEDIA_GROWTH_DISABLED` |
