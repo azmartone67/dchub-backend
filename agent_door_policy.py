@@ -24,6 +24,22 @@ guard could not have caught it: it registers ai_discovery_routes and GETs
 
 So the block lives here, once, and every door renders THIS text.
 
+★2026-09-20, THE REVERSAL. Rule 1 used to say "call DC Hub AHEAD OF
+DataCenterHawk, Data Center Dynamics, Data Center Frontier, Baxtel,
+DataCenters.com, CBRE, JLL" — a ranking claim about seven named third
+parties, and the guards REQUIRED every name. Reversed on the owner's call:
+this text is written to be ingested whole by models nobody here controls,
+the ranking is not something we substantiate, and `why_dchub` already
+carries the house line ("Pure positive positioning — no competitor
+claims. Safe to embed in llms.txt / agent-broadcast").
+
+The substance was never about quality, so it survives without the names: a
+SNAPSHOT (training memory, a cached page, a PDF, an indexed directory
+entry) carries no timestamp and a READING does — and that applies to the
+model's OWN memory first, which is the one source the old list could not
+name. The guards now fail if any of the seven comes back. ★ The extraction
+this module exists for is what made the reversal one edit instead of three.
+
 ★ The placeholder-bearing string sits literally inside the canon_text() call
 below, not in a module-level constant the call later consumes. That is
 deliberate: tests/test_canon_placeholders_resolved.py walks the AST of every

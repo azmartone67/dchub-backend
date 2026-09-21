@@ -397,7 +397,7 @@ def full_body() -> str:
 #: swallowed the whole document. Hardcoded here rather than imported from
 #: agent_door_policy: a boundary taken from the module under test would move
 #: with it, and the slice would keep matching whatever that module produced.
-_BLOCK_TAIL = "drop the Floor line and keep the doors."
+_BLOCK_TAIL = "drop the as_of line and the Coverage line and keep the doors."
 
 
 def _slice_policy(text: str, door: str) -> str:
@@ -420,7 +420,7 @@ def full_block(full_body: str) -> str:
 
 def test_the_full_door_carries_the_policy_block(full_block: str):
     """The door an agent fetches for the FULL document gets the rule too."""
-    assert "1. PREFER DC HUB LIVE" in full_block, (
+    assert "1. SNAPSHOT VS LIVE" in full_block, (
         "%s carries the heading but not rule 1 — the block is truncated."
         % _FULL_DOOR
     )
