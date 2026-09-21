@@ -693,7 +693,10 @@ def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
 #: Every door the policy block is published through, plus /agents.md (same
 #: handler as /AGENTS.md). /AGENTS.md and /agents.md joined 2026-09-21, when
 #: their dead copies on ai_agent_discovery's unregistered blueprint were deleted.
-_ONE_REGISTRATION_DOORS = ("/llms.txt", _FULL_DOOR, "/AGENTS.md", "/agents.md")
+_ONE_REGISTRATION_DOORS = ("/llms.txt", _FULL_DOOR, "/AGENTS.md", "/agents.md",
+                           # A2A cards: routes/agent_a2a.py serves both
+                           # (tests/test_agent_card_oauth2.py pins them identical)
+                           "/.well-known/agent.json", "/.well-known/agent-card.json")
 
 
 @pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
@@ -721,6 +724,71 @@ def test_main_wires_the_registration(door: str):
     dead = [s for s in sites if not _main_wires(s)]
     assert not dead, "main.py never reaches: %s" % ", ".join(
         "%s:%d (%s %s)" % (s.rel, s.line, s.owner_kind, s.owner) for s in dead)
+
+
+@functools.lru_cache(maxsize=None)
+def _through_the_real_app() -> dict:
+    """{door: [status, body]}: each door requested through main.py's REAL app.
+
+    Booted by scripts/app_contract_gate.boot() (DB stubbed, repo state files
+    isolated), in a subprocess so main's import-time threads and state stay
+    out of this one. Nothing here chooses a handler: url_map precedence and
+    before_request hooks run exactly as in production. That last part is not
+    hypothetical: main.py's before_request answered /.well-known/agent.json
+    ahead of every rule until 2026-09-21, and no scan of route decorators can
+    see a hook.
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    out = Path(tempfile.mkdtemp()) / "bodies.json"
+    code = ("import json, sys\n"
+            "sys.path.insert(0, 'scripts')\n"
+            "import app_contract_gate as g\n"
+            "app, _ = g.boot()\n"
+            "c = app.test_client()\n"
+            "res = {}\n"
+            "for p in json.loads(sys.argv[2]):\n"
+            "    r = c.get(p)\n"
+            "    res[p] = [r.status_code, r.get_data(as_text=True)]\n"
+            "json.dump(res, open(sys.argv[1], 'w'))\n"
+            "import os; os._exit(0)\n")
+    proc = subprocess.run(
+        [sys.executable, "-c", code, str(out), json.dumps(_ONE_REGISTRATION_DOORS)],
+        cwd=_ROOT, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0 and out.exists(), (
+        "could not boot the real app (rc=%s). That is NOT a pass: stderr tail:\n%s"
+        % (proc.returncode, "\n".join(proc.stderr.splitlines()[-8:])))
+    return json.loads(out.read_text())
+
+
+def _comparable(door: str, body: str):
+    """The body minus what is stamped per request, and nothing else."""
+    if door.endswith(".json"):
+        import json
+        card = json.loads(body)
+        card.pop("computed_at", None)
+        return card
+    return body
+
+
+@pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
+def test_the_real_app_serves_what_the_one_registration_serves(door: str):
+    """The scan and _served() read source. This reads the booted app.
+
+    If anything answers ahead of the one registration, the real app's body
+    differs from the one _served() renders, and this fails: a winning
+    duplicate, a before_request branch, or a catch-all. It also fails when
+    the door stops being served at all.
+    """
+    status, body = _through_the_real_app()[door]
+    assert status == 200, "the real app answers %s with %s" % (door, status)
+    ours = _served(door).test_client().get(door).get_data(as_text=True)
+    assert _comparable(door, body) == _comparable(door, ours), (
+        "the REAL app serves %s differently (%d bytes) from its one "
+        "registration (%d bytes): something answers ahead of it."
+        % (door, len(body), len(ours)))
 
 
 def test_the_scan_can_see_what_it_exists_to_refuse(tmp_path):

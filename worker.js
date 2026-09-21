@@ -603,7 +603,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.71-capacity-source-on-mcp-get';
+const WORKER_VERSION = '4.9.72-agent-json-serves-the-a2a-card';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2634,34 +2634,40 @@ async function wellKnownResponse(pathname, kv, env) {
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/agent.json') {
-    // ★2026-09-02 (v4.9.52) — see the ai-plugin.json note above; this surface
-    // carried BOTH halves of the rot. Measured live 2026-09-02: description
-    // frozen at 15,700+/1,600+ AND `version` frozen at MCP_SERVER_INFO's
-    // '2.5.0' while /.well-known/mcp/server-card.json — same worker, same
-    // second — served the origin-derived 2.12.3. Fixing ai-plugin.json alone
-    // would have left exactly the split-brain the v4.9.45 server-card note
-    // refuses: two well-known docs on one zone disagreeing about the server's
-    // own version.
-    const [agentTools, agentExtras] = await Promise.all([
-      resolveManifestTools(kv, env),
-      resolveManifestExtras(kv),
-    ]);
-    return new Response(JSON.stringify({
-      name:    MCP_SERVER_INFO.name,
-      url:     MCP_SERVER_INFO.url,
-      version: agentExtras.version || MCP_SERVER_INFO.version,
-      description: agentExtras.description || MCP_SERVER_INFO.description,
-      provider: {
-        organization: MCP_SERVER_INFO.organization,
-        url:          MCP_SERVER_INFO.homepage,
-        contact:      MCP_SERVER_INFO.contact,
-      },
-      capabilities: {
-        tools: { count: agentTools.length, listChanged: true },
-      },
-      protocol: MCP_SERVER_INFO.protocol_version,
-      transport: MCP_SERVER_INFO.transport,
-    }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
+    // ★2026-09-21 (v4.9.72) — ONE A2A card behind both A2A discovery paths.
+    // This path returned an MCP server card (name/url/version/tools/protocol/
+    // transport from MCP_SERVER_INFO), at the location A2A 0.2.x clients read
+    // an AgentCard from. Meanwhile /.well-known/agent-card.json (A2A 0.3)
+    // served the real one, with skills and an OAuth2 scheme. So two answers
+    // to one question, and a 0.2.x client never saw the auth flow.
+    //
+    // It now returns exactly what the public agent-card.json returns: Pages
+    // proxies that path to the Flask origin (routes/agent_a2a.py, which also
+    // registers this path), so the two cannot disagree. MCP clients still get
+    // the MCP card where they look for it: /.well-known/mcp.json and
+    // /.well-known/mcp/server-card.json.
+    //
+    // A same-zone subrequest does not re-enter this worker. The pass-through
+    // `await fetch(request)` below relies on the same property.
+    try {
+      const card = await fetch(`${MCP_SERVER_INFO.homepage}/.well-known/agent-card.json`, {
+        headers: { 'Accept': 'application/json', 'User-Agent': `dchub-zone-worker/${WORKER_VERSION} (agent.json)` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      return new Response(card.body, {
+        status: card.status,
+        headers: {
+          ...headers,
+          ...(card.ok ? {} : { 'Cache-Control': 'no-store' }),
+          'Content-Type': card.headers.get('Content-Type') || 'application/json; charset=utf-8',
+        },
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({
+        error: 'agent card temporarily unavailable',
+        card:  `${MCP_SERVER_INFO.homepage}/.well-known/agent-card.json`,
+      }), { status: 503, headers: { ...headers, 'Cache-Control': 'no-store', 'Retry-After': '60', 'Content-Type': 'application/json; charset=utf-8' } });
+    }
   }
   // Phase r33-J round 8 (2026-05-21) — OAuth advertisement 404.
   // Phase r39-oauth-perpath (2026-05-24) — extended to RFC 9728 per-path variants.

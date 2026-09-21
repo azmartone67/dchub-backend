@@ -1,39 +1,18 @@
 """
-DC Hub — AI Agent Discovery Routes v2
-======================================
-Adds support for all major AI agent discovery protocols:
-- AGENTS.md (OpenAI/Linux Foundation standard)
-- Google Agent2Agent (A2A) Protocol
-- llms-full.txt (extended LLM documentation)
-- security.txt (RFC 9116)
-- Enhanced AI platform tracking
+DC Hub — AI platform identification for agent-traffic attribution.
 
-Installation:
-  1. Copy this file to your Replit project
-  2. Copy the discovery files (AGENTS.md, llms-full.txt, .well-known/agent.json, .well-known/security.txt)
-  3. Add to main.py:
-       from ai_agent_discovery import register_discovery_routes
-       register_discovery_routes(app)
-  4. Restart Replit
-
-New endpoints served:
-  GET /AGENTS.md                      - AGENTS.md (Linux Foundation standard)
-  GET /.well-known/agent.json         - Google A2A Agent Card
-  GET /llms-full.txt                  - Extended LLM documentation
-  GET /.well-known/security.txt       - Security contact (RFC 9116)
-  POST /a2a/tasks/send                - A2A task handler
-  GET /api/v1/ai-tracking/stats       - AI platform access statistics
-  GET /api/v1/ai-tracking/recent      - Recent AI accesses
+main.py imports identify_ai_platform() from here; that is the module's only
+live use. It used to also define a Flask blueprint serving /AGENTS.md,
+/.well-known/agent.json, /llms-full.txt, /.well-known/security.txt, an A2A
+task handler and AI-tracking endpoints. main.py never registered it, so none of
+those routes was ever reachable, and they were deleted 2026-09-21. The note at
+the end of this file says where each path is really served.
 """
 
 import os
 import logging
-from datetime import datetime
 from functools import wraps
-from flask import Blueprint, request, jsonify, Response, send_file
-from db_utils import get_db, try_get_db
-from workos_authkit import authkit_endpoints, AUTHKIT_SCOPES
-from ai_surface_canon import canon_text
+from db_utils import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -134,186 +113,9 @@ def init_tracking_db():
                 pass
 
 
-def log_ai_access(file_requested, platform=None):
-    """Log an AI platform access to a discovery file. Non-blocking — skips if DB busy."""
-    conn = None
-    try:
-        user_agent = request.headers.get('User-Agent', '')
-        if platform is None:
-            platform = identify_ai_platform(user_agent)
-        if platform is None:
-            return
-        
-        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        if ip and ',' in ip:
-            ip = ip.split(',')[0].strip()
-        
-        conn = try_get_db()
-        if conn is None:
-            return
-        c = conn.cursor()
-        c.execute('''INSERT INTO ai_access_log 
-                     (timestamp, platform, user_agent, ip_address, file_requested)
-                     VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING''',
-                  (datetime.utcnow().isoformat(), platform, user_agent[:500], ip, file_requested))
-        conn.commit()
-    except Exception as e:
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
 # =============================================================================
 # DISCOVERY FILE CONTENT
 # =============================================================================
-
-
-# Inline A2A Agent Card
-# The WorkOS AuthKit AS, from its single origin (workos_authkit). Resolved at
-# import like routes/mcp_oauth_2025_06_18.py's _AUTHKIT, so a domain cutover is
-# an env change plus a restart, not an edit to this file.
-_AK = authkit_endpoints()
-
-# ★2026-09-13 — canon resolves when the card is SERVED, in _a2a_agent_card().
-# canon_text() inside the dict below ran once, at import, while every canon
-# cache was cold, so the card holds these two as raw templates.
-_A2A_DESCRIPTION = "Data center intelligence platform - {canon_facilities} distinct facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries."
-_A2A_FACILITY_SEARCH = "Search {canon_facilities} distinct data center facilities worldwide by name, location, provider, or capacity."
-
-A2A_AGENT_CARD = {
-    "protocolVersion": "0.2.1",
-    "name": "DC Hub Intelligence Agent",
-    "description": _A2A_DESCRIPTION,
-    "url": "https://dchub.cloud",
-    "iconUrl": "https://dchub.cloud/favicon.ico",
-    "version": "86.0.0",
-    "provider": {
-        "organization": "DC Hub",
-        "url": "https://dchub.cloud"
-    },
-    "capabilities": {
-        "streaming": False,
-        "pushNotifications": False
-    },
-    "skills": [
-        {
-            "id": "facility-search",
-            "name": "Data Center Facility Search",
-            "description": _A2A_FACILITY_SEARCH,
-            "tags": ["data center", "colocation", "facility", "infrastructure"],
-            "examples": ["Find Equinix data centers in Dallas", "List hyperscale data centers in Arizona"]
-        },
-        {
-            "id": "site-scoring",
-            "name": "Data Center Site Analysis",
-            "description": "Score any location (0-100) for data center suitability: power, carbon, infrastructure, connectivity, risk.",
-            "tags": ["site selection", "scoring", "power", "carbon", "renewable energy"],
-            "examples": ["Score Ashburn VA for a data center", "Compare Phoenix vs Dallas for DC site"]
-        },
-        {
-            "id": "grid-analytics",
-            "name": "Real-Time Grid Analytics",
-            "description": "Live power grid fuel mix across 5 continents — 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) + Great Britain (NESO), ~24 EU bidding zones (ENTSO-E), Taiwan (Taipower), Japan (OCCTO), South Korea (KPX), Brazil (ONS) and Australia (AEMO, partial).",
-            "tags": ["power grid", "energy", "fuel mix", "ISO", "real-time"],
-            "examples": ["What is ERCOT's current fuel mix?", "Show renewables on PJM grid"]
-        },
-        {
-            "id": "ma-tracking",
-            "name": "M&A Transaction Tracking",
-            "description": "Track 1,400+ data center M&A deals, CapEx, and investment deals.",
-            "tags": ["M&A", "transactions", "deals", "acquisitions", "investment"],
-            "examples": ["Recent data center acquisitions", "Deals over $1 billion"]
-        },
-        {
-            "id": "market-intelligence",
-            "name": "Market Intelligence",
-            "description": "Daily market reports: facility counts, capacity, deal volume, trends across 170+ countries.",
-            "tags": ["market report", "intelligence", "analytics", "trends"],
-            "examples": ["Today's market report", "Top data center markets globally"]
-        },
-        {
-            "id": "news-aggregation",
-            "name": "Industry News Feed",
-            "description": "Real-time news from 60+ sources, updated every minute.",
-            "tags": ["news", "industry", "data center"],
-            "examples": ["Latest data center news", "News about hyperscale construction"]
-        },
-        {
-            "id": "energy-infrastructure",
-            "name": "Energy Infrastructure",
-            "description": "Gas pipelines, electricity pricing, carbon intensity, solar/wind potential.",
-            "tags": ["energy", "gas", "electricity", "carbon", "solar", "wind"],
-            "examples": ["Gas pipelines in Texas", "Electricity prices in Virginia"]
-        }
-    ],
-    "defaultInputModes": ["text/plain", "application/json"],
-    "defaultOutputModes": ["application/json", "text/plain"],
-    "authentication": {
-        "schemes": [
-            {
-                "scheme": "apiKey",
-                "in": "header",
-                "name": "X-API-Key",
-                "description": "Optional. Free tier: 100 req/day without key."
-            },
-            {
-                # ADDITIVE enterprise/marketplace path — free tier stays keyless
-                # (apiKey scheme above is unchanged). OAuth2 authorization_code via
-                # WorkOS AuthKit with RFC 7591 Dynamic Client Registration. Required
-                # by Google Cloud Marketplace / Gemini Enterprise Custom-MCP connect.
-                "scheme": "oauth2",
-                "flow": "authorizationCode",
-                "grantType": "authorization_code",
-                "issuer": _AK["issuer"],
-                "authorizationUrl": _AK["authorizationUrl"],
-                "tokenUrl": _AK["tokenUrl"],
-                "registrationUrl": _AK["registrationUrl"],
-                "scopes": list(AUTHKIT_SCOPES),
-                "description": ("Enterprise / marketplace path (Google Cloud "
-                                "Marketplace, Gemini Enterprise) via WorkOS AuthKit. "
-                                "Additive and OPTIONAL — the free tier stays keyless "
-                                "and never requires OAuth.")
-            }
-        ]
-    }
-}
-
-def _a2a_agent_card():
-    """A2A_AGENT_CARD as served, its canon templates resolved for THIS request."""
-    live = {"facility-search": canon_text(_A2A_FACILITY_SEARCH)}
-    return {
-        **A2A_AGENT_CARD,
-        "description": canon_text(_A2A_DESCRIPTION),
-        "skills": [{**s, "description": live[s["id"]]} if s["id"] in live else s
-                   for s in A2A_AGENT_CARD["skills"]],
-    }
-
-
-# =============================================================================
-# BLUEPRINT REGISTRATION
-# =============================================================================
-
-# ★ Unregistered — see the note at the end of this file.
-discovery_bp = Blueprint('discovery', __name__)
-
-
-# ----- Google A2A Agent Card -----
-@discovery_bp.route('/.well-known/agent.json')
-def serve_a2a_agent_card():
-    """Serve A2A Agent Card for Google Agent2Agent Protocol discovery"""
-    log_ai_access('agent.json')
-    response = jsonify(_a2a_agent_card())
-    response.headers['Cache-Control'] = 'public, max-age=3600'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    return response
 
 
 # ----- routes deleted 2026-09-21 -----
@@ -327,6 +129,7 @@ def serve_a2a_agent_card():
 #
 #   /llms-full.txt             ai_discovery_routes.register_discovery_routes
 #   /AGENTS.md, /agents.md     routes/agents_md_fallback.py
+#   /.well-known/agent.json    routes/agent_a2a.py (+ the CF zone worker, worker.js)
 #   /.well-known/security.txt  main.py
 #   /api/v1/ai-tracking/stats  main.py
 #   /api/v1/discovery          main.py
