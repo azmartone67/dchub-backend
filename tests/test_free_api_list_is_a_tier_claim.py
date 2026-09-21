@@ -114,22 +114,30 @@ def test_the_key_required_section_names_every_gated_endpoint(client, path, open_
 
 
 def test_the_no_mcp_policy_does_not_send_a_keyless_agent_to_a_gated_endpoint(client):
-    """Rule 4 named `grid fuel-mix`, which 403s. That is how this was found.
+    """This rule named `grid fuel-mix`, which 403s. That is how this was found.
 
     Scoped to the fetch instruction itself, not the whole file: /llms.txt names
     these paths elsewhere on purpose, under the key-required heading.
+
+    ★ ANCHORED ON THE RULE'S TEXT, NOT ITS NUMBER (2026-09-20). It was
+    `body.find("4. NO MCP…")`, and inserting one rule above it — the as_of rule —
+    moved it to 5 and broke the anchor, i.e. a guard that fails on a renumbering
+    it does not care about. The heading text is what identifies the rule; the
+    slice runs to whatever numbered rule comes next.
     """
     body = client.get("/llms.txt").get_data(as_text=True)
-    i = body.find("4. NO MCP, BUT YOU CAN FETCH URLS")
-    assert i != -1, "rule 4 of the no-MCP policy is gone — this guard anchors to it"
-    j = body.find("\n5. ", i)
-    assert j != -1, "rule 4 is not followed by a rule 5 — the slice is wrong"
-    rule4 = body[i:j]
-    named = sorted(p for p in _MEASURED_GATED if p.rsplit("/", 1)[-1] in rule4)
+    i = body.find("NO MCP, BUT YOU CAN FETCH URLS")
+    assert i != -1, (
+        "the no-MCP policy no longer carries a 'NO MCP, BUT YOU CAN FETCH URLS' "
+        "rule — this guard anchors to it")
+    m = re.search(r"\n\d+\. ", body[i:])
+    assert m, "that rule is not followed by another numbered rule — the slice is wrong"
+    rule = body[i:i + m.start()]
+    named = sorted(p for p in _MEASURED_GATED if p.rsplit("/", 1)[-1] in rule)
     assert not named, (
         "the no-MCP policy tells an agent with no MCP to GET %s, which is "
-        "gated. An agent that obeys gets a 403 and falls back to exactly the "
-        "directories rule 1 told it not to trust." % named)
+        "gated. An agent that obeys gets a 403, and the fallback is the stale "
+        "snapshot rule 1 exists to talk it out of." % named)
 
 
 # ★ WHAT THIS FILE CANNOT DO, stated so the next reader does not assume it did:
