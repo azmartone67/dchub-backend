@@ -1457,6 +1457,7 @@ def _safe_ratio(num, den, digits=2):
 # The signal taxonomy is IMPORTED, never re-declared: a second copy is how
 # a reader and a writer come to disagree about what a signal means.
 from mcp_signal_canonical import SIGNAL_CLASSES, signal_class  # noqa: E402
+from ai_platform_canon import BYO_MCP_PLATFORMS  # noqa: E402
 
 
 @schema_repair_bp.route("/api/v1/admin/funnel/leakage", methods=["GET"])
@@ -1675,10 +1676,28 @@ def funnel_leakage():
             #                        unattributable ('' or 'mcp'). High means
             #                        the row cannot tell an agent from a probe
             #                        whatever the filter did.
-            #   signals_per_session  near 1.0 is the signature of many
-            #                        single-shot sessions — a harness opening a
-            #                        fresh MCP session per run — not of an
-            #                        agent working a problem.
+            #   signals_per_session  a ratio whose FLOOR is set by WHO
+            #                        called, not by how hard they worked. Near
+            #                        1.0 is the signature of single-shot
+            #                        sessions — a harness opening a fresh MCP
+            #                        session per run — OR of a BYO-MCP host
+            #                        that mints one session per tool call,
+            #                        where 1.00 is the only value the ratio can
+            #                        take and it says nothing about the caller.
+            #   byo_client_pct       share of the KEPT signals whose client is
+            #                        in BYO_MCP_PLATFORMS. This is the field
+            #                        that tells those two apart. REPORTED,
+            #                        never subtracted — BYO surfaces carry real
+            #                        users (15 bound emails via Smithery alone).
+            # ★2026-09-20 (r-byo-pin): the line above used to read near-1.0 as
+            # "many single-shot sessions ... not an agent working a problem",
+            # unconditionally. Measured that day on this endpoint's OWN
+            # real_top_clients: connectors-manager returned 200 signals over
+            # 200 sessions - exactly 1.00, structurally - while chatgpt, also
+            # BYO, returned 18.25. So neither the old reading nor a blanket
+            # "BYO means 1.00" survives contact with the data; only the
+            # measured share does, which is why it is published and the
+            # platform list is NOT applied as a rule.
             # Read over mcp_funnel_canonical, NOT mcp_funnel_real, because the
             # excluded count is exactly what mcp_funnel_real has thrown away.
             # Ordering and the signals/sessions values stay on the REAL
@@ -1697,7 +1716,11 @@ def funnel_leakage():
                            COUNT(*) FILTER (
                              WHERE NOT is_synthetic
                                AND LOWER(COALESCE(mcp_client,'')) IN ('', 'mcp')
-                           ) AS generic_client_signals
+                           ) AS generic_client_signals,
+                           COUNT(*) FILTER (
+                             WHERE NOT is_synthetic
+                               AND LOWER(COALESCE(mcp_client,'')) = ANY(%s)
+                           ) AS byo_client_signals
                       FROM mcp_funnel_canonical
                      WHERE created_at >= NOW() - INTERVAL %s
                      GROUP BY tool_requested
@@ -1706,7 +1729,7 @@ def funnel_leakage():
                      -- r-signal-class: window 50, OUTPUT still 15. The top
                      -- 15 by BLOCKED is not a subset of the top 15 by total.
                      LIMIT 50
-                """, (f"{days} days",))
+                """, (sorted(BYO_MCP_PLATFORMS), f"{days} days"))
                 _rows = [
                     {"tool": r[0], "signals": r[1], "sessions": r[2],
                      "excluded_synthetic": r[3],
@@ -1717,6 +1740,10 @@ def funnel_leakage():
                      # NULL session_id, which counts 0 distinct sessions. An
                      # unguarded divide there takes the whole board down.
                      "generic_client_pct": _safe_ratio(100 * r[5], r[1], 1),
+                     # ★ r[6] is 0 when no BYO client called this tool. That
+                     # is a real 0.0, NOT "unmeasured" - a tool that no one
+                     # called at all is absent from the board entirely.
+                     "byo_client_pct": _safe_ratio(100 * r[6], r[1], 1),
                      "signals_per_session": _safe_ratio(r[1], r[2], 2)}
                     for r in cur.fetchall()
                 ]
@@ -1870,7 +1897,13 @@ def funnel_leakage():
                 "not the rank. is_synthetic is a denylist over mcp_client and "
                 "mcp_client is degraded on the trial_preview path, so a rank "
                 "on its own cannot be aimed at. Read real_top_clients for the "
-                "client names that survived the filter."
+                "client names that survived the filter. signals_per_session "
+                "has a FLOOR set by the caller: a BYO-MCP host can mint one "
+                "session per tool call, and a row whose byo_client_pct is "
+                "high is pinned near 1.00 whatever its callers did. That "
+                "list is a population to CHECK, never a rule - measured "
+                "2026-09-20, connectors-manager ran 200 signals / 200 "
+                "sessions = 1.00 while chatgpt, also BYO, ran 18.25."
             )
             out["mixed_population_rates"] = [
                 "drop_calls_to_signals_pct",   # unfiltered calls vs real signals
