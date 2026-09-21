@@ -512,7 +512,7 @@ def add_watchlist_entry():
         _log(f"add_failed: {e}")
         try: conn.rollback()
         except Exception: pass
-        return jsonify(error="add_failed", detail=str(e)[:140]), 500
+        return jsonify(error="add_failed"), 500
     finally:
         try: conn.close()
         except Exception: pass
@@ -559,7 +559,7 @@ def remove_watchlist_entry():
         _log(f"remove_failed: {e}")
         try: conn.rollback()
         except Exception: pass
-        return jsonify(error="remove_failed", detail=str(e)[:140]), 500
+        return jsonify(error="remove_failed"), 500
     finally:
         try: conn.close()
         except Exception: pass
@@ -614,7 +614,7 @@ def list_watchlist():
             ), 200
     except Exception as e:
         _log(f"list_failed: {e}")
-        return jsonify(error="list_failed", detail=str(e)[:140]), 500
+        return jsonify(error="list_failed"), 500
     finally:
         try: conn.close()
         except Exception: pass
@@ -685,7 +685,7 @@ def push_subscribe():
         _log(f"push_subscribe_failed: {e}")
         try: conn.rollback()
         except Exception: pass
-        return jsonify(error="subscribe_failed", detail=str(e)[:140]), 500
+        return jsonify(error="subscribe_failed"), 500
     finally:
         try: conn.close()
         except Exception: pass
@@ -713,5 +713,7 @@ def watchlist_page():
         )
         return Response(html, mimetype="text/html")
     except Exception as e:
-        return Response(f"<!doctype html><body>watchlist: {e}</body>",
-                        mimetype="text/html", status=500)
+        # The detail goes to the server log; the page body stays fixed.
+        _log(f"page_failed: {e}")
+        return Response("<!doctype html><body>watchlist is temporarily "
+                        "unavailable</body>", mimetype="text/html", status=500)
