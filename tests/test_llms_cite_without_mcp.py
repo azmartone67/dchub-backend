@@ -629,9 +629,9 @@ def test_every_door_serves_the_identical_block(
     Extended here rather than as a second guard so a fourth door has one
     assertion to join, not two to keep in step.
 
-    ★ Both llms bodies come from _served(): each door's ONE registration,
-    the one main.py wires. Identity between two handlers this file picked
-    proved nothing about the two production routes to.
+    ★ All three bodies come from _served(): each door's ONE registration,
+    the one main.py wires. Identity between handlers this file picked proved
+    nothing about the ones production routes to.
     """
     summary = _slice_policy(block, "/llms.txt")
     for door, served in ((_FULL_DOOR, full_block), (_AGENTS_DOOR, agents_block)):
@@ -690,12 +690,13 @@ def test_no_unresolved_placeholder_reaches_the_full_door(full_body: str):
     )
 
 
-#: The doors ai_discovery_routes serves. /AGENTS.md is not here yet: it still
-#: has a dead second registration — see test_the_agents_door_duplicate_is_still_dead.
-_LLMS_PATHS = ("/llms.txt", _FULL_DOOR)
+#: Every door the policy block is published through, plus /agents.md (same
+#: handler as /AGENTS.md). /AGENTS.md and /agents.md joined 2026-09-21, when
+#: their dead copies on ai_agent_discovery's unregistered blueprint were deleted.
+_ONE_REGISTRATION_DOORS = ("/llms.txt", _FULL_DOOR, "/AGENTS.md", "/agents.md")
 
 
-@pytest.mark.parametrize("door", _LLMS_PATHS)
+@pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
 def test_each_door_has_exactly_one_registration(door: str):
     """Two registrations of one public path IS the defect.
 
@@ -707,7 +708,7 @@ def test_each_door_has_exactly_one_registration(door: str):
     assert len(sites) == 1, _describe(door, sites)
 
 
-@pytest.mark.parametrize("door", _LLMS_PATHS)
+@pytest.mark.parametrize("door", _ONE_REGISTRATION_DOORS)
 def test_main_wires_the_registration(door: str):
     """Unique is not enough: it must also be REACHABLE from main.py.
 
@@ -765,68 +766,15 @@ def test_the_scan_can_see_what_it_exists_to_refuse(tmp_path):
 # ───────────────────────────────────────────────────────────────────────────
 
 
-def _agents_app():
-    """An app wired the way main.py wires THIS door.
-
-    ★ Not _served(): /AGENTS.md is still declared twice, as /llms-full.txt
-    was — ai_agent_discovery.py:358 (discovery_bp) and
-    routes/agents_md_fallback.py — so _served() refuses it. main.py's
-    `discovery_bp` is imported `from routes.discovery_routes import
-    (discovery_bp, init_discovery_routes, ...)` — the data-discovery
-    blueprint. ai_agent_discovery is never register_blueprint()'d there at
-    all; main.py imports exactly one name from it, identify_ai_platform.
-    Registering ai_agent_discovery's blueprint here would hand the guard its
-    1.1 KB AGENTS_MD_FALLBACK constant, which carries no policy block, and
-    fail while the live door was fine. Deleting that duplicate, as
-    /llms-full.txt's was, lets this become _served(_AGENTS_DOOR).
-
-    Confirmed from the outside rather than argued: live https://dchub.cloud/
-    AGENTS.md served 11,168 bytes on 2026-09-20 and named
-    routes/agents_md_fallback.py in its own header line.
-    """
-    flask = pytest.importorskip("flask")
-    from routes.agents_md_fallback import agents_md_fallback_bp
-
-    app = flask.Flask(__name__)
-    app.register_blueprint(agents_md_fallback_bp)  # main.py, the only one
-    return app
-
-
-def test_the_agents_door_duplicate_is_still_dead():
-    """Pins the premise _agents_app() rests on.
-
-    If ai_agent_discovery's blueprint is ever registered in main.py, its
-    /AGENTS.md rule is registered BEFORE routes/agents_md_fallback.py's and
-    wins, and the live door starts serving a 1.1 KB constant with no policy
-    block in it — silently, exactly as /llms-full.txt did after be#4996. This
-    guard is the tripwire for that, and it is the reason the fixture above may
-    register one blueprint without being a fixture that grades a door nobody
-    serves.
-
-    Deliberately NOT fixed here by patching that constant. The fix is to
-    delete the duplicate, as 2026-09-21 did for /llms-full.txt's; then this
-    door can join _LLMS_PATHS and test_each_door_has_exactly_one_registration.
-    """
-    main = Path(__file__).resolve().parents[1] / "main.py"
-    src = main.read_text()
-    assert "from ai_agent_discovery import discovery_bp" not in src, (
-        "main.py now registers ai_agent_discovery.discovery_bp. Its /AGENTS.md "
-        "rule is declared BEFORE routes/agents_md_fallback.py's and will win, "
-        "and it serves AGENTS_MD_FALLBACK (1,136 bytes, no policy block). "
-        "Either render policy_block() there too, or stop registering it."
-    )
-
-
 @pytest.fixture(scope="module")
 def agents_body() -> str:
-    """The REAL /AGENTS.md body, served through the blueprint that answers it."""
-    app = _agents_app()
+    """The REAL /AGENTS.md body, from the path's one registration."""
+    app = _served(_AGENTS_DOOR)
     r = app.test_client().get(_AGENTS_DOOR)
     assert r.status_code == 200, "%s -> %s" % (_AGENTS_DOOR, r.status_code)
     body = r.get_data(as_text=True)
     assert len(body) > 2000, (
-        "%s served only %d bytes — that is the 1.1 KB ai_agent_discovery "
-        "constant or a stub, not the rendered door, and every assertion below "
+        "%s served only %d bytes — a stub, not the rendered door, and every assertion below "
         "would be reading it instead." % (_AGENTS_DOOR, len(body))
     )
     assert "routes/agents_md_fallback.py" in body, (
