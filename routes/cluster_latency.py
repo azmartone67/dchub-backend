@@ -462,7 +462,7 @@ def physics_impossible_mitigation(res):
 
 
 # ── HTTP surface ─────────────────────────────────────────────────────────
-def _resolve_candidate_sites(src):
+def _resolve_candidate_sites(src, coarse=False):
     """r-candidate-cluster (2026-07-12, Grok's high-priority review item):
     let tool #73 consume the candidate contract instead of coordinate-only.
     Accepts candidate_ids (array or comma/semicolon string) AND cand_… tokens
@@ -529,7 +529,13 @@ def _resolve_candidate_sites(src):
                 contract["snapshot_id"] = cand.get("snapshot_id")
             label = (cand.get("project_name") or cid)
             label = str(label).replace(":", " ").replace(";", " ")[:64]
-            passthrough.append(f"{cand['lat']},{cand['lng']}:{label}")
+            lat, lng = cand["lat"], cand["lng"]
+            if coarse:
+                # Free/anon tighten (2026-09-21): below Developer a candidate
+                # resolves to the 2 dp point the refined queue's tease shows,
+                # and every latency is computed from that point.
+                lat, lng = round(float(lat), 2), round(float(lng), 2)
+            passthrough.append(f"{lat},{lng}:{label}")
             contract["resolved"].append(cid)
     try:
         conn.close()
@@ -544,7 +550,14 @@ def cluster_latency():
     src = request.get_json(silent=True) or request.values
     # candidate contract (Grok review): resolve candidate_ids / cand_ tokens to
     # frozen coordinates before parsing. Fail-soft — falls back to raw sites.
-    _sites_str, _cand_contract = _resolve_candidate_sites(src)
+    _coarse = False
+    if src.get("candidate_ids") or "cand_" in str(src.get("sites") or ""):
+        try:
+            from util.paid_numeric_gate import is_full_caller
+            _coarse = not is_full_caller()
+        except Exception:  # noqa: BLE001 — unknown caller: the coarse point
+            _coarse = True
+    _sites_str, _cand_contract = _resolve_candidate_sites(src, coarse=_coarse)
     _sites_input = _sites_str if _sites_str is not None else src.get("sites")
     sites, err = parse_sites(_sites_input)
     if err:

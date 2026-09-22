@@ -348,8 +348,32 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 256
 
 
+# Free/anon tighten (2026-09-21): below Developer every megawatt figure in the
+# timeline and the queue context comes back as a band (util/paid_numeric_gate).
+# Years, unit and project counts, dates, sources and caveats stay.
+_TIMELINE_MW = ("under_construction_mw", "planned_mw", "testing_mw", "other_mw",
+                "retiring_mw", "cumulative_firm_signal_mw")
+_TIMELINE_LOCKED = tuple("timeline[].%s" % f for f in _TIMELINE_MW) + (
+    "queue_context.active_mw",)
+
+
+def _timeline_tease(payload):
+    from util.paid_numeric_gate import band_fields
+    for row in payload.get("timeline") or []:
+        band_fields(row, _TIMELINE_MW)
+    if isinstance(payload.get("queue_context"), dict):
+        band_fields(payload["queue_context"], ("active_mw",))
+    return payload, len(payload.get("timeline") or [])
+
+
+def _timeline_gate(view):
+    from util.paid_numeric_gate import tease_numerics
+    return tease_numerics(_timeline_tease, locked=_TIMELINE_LOCKED)(view)
+
+
 @power_availability_timeline_bp.route("/api/v1/power/availability-timeline",
                                       methods=["GET"])
+@_timeline_gate
 def power_availability_timeline():
     state = (request.args.get("state") or "").strip().upper()[:2]
     if not state or len(state) != 2 or not state.isalpha():

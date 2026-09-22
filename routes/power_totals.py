@@ -204,7 +204,31 @@ def _cached_totals() -> dict:
     return data
 
 
+# Free/anon tighten (2026-09-21): below Developer the per-state and per-market
+# megawatts come back as bands (util/paid_numeric_gate). The three national
+# totals and the counts stay exact: one national figure per key, with no
+# parameter a caller can narrow it by, is a headline stat like the facility
+# count, not a site-level number.
+_TOTALS_LOCKED = ("by_state[].operating_mw", "by_state[].pipeline_mw",
+                  "by_state[].total_mw", "top_pipeline_markets[].pipeline_mw")
+
+
+def _totals_tease(payload):
+    from util.paid_numeric_gate import band_fields
+    for row in payload.get("by_state") or []:
+        band_fields(row, ("operating_mw", "pipeline_mw", "total_mw"))
+    for row in payload.get("top_pipeline_markets") or []:
+        band_fields(row, ("pipeline_mw",))
+    return payload, len(payload.get("by_state") or [])
+
+
+def _totals_gate(view):
+    from util.paid_numeric_gate import tease_numerics
+    return tease_numerics(_totals_tease, locked=_TOTALS_LOCKED)(view)
+
+
 @power_totals_bp.route("/api/v1/power/totals", methods=["GET"])
+@_totals_gate
 def api_totals():
     """Public — JSON aggregates. 5-min cache."""
     data = _cached_totals()
@@ -241,17 +265,21 @@ def html_totals():
     top_pp     = d.get("top_pipeline_markets") or []
     computed   = d.get("computed_at", "")
 
+    # Free/anon tighten (2026-09-21): this page is public and cached, so its
+    # state and market tables show the same bands the JSON gives a caller below
+    # Developer (util/paid_numeric_gate). The national totals above them stay.
+    from util.paid_numeric_gate import mw_band as _band
     state_rows = "\n".join(
         f'<tr><td><a href="/dcpi/{s["state"].lower()}">{s["state"]}</a></td>'
-        f'<td>{_fmt_mw(s["operating_mw"])}</td>'
-        f'<td style="color:#818cf8;font-weight:600">{_fmt_mw(s["pipeline_mw"])}</td>'
-        f'<td>{_fmt_mw(s["total_mw"])}</td>'
+        f'<td>{_band(s["operating_mw"])}</td>'
+        f'<td style="color:#818cf8;font-weight:600">{_band(s["pipeline_mw"])}</td>'
+        f'<td>{_band(s["total_mw"])}</td>'
         f'<td>{s["facility_count"]:,}</td></tr>'
         for s in by_state[:25]
     )
     pp_market_rows = "\n".join(
         f'<tr><td>{m["city"]}, {m["state"] or "-"}</td>'
-        f'<td style="color:#818cf8;font-weight:600">{_fmt_mw(m["pipeline_mw"])}</td>'
+        f'<td style="color:#818cf8;font-weight:600">{_band(m["pipeline_mw"])}</td>'
         f'<td>{m["project_count"]:,}</td></tr>'
         for m in top_pp[:15]
     )

@@ -205,7 +205,34 @@ def candidate_lifecycle_doc():
     return send_from_directory("static", "candidate-lifecycle.html")
 
 
+# Free/anon tighten (2026-09-21): a candidate_id resolves to the frozen row the
+# refined queue minted, so resolving one follows the refined queue's gate. Below
+# Developer: capacity and fiber distance null, coordinates at 2 dp
+# (util/paid_numeric_gate).
+_CANDIDATE_LOCKED = ("identity.capacity_mw", "location.fiber_km",
+                     "location.lat", "location.lng")
+
+
+def _candidate_tease(payload):
+    from util.paid_numeric_gate import coarse_coord
+    ident = payload.get("identity")
+    if isinstance(ident, dict):
+        ident["capacity_mw"] = None
+    loc = payload.get("location")
+    if isinstance(loc, dict):
+        loc["fiber_km"] = None
+        loc["lat"] = coarse_coord(loc.get("lat"))
+        loc["lng"] = coarse_coord(loc.get("lng"))
+    return payload, 1
+
+
+def _candidate_gate(view):
+    from util.paid_numeric_gate import tease_numerics
+    return tease_numerics(_candidate_tease, locked=_CANDIDATE_LOCKED)(view)
+
+
 @candidates_bp.route("/api/v1/resolve-candidate")
+@_candidate_gate
 def resolve_candidate():
     """Narrow by contract: identity, location, snapshot metadata, provenance,
     originating search context. NEVER analysis, never a recompute."""
