@@ -548,6 +548,24 @@ def test_a_session_whose_token_lapsed_gets_the_preview_not_the_wall(client, path
     _assert_preview(_get(client, path), path)
 
 
+@pytest.mark.parametrize("path", [p for p in ROUTES if p.startswith("/api/v1/")])
+def test_an_ai_browser_with_a_lapsed_session_gets_the_preview_not_a_401(client, path):
+    """The Claude desktop browser of a signed-in user whose access token lapsed:
+    the refresh cookie, no key of its own, and on /api/v1/* the trial key
+    main.auto_issue_key_for_ai_agents injects (which here does not validate).
+    Measured live 2026-09-22 on the owner's Pro session: the ladder answered
+    access=wall while /api/v2/scoring/h3-cell, which the hook does not touch,
+    answered the preview. The session is judged without the injected key."""
+    client.set_cookie("dchub_refresh", "opaque-refresh-token")
+    _assert_preview(client.get(path, headers={"User-Agent": CLAUDE_UA}), path)
+
+
+def test_the_ladder_reads_that_browser_as_preview_too(client):
+    client.set_cookie("dchub_refresh", "opaque-refresh-token")
+    body = client.get(LADDER, headers={"User-Agent": CLAUDE_UA}).get_json()
+    assert body["access"] == "preview" and body["key_bound"] is False
+
+
 @pytest.mark.parametrize("path", ROUTES)
 def test_a_signed_in_free_user_gets_the_preview(client, monkeypatch, path):
     import api_tier_gating
