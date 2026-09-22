@@ -168,15 +168,17 @@ def db(world, monkeypatch):
         monkeypatch.setenv(var, _scoped_dsn())
     monkeypatch.setattr(psycopg2, "connect", _connect)
     monkeypatch.setattr(mg, "_key_store", {})
+    monkeypatch.setattr(mg, "_row_tiers", {})
     return world
 
 
 def _read(key):
     """(X-API-Key tier, Bearer tier), each read as a new process would: the
-    gatekeeper's _key_store keeps a tier for the life of the process."""
+    gatekeeper keeps a row's tier for _ROW_TIER_TTL_S, so this empties it."""
     out = []
     for headers in ({"X-API-Key": key}, {"Authorization": "Bearer " + key}):
         mg._key_store.clear()
+        mg._row_tiers.clear()
         app = flask.Flask(__name__)
         with app.test_request_context("/", headers=headers, environ_base=EXTERNAL):
             out.append(tier_gate._resolve_caller_tier()[0])

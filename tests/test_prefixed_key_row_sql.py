@@ -105,6 +105,7 @@ def db(world, monkeypatch):
         monkeypatch.setenv(var, _scoped_dsn())
     monkeypatch.setattr(psycopg2, "connect", _connect)
     monkeypatch.setattr(mg, "_key_store", {})
+    monkeypatch.setattr(mg, "_row_tiers", {})
     return world
 
 
@@ -159,5 +160,6 @@ def test_a_revoked_partner_key_is_free(db):
     assert _tier({"X-API-Key": issued["key"]}) == "ENTERPRISE"   # live before
     _revoke(issued["key_prefix"])
     mg._key_store.clear()
+    mg._row_tiers.clear()     # a new process: no row tier kept from before
     assert _tier({"X-API-Key": issued["key"]}) == "FREE"
     assert _tier({"Authorization": "Bearer " + issued["key"]}) == "FREE"

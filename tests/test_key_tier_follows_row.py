@@ -78,6 +78,7 @@ def db(monkeypatch):
     monkeypatch.setenv("NEON_DATABASE_URL", "postgres://row-stub/none")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(mg, "_key_store", {})
+    monkeypatch.setattr(mg, "_row_tiers", {})
     return d
 
 
@@ -89,15 +90,22 @@ def _key(prefix):
     return prefix + secrets.token_urlsafe(24)
 
 
-def _fresh(key):
-    """Resolve as a new process would: _key_store keeps a tier for the life of
-    the process, so a row change is seen on the next start, not the next call."""
+def _new_process():
+    """Empty what a process start empties: _key_store, and the row tiers
+    resolve_tier keeps for _ROW_TIER_TTL_S (tests/test_key_tier_row_ttl.py)."""
     mg._key_store.clear()
+    mg._row_tiers.clear()
+
+
+def _fresh(key):
+    """Resolve as a new process would, reading the row now rather than once
+    the tier resolve_tier last read from it expires."""
+    _new_process()
     app = flask.Flask(__name__)
     with app.test_request_context("/", headers={"X-API-Key": key},
                                   environ_base=EXTERNAL):
         caller = tier_gate._resolve_caller_tier()[0]
-    mg._key_store.clear()
+    _new_process()
     return mg.resolve_tier(key), caller
 
 
@@ -185,11 +193,11 @@ def test_a_dunning_demoted_key_fails_the_gate_its_plan_passed(db, plan, monkeypa
     key = _key("dchub_%s_" % plan)
     for row, ok in ((_row(plan, plan, plan), True), (_row("free", plan, plan), False)):
         db.rows[key] = row
-        mg._key_store.clear()
+        _new_process()
         got = app.test_client().get("/key-tier-row/paid", headers={"X-API-Key": key},
                                     environ_base=EXTERNAL).status_code
         assert got == (200 if ok else 402), (row, got)
-        mg._key_store.clear()
+        _new_process()
         with app.test_request_context("/", headers={"X-API-Key": key},
                                       environ_base=EXTERNAL):
             assert tier_gate.caller_is_privileged(need) is ok, row
@@ -209,10 +217,10 @@ def test_developer_keys_on_enterprise_rows_are_enterprise(db, monkeypatch):
     def ent():
         return "full"
 
-    mg._key_store.clear()
+    _new_process()
     assert app.test_client().get("/key-tier-row/ent", headers={"X-API-Key": key},
                                  environ_base=EXTERNAL).status_code == 200
-    mg._key_store.clear()
+    _new_process()
     with app.test_request_context("/", headers={"X-API-Key": key},
                                   environ_base=EXTERNAL):
         assert tier_gate.caller_is_privileged("ENTERPRISE") is True
