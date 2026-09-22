@@ -202,20 +202,24 @@ def _resolve_caller_tier() -> tuple[str, dict]:
         _have = max([_TIER_RANK.get(t, 0) for t, _ in candidates], default=0)
         if _have < _TIER_RANK.get("PRO", 3):
             try:
-                import os, psycopg2
+                import os, psycopg2, hashlib
                 db = os.environ.get("DATABASE_URL")
                 if db:
                     with psycopg2.connect(db, sslmode="require", connect_timeout=3) as c:
                         with c.cursor() as cur:
                             # Token can be a session token OR a raw api key.
                             # Try api_keys table first (most common case).
+                            # 2026-09-22: the whole key, sha256 or raw (partner
+                            # keys are stored raw), on an active row — the
+                            # X-API-Key path's match. Not its first 16 chars.
                             try:
                                 cur.execute("""
                                     SELECT COALESCE(rate_limit_tier, 'free')
                                       FROM api_keys
-                                     WHERE key_prefix = %s OR key_hash = %s
+                                     WHERE key_hash IN (%s, %s)
+                                       AND (is_active = 1 OR is_active IS NULL)
                                      LIMIT 1
-                                """, (token[:16], token))
+                                """, (hashlib.sha256(token.encode()).hexdigest(), token))
                                 r = cur.fetchone()
                                 if r and r[0]:
                                     candidates.append((str(r[0]).upper(), "cookie:api_keys"))
