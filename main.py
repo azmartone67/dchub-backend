@@ -13420,7 +13420,9 @@ def _get_request_tier():
     # REST as anonymous/free and 429'd under a shared IP bucket. Recognize all
     # three; the api_keys SQL only covers dchub_, so dch_live_/dch_trial_ delegate
     # to the canonical validate_api_key (which knows their tables).
-    _KEY_PREFIXES = ('dchub_', 'dch_live_', 'dch_trial_')
+    # frontend#1534 (2026-09-22): dch_oauth_ (the MCP OAuth sign-in) lives in
+    # mcp_dev_keys like dch_live_ and resolves through validate_api_key too.
+    _KEY_PREFIXES = ('dchub_', 'dch_live_', 'dch_trial_', 'dch_oauth_')
     api_key = (
         request.headers.get('X-API-Key')
         or request.args.get('api_key')
@@ -13432,7 +13434,7 @@ def _get_request_tier():
             _bearer = _auth[7:].strip()
             if _bearer.startswith(_KEY_PREFIXES):
                 api_key = _bearer
-    if api_key and api_key.startswith(('dch_live_', 'dch_trial_')):
+    if api_key and api_key.startswith(('dch_live_', 'dch_trial_', 'dch_oauth_')):
         # Minted MCP/trial keys don't live in api_keys — resolve via the shared
         # validator (mcp_dev_keys / auto_trial_keys), cached briefly so a burst
         # of REST calls from one agent doesn't open a DB connection per request.
