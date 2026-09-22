@@ -199,12 +199,14 @@ def _today() -> str:
 def _dchub_numbers() -> dict:
     """Canonical, citation-safe DC Hub numbers. Never raises.
 
-    Tool count + facility floor come from ai_surface_canon.PINNED — the
-    fenced source every agent surface renders from. The old hardcoded
-    "mcp_tools": 40 drifted 40→82 unnoticed for weeks because this module
-    was outside AGENT_CODE_SURFACES, and facilities_phrase() is the raw-row
-    OVER-claim path (its output is on the canon stale_markers denylist) —
-    the verified floor is the only citeable one.
+    Tool count + facility floor come from canon_text() — the live canon
+    floors /api/v1/canon/phrases publishes, with ai_surface_canon.PINNED only
+    as the cold-start fallback. The old hardcoded "mcp_tools": 40 drifted
+    40→82 unnoticed for weeks because this module was outside
+    AGENT_CODE_SURFACES, and facilities_phrase() is the raw-row OVER-claim path
+    (its output is on the canon stale_markers denylist). The keeper count
+    (facilities_verified_phrase) is not used either: it is a different
+    population from the canon floor (see _dchub_numbers' 2026-09-22 note).
     """
     nums = {
         "facilities_phrase": canon_text("{canon_facilities}"),
@@ -221,19 +223,31 @@ def _dchub_numbers() -> dict:
         # this module has already failed, so this never renders an empty count.
         "mcp_tools": len((_CANON or {}).get("tool_manifest") or ()),  # PINNED overrides below
     }
+    # ★2026-09-22 — THE CANON FLOOR, NOT THE KEEPER COUNT. This block used to
+    # overwrite the canon value twice: first with PINNED (the cold-start pin),
+    # then with facilities_verified_phrase(), the deprecated alias of the KEEPER
+    # count (a de-duplication state, a different population). Measured live that
+    # day: every /vs page's <meta description> and og:description published the
+    # keeper floor, about 1,600 below the facilities floor /api/v1/canon/phrases
+    # served, and labelled it "verified".
+    # canon_text() resolves the same live floor that endpoint publishes (PINNED
+    # only at cold start), so the pages now say what every other door says, and
+    # "verified" is dropped from the copy: no floor here is a verification.
+    _tools = canon_text("{canon_tools}")
+    _fac = canon_text("{canon_facilities}")
     if _CANON:
         try:
             nums["mcp_tools"] = int(_CANON["tools_advertised"])
             nums["facilities_phrase"] = _CANON["public"]["facilities"]
         except Exception:
             pass
+    if _tools.isdigit():
+        nums["mcp_tools"] = int(_tools)
+    if _fac:
+        nums["facilities_phrase"] = _fac
     try:
-        from canonical_stats import get_canonical_stats, facilities_verified_phrase
+        from canonical_stats import get_canonical_stats
         s = get_canonical_stats()
-        # Verified (deduped, distinct-site) floor — never the raw-row pile.
-        _fp = facilities_verified_phrase()
-        if _fp:
-            nums["facilities_phrase"] = _fp
         if s.get("markets"):
             nums["markets"] = int(s["markets"])
         if s.get("grid_operators"):
@@ -630,7 +644,7 @@ def _render_html(m: dict) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{search} Alternative ({year}) — DC Hub vs {disp_attr} · DC Hub</title>
-<meta name="description" content="Looking for a {search} alternative? DC Hub vs {disp_attr}, compared factually: live MCP server ({n['mcp_tools']}+ tools) AI agents can query directly, {n['facilities_phrase']} verified facilities, live grid telemetry, public pricing and a free tier — no demo call required.">
+<meta name="description" content="Looking for a {search} alternative? DC Hub vs {disp_attr}, compared factually: live MCP server ({n['mcp_tools']}+ tools) AI agents can query directly, {n['facilities_phrase']} facilities, live grid telemetry, public pricing and a free tier — no demo call required.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="{m['canonical']}">
 <meta property="og:title" content="{search} Alternative — DC Hub vs {disp_attr}">

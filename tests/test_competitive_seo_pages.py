@@ -83,6 +83,28 @@ def test_counts_are_canon_bound_not_hardcoded(vs_client):
         assert stale not in body, f"retired floor {stale} re-appeared"
 
 
+def test_vs_publishes_the_canon_floor_not_the_keeper_count(vs_client, monkeypatch):
+    """★2026-09-22: every /vs <meta description> and og:description published
+    the KEEPER floor (facilities_verified_phrase, a de-duplication state)
+    labelled "verified", about 1,600 below the facilities floor
+    /api/v1/canon/phrases served. The pages must publish the canon floor (the
+    live public floor canon_text resolves) and never the keeper count.
+
+    Synthetic values on purpose, so a pass cannot come from either one
+    happening to equal today's canon."""
+    import ai_surface_canon
+    import canonical_stats
+    monkeypatch.setattr(ai_surface_canon, "_live_public_floors",
+                        lambda: {"facilities": "31,300+"})          # the live canon floor
+    monkeypatch.setattr(canonical_stats, "facilities_verified_phrase",
+                        lambda: "29,100+")                          # the keeper count
+    for path in ("/vs", "/vs/datacenterhawk", "/vs/baxtel"):
+        body = _body(vs_client, path)
+        assert "31,300+" in body, f"{path} does not publish the canon facilities floor"
+        assert "29,100+" not in body, f"{path} publishes the keeper count instead of canon"
+        assert "verified facilities" not in body, f"{path} labels a floor as verified"
+
+
 def test_sp_acquisition_section_only_on_datacenterhawk(vs_client):
     hawk = _body(vs_client, "/vs/datacenterhawk")
     assert 'id="sp-global-acquisition"' in hawk

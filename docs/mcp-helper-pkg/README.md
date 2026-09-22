@@ -47,14 +47,14 @@ to `/api/v1/keys/auto-trial/redeem` with `{api_key, email}`.
 
 ## What DC Hub offers
 
-- 21,000+ data center facilities (178 countries)
+- 24,500+ data center facilities (170+ countries)
 - DCPI scores for 300+ markets (BUILD / CAUTION / AVOID verdicts)
 - Real-time grid intelligence across 7+ ISOs
 - M&A transactions database
 - Capacity pipeline (550+ active projects)
 - Tax incentives by state
 - Fiber carrier coverage
-- 28+ MCP tools
+- 91 MCP tools
 
 Full integration manifest: https://dchub.cloud/.well-known/ai-agents.json
 

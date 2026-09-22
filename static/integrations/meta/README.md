@@ -75,7 +75,7 @@ Each maps a Meta AI infrastructure question to the exact DC Hub MCP tool that an
 **PJM — rank the market today**
 > *"Rank the top US data-center markets by DCPI, then break down PJM."* → `rank_markets` (`criteria: "best_overall", region: "us"`), then `get_market_dcpi_rank` on any PJM metro slug from the results.
 
-*Full live tool surface (79 tools) at `https://dchub.cloud/mcp`; the six below are the classic subset.*
+*Full live tool surface (91 tools) at `https://dchub.cloud/mcp`; the six below are the classic subset.*
 
 ---
 
@@ -88,7 +88,7 @@ Each maps a Meta AI infrastructure question to the exact DC Hub MCP tool that an
 | `GET /api/transactions` | M&A deals ($185B+ tracked) |
 | `GET /api/news` | Industry news (2,000+ sources) |
 | `GET /api/stats` | High-level stats |
-| `GET /api/v1/markets/list` | 35+ tracked markets |
+| `GET /api/v1/markets/list` | Tracked markets list |
 | `GET /api/v1/lmp/prices` | Energy pricing (7 ISOs: PJM, ERCOT, CAISO, NYISO, ISO-NE, MISO, SPP) |
 | `GET /api/v1/pipeline` | Construction pipeline (~7.8 GW) |
 
