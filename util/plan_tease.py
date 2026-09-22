@@ -401,7 +401,20 @@ def _lp_resolve(serve_full, probe=None):
         return serve_full()
 
     from api_tier_gating import require_plan
-    return make_response(require_plan(LP_PLAN, pack_opens=True)(_entitled)())
+    # The trial key main.auto_issue_key_for_ai_agents put on this request is not
+    # a credential the caller chose. When it rides beside a session cookie (the
+    # Claude desktop browser of a signed-in user whose access token lapsed),
+    # require_plan read it as the caller's key and answered 401 invalid_api_key
+    # whenever that trial no longer validated, where the same browser got the
+    # preview on every route the hook does not touch. So the session is judged
+    # on its own, as if the hook had not run; the key is put back afterwards.
+    injected = key and key == _auto_issued_key()
+    held = request.environ.pop("HTTP_X_API_KEY", None) if injected else None
+    try:
+        return make_response(require_plan(LP_PLAN, pack_opens=True)(_entitled)())
+    finally:
+        if held is not None:
+            request.environ["HTTP_X_API_KEY"] = held
 
 
 def lp_early_wall():
