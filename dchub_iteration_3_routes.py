@@ -366,49 +366,84 @@ def semantic_search():
             return cs
         matches = sorted(matches, key=_composite, reverse=True)
 
-    if hydrate_flag:
-        matches = _hydrate(matches)
+    # 2026-09-21: the full match list (exact coordinates, power_mw, the hydrated
+    # facility row) is Developer data, as the api.dchub.cloud edge copy of this
+    # route already rules. util/rest_tease.serve answers everyone else with a
+    # preview: the top TEASE_ROWS matches, coordinates rounded, MW null. The
+    # $10 pack opens the full list for one credit; internal / admin unchanged.
+    from util import rest_tease
 
-    flat = []
-    for m in matches:
-        md = m.get('metadata') or {}
-        flat.append({
-            'id':                m.get('id'),
-            'score':             m.get('score'),
-            'name':              md.get('name'),
-            'provider':          md.get('provider'),
-            'city':              md.get('city'),
-            'state':             md.get('state'),
-            'country':           md.get('country'),
-            'lat':               md.get('lat'),
-            'lng':               md.get('lng'),
-            'power_mw':          md.get('power_mw'),
-            'status':            md.get('status'),
-            'hydrated':          m.get('hydrated'),
-            'hydration_method': m.get('hydration_method'),
-            'composite_score':  m.get('composite_score'),
-        })
+    def _answer(shown, preview):
+        if hydrate_flag:
+            shown = _hydrate(shown)
+        flat = []
+        for m in shown:
+            md = m.get('metadata') or {}
+            row = {
+                'id':                m.get('id'),
+                'score':             m.get('score'),
+                'name':              md.get('name'),
+                'provider':          md.get('provider'),
+                'city':              md.get('city'),
+                'state':             md.get('state'),
+                'country':           md.get('country'),
+                'lat':               md.get('lat'),
+                'lng':               md.get('lng'),
+                'power_mw':          md.get('power_mw'),
+                'status':            md.get('status'),
+                'hydrated':          m.get('hydrated'),
+                'hydration_method': m.get('hydration_method'),
+                'composite_score':  m.get('composite_score'),
+            }
+            if preview:
+                row.update({
+                    'lat':             rest_tease.rounded(md.get('lat')),
+                    'lng':             rest_tease.rounded(md.get('lng')),
+                    'power_mw':        None,
+                    'composite_score': None,
+                    'hydrated':        (rest_tease.tease_row(
+                        m['hydrated'], keep=_PREVIEW_HYDRATED_KEEP,
+                        coords=('latitude', 'longitude'), null=('power_mw',))
+                        if isinstance(m.get('hydrated'), dict) else None),
+                })
+            flat.append(row)
 
-    return jsonify({
-        'query':           q,
-        'topK':            topK,
-        'count':           len(flat),
-        'hydrated':        hydrate_flag,
-        'matches':         flat,
-        'filters':         filters or None,
-        'filter_stats':    {
-            'fetched':            pre_filter_count,
-            'matched_filters':    post_filter_count,
-            'returned':           len(flat),
-        },
-        'timing_ms': {
-            'embed':   embed_ms,
-            'query':   query_ms,
-            'total':   int((time.time() - started) * 1000),
-        },
-        'index':           VECTORIZE_INDEX,
-        'model':           EMBED_MODEL,
-    }), 200
+        out = {
+            'query':           q,
+            'topK':            topK,
+            'count':           len(flat),
+            'hydrated':        hydrate_flag,
+            'matches':         flat,
+            'filters':         filters or None,
+            'filter_stats':    {
+                'fetched':            pre_filter_count,
+                'matched_filters':    post_filter_count,
+                'returned':           len(flat),
+            },
+            'timing_ms': {
+                'embed':   embed_ms,
+                'query':   query_ms,
+                'total':   int((time.time() - started) * 1000),
+            },
+            'index':           VECTORIZE_INDEX,
+            'model':           EMBED_MODEL,
+        }
+        if preview:
+            out.update({**rest_tease.envelope('developer', _PREVIEW_LOCKED,
+                                              len(matches), coords=True)})
+        return jsonify(out), 200
+
+    return rest_tease.serve(
+        'developer',
+        lambda: _answer(matches, False),
+        lambda: _answer(matches[:rest_tease.TEASE_ROWS], True))
+
+
+# What the /api/v1/search/semantic preview leaves null or rounds (2026-09-21).
+_PREVIEW_LOCKED = ('matches[].power_mw', 'matches[].composite_score',
+                   'matches[].hydrated.power_mw')
+_PREVIEW_HYDRATED_KEEP = ('id', 'slug', 'name', 'provider', 'status', 'city',
+                          'state', 'country', 'source', 'source_url')
 
 
 # ============================================================

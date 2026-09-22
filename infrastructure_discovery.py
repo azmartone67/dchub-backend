@@ -1962,18 +1962,46 @@ def register_infrastructure_routes(app, start_scheduler=True):
 
     @bp.route('/api/infrastructure/gas-pipelines')
     def get_gas_pipelines():
-        conn = get_db()
-        try:
-            cursor = conn.cursor()
+        # 2026-09-21: the same preview as /api/v1/gas-pipelines (util/rest_tease)
+        # for callers below Developer: TEASE_ROWS rows, an allowlist of fields,
+        # coordinates rounded. Developer+, pack credits and internal / admin
+        # callers get the 200 rows as before.
+        from util import rest_tease
+
+        def _answer(n, preview):
+            conn = get_db()
+            total = 0
             try:
-                cursor.execute("SELECT * FROM gas_pipelines ORDER BY created_at DESC LIMIT 200")
-                pipelines = [dict(row) for row in cursor.fetchall()]
-            except:
-                pipelines = []
-        finally:
-            try: conn.close()
-            except Exception: pass
-        return jsonify({"success": True, "data": pipelines, "count": len(pipelines)})
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT * FROM gas_pipelines ORDER BY created_at DESC LIMIT %s", (n,))
+                    pipelines = [dict(row) for row in cursor.fetchall()]
+                    if preview:
+                        cursor.execute("SELECT COUNT(*) AS n FROM gas_pipelines")
+                        _row = cursor.fetchone()
+                        total = (_row.get('n') if hasattr(_row, 'get') else _row[0]) if _row else 0
+                except:
+                    pipelines = []
+            finally:
+                try: conn.close()
+                except Exception: pass
+            if preview:
+                pipelines = [rest_tease.tease_row(
+                    p, keep=('id', 'pipeline_type', 'commodity', 'status', 'city', 'state',
+                             'country', 'source'),
+                    coords=('lat', 'lng'),
+                    null=('name', 'operator', 'diameter_inches', 'capacity_mcf'))
+                    for p in pipelines]
+            out = {"success": True, "data": pipelines, "count": len(pipelines)}
+            if preview:
+                out.update({**rest_tease.envelope(
+                    'developer', ('data[].name', 'data[].operator',
+                                  'data[].diameter_inches', 'data[].capacity_mcf'),
+                    total, coords=True)})
+            return jsonify(out)
+
+        return rest_tease.serve('developer', lambda: _answer(200, False),
+                                lambda: _answer(rest_tease.TEASE_ROWS, True))
 
     @bp.route('/api/infrastructure/weekly-digest')
     def get_weekly_digest():

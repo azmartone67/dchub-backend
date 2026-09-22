@@ -50,11 +50,13 @@ Outputs (PRO tier, full payload):
   - comparable_sales: [up to 10 nearby market transactions from deals table]
   - methodology_url + warnings
 
-Outputs (free tier teaser):
-  - dcpi_context (public)
-  - best_fit.scenario (label only)
-  - valuation.site_value_usd_mid (single midpoint, no range)
-  - + upgrade_hint
+Outputs (keyless and below-Pro preview, 2026-09-21):
+  - dcpi_context verdict + subtype (scores and time-to-power null)
+  - best_fit.scenario (label only) and valuation_teaser.$/mw_band_status
+  - every $, $/MW, score, MW and month null, listed in _locked_fields
+  - + upgrade_hint and the ladder (util/rest_tease.envelope)
+  A key below Pro holding $10-pack credits gets the full payload for one
+  credit; X-Internal-Key and admin callers are answered as before.
 """
 
 from __future__ import annotations
@@ -68,6 +70,7 @@ from typing import Any, Optional, Tuple
 
 from flask import Blueprint, Response, jsonify, request
 from tier_registry import price_display as _canon_price_display
+from util import rest_tease
 
 site_valuation_engine_bp = Blueprint("site_valuation_engine", __name__)
 
@@ -106,6 +109,48 @@ def _resolve_tier() -> str:
 
 def _is_pro_plus() -> bool:
     return _resolve_tier() in ("PRO", "DEVELOPER", "ENTERPRISE")
+
+
+# What the preview of POST /api/v1/site/value leaves null (2026-09-21). The
+# preview keeps the verdict, the band status, the best-fit label and the
+# caller's own inputs; a valuation Pro pays for is none of those.
+_PREVIEW_LOCKED = (
+    "comparable_sales", "gas_context", "scenarios", "valuation",
+    "market_context.power_cost_usd_mwh",
+    "dcpi_context.composite_score", "dcpi_context.excess_power_score",
+    "dcpi_context.constraint_score", "dcpi_context.time_to_power_months",
+    "phase_3_inputs.substation_proximity.capex_usd",
+    "phase_3_inputs.substation_proximity.miles_to_nearest",
+    "phase_3_inputs.substation_proximity.nearest_name",
+    "phase_3_inputs.live_queue_ttp.months_to_power",
+    "phase_3_inputs.live_queue_ttp.queue_depth_mw",
+    "phase_3_inputs.live_queue_ttp.velocity_mw_yr",
+    "valuation_teaser.site_value_usd_mid", "valuation_teaser.$/mw_mid",
+    "valuation_teaser.$/mw_uncapped", "valuation_teaser.$/mw_band_floor",
+    "valuation_teaser.$/mw_band_ceiling",
+    "valuation_teaser.site_sufficiency.residual_land_value",
+    "valuation_teaser.site_value_breakdown.mw_contribution_usd",
+    "valuation_teaser.site_value_breakdown.mw_contribution_nameplate_usd",
+    "valuation_teaser.site_value_breakdown.ramp_pv_discount_usd",
+    "valuation_teaser.site_value_breakdown.surplus_land_residual_usd",
+    "scenarios_teaser.grid_only.time_to_power_months",
+    "scenarios_teaser.gas_btm.time_to_power_months",
+    "scenarios_teaser.gas_to_grid_hybrid.time_to_power_months",
+    "scenarios_teaser._assumptions",
+)
+
+_PREVIEW_UNLOCKS = [
+    "Full $-range valuation envelope (low/mid/high per MW + per acre, ±50%)",
+    "DCPI composite, excess-power and constraint scores, and time-to-power",
+    "6 site-readiness premiums (grid/sub/water/fiber/zoning/permits)",
+    "Grid / Gas-BTM / Gas-to-Grid 10-yr Total-Cost-NPV comparison",
+    "CapEx + OpEx breakdown per scenario",
+    "Levelized cost $/MWh per scenario",
+    "Best-fit scenario rationale",
+    "Comparable M&A transactions in the market",
+    "Live gas hub pricing (Henry Hub + regional basis)",
+    "Multiplier breakdown (verdict × best-fit × readiness stack)",
+]
 
 
 # ── Industry constants (Phase 1 — replaceable with live data Phase 2) ─
@@ -1942,8 +1987,18 @@ def site_value():
         },
     }
 
-    # ── PRO tier: full payload ─────────────────────────────────
-    if _is_pro_plus():
+    # ── Who gets what (2026-09-21) ─────────────────────────────
+    # The valuation is a Pro product. util/rest_tease.serve picks the answer:
+    #   X-Internal-Key / admin     unchanged: _answer_unchanged is the exact
+    #                              pre-2026-09-21 branch (the brain's
+    #                              calibration probe reads valuation_teaser)
+    #   Pro and above              the full payload, private + no-store
+    #   a key with pack credits    the full payload for one credit, burned
+    #                              only on a delivered 200
+    #   everyone else              _answer_preview: verdict, band status and
+    #                              best-fit label; every $, $/MW, score, MW
+    #                              and month null
+    def _answer_full():
         base.update({
             "scenarios":            scenarios,
             "best_fit":             best_fit,
@@ -1953,6 +2008,113 @@ def site_value():
             "methodology_url":      "/api/v1/site/value/methodology",
         })
         return jsonify(base), 200
+
+    def _answer_preview():
+        mc = base["market_context"]
+        dc = base["dcpi_context"]
+        sub = sub_proximity or {}
+        lq = live_queue or {}
+        mb = market_baseline or {}
+        suff = valuation.get("site_sufficiency") or {}
+        brk = valuation.get("site_value_breakdown") or {}
+        gate = rest_tease.envelope("pro", _PREVIEW_LOCKED, 1)
+        base.update({
+            "market_context": {
+                "nearest_market_slug":  mc.get("nearest_market_slug"),
+                "nearest_market_state": mc.get("nearest_market_state"),
+                "miles_from_centroid":  mc.get("miles_from_centroid"),
+                "site_state":           mc.get("site_state"),
+                "site_state_source":    mc.get("site_state_source"),
+                "power_cost_usd_mwh":   None,
+                "power_cost_source":    mc.get("power_cost_source"),
+            },
+            "dcpi_context": {
+                "verdict":              dc.get("verdict"),
+                "verdict_subtype":      dc.get("verdict_subtype"),
+                "verdict_explainer":    dc.get("verdict_explainer"),
+                "iso":                  dc.get("iso"),
+                "composite_score":      None,
+                "excess_power_score":   None,
+                "constraint_score":     None,
+                "time_to_power_months": None,
+            },
+            "phase_3_inputs": {
+                "substation_proximity": {
+                    "available":        sub.get("available"),
+                    "tier":             sub.get("tier"),
+                    "capex_usd":        None,
+                    "miles_to_nearest": None,
+                    "nearest_name":     None,
+                },
+                "market_baseline": {
+                    "available": mb.get("available"),
+                    "reason":    mb.get("reason"),
+                    "note":      mb.get("note"),
+                },
+                "live_queue_ttp": {
+                    "available":       lq.get("available"),
+                    "reason":          lq.get("reason"),
+                    "months_to_power": None,
+                    "queue_depth_mw":  None,
+                    "velocity_mw_yr":  None,
+                },
+            },
+            "best_fit":          {"scenario": best_fit["scenario"]},
+            "valuation_teaser":  {
+                "site_value_usd_mid":  None,
+                "$/mw_mid":            None,
+                "$/mw_uncapped":       None,
+                "$/mw_band_floor":     None,
+                "$/mw_band_ceiling":   None,
+                "$/mw_band_status":    valuation.get("$/mw_band_status"),
+                "site_sufficiency": {
+                    "category":               suff.get("category"),
+                    "note":                   suff.get("note"),
+                    "acres":                  suff.get("acres"),
+                    "stories":                suff.get("stories"),
+                    "target_mw":              suff.get("target_mw"),
+                    "acres_per_mw":           suff.get("acres_per_mw"),
+                    "effective_acres_per_mw": suff.get("effective_acres_per_mw"),
+                    "typical_band":           suff.get("typical_band"),
+                    "surplus_acres":          suff.get("surplus_acres"),
+                    "residual_land_value":    None,
+                },
+                "site_value_breakdown": {
+                    "depiction":                     brk.get("depiction"),
+                    "delivery_pv_factor":            brk.get("delivery_pv_factor"),
+                    "mw_contribution_usd":           None,
+                    "mw_contribution_nameplate_usd": None,
+                    "ramp_pv_discount_usd":          None,
+                    "surplus_land_residual_usd":     None,
+                },
+                # The caller's own delivery schedule, restated: no DC Hub data.
+                "power_delivery":      valuation.get("power_delivery"),
+            },
+            "scenarios_teaser":  {
+                "grid_only":          {"time_to_power_months": None},
+                "gas_btm":            {"time_to_power_months": None},
+                "gas_to_grid_hybrid": {"time_to_power_months": None},
+                "_assumptions":       None,
+            },
+            "upgrade_hint": {
+                "human_message":  ("The dollar valuation, $/MW, DCPI scores, time-to-power, "
+                                   "3-scenario NPV, gas pricing and comparable transactions "
+                                   "are a PRO feature."),
+                "tier_required":  "pro",
+                "signup_url":     gate.get("upgrade_url"),
+                "what_you_unlock": _PREVIEW_UNLOCKS,
+            },
+            **gate,
+        })
+        return jsonify(base), 200
+
+    kind = rest_tease.access("pro")
+    if kind != rest_tease.UNCHANGED:
+        return rest_tease.serve("pro", _answer_full, _answer_preview, kind=kind)
+
+    # ── X-Internal-Key / admin: answered exactly as before 2026-09-21 ──
+    if _is_pro_plus():
+        return _answer_full()
 
     # ── Free / Starter: teaser ─────────────────────────────────
     base.update({
@@ -2820,6 +2982,9 @@ async function dcExportTwoTier(btn){
 }
 function renderResults(d) {
   const dcpi = d.dcpi_context || {};
+  // A preview (d._gated) nulls every paid number: show a lock, never a 0.
+  const gated = !!d._gated;
+  const num = (v, dp) => (v == null ? (gated ? '🔒' : '—') : Number(v).toFixed(dp));
   const verdictClass = 'verdict-' + (dcpi.verdict || 'UNKNOWN');
   // v2.1c — surface the AVOID subtype so users see WHY a market got
   // its verdict. Constrained AVOID (Ashburn) and weak-demand AVOID
@@ -2850,7 +3015,7 @@ function renderResults(d) {
         <div class="stat">${(d.market_context.nearest_market_slug || '').replace(/-/g, ' ')}</div>
         <div class="stat-label">${d.market_context.nearest_market_state} · ${d.market_context.miles_from_centroid} mi from centroid · ISO: ${dcpi.iso || 'n/a'}</div>
         <div style="margin-top:12px;font-size:13px;color:var(--muted)">
-          DCPI composite: <b>${(dcpi.composite_score || 0).toFixed(1)}</b> · Excess power: <b>${(dcpi.excess_power_score || 0).toFixed(1)}</b> · Time-to-power: <b>${(dcpi.time_to_power_months || 0).toFixed(0)} months</b>
+          DCPI composite: <b>${num(dcpi.composite_score, 1)}</b> · Excess power: <b>${num(dcpi.excess_power_score, 1)}</b> · Time-to-power: <b>${num(dcpi.time_to_power_months, 0)}${dcpi.time_to_power_months == null ? '' : ' months'}</b>
         </div>
         ${subtypeNote}
       </div>`;
@@ -2971,11 +3136,13 @@ function renderResults(d) {
         </div>
       </div>`;
   } else if (d.valuation_teaser) {
+    const vt = d.valuation_teaser;
+    const band = String(vt['$/mw_band_status'] || 'n/a').replace(/_/g, ' ');
     html += `
       <div class="card">
         <h3>Valuation midpoint</h3>
-        <div class="stat">${fmtM$(d.valuation_teaser.site_value_usd_mid)}</div>
-        <div class="stat-label">teaser · full envelope is PRO</div>
+        <div class="stat">${vt.site_value_usd_mid == null ? '🔒 PRO' : fmtM$(vt.site_value_usd_mid)}</div>
+        <div class="stat-label">${vt.site_value_usd_mid == null ? ('per-MW band: ' + band + ' · the dollar valuation is PRO') : 'teaser · full envelope is PRO'}</div>
       </div>`;
   }
   html += '</div>';
@@ -3029,7 +3196,7 @@ function renderResults(d) {
       const s = d.scenarios_teaser[key];
       html += `<div class="scen-card">
         <h4>${label}</h4>
-        <div class="num">${s.time_to_power_months}mo</div>
+        <div class="num">${s.time_to_power_months == null ? '🔒' : s.time_to_power_months + 'mo'}</div>
         <div class="small">time to power</div>
       </div>`;
     });
@@ -3061,8 +3228,8 @@ function renderResults(d) {
         This is a <b>model-based indicative valuation</b> for screening and negotiation — <b>not a certified (USPAP) appraisal</b>.
         Use the <b>range</b>, not a single point.${_saturated ? ' The midpoint sits at a modeled ceiling — treat it as an upper anchor.' : ''}
       </p>
-      <div style="font-size:24px;font-weight:700">${fmtM$(_v.site_value_usd_low)} – ${fmtM$(_v.site_value_usd_high)}</div>
-      <div style="font-size:12px;color:var(--muted);margin:2px 0 16px">midpoint ${fmtM$(_v.site_value_usd_mid)} · ±50% envelope · ${_in.target_mw || ''} MW · ${_mc.site_state || ''} · verdict ${(d.dcpi_context && d.dcpi_context.verdict) || ''} · best path: ${(typeof bestName !== 'undefined' ? bestName : '').replace(/_/g, ' ')}</div>
+      <div style="font-size:24px;font-weight:700">${d.valuation ? (fmtM$(_v.site_value_usd_low) + ' – ' + fmtM$(_v.site_value_usd_high)) : '🔒 The range is PRO'}</div>
+      <div style="font-size:12px;color:var(--muted);margin:2px 0 16px">midpoint ${d.valuation ? fmtM$(_v.site_value_usd_mid) : '🔒'} · ±50% envelope · ${_in.target_mw || ''} MW · ${_mc.site_state || ''} · verdict ${(d.dcpi_context && d.dcpi_context.verdict) || ''} · best path: ${(typeof bestName !== 'undefined' ? bestName : '').replace(/_/g, ' ')}</div>
       <div class="methgrid">
         <div>
           <div class="methh">Grounded in real data</div>
@@ -3122,15 +3289,16 @@ _PRO_HERO_BANNER = """
               font-size:11px;font-weight:800;letter-spacing:0.18em;
               padding:6px 12px;border-radius:3px;text-transform:uppercase;
               margin-bottom:14px;cursor:default;">
-    🔒 &nbsp; PRO + DEVELOPER + ENTERPRISE ONLY
+    🔒 &nbsp; PRO + ENTERPRISE ONLY
   </div>
   <h2 style="margin:0 0 8px;color:#fff;font-size:30px;font-weight:800;letter-spacing:-0.01em;">
     Site Valuation Engine is a premium tool
   </h2>
   <p style="margin:0 0 20px;color:rgba(255,255,255,0.92);font-size:16px;line-height:1.5;max-width:760px;">
     Unlock the full 3-scenario NPV engine, comparable-sale envelope, and
-    DCPI verdict-weighted valuation for any US site. Free + Starter
-    visitors get a teaser midpoint only.
+    DCPI verdict-weighted valuation for any US site. Below Pro, a
+    valuation shows its verdict and per-MW band only; a key holding pack
+    credits opens one full valuation per credit.
   </p>
   <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
     <a href="/pricing" style="background:#fff;color:#0369A1;font-weight:700;
@@ -3181,7 +3349,13 @@ def site_value_page():
         tier = _resolve_tier()
     except Exception:
         tier = "FREE"
-    is_pro_plus = tier in ("PRO", "DEVELOPER", "ENTERPRISE")
+    # The banner states what POST /api/v1/site/value will answer this visitor:
+    # rest_tease.access is the same decision that route makes (2026-09-21).
+    _access = rest_tease.access("pro")
+    if _access == rest_tease.UNCHANGED:
+        is_pro_plus = tier in ("PRO", "DEVELOPER", "ENTERPRISE")
+    else:
+        is_pro_plus = _access == rest_tease.FULL
     banner = _PRO_OK_BANNER if is_pro_plus else _PRO_HERO_BANNER
 
     # Inject the banner directly after the opening <div class="wrap"> so it

@@ -600,111 +600,136 @@ def get_hifld_gas_pipelines():
     state = request.args.get('state')
     limit = min(request.args.get('limit', 100, type=int), 500)
 
-    # r47.36 (2026-05-26): guarantee conn release on every exit path —
-    # the prior try/except left conn dangling whenever c.execute raised,
-    # which is what showed up as 67s FORCED RECLAIM in Railway logs.
-    conn = None
-    c = None
-    try:
-        from db_utils import get_db
-        conn = get_db()
-        c = conn.cursor()
+    # 2026-09-21 (free/anon tighten): util/rest_tease.serve decides the rows.
+    # Developer and above get up to `limit`; a key holding $10-pack credits gets
+    # the same for one credit; internal / admin callers are unchanged; everyone
+    # else gets TEASE_ROWS rows, coordinates rounded, identity and sizes null.
+    from util import rest_tease as _rest_tease
 
-        # 2026-05-24 r31: dangling-AND fix. The previous form did
-        # `{where} AND lat IS NOT NULL...` which produced `AND lat IS
-        # NOT NULL` with NO preceding WHERE when conditions was empty
-        # (no lat/lng/state params passed). Result: SQL syntax error +
-        # HTTP 500 on every anonymous GET. SLA visitor caught it.
-        # Fix: fold the NOT-NULL guards into `conditions` from the
-        # start so the WHERE clause is always well-formed.
-        conditions = ['lat IS NOT NULL', 'lng IS NOT NULL']
-        params = []
+    def _answer(n, preview=False):
+        # r47.36 (2026-05-26): guarantee conn release on every exit path —
+        # the prior try/except left conn dangling whenever c.execute raised,
+        # which is what showed up as 67s FORCED RECLAIM in Railway logs.
+        conn = None
+        c = None
+        try:
+            from db_utils import get_db
+            conn = get_db()
+            c = conn.cursor()
 
-        if state:
-            conditions.append('state = %s')
-            params.append(state.upper())
+            # 2026-05-24 r31: dangling-AND fix. The previous form did
+            # `{where} AND lat IS NOT NULL...` which produced `AND lat IS
+            # NOT NULL` with NO preceding WHERE when conditions was empty
+            # (no lat/lng/state params passed). Result: SQL syntax error +
+            # HTTP 500 on every anonymous GET. SLA visitor caught it.
+            # Fix: fold the NOT-NULL guards into `conditions` from the
+            # start so the WHERE clause is always well-formed.
+            conditions = ['lat IS NOT NULL', 'lng IS NOT NULL']
+            params = []
 
-        if lat and lng:
-            lat_range = radius / 69.0
-            lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
-            conditions.append('lat BETWEEN %s AND %s')
-            params.extend([lat - lat_range, lat + lat_range])
-            conditions.append('lng BETWEEN %s AND %s')
-            params.extend([lng - lng_range, lng + lng_range])
+            if state:
+                conditions.append('state = %s')
+                params.append(state.upper())
 
-            where = 'WHERE ' + ' AND '.join(conditions)
-            query = f"""
-                SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
-                    ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
-                FROM gas_pipelines
-                {where}
-                ORDER BY distance_miles
-                LIMIT %s
-            """
-            params_full = [lat, lng, lat] + params + [limit]
-        else:
-            where = 'WHERE ' + ' AND '.join(conditions)
-            query = f"""
-                SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
-                    NULL as distance_miles
-                FROM gas_pipelines
-                {where}
-                LIMIT %s
-            """
-            params_full = params + [limit]
+            if lat and lng:
+                lat_range = radius / 69.0
+                lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
+                conditions.append('lat BETWEEN %s AND %s')
+                params.extend([lat - lat_range, lat + lat_range])
+                conditions.append('lng BETWEEN %s AND %s')
+                params.extend([lng - lng_range, lng + lng_range])
 
-        c.execute(query, params_full)
-        cols = [desc[0] for desc in c.description]
-        rows = c.fetchall()
+                where = 'WHERE ' + ' AND '.join(conditions)
+                query = f"""
+                    SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
+                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
+                    FROM gas_pipelines
+                    {where}
+                    ORDER BY distance_miles
+                    LIMIT %s
+                """
+                params_full = [lat, lng, lat] + params + [n]
+            else:
+                where = 'WHERE ' + ' AND '.join(conditions)
+                query = f"""
+                    SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
+                        NULL as distance_miles
+                    FROM gas_pipelines
+                    {where}
+                    LIMIT %s
+                """
+                params_full = params + [n]
 
-        pipelines = []
-        for row in rows:
-            r = dict(zip(cols, row))
-            pipelines.append({
-                'name': r.get('name'),
-                'operator': r.get('operator'),
-                'pipeline_type': r.get('pipeline_type'),
-                'diameter_inches': r.get('diameter_inches'),
-                'capacity_mcf': r.get('capacity_mcf'),
-                'status': r.get('status'),
-                'lat': r.get('lat'),
-                'lng': r.get('lng'),
-                'city': r.get('city'),
-                'state': r.get('state'),
-                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
-                'source': 'HIFLD/Neon'
-            })
+            c.execute(query, params_full)
+            cols = [desc[0] for desc in c.description]
+            rows = c.fetchall()
 
-        return jsonify({
-            'success': True,
-            'count': len(pipelines),
-            'total_available': '37,705 in Neon',
-            'source': 'HIFLD/DOT (Neon PostgreSQL)',
-            'pipelines': pipelines
-        })
-    except Exception as e:
-        import traceback
-        print(f"HIFLD gas pipelines Neon error: {traceback.format_exc()}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'count': 0,
-            'pipelines': []
-        }), 500
-    finally:
-        # r47.36: GUARANTEED conn release. Earlier code returned 500
-        # from the except handler without releasing → 67s watchdog
-        # reclaim every time gas_pipelines erred under load.
-        if c is not None:
-            try: c.close()
-            except Exception: pass
-        if conn is not None:
-            try:
-                from main import return_pg_connection as _rpg
-                _rpg(conn)
-            except Exception:
-                try: conn.close()
+            pipelines = []
+            for row in rows:
+                r = dict(zip(cols, row))
+                pipelines.append({
+                    'name': r.get('name'),
+                    'operator': r.get('operator'),
+                    'pipeline_type': r.get('pipeline_type'),
+                    'diameter_inches': r.get('diameter_inches'),
+                    'capacity_mcf': r.get('capacity_mcf'),
+                    'status': r.get('status'),
+                    'lat': r.get('lat'),
+                    'lng': r.get('lng'),
+                    'city': r.get('city'),
+                    'state': r.get('state'),
+                    'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                    'source': 'HIFLD/Neon'
+                })
+
+            if preview:
+                pipelines = [_rest_tease.tease_row(
+                    p, keep=('pipeline_type', 'status', 'city', 'state', 'source'),
+                    coords=('lat', 'lng'),
+                    null=('name', 'operator', 'diameter_inches', 'capacity_mcf',
+                          'distance_miles'))
+                    for p in pipelines]
+            out = {
+                'success': True,
+                'count': len(pipelines),
+                'total_available': '37,705 in Neon',
+                'source': 'HIFLD/DOT (Neon PostgreSQL)',
+                'pipelines': pipelines
+            }
+            if preview:
+                c.execute('SELECT COUNT(*) FROM gas_pipelines ' + where, params)
+                out.update({**_rest_tease.envelope(
+                    'developer', ('pipelines[].name', 'pipelines[].operator',
+                                  'pipelines[].diameter_inches', 'pipelines[].capacity_mcf',
+                                  'pipelines[].distance_miles'),
+                    (c.fetchone() or [0])[0], coords=True)})
+            return jsonify(out)
+        except Exception as e:
+            import traceback
+            print(f"HIFLD gas pipelines Neon error: {traceback.format_exc()}")
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'count': 0,
+                'pipelines': []
+            }), 500
+        finally:
+            # r47.36: GUARANTEED conn release. Earlier code returned 500
+            # from the except handler without releasing → 67s watchdog
+            # reclaim every time gas_pipelines erred under load.
+            if c is not None:
+                try: c.close()
                 except Exception: pass
+            if conn is not None:
+                try:
+                    from main import return_pg_connection as _rpg
+                    _rpg(conn)
+                except Exception:
+                    try: conn.close()
+                    except Exception: pass
+
+    return _rest_tease.serve('developer', lambda: _answer(limit),
+                             lambda: _answer(_rest_tease.TEASE_ROWS, preview=True))
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/railroads', methods=['GET'])
