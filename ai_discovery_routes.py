@@ -671,12 +671,12 @@ def register_discovery_routes(app):
                             "Data centers under construction, announced or in planning, "
                             "with operator, market and capacity where disclosed. Use for "
                             "supply coming into a market rather than what is already "
-                            "operating. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                            "operating. Requires an X-API-Key header for a key that opens it: a trial key or any paid plan, or any key holding pack credits (one credit per full answer). The free key from /api/v1/keys/claim does not open it."
                         ),
                         "security": [{"apiKey": []}],
                         "responses": {
                             "200": {"description": "Pipeline data"},
-                            "403": {"description": "Key required; the body carries the one-POST claim instruction"}
+                            "403": {"description": "No key, or a key that does not open it; the body lists the options that do"}
                         },
                         "tags": ["Pro"]
                     }
@@ -689,7 +689,7 @@ def register_discovery_routes(app):
                             "Composite 0-100 suitability score for data center development "
                             "at one coordinate, with the component sub-scores behind it. "
                             "A first-pass screen for a specific location, not a substitute "
-                            "for the per-layer power, fiber and risk calls. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                            "for the per-layer power, fiber and risk calls. Requires an X-API-Key header for a key on the Developer plan or above. The free key from /api/v1/keys/claim does not open it."
                         ),
                         "parameters": [
                             {"name": "lat", "in": "query", "schema": {"type": "number"}, "required": True},
@@ -699,7 +699,8 @@ def register_discovery_routes(app):
                         "security": [{"apiKey": []}],
                         "responses": {
                             "200": {"description": "Site score"},
-                            "402": {"description": "Key required; the body carries the one-POST claim instruction"}
+                            "402": {"description": "No key, and the keyless allowance is used up"},
+                            "403": {"description": "A key that does not open it; the body names the plan that does"}
                         },
                         "tags": ["Pro"]
                     }
@@ -714,7 +715,7 @@ def register_discovery_routes(app):
                             "reading's own timestamp. Use this instead of quoting an annual "
                             "average when the question is about current conditions. Covers "
                             "the seven US ISOs/RTOs only — not utility-level or non-US "
-                            "grids. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                            "grids. Requires an X-API-Key header for a key on the Developer plan or above, or any key holding pack credits (one credit per full answer). The free key from /api/v1/keys/claim does not open it."
                         ),
                         "parameters": [
                             {"name": "iso", "in": "query", "schema": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "SPP", "NYISO", "ISONE"]}}
@@ -722,7 +723,7 @@ def register_discovery_routes(app):
                         "security": [{"apiKey": []}],
                         "responses": {
                             "200": {"description": "Grid fuel mix data"},
-                            "403": {"description": "Key required; the body carries the one-POST claim instruction"}
+                            "403": {"description": "No key, or a key that does not open it; the body lists the options that do"}
                         },
                         "tags": ["Pro"]
                     }
@@ -736,7 +737,7 @@ def register_discovery_routes(app):
                             "one US state from the latest EIA release, with the period it "
                             "covers. Use for a first-pass cost comparison between states. "
                             "These are state-level averages — not a utility tariff and not a "
-                            "negotiated large-load rate. Requires an X-API-Key header; a free dev key is one POST to /api/v1/keys/claim (no email, no account)."
+                            "negotiated large-load rate. Requires an X-API-Key header for a key on the Developer plan or above, or any key holding pack credits (one credit per full answer). The free key from /api/v1/keys/claim does not open it."
                         ),
                         "parameters": [
                             {"name": "state", "in": "path", "schema": {"type": "string"}, "required": True}
@@ -744,7 +745,7 @@ def register_discovery_routes(app):
                         "security": [{"apiKey": []}],
                         "responses": {
                             "200": {"description": "Energy pricing"},
-                            "403": {"description": "Key required; the body carries the one-POST claim instruction"}
+                            "403": {"description": "No key, or a key that does not open it; the body lists the options that do"}
                         },
                         "tags": ["Pro"]
                     }

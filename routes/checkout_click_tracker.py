@@ -340,10 +340,10 @@ def checkout_url(plan: str, ref: str = "", sid: str = "") -> str:
     return (_GO_BASE + tok) if tok else _PRICING_URL
 
 
-def _pack_led_ladder() -> dict:
+def _pack_led_ladder(ref: str = "") -> dict:
     """The $10 pack leads (its measured /go/c checkout is upgrade_url), then
     Developer. Both open the REST list they are shown on."""
-    out = {"upgrade_url": checkout_url("metered")}
+    out = {"upgrade_url": checkout_url("metered", ref)}
     opts = []
     try:
         from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
@@ -360,7 +360,7 @@ def _pack_led_ladder() -> dict:
         if price:
             opts.append({"plan": "developer", "opens": "rest",
                          "label": "%s %s opens this endpoint" % (_tr.label("developer"), price),
-                         "url": checkout_url("developer")})
+                         "url": checkout_url("developer", ref)})
     except Exception:  # noqa: BLE001
         pass
     if opts:
@@ -368,7 +368,7 @@ def _pack_led_ladder() -> dict:
     return out
 
 
-def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
+def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "", ref: str = "") -> dict:
     """What a REST free-tier wall hands its caller: only what actually opens it.
 
     `opens_on_rest` is the plan the endpoint's own require_plan() admits (every
@@ -389,11 +389,15 @@ def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
     Developer gets the full answer for one pack credit (util/rest_pack_access.py).
     There the $10 pack leads and Developer follows, both `opens: "rest"`.
 
-    Caller-independent by construction, so it can ride a cached, shared payload.
+    Caller-independent by construction, so it can ride a cached, shared payload,
+    unless `ref` is passed. `ref` is for a wall built for ONE request (a 403):
+    every /go/c link then carries it as client_reference_id, as the MCP
+    server's links do (partner_attribution.offer_ref_for_request). Never pass
+    one into a payload that is cached.
     """
     if opens_on_rest == "pack":
-        return _pack_led_ladder()
-    out = {"upgrade_url": checkout_url(opens_on_rest)}
+        return _pack_led_ladder(ref)
+    out = {"upgrade_url": checkout_url(opens_on_rest, ref)}
     opts = []
     try:
         import tier_registry as _tr
@@ -414,7 +418,7 @@ def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
                              "label": "$%d one-time = %s API credits; %s" % (
                                  int(PACK10_PRICE_CENTS) // 100,
                                  format(int(PACK10_CREDITS), ","), via),
-                             "url": checkout_url("metered")})
+                             "url": checkout_url("metered", ref)})
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -423,7 +427,7 @@ def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "") -> dict:
             if price:
                 opts.append({"plan": "developer", "opens": "mcp", "mcp_tool": mcp_tool,
                              "label": "%s %s; %s" % (_tr.label("developer"), price, via),
-                             "url": checkout_url("developer")})
+                             "url": checkout_url("developer", ref)})
         except Exception:  # noqa: BLE001
             pass
     if opts:

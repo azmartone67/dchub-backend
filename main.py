@@ -6386,7 +6386,7 @@ from functools import wraps as _early_wraps
 
 _real_require_plan = None
 
-def require_plan(min_plan='pro'):
+def require_plan(min_plan='pro', **gate_opts):
     def decorator(f):
         @_early_wraps(f)
         def wrapper(*args, **kwargs):
@@ -6532,7 +6532,8 @@ def require_plan(min_plan='pro'):
             except NameError:
                 pass
             if _real_require_plan is not None:
-                enforced = _real_require_plan(min_plan)(f)
+                # gate_opts (e.g. pack_opens=True) belong to the real gate.
+                enforced = _real_require_plan(min_plan, **gate_opts)(f)
                 return enforced(*args, **kwargs)
             else:
                 return jsonify({
@@ -25279,7 +25280,7 @@ def _list_facilities_full():
     return jsonify(_full_payload)
 
 
-def _honest_rest_wall(opens_on_rest='pro', mcp_tool=''):
+def _honest_rest_wall(opens_on_rest='pro', mcp_tool='', ref=''):
     """A REST wall's upgrade fields: the measured /go/c checkout of the plan that
     ACTUALLY opens the endpoint, plus the ladder (checkout_click_tracker.
     rest_wall_ladder). Pass the cheapest plan the endpoint's own gate admits,
@@ -25287,7 +25288,7 @@ def _honest_rest_wall(opens_on_rest='pro', mcp_tool=''):
     to nothing (frontend#1534, 2026-09-21)."""
     try:
         from routes.checkout_click_tracker import rest_wall_ladder
-        return rest_wall_ladder(opens_on_rest=opens_on_rest, mcp_tool=mcp_tool)
+        return rest_wall_ladder(opens_on_rest=opens_on_rest, mcp_tool=mcp_tool, ref=ref)
     except Exception:  # noqa: BLE001
         return {'upgrade_url': 'https://dchub.cloud/pricing'}
 
@@ -39204,14 +39205,15 @@ def api_site_score():
             (request.headers.get('Authorization', '')[7:].strip()
              if request.headers.get('Authorization', '').startswith('Bearer ') else '')
         )
-        if _api_key and _api_key.startswith('dchub_'):
+        if _api_key and _api_key.startswith(('dchub_', 'dch_live_', 'dch_trial_')):
+            # frontend#1534 (2026-09-21): resolve every key shape a buyer holds,
+            # the way require_plan does. This read dchub_ account keys only, so a
+            # self-serve dch_live_ key on Developer or Pro, which is what /pricing
+            # and this wall's Developer checkout sell, was refused.
             try:
-                _kconn = get_read_db()
-                _kc = _kconn.cursor()
-                _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (_api_key,))
-                _krow = _kc.fetchone()
-                _kconn.close()
-                if _krow and _krow[0] in ('pro', 'enterprise', 'developer'):
+                from api_tier_gating import validate_api_key, user_has_access
+                _kinfo = validate_api_key(_api_key)
+                if _kinfo and user_has_access(_kinfo.get('plan') or 'free', 'developer'):
                     _authed = True
             except Exception as _ke:
                 logger.warning(f"site-score key lookup failed: {_ke}")
@@ -39221,7 +39223,16 @@ def api_site_score():
             if plan not in ("pro", "enterprise", "developer"):
                 # frontend#1534: the gate above admits developer, so the wall offers
                 # the Developer checkout (it said "requires Pro" and linked /pricing).
-                return jsonify({"error": "plan_required", "message": "Site scoring requires the Developer or Pro plan.", "upgrade_url": _honest_rest_wall('developer')["upgrade_url"], "upgrade_options": _honest_rest_wall('developer').get("upgrade_options"), "success": False}), 403
+                # One wall per response, so its links share one ref: a keyless
+                # caller from a declared partner egress gets one recorded to the
+                # partner (routes/partner_attribution.py), everyone else none.
+                try:
+                    from routes.partner_attribution import offer_ref_for_request
+                    _ss_ref = offer_ref_for_request(request.path)
+                except Exception:
+                    _ss_ref = ''
+                _ss_wall = _honest_rest_wall('developer', ref=_ss_ref)
+                return jsonify({"error": "plan_required", "message": "Site scoring requires the Developer or Pro plan.", "upgrade_url": _ss_wall["upgrade_url"], "upgrade_options": _ss_wall.get("upgrade_options"), "success": False}), 403
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()

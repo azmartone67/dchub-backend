@@ -151,13 +151,14 @@ def _lazy_protect_data(f):
     return wrapper
 
 
-def _lazy_require_plan(plan_name):
-    """r43-F (2026-05-27): FAIL-CLOSED. See sibling /deals_routes.py."""
+def _lazy_require_plan(plan_name, **gate_opts):
+    """r43-F (2026-05-27): FAIL-CLOSED. See sibling /deals_routes.py.
+    gate_opts (e.g. pack_opens=True) pass through to the real require_plan."""
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
             if _require_plan is not None:
-                return _require_plan(plan_name)(f)(*args, **kwargs)
+                return _require_plan(plan_name, **gate_opts)(f)(*args, **kwargs)
             from flask import jsonify as _j, current_app as _ca
             try: _ca.logger.error(
                 f"[GATE LEAK] _require_plan({plan_name}) not wired for {f.__name__}")
@@ -958,7 +959,12 @@ def _get_transactions_free():
 # MCP could access pipeline data with just an email key but the same
 # data via web API still threw a $99/mo paywall. Inconsistent UX.
 # Now both web + MCP gate at IDENTIFIED.
-@_lazy_require_plan('identified')
+# REST honours /pricing (frontend#1534, 2026-09-21): the MCP tool opens for the
+# $10 pack, and so does this route now. A valid key below IDENTIFIED with pack
+# credits gets the answer for one credit, under protect_data's 'pack' caps; a
+# free key and no key still get the wall, which now offers only what opens it
+# (util/rest_pack_access). The generic wall offered a free key, which does not.
+@_lazy_require_plan('identified', pack_opens=True)
 @_lazy_protect_data
 def get_pipeline():
     """Get construction pipeline data"""

@@ -477,6 +477,14 @@ def _personal_hit_pitch(ip: str, ua: str, path: str, status: int) -> str:
               f"{_canon_price_display('starter')} Starter covers everything else.").strip()
 
 
+def _names_what_opens_it(body):
+    """True for a body whose upgrade_options all say where they open the
+    endpoint: rest_wall_ladder's output, and nothing else we emit."""
+    opts = body.get("upgrade_options")
+    return (isinstance(opts, list) and bool(opts)
+            and all(isinstance(o, dict) and o.get("opens") for o in opts))
+
+
 def _partner_of_request():
     """rate_limiter's own classification: keyless, from a declared partner egress."""
     try:
@@ -554,6 +562,12 @@ def register_paywall_hint_middleware(app):
 
             # Skip if already enriched (some endpoints inject their own hint)
             if "_upgrade_hint" in body or body.get("_gated"):
+                return response
+            # A wall built by checkout_click_tracker.rest_wall_ladder already
+            # names every rung that opens its endpoint (each option says where
+            # it `opens`). The hint would add rungs that do not (Starter, the
+            # free key), which is the false offer that wall exists to remove.
+            if _names_what_opens_it(body):
                 return response
 
             # r57: pick A/B/C variant + log

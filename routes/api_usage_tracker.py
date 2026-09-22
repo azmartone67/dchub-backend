@@ -691,12 +691,14 @@ PARTNER_TRAFFIC_BASIS = {
         "never reached the origin and is not here. Each replica flushes every "
         "flush_interval_sec, so the newest interval is not in the table yet."),
     "attribution": (
-        "refs: the DCM- pair codes on the paywalls served to those requests "
+        "refs: the DCM- pair codes on the paywalls served to those requests, "
+        "and the a- offer ids on the /go/c links of walls built for them "
         "(routes/partner_attribution.py). pricing_clicks: /go/p presses whose "
-        "ref is /pricing's ref_<code>__ wrapper around one; bot user agents are "
-        "not excluded. payments: live-mode paid checkouts whose "
-        "client_reference_id is a recorded code or that wrapper. Walls served "
-        "from a shared cache carry no partner ref, so these are floors."),
+        "ref is /pricing's ref_<code>__ wrapper around one; go_c_clicks: signed "
+        "/go/c clicks on one; bot user agents are not excluded from either. "
+        "payments: live-mode paid checkouts whose client_reference_id is a "
+        "recorded ref or that wrapper. Walls served from a shared cache carry "
+        "no partner ref, so these are floors."),
 }
 
 
