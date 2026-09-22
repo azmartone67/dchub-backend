@@ -259,7 +259,11 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     # ★ RISEN_FACILITIES in tests/test_agents_md_live_floors.py IS re-based in
     #   the same commit, every time. 2026-09-20: 22,400+ -> 24,900+, because
     #   this pin walked to 24,400+ and that file asserts RISEN sits ABOVE it.
-    assert CANON_FACILITIES == "24,400+", (
+    # ★2026-09-21: 24,400+ -> 24,500+ (eleventh walk; facilities_distinct
+    #   24,508 on /api/v1/stats/canonical). RETIRED_* untouched: 24,400+ was
+    #   canon until today, and the below-the-floor fence bans it everywhere the
+    #   moment the pin passes it. RISEN_FACILITIES (24,900+) still sits above.
+    assert CANON_FACILITIES == "24,500+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
     # ★2026-09-21: 2,200+ -> 1,600+, the first walk DOWN (690 AUTO deal rows

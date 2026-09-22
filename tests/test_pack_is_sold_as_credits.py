@@ -51,7 +51,9 @@ def test_the_llms_ladder_sells_credits_and_states_the_heavy_rule():
     text = routes._llms_unlock_ladder()
     assert "API credits" in text, text[:400]
     assert not PACK_AS_CALLS.search(text), text[:400]
-    assert "1 per paid-tool call, 5 for the heavy" in text
+    # ★2026-09-22 owner wording: the pack is "1,000 API credits (1 per call, 5
+    # for heavy tools)", capacity only (was "1 per paid-tool call").
+    assert "1 per call, 5 for the heavy" in text
 
 
 def test_both_rest_pack_labels_say_credits(monkeypatch):

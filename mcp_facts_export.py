@@ -69,8 +69,11 @@ sys.path.insert(0, HERE)
 import tier_registry as t          # noqa: E402
 import canonical_stats as c        # noqa: E402
 
-PRICE_TIERS = ["starter", "developer", "pro", "team", "enterprise"]
-DAILY_TIERS = ["free", "identified", "starter", "developer", "pro", "enterprise"]
+# ★2026-09-21 (owner rule): the facts publish the ladder /pricing sells. Starter
+# and Team left both lists: /.well-known/mcp_facts.json served "starter": 9 and
+# "team": 699 to agents, prices no page offers.
+PRICE_TIERS = ["developer", "pro", "enterprise"]
+DAILY_TIERS = ["free", "identified", "developer", "pro", "enterprise"]
 
 # The founding counter — the same endpoint the checkout-integrity shell
 # reads (lane 4). Deliberately NOT under /api/v1/: CF rule #3 caches that
@@ -196,31 +199,15 @@ def _live_numbers() -> dict:
 
 
 def _pricing() -> dict:
-    """pricing_usd_month — the flat monthly tiers, plus `founding` while the
-    founding program is OPEN.
+    """pricing_usd_month — the flat monthly tiers /pricing sells.
 
-    2026-09-02 (finding 3): $99 founding is the SKU that sells — 10 of 14
-    active external subs, 7 of 16 completions in 8 weeks — and it was absent
-    from every agent-facing surface, this file included. It is a LIMITED
-    programme (FOUNDING_CUSTOMERS_CAP), so it is emitted only while the live
-    counter says there is stock; a closed programme drops the key and the
-    next export publishes the standing tiers alone. The counter is read like
-    every other figure here — fetched, fail-hard — because a facts file that
-    advertises a sold-out price is the exact drift this exporter exists to
-    end. What "founding" COUNTS (first-25-paid-of-any-plan today) is the
-    owner's decision and is not decided here.
+    ★2026-09-21 (owner rule): never Founding, whatever the founding counter
+    says. Until today this added `founding` while the programme was open (the
+    2026-09-02 finding that it was the SKU that sold); the owner's ladder for
+    every agent-facing surface is the $10 pack, Developer and Pro, so the facts
+    carry no Founding rung and no longer read the counter.
     """
-    pricing = {k: t.price(k) for k in PRICE_TIERS}
-    fc = _get_json(FOUNDING_COUNTER_PATH)
-    active = fc.get("program_active")
-    remaining = fc.get("remaining")
-    if not isinstance(active, bool) or not isinstance(remaining, int):
-        raise ExportError(f"{FOUNDING_COUNTER_PATH} missing program_active/remaining "
-                          f"(got {active!r}/{remaining!r}) — refusing to guess "
-                          "whether the founding price is still for sale")
-    if active and remaining > 0:
-        pricing["founding"] = t.price("founding")
-    return pricing
+    return {k: t.price(k) for k in PRICE_TIERS}
 
 
 def build() -> dict:
