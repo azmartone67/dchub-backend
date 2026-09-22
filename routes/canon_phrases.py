@@ -451,3 +451,56 @@ def _build_canon_body():
             return None
 
     return body
+
+
+# The four headline counts a changelog surface publishes beside its items.
+HEADLINE_KEYS = ("facilities", "tools", "deals", "markets")
+
+
+def headline_counts():
+    """facilities / tools / deals / markets exactly as /api/v1/canon/phrases
+    publishes them, for a REQUEST PATH that must never block (2026-09-22,
+    first caller: the /api/v1/whats-new machine door).
+
+    ★ WHY NOT _cached_body(_build_canon_body). On an empty memo that builds the
+    body inline, and _build_canon_body() takes the tool count from
+    resolve_canon(), which probes live per call (mean ~10s; see
+    ai_surface_canon.resolve_tools_advertised_cached). /api/v1/whats-new has
+    the edge's default 5s GET budget, so an inline build is an intermittent 503.
+
+    ★ SAME SOURCES AS THE ENDPOINT, NON-BLOCKING HALVES. The floors come from
+    resolve_public_floors_cached(), the very call _build_canon_body() makes for
+    facilities/deals/markets. The tool count comes from
+    resolve_tools_advertised_cached(peek=True), which applies the same adoption
+    rule resolve_canon() uses (_adopt_live_tool_count) without ever probing.
+    Both answer from memory and refresh in the background.
+
+    Returns {"counts": {...} | None, "provisional": bool}. `provisional` is
+    _is_provisional() over the same shape, so a cold, degraded or all-pinned
+    reading is labelled exactly as the endpoint's own body would be. Never
+    raises: an unreadable canon is counts=None + provisional=True, never a
+    guessed number.
+    """
+    try:
+        from ai_surface_canon import (PINNED, resolve_public_floors_cached,
+                                      resolve_tools_advertised_cached)
+        floors = dict(resolve_public_floors_cached() or {})     # copy: never mutate the cache
+        tools = None
+        try:
+            tools = resolve_tools_advertised_cached(peek=True)
+        except Exception as e:
+            logger.warning("canon_phrases: tools peek failed: %s", str(e)[:120])
+        body = {
+            "tools": tools or PINNED.get("tools_advertised"),
+            **{k: v for k, v in floors.items() if not k.startswith("_")},
+            "value_source": dict(floors.get("_source") or {}),
+            "degraded": list(floors.get("_rejected") or []),
+            "cold": bool(floors.get("_cold")),
+        }
+    except Exception as e:
+        logger.warning("canon_phrases: headline_counts failed: %s", str(e)[:160])
+        return {"counts": None, "provisional": True}
+    counts = {k: body.get(k) for k in HEADLINE_KEYS}
+    if not all(counts.values()):
+        return {"counts": None, "provisional": True}
+    return {"counts": counts, "provisional": bool(_is_provisional(body))}

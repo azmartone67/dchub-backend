@@ -956,8 +956,28 @@ def whats_new():
         _plat_pending = sum(
             1 for w in (plat.get("withheld") or [])
             if "not approved" in str((w or {}).get("reason") or ""))
+    # ★2026-09-22 — THE MACHINE DOOR CARRIES THE HEADLINE COUNTS. /whats-new
+    # renders facilities / tools / deals / markets in its served HTML for
+    # agents that never run JS; this is the same four, from the same canon
+    # (/api/v1/canon/phrases), so an agent reading the JSON and one reading the
+    # page cite identical figures. headline_counts() never blocks (see its
+    # docstring) and never raises: an unreadable canon is counts=null, which is
+    # a visible gap, never a guessed number.
+    try:
+        from routes.canon_phrases import headline_counts
+        _hc = headline_counts()
+    except Exception:
+        _hc = {"counts": None, "provisional": True}
+    # ONE instant for the whole response. `as_of` is when these counts and
+    # items were read; it equals generated_at and is published under the name
+    # agents look for. data_as_of stays the newest snapshot DATE behind totals.
+    _now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     resp = jsonify(ok=True,
-                   generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   generated_at=_now_iso,
+                   as_of=_now_iso,
+                   counts=_hc.get("counts"),
+                   counts_source="/api/v1/canon/phrases",
+                   counts_provisional=bool(_hc.get("provisional")),
                    data_as_of=data_as_of,
                    platform=platform,
                    platform_unavailable_reason=platform_reason,
@@ -969,6 +989,12 @@ def whats_new():
                    facilities_tracked=(layers and next((l["count"] for l in layers if l["layer"] == "data_centers"), None)) or None,
                    facilities_distinct=dc_distinct,
                    note="Live additions to DC Hub across infrastructure layers (rolling 7-day window). "
+                        "'counts' carries the four headline figures (facilities, tools, deals, "
+                        "markets) exactly as /api/v1/canon/phrases publishes them; "
+                        "counts_provisional=true means canon was cold or degraded when read, so "
+                        "the figures are pinned lower bounds. 'as_of' is when this response's "
+                        "counts and items were read (UTC); 'data_as_of' is the newest snapshot "
+                        "date behind the layer totals. "
                         "Every layer carries a derived 'status' with the 'status_reason' that produced "
                         "it, because 'cadence' is a SCHEDULE and not a health verdict: 'growing' = new "
                         "rows measured; 'refreshed' = re-ingested with a flat count, which is what a "
