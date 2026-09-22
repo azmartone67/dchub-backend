@@ -2005,6 +2005,7 @@ Content-Signal: search=yes, ai-input=yes, ai-train=no
 Disallow: /*?
 Allow: /sitemap.xml
 Disallow: /api/
+Allow: /api/v1/canon/
 Disallow: /admin/
 # /admin, /admin-qa (internal bug inventory) and /admin-outreach (outreach
 # templates) are ops shells: noindex'd, but the bare /admin path is NOT matched
@@ -2013,6 +2014,9 @@ Disallow: /admin/
 # three so they stay out of crawl entirely.
 Disallow: /admin
 Disallow: /brain
+# /brain-live is the PUBLIC brain page and is in sitemap-static.xml; the
+# /brain prefix above matched it too (GSC: submitted URL blocked).
+Allow: /brain-live$
 Disallow: /cdn-cgi/
 # /sites/<slug> serves ONE identical "Site Capacity Report" shell for every
 # slug (each variant canonicals back to /sites/), so the variants are an
@@ -2230,6 +2234,7 @@ Disallow: /api/auth/
 Disallow: /api/stripe/
 Disallow: /admin
 Disallow: /brain
+Allow: /brain-live$
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
@@ -2380,6 +2385,7 @@ Disallow: /api/auth/
 Disallow: /api/stripe/
 Disallow: /admin
 Disallow: /brain
+Allow: /brain-live$
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
@@ -2414,6 +2420,7 @@ Allow: /sitemap.xml
 Disallow: /api/
 Disallow: /admin
 Disallow: /brain
+Allow: /brain-live$
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
