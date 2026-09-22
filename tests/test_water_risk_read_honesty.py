@@ -188,6 +188,23 @@ def test_the_old_1_to_5_threshold_no_longer_sweeps_the_table():
     assert sum(1 for b in every_live_band if b >= wr.STRESSED_BAND) == 1
 
 
+def test_band_agrees_with_the_site_simulator_copy():
+    """routes/site_simulator.py grew its own `_water_band` in #5259, landed
+    while this change was in flight. Two implementations of one conversion is
+    how a surface silently drifts a band away from its neighbours, so they are
+    pinned to each other across the whole range until one of them goes away.
+    """
+    ss = pytest.importorskip("routes.site_simulator")
+    other = getattr(ss, "_water_band", None)
+    if other is None:                       # consolidated onto util/water_risk
+        pytest.skip("routes.site_simulator no longer carries its own _water_band")
+    probes = [i / 2.0 for i in range(0, 201)] + [12.5, 37.5, 62.5, 87.5, None]
+    for score in probes:
+        assert other(score) == wr.water_band_1_5(score), (
+            f"band drift at {score!r}: site_simulator={other(score)} "
+            f"util.water_risk={wr.water_band_1_5(score)}")
+
+
 # ------------------------------------------------- market_brief Section 8
 
 def test_market_brief_risk_publishes_the_score_not_a_forever_null():
