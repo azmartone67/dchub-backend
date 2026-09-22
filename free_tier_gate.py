@@ -610,9 +610,26 @@ def _metered_402():
         payload['upgrade_url'] = 'https://dchub.cloud/pricing?utm_source=map_session_cap'
     except Exception:
         pass
+    # 2026-09-22 (owner): Land & Power opens at Pro and at nothing below it, so
+    # this wall on a Land & Power route offers Pro alone, through the same
+    # signed checkout as that route's own wall (util/plan_tease.lp_ladder).
+    if any(request.path == p or request.path.startswith(p + '/') for p in LP_METERED_PREFIXES):
+        try:
+            from util.plan_tease import lp_ladder, LP_PLAN
+            payload['message'] = ("You've used your free map session for this period "
+                                  f"({FREE_MAP_SESSIONS}/30 days). Land & Power opens with Pro.")
+            payload['tier_required'] = LP_PLAN
+            payload.update(lp_ladder())
+        except Exception:
+            pass
     resp = jsonify(payload)
     resp.headers['Cache-Control'] = 'private, no-store'
     return resp, 402
+
+
+# The Land & Power routes among METERED_MAP_PREFIXES (util/plan_tease.py).
+LP_METERED_PREFIXES = ('/api/v1/land-power', '/api/v1/site-score', '/api/site-score',
+                       '/api/v1/site-planner')
 
 
 def _metered_session_gate(get_db_conn):
