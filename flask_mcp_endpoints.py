@@ -1397,6 +1397,36 @@ NODE_TIER_VOCABULARY = ("enterprise", "paid", "identified", "starter",
                         "developer", "free")
 
 
+def _api_key_row_node_tier(rate_limit_tier, plan, user_plan):
+    """The Node tier an api_keys row grants: its FIRST non-empty value among
+    rate_limit_tier, api_keys.plan and users.plan, through _node_tier_max.
+
+    ★ THE ROW DECIDES, NOT THE MAX — the rule mcp_gatekeeper._tier_of_row
+    applies on the Python gate (#5193), confirmed by the owner for this path.
+    rate_limit_tier is the column the billing lifecycle writes: the dunning
+    demote (main.handle_payment_failed), both cancel handlers and
+    routes/expired_demote set it to 'free' and leave api_keys.plan alone, and
+    handle_invoice_paid restores it from plan. The MAX of the three let that
+    preserved plan outvote all of them, so a demoted, canceled or lapsed
+    dashboard key kept the paid tool set on the Node MCP.
+
+    The dunning grace window is untouched: the demote writes 'free' in the
+    same block that stamps users.demoted_at, so failures 1-3 still read paid.
+
+    Only WHICH value is read changed, not the vocabulary: every writer stores
+    api_tier(plan) in rate_limit_tier, and each tier_registry.TIERS name maps
+    to the same Node tier as its api_tier, so a row whose columns agree
+    answers exactly as before.
+
+    Known gap, shared with #5193: handle_invoice_paid restores only
+    'dunning_prior_payer', so a 'first_charge_never_succeeded' demote that
+    later pays keeps rate_limit_tier='free' and reads free here.
+    """
+    name = next((str(v).strip() for v in (rate_limit_tier, plan, user_plan)
+                 if v is not None and str(v).strip()), "free")
+    return _node_tier_max([name])
+
+
 # ── Quota/price copy, read from the registry rather than hand-typed ─────
 # Agent-facing hints in this file quoted invented numbers ("100 calls/day",
 # "1,000/day" for Developer, whose mcp_daily is 500) — an agent that trusts
@@ -1749,7 +1779,7 @@ def validate_key():
                 )
                 _akr = cur.fetchone()
             if _akr:
-                _nt = _node_tier_max([_akr[0], _akr[1], _akr[2]])
+                _nt = _api_key_row_node_tier(_akr[0], _akr[1], _akr[2])
                 if _nt in ("paid", "enterprise"):
                     return jsonify({
                         "valid":        True,
