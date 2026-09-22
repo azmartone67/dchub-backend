@@ -46,6 +46,7 @@ from routes._swallowed_writes import note_swallowed_write
 from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
 from util.facility_count_basis import mw_coverage_note
 from util.dcpi_score_row import PUBLISHED_ONLY
+from util.water_risk import read_state_stress
 # Derived per call, never frozen at import: #4334 retired three templates
 # that froze canon at import time and retyped their prices.
 from tier_registry import price_display
@@ -940,35 +941,43 @@ def _section_comps(cur, hero: dict) -> dict:
 
 
 def _section_risk(cur, hero: dict) -> dict:
-    """Section 8: Risk Factors (PRO+). Water stress, drought, seismic."""
-    out = {"water_stress": None, "drought_months_d2_plus": None,
-           "wildfire_seismic_note": None}
+    """Section 8: Risk Factors (PRO+). Water stress, drought, seismic.
+
+    `water_stress` is water_risk.water_stress_score: 0-100, 100 = MOST
+    stressed (WRI Aqueduct 4.0, normalised from the published bws_cat bucket
+    by routes/water_aqueduct_ingest.py). It is NOT a 1-5 index — `water_band`
+    carries the 1-5 WRI category beside it for callers that want one.
+
+    Until #5260 this selected `drought_d2_months`, a column water_risk has
+    never had, so the read threw on every call; the `except` branch then tried
+    `stress_score` / `market`, which do not exist either, and a bare
+    `except: pass` ate that too. Section 8 published `water_stress: null` on
+    every market, forever, while the table held all 51 states. Full chain in
+    util/water_risk.
+    """
+    out = {"water_stress": None, "water_band": None, "water_band_label": None,
+           "water_category": None, "drought_months_d2_plus": None,
+           "wildfire_seismic_note": None, "errors": {}}
     state = hero.get("state")
-    try:
-        cur.execute("""
-            SELECT water_stress_score, drought_d2_months
-              FROM water_risk
-             WHERE UPPER(state) = UPPER(%s)
-             ORDER BY computed_at DESC NULLS LAST LIMIT 1
-        """, (state or "",))
-        r = cur.fetchone()
-        if r:
-            out["water_stress"]            = _as_float(r[0])
-            out["drought_months_d2_plus"]  = _as_int(r[1])
-    except Exception:
-        # water_risk schema varies; try the per-market column shape
-        try:
-            cur.execute("""
-                SELECT stress_score, baseline_water_stress
-                  FROM water_risk
-                 WHERE LOWER(market) = LOWER(%s)
-                 LIMIT 1
-            """, ((hero.get("name") or ""),))
-            r = cur.fetchone()
-            if r:
-                out["water_stress"] = _as_float(r[0]) or _as_float(r[1])
-        except Exception:
-            pass
+    water, werr = read_state_stress(cur, state)
+    if werr:
+        # Named, not swallowed: a read that BLEW UP and a market that has no
+        # row are different answers, and the old code published both as null.
+        out["errors"]["water_stress"] = werr
+    elif water:
+        out["water_stress"]     = water["score"]
+        out["water_band"]       = water["band"]
+        out["water_band_label"] = water["band_label"]
+        out["water_category"]   = water["category"]
+    elif state:
+        out["errors"]["water_stress"] = f"no water_risk row for state {state!r}"
+    else:
+        out["errors"]["water_stress"] = "market has no state"
+    # No drought source is ingested ANYWHERE in this schema — water_risk has
+    # never carried a drought column and nothing else writes one. The key stays
+    # for response-shape stability, but it is null-because-uncollected, which
+    # is worth saying out loud rather than leaving it to look like a failed read.
+    out["errors"]["drought_months_d2_plus"] = "no_drought_source_ingested"
     # California/Pacific NW wildfire note (best-effort, hardcoded heuristic)
     if (state or "").upper() in ("CA", "OR", "WA", "NV", "ID"):
         out["wildfire_seismic_note"] = (
@@ -1510,7 +1519,13 @@ def _render_html(brief: dict) -> str:
 
         risk_items = []
         if risk.get("water_stress") is not None:
-            risk_items.append(("Water Stress", f"{risk['water_stress']:.2f}"))
+            # 0-100, 100 = most stressed. The bare 2dp number that used to sit
+            # here read as a 1-5 index to anyone who did not know the column,
+            # so the scale and the WRI band are both on the page now.
+            _wband = risk.get("water_band_label")
+            risk_items.append(("Water Stress",
+                               f"{risk['water_stress']:.1f} / 100"
+                               + (f" ({_wband})" if _wband else "")))
         if risk.get("drought_months_d2_plus") is not None:
             risk_items.append(("Drought (D2+)", f"{risk['drought_months_d2_plus']} mo"))
         if risk.get("wildfire_seismic_note"):
@@ -1763,7 +1778,7 @@ tbody tr:last-child td{{border-bottom:none}}
 <h2>Comps {_cov_badge(len(comps.get("powered_shell") or []) + len(comps.get("land") or []), label_singular="comp tracked", label_plural="comps tracked")}</h2>
 {comps_html}
 
-<h2>Risk Factors {_cov_badge(sum(1 for k in ("water_stress","drought_months_d2_plus","wildfire_seismic_note") if risk.get(k) is not None), label_singular="of 3 signals live", label_plural="of 3 signals live")}</h2>
+<h2>Risk Factors {_cov_badge(sum(1 for k in ("water_stress","wildfire_seismic_note") if risk.get(k) is not None), label_singular="of 2 signals live", label_plural="of 2 signals live")}</h2>
 {risk_html}
 
 <h2>12-Month Outlook</h2>
@@ -2852,25 +2867,17 @@ def admin_market_coverage_matrix():
 
                 state = m.get("state") or ""
                 risk_filled = 0
-                try:
-                    cur.execute("""
-                        SELECT water_stress_score, drought_d2_months
-                          FROM water_risk
-                         WHERE UPPER(state) = UPPER(%s)
-                         ORDER BY computed_at DESC NULLS LAST LIMIT 1
-                    """, (state,))
-                    r = cur.fetchone()
-                    if r:
-                        if r[0] is not None:
-                            risk_filled += 1
-                        if r[1] is not None:
-                            risk_filled += 1
-                except Exception as e:
-                    lane_errors["risk"] = f"{type(e).__name__}: {str(e)[:120]}"
-                    try:
-                        c.rollback()
-                    except Exception:
-                        pass
+                # water_risk offers exactly ONE fillable signal here,
+                # water_stress_score. This lane used to tally `drought_d2_months`
+                # as a second one — a column the table has never had — so the
+                # query threw and the matrix reported risk 0-filled on every
+                # market. read_state_stress unpoisons on failure, so the manual
+                # rollback that used to follow is no longer needed.
+                water, werr = read_state_stress(cur, state)
+                if werr:
+                    lane_errors["risk"] = werr
+                elif water and water["score"] is not None:
+                    risk_filled += 1
                 if state.upper() in ("CA", "OR", "WA", "NV", "ID", "AK", "HI"):
                     risk_filled += 1  # wildfire_seismic_note heuristic
 
