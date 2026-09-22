@@ -10592,7 +10592,7 @@
    "keys": []
   },
   "GET /api/v1/competitive/head-to-head": {
-   "source": "routes/competitive_seo.py:1150",
+   "source": "routes/competitive_seo.py:1164",
    "handler": "head_to_head_json",
    "resolution": "resolved",
    "open_at": [
@@ -10618,7 +10618,7 @@
    ]
   },
   "GET /api/v1/competitive/outreach-drafts": {
-   "source": "routes/competitive_seo.py:1165",
+   "source": "routes/competitive_seo.py:1179",
    "handler": "outreach_drafts",
    "resolution": "resolved",
    "open_at": [
