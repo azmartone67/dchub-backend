@@ -112,6 +112,30 @@ def _users_migrations():
     return list(got.values())
 
 
+def _onetime_migrations():
+    """The one-time-purchase columns, read from routes/schema_repair.py.
+
+    handle_checkout_completed writes users.tier_expires_at and users.source_plan
+    — the one-time branch stamps them, and since 2026-09-22 a SUBSCRIPTION
+    checkout NULLs them (r-onetime-carryover), which is the path this file's
+    harness drives. main.py declares neither: their ALTERs live in
+    routes/schema_repair.py, so read them from there rather than restating the
+    types here, where a change to either would not reach this fixture.
+    """
+    want = ("tier_expires_at", "source_plan")
+    src = (ROOT / "routes" / "schema_repair.py").read_text(encoding="utf-8")
+    got = {}
+    for m in re.finditer(
+            r"ALTER TABLE users ADD COLUMN IF NOT EXISTS (\w+) [^\"']+", src):
+        if m.group(1) in want:
+            got.setdefault(m.group(1), m.group(0))
+    assert sorted(got) == sorted(want), (
+        "routes/schema_repair.py no longer declares %s — the checkout writes "
+        "them, so this harness cannot build a users table it can run against"
+        % (set(want) - set(got)))
+    return list(got.values())
+
+
 def _mcp_dev_keys_ddl():
     sql = (ROOT / "dchub-mcp-v2.1" / "migration_001_api_keys.sql").read_text()
     sql = re.sub(r"--[^\n]*", "", sql)
@@ -313,6 +337,7 @@ def h(monkeypatch):
     # handle_checkout_completed writes users.plan_updated_at (and
     # routes/auth_routes.py reads it); no DDL in the tree declares it.
     for stmt in [_critical_ddl("users"), *_users_migrations(),
+                 *_onetime_migrations(),
                  "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_updated_at TIMESTAMPTZ",
                  _critical_ddl("api_keys"), _mcp_dev_keys_ddl()]:
         cur.execute(stmt)

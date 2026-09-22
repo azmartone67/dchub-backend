@@ -20,6 +20,14 @@ Stripe) leave `tier_expires_at` NULL — their expiry follows
 `subscription_status` / Stripe auto-renew, which is already handled by
 `handle_subscription_deleted` in main.py. We MUST NOT touch them.
 
+An account that bought ONE-TIME and LATER SUBSCRIBED does not leave the column
+NULL: the one-time purchase stamped it. Nothing here clears `tier_expires_at`
+or `source_plan`, and the SELECT below has no `subscription_status` filter, so
+that row matched this cron and was demoted despite an active subscription.
+handle_checkout_completed NULLs both columns on a subscription checkout
+(r-onetime-carryover, 2026-09-22) — that clear, not this file, is what keeps
+them out.
+
 We isolate one-time buyers via `source_plan ILIKE '%_onetime'` (set by the
 webhook at checkout). Anything without that label is out of scope.
 
@@ -63,7 +71,9 @@ Safety
 ------
   - Targets only `source_plan ILIKE '%_onetime'` AND tier_expires_at < NOW()
     AND plan != 'free' — three conjunctive predicates. Even an accidental
-    NULL tier_expires_at can never match.
+    NULL tier_expires_at can never match. NOTE none of the three is a
+    subscription check: a row whose one-time columns were never cleared matches
+    while its subscription is active (see Scope).
   - DCHUB_DEMOTE_DRY_RUN=1 kill switch.
   - Per-row try/except — one bad row never poisons the rest.
   - Audit via brain_findings (constraint-agnostic upsert) so an operator
