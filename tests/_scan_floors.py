@@ -242,9 +242,27 @@ def install() -> None:
     _originals["prglob"] = pathlib.Path.rglob
 
     def glob_(pathname, *a, **k):
+        # ★ 2026-09-21. Counted with the SAME noise filter as _counted below,
+        # and it has to be: _record keeps a MAX per (file, kind), so a raw
+        # len(r) here simply out-votes the filtered count and every glob.glob
+        # scan goes back to being sized by how big the checkout happens to be
+        # — the measurement the ★ 2026-09-05 block above _NOISE_SEGMENTS
+        # exists to end. Measured: a tree of __pycache__/{a,b,c}.pyc plus
+        # r/x.py recorded glob=7 through glob.glob and glob=3 through
+        # glob.iglob, for the same four items.
+        #
+        # Deliberately redundant. CPython's glob.glob is `list(iglob(...))`
+        # and that `iglob` resolves from the glob module's globals at CALL
+        # time, so the original already runs through iglob_ and records the
+        # filtered count itself — today both spellings agree and the max is a
+        # no-op. Dropping this line instead would hang the measurement on that
+        # implementation detail: an interpreter whose glob.glob stopped
+        # delegating would record NOTHING for glob.glob, which is the
+        # fail-open direction. One pass over a list already in memory is the
+        # cheaper half of the trade.
         r = _originals["glob"](pathname, *a, **k)
-        _record("glob", len(r))
-        return r
+        _record("glob", sum(1 for p in r if not _is_noise(p, "glob")))
+        return r          # ...every item, unfiltered, like every wrapper here
 
     # ★ These MUST stay lazy. The first version of this module did
     # `list(os.walk(top))` to count in one shot — which consumes the whole walk
