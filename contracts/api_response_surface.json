@@ -11,14 +11,14 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1492,
+  "python_files_scanned": 1494,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 452,
-  "keys_total": 10710,
-  "keys_strictly_protected": 9784,
-  "keys_open_level_unmeasured_on_removal": 926,
+  "keys_total": 10739,
+  "keys_strictly_protected": 9765,
+  "keys_open_level_unmeasured_on_removal": 974,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
  },
@@ -250,7 +250,7 @@
    ]
   },
   "GET /api/agent/news": {
-   "source": "routes/deals_routes.py:1835",
+   "source": "routes/deals_routes.py:1873",
    "handler": "get_agent_news",
    "resolution": "resolved",
    "open_at": [
@@ -1540,7 +1540,7 @@
    ]
   },
   "GET /api/dc-markets": {
-   "source": "routes/deals_routes.py:1402",
+   "source": "routes/deals_routes.py:1440",
    "handler": "get_dc_markets",
    "resolution": "resolved",
    "open_at": [
@@ -3523,6 +3523,7 @@
    "handler": "get_gas_pipelines",
    "resolution": "resolved",
    "open_at": [
+    "",
     "count",
     "data"
    ],
@@ -3587,7 +3588,7 @@
    ]
   },
   "GET /api/infrastructure/weekly-digest": {
-   "source": "infrastructure_discovery.py:1979",
+   "source": "infrastructure_discovery.py:2007",
    "handler": "get_weekly_digest",
    "resolution": "resolved",
    "open_at": [
@@ -4413,7 +4414,7 @@
    ]
   },
   "GET /api/markets": {
-   "source": "routes/deals_routes.py:1425",
+   "source": "routes/deals_routes.py:1463",
    "handler": "get_markets",
    "resolution": "resolved",
    "open_at": [
@@ -4619,7 +4620,7 @@
    ]
   },
   "GET /api/news-feed": {
-   "source": "routes/deals_routes.py:1921",
+   "source": "routes/deals_routes.py:1959",
    "handler": "get_news_feed",
    "resolution": "opaque",
    "open_at": [],
@@ -4708,7 +4709,7 @@
    ]
   },
   "GET /api/news/live": {
-   "source": "routes/deals_routes.py:1926",
+   "source": "routes/deals_routes.py:1964",
    "handler": "get_live_news",
    "resolution": "resolved",
    "open_at": [
@@ -5039,7 +5040,7 @@
    ]
   },
   "GET /api/pipeline": {
-   "source": "routes/deals_routes.py:1620",
+   "source": "routes/deals_routes.py:1658",
    "handler": "get_public_pipeline",
    "resolution": "opaque",
    "open_at": [],
@@ -7423,7 +7424,7 @@
    "keys": []
   },
   "GET /api/v1/analytics": {
-   "source": "routes/deals_routes.py:1764",
+   "source": "routes/deals_routes.py:1802",
    "handler": "get_analytics",
    "resolution": "resolved",
    "open_at": [
@@ -7447,7 +7448,7 @@
    ]
   },
   "GET /api/v1/announcements": {
-   "source": "routes/deals_routes.py:2013",
+   "source": "routes/deals_routes.py:2051",
    "handler": "get_announcements",
    "resolution": "resolved",
    "open_at": [
@@ -11987,7 +11988,7 @@
    ]
   },
   "GET /api/v1/deals": {
-   "source": "routes/deals_routes.py:1365",
+   "source": "routes/deals_routes.py:1403",
    "handler": "get_deals_v1",
    "resolution": "opaque",
    "open_at": [],
@@ -13544,6 +13545,7 @@
    "handler": "get_gas_pipelines",
    "resolution": "resolved",
    "open_at": [
+    "",
     "_debug.lat_received",
     "_debug.lng_received",
     "_debug.radius",
@@ -13580,10 +13582,11 @@
    ]
   },
   "GET /api/v1/gas-pipelines-test": {
-   "source": "routes/deals_routes.py:2098",
+   "source": "routes/deals_routes.py:2136",
    "handler": "get_gas_pipelines_test",
    "resolution": "resolved",
    "open_at": [
+    "",
     "count",
     "db",
     "rows[].id",
@@ -15598,7 +15601,7 @@
    ]
   },
   "GET /api/v1/land-power/quick-score": {
-   "source": "routes/land_power_mcp.py:444",
+   "source": "routes/land_power_mcp.py:548",
    "handler": "quick_score",
    "resolution": "resolved",
    "open_at": [
@@ -15617,7 +15620,7 @@
    ]
   },
   "GET /api/v1/land-power/site-analysis": {
-   "source": "routes/land_power_mcp.py:410",
+   "source": "routes/land_power_mcp.py:515",
    "handler": "site_analysis",
    "resolution": "opaque",
    "open_at": [],
@@ -18414,7 +18417,7 @@
    ]
   },
   "GET /api/v1/news": {
-   "source": "routes/deals_routes.py:2008",
+   "source": "routes/deals_routes.py:2046",
    "handler": "get_v1_news",
    "resolution": "opaque",
    "open_at": [],
@@ -19494,7 +19497,7 @@
    ]
   },
   "GET /api/v1/pipeline/summary": {
-   "source": "routes/deals_routes.py:1650",
+   "source": "routes/deals_routes.py:1688",
    "handler": "get_pipeline_summary",
    "resolution": "resolved",
    "open_at": [
@@ -22011,7 +22014,7 @@
    "keys": []
   },
   "GET /api/v1/site-selection/canvas": {
-   "source": "routes/site_selection_canvas.py:375",
+   "source": "routes/site_selection_canvas.py:420",
    "handler": "canvas",
    "resolution": "resolved",
    "open_at": [
@@ -22135,7 +22138,7 @@
    ]
   },
   "GET /api/v1/site/value/methodology": {
-   "source": "routes/site_valuation_engine.py:2017",
+   "source": "routes/site_valuation_engine.py:2179",
    "handler": "site_value_methodology",
    "resolution": "resolved",
    "open_at": [
@@ -24197,7 +24200,7 @@
    ]
   },
   "GET /api/v2/infrastructure/airports": {
-   "source": "expanded_infrastructure_api.py:755",
+   "source": "expanded_infrastructure_api.py:780",
    "handler": "get_airports",
    "resolution": "resolved",
    "open_at": [
@@ -24213,7 +24216,7 @@
    ]
   },
   "GET /api/v2/infrastructure/aquifers": {
-   "source": "expanded_infrastructure_api.py:808",
+   "source": "expanded_infrastructure_api.py:833",
    "handler": "get_aquifers",
    "resolution": "resolved",
    "open_at": [
@@ -24233,6 +24236,7 @@
    "handler": "get_hifld_gas_pipelines",
    "resolution": "resolved",
    "open_at": [
+    "",
     "count",
     "pipelines"
    ],
@@ -24289,7 +24293,7 @@
    ]
   },
   "GET /api/v2/infrastructure/internet-exchanges": {
-   "source": "expanded_infrastructure_api.py:848",
+   "source": "expanded_infrastructure_api.py:873",
    "handler": "get_internet_exchanges",
    "resolution": "resolved",
    "open_at": [
@@ -24320,7 +24324,7 @@
    ]
   },
   "GET /api/v2/infrastructure/railroads": {
-   "source": "expanded_infrastructure_api.py:711",
+   "source": "expanded_infrastructure_api.py:736",
    "handler": "get_railroads",
    "resolution": "resolved",
    "open_at": [
@@ -24352,7 +24356,7 @@
    ]
   },
   "GET /api/v2/infrastructure/summary": {
-   "source": "expanded_infrastructure_api.py:894",
+   "source": "expanded_infrastructure_api.py:919",
    "handler": "infrastructure_summary",
    "resolution": "resolved",
    "open_at": [
@@ -25657,7 +25661,7 @@
    ]
   },
   "POST /api/infrastructure/weekly-digest/post": {
-   "source": "infrastructure_discovery.py:1984",
+   "source": "infrastructure_discovery.py:2012",
    "handler": "post_weekly_digest",
    "resolution": "resolved",
    "open_at": [
@@ -26591,7 +26595,7 @@
    ]
   },
   "POST /api/news/sync": {
-   "source": "routes/deals_routes.py:1991",
+   "source": "routes/deals_routes.py:2029",
    "handler": "trigger_news_sync",
    "resolution": "resolved",
    "open_at": [
@@ -29877,7 +29881,7 @@
    ]
   },
   "POST /api/v1/land-power/track": {
-   "source": "routes/land_power_mcp.py:468",
+   "source": "routes/land_power_mcp.py:617",
    "handler": "land_power_track",
    "resolution": "opaque",
    "open_at": [],
@@ -31791,7 +31795,7 @@
    ]
   },
   "POST /api/v1/site-selection/canvas": {
-   "source": "routes/site_selection_canvas.py:375",
+   "source": "routes/site_selection_canvas.py:420",
    "handler": "canvas",
    "resolution": "resolved",
    "open_at": [
@@ -31860,7 +31864,7 @@
    ]
   },
   "POST /api/v1/site/value": {
-   "source": "routes/site_valuation_engine.py:1753",
+   "source": "routes/site_valuation_engine.py:1798",
    "handler": "site_value",
    "resolution": "resolved",
    "open_at": [
@@ -31890,17 +31894,27 @@
     "market_context.miles_from_centroid",
     "market_context.nearest_market_slug",
     "market_context.nearest_market_state",
+    "market_context.power_cost_source",
     "market_context.power_cost_usd_mwh",
     "market_context.site_state",
     "market_context.site_state_source",
     "phase_3_inputs.live_queue_ttp",
+    "phase_3_inputs.live_queue_ttp.available",
+    "phase_3_inputs.live_queue_ttp.reason",
     "phase_3_inputs.market_baseline",
+    "phase_3_inputs.market_baseline.available",
+    "phase_3_inputs.market_baseline.note",
+    "phase_3_inputs.market_baseline.reason",
     "phase_3_inputs.substation_proximity",
+    "phase_3_inputs.substation_proximity.available",
+    "phase_3_inputs.substation_proximity.tier",
     "scenarios",
     "scenarios_teaser._assumptions",
     "scenarios_teaser.gas_btm.time_to_power_months",
     "scenarios_teaser.gas_to_grid_hybrid.time_to_power_months",
     "scenarios_teaser.grid_only.time_to_power_months",
+    "upgrade_hint.signup_url",
+    "upgrade_hint.what_you_unlock",
     "valuation",
     "valuation_teaser.$/mw_band_ceiling",
     "valuation_teaser.$/mw_band_floor",
@@ -31909,7 +31923,18 @@
     "valuation_teaser.$/mw_uncapped",
     "valuation_teaser.power_delivery",
     "valuation_teaser.site_sufficiency",
+    "valuation_teaser.site_sufficiency.acres",
+    "valuation_teaser.site_sufficiency.acres_per_mw",
+    "valuation_teaser.site_sufficiency.category",
+    "valuation_teaser.site_sufficiency.effective_acres_per_mw",
+    "valuation_teaser.site_sufficiency.note",
+    "valuation_teaser.site_sufficiency.stories",
+    "valuation_teaser.site_sufficiency.surplus_acres",
+    "valuation_teaser.site_sufficiency.target_mw",
+    "valuation_teaser.site_sufficiency.typical_band",
     "valuation_teaser.site_value_breakdown",
+    "valuation_teaser.site_value_breakdown.delivery_pv_factor",
+    "valuation_teaser.site_value_breakdown.depiction",
     "valuation_teaser.site_value_usd_mid"
    ],
    "keys": [
@@ -31951,8 +31976,21 @@
     "ok",
     "phase_3_inputs",
     "phase_3_inputs.live_queue_ttp",
+    "phase_3_inputs.live_queue_ttp.available",
+    "phase_3_inputs.live_queue_ttp.months_to_power",
+    "phase_3_inputs.live_queue_ttp.queue_depth_mw",
+    "phase_3_inputs.live_queue_ttp.reason",
+    "phase_3_inputs.live_queue_ttp.velocity_mw_yr",
     "phase_3_inputs.market_baseline",
+    "phase_3_inputs.market_baseline.available",
+    "phase_3_inputs.market_baseline.note",
+    "phase_3_inputs.market_baseline.reason",
     "phase_3_inputs.substation_proximity",
+    "phase_3_inputs.substation_proximity.available",
+    "phase_3_inputs.substation_proximity.capex_usd",
+    "phase_3_inputs.substation_proximity.miles_to_nearest",
+    "phase_3_inputs.substation_proximity.nearest_name",
+    "phase_3_inputs.substation_proximity.tier",
     "scenarios",
     "scenarios_teaser",
     "scenarios_teaser._assumptions",
@@ -31977,7 +32015,23 @@
     "valuation_teaser.$/mw_uncapped",
     "valuation_teaser.power_delivery",
     "valuation_teaser.site_sufficiency",
+    "valuation_teaser.site_sufficiency.acres",
+    "valuation_teaser.site_sufficiency.acres_per_mw",
+    "valuation_teaser.site_sufficiency.category",
+    "valuation_teaser.site_sufficiency.effective_acres_per_mw",
+    "valuation_teaser.site_sufficiency.note",
+    "valuation_teaser.site_sufficiency.residual_land_value",
+    "valuation_teaser.site_sufficiency.stories",
+    "valuation_teaser.site_sufficiency.surplus_acres",
+    "valuation_teaser.site_sufficiency.target_mw",
+    "valuation_teaser.site_sufficiency.typical_band",
     "valuation_teaser.site_value_breakdown",
+    "valuation_teaser.site_value_breakdown.delivery_pv_factor",
+    "valuation_teaser.site_value_breakdown.depiction",
+    "valuation_teaser.site_value_breakdown.mw_contribution_nameplate_usd",
+    "valuation_teaser.site_value_breakdown.mw_contribution_usd",
+    "valuation_teaser.site_value_breakdown.ramp_pv_discount_usd",
+    "valuation_teaser.site_value_breakdown.surplus_land_residual_usd",
     "valuation_teaser.site_value_usd_mid"
    ]
   },
