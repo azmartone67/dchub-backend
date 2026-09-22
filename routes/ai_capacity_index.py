@@ -279,7 +279,38 @@ def _compute_index(horizon_days=90, limit=20):
     }, 200
 
 
+# Free/anon tighten (2026-09-21): below Developer each market keeps its rank,
+# counts, hyperscale flag and qualifying notes; its megawatts come back as bands
+# and its score as null (util/paid_numeric_gate). The landing page below reads
+# the same response, so it renders the bands.
+_INDEX_LOCKED = ("markets[].deployable_mw.value", "markets[].ai_ready_mw.value",
+                 "markets[].total_installed_mw", "markets[].pipeline_mw",
+                 "markets[].score")
+
+
+def _index_tease(payload):
+    from util.paid_numeric_gate import band_fields, mw_band
+    for m in payload.get("markets") or []:
+        if not isinstance(m, dict):
+            continue
+        for key in ("deployable_mw", "ai_ready_mw"):
+            q = m.get(key)
+            if isinstance(q, dict):
+                q["band"] = mw_band(q.get("value"))
+                q["value"] = None
+        band_fields(m, ("total_installed_mw", "pipeline_mw"))
+        if "score" in m:
+            m["score"] = None
+    return payload, len(payload.get("markets") or [])
+
+
+def _index_gate(view):
+    from util.paid_numeric_gate import tease_numerics
+    return tease_numerics(_index_tease, locked=_INDEX_LOCKED)(view)
+
+
 @ai_capacity_index_bp.route("/api/v1/ai-capacity-index", methods=["GET"])
+@_index_gate
 def api_ai_capacity_index():
     horizon = max(7, min(180, int(request.args.get("horizon", 90))))
     limit = max(5, min(50, int(request.args.get("limit", 20))))
@@ -345,17 +376,18 @@ fetch('/api/v1/ai-capacity-index?horizon=90&limit=20').then(r=>r.json()).then(d=
   d.markets.forEach(m=>{
     const tr=document.createElement('tr');
     const hyp=m.hyperscale_ready?'<span class="badge">hyperscale</span>':'';
+    const dep=m.deployable_mw||{};
     tr.innerHTML='<td class="rank">'+m.rank+'</td>'
       +'<td><b>'+m.city+', '+m.state+'</b>'+hyp+'</td>'
-      +'<td class="mw">~'+m.deployable_mw.value+' MW</td>'
+      +'<td class="mw">'+(dep.value!=null?'~'+dep.value+' MW':(dep.band||'—'))+'</td>'
       +'<td>'+m.operator_count+'</td>'
       +'<td>'+m.facility_count+' <span style="color:#94a3b8;font-size:.85em" '
       +'title="of which disclose a power figure">('+m.metered_facility_count+' metered)</span></td>'
-      +'<td class="mw">'+m.total_installed_mw+'</td>'
-      +'<td>'+m.score+'</td>';
+      +'<td class="mw">'+(m.total_installed_mw!=null?m.total_installed_mw:(m.total_installed_mw_band||'—'))+'</td>'
+      +'<td>'+(m.score!=null?m.score:'—')+'</td>';
     tb.appendChild(tr);
   });
-  document.getElementById('status').textContent='Computed '+new Date(d.computed_at).toLocaleString()+' · '+d.result_count+' markets ranked';
+  document.getElementById('status').textContent='Computed '+new Date(d.computed_at).toLocaleString()+' · '+d.result_count+' markets ranked'+(d._gated?' · preview: megawatts shown as bands, scores withheld':'');
 }).catch(e=>document.getElementById('status').textContent='Failed: '+e.message);
 </script>
 </body></html>"""

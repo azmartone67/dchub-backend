@@ -832,8 +832,17 @@ def api_rank_sites():
     # the mint should have frozen). read_failed is distinct from unknown so an
     # agent can retry vs. re-search.
     _expired_cands, _unknown_cands, _readfailed_cands = [], [], []
+    _cand_locked = []
     if any(c.get("candidate_id") for c in cands):
         from routes.candidates import load_candidate, CandidateReadUnavailable
+        # Free/anon tighten (2026-09-21): the frozen row a candidate_id resolves
+        # to follows the refined queue's own gate. Below Developer, capacity and
+        # fiber distance stay out and coordinates are 2 dp
+        # (util/paid_numeric_gate).
+        from util.paid_numeric_gate import is_full_caller, coarse_coord
+        _cand_full = is_full_caller()
+        if not _cand_full:
+            _cand_locked = ["capacity_mw", "fiber_km", "lat", "lng"]
         _resolved, _cc = [], None
         try:
             _cc = psycopg.connect(NEON_URL, autocommit=True)
@@ -865,6 +874,12 @@ def api_rank_sites():
                 "lng": cand.get("lng"), "capacity_mw": cand.get("capacity_mw"),
                 "fiber_km": cand.get("fiber_km"), "iso": cand.get("iso"),
             }.items() if v is not None}
+            if not _cand_full:
+                frozen.pop("capacity_mw", None)
+                frozen.pop("fiber_km", None)
+                for _ck in ("lat", "lng"):
+                    if _ck in frozen:
+                        frozen[_ck] = coarse_coord(frozen[_ck])
             _resolved.append({**c, **frozen})
         if _cc is not None:
             try: _cc.close()
@@ -1041,6 +1056,8 @@ def api_rank_sites():
             _cc_block["read_failed_note"] = ("candidate store temporarily "
                 "unavailable for these ids — retry; they were NOT ranked and "
                 "NOT reinterpreted on caller fields")
+        if _cand_locked:
+            _cc_block["locked_fields"] = _cand_locked
         _extra["candidate_contract"] = _cc_block
     _unavail = [f for f in objectives if coverage.get(f) == "unavailable"]
     if _unavail:
@@ -1077,7 +1094,61 @@ def api_rank_sites():
     })
 
 
+# Free/anon tighten (2026-09-21): the tease a caller below Developer gets
+# (util/paid_numeric_gate). Three rows; MW, time-to-power, fiber distance and
+# the analyze handoff null; coordinates at 2 dp. count_total_matching stays: a
+# count. total_queued_mw does NOT: it is a sum over the caller's own filters,
+# so it is as site-level as the rows it sums. The tease is computed without the
+# numeric filters, so neither its rows nor its count depend on a withheld value.
+_REFINED_TEASE_ROWS = 3
+_REFINED_NUMERIC_FILTERS = ("min_mw", "max_ttp_months", "max_fiber_km")
+_REFINED_LOCKED = ("capacity_mw", "estimated_ttp_months", "fiber_km", "lat", "lng",
+                   "representative_point", "site_evaluation_handoff", "candidate_id",
+                   "total_queued_mw")
+
+
+def _refined_preview_args(args):
+    pairs = [(k, v) for k, v in args.items(multi=True)
+             if k not in _REFINED_NUMERIC_FILTERS and k != "limit"]
+    return pairs + [("limit", str(_REFINED_TEASE_ROWS))]
+
+
+def _refined_tease(payload):
+    from util.paid_numeric_gate import coarse_coord
+    rows = (payload.get("results") or [])[:_REFINED_TEASE_ROWS]
+    for r in rows:
+        r["capacity_mw"] = None
+        r["estimated_ttp_months"] = None
+        r["fiber_km"] = None
+        r["lat"] = coarse_coord(r.get("lat"))
+        r["lng"] = coarse_coord(r.get("lng"))
+        if isinstance(r.get("representative_point"), dict):
+            rp = r["representative_point"]
+            r["representative_point"] = {"lat": coarse_coord(rp.get("lat")),
+                                         "lng": coarse_coord(rp.get("lng"))}
+        r["site_evaluation_handoff"] = None
+        if "candidate_id" in r:
+            r["candidate_id"] = None
+    payload["results"] = rows
+    payload["count_returned"] = len(rows)
+    payload["total_queued_mw"] = None
+    if isinstance(payload.get("isos_excluded_by_ttp"), dict):
+        payload["isos_excluded_by_ttp"] = {k: None for k in payload["isos_excluded_by_ttp"]}
+    if "min_satisfiable_max_ttp_months" in payload:
+        payload["min_satisfiable_max_ttp_months"] = None
+    payload.pop("_error_mitigation", None)
+    total = payload.get("count_total_matching")
+    return payload, (total if isinstance(total, int) else None)
+
+
+def _refined_gate(view):
+    from util.paid_numeric_gate import tease_numerics
+    return tease_numerics(_refined_tease, locked=_REFINED_LOCKED,
+                          preview_args=_refined_preview_args)(view)
+
+
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/refined")
+@_refined_gate
 # r-slow-tool-cache (2026-08-31): p50 10,991 ms / p95 12,854 ms over 65 calls in
 # the 14 days to 2026-08-31 — a MEDIAN past most MCP client timeouts. The
 # response is a pure function of the filter args below (a queue slice, not a

@@ -4,7 +4,9 @@ DC Hub Rankings Series API — v3 (Production)
 Dynamic infrastructure rankings by US state.
 
 Rankings data is FREE — this is viral marketing content for LinkedIn/social.
-The analysis tool overlay on the page is pro-gated client-side.
+The analysis tool overlay on the page is pro-gated client-side. Since
+2026-09-21 the exact megawatts are not: below Developer each MW figure comes
+back as a band (util/paid_numeric_gate); ranks, counts and names are unchanged.
 
 Categories:
   - construction: Pipeline projects under construction (capacity_pipeline + PIPELINE_DATA fallback)
@@ -17,6 +19,7 @@ from flask import Blueprint, jsonify, request
 from datetime import datetime
 
 from util.capacity_pipeline import CP_OK
+from util.paid_numeric_gate import band_rows, tease_numerics
 from utc_clock import utc_now
 
 rankings_bp = Blueprint('energy_rankings', __name__)
@@ -165,7 +168,16 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
     # ---------------------------------------------------------------
     # Construction Rankings
     # ---------------------------------------------------------------
+    # Free/anon tighten (2026-09-21): the rankings stay free, the exact MW does
+    # not. Below Developer every state row keeps its rank, counts and operators;
+    # its megawatts come back as a band (util/paid_numeric_gate). The summary
+    # total is banded too: it is a sum over the caller's `limit`, so limit=1
+    # makes it one state's exact MW.
     @rankings_bp.route('/api/rankings/construction', methods=['GET'])
+    @tease_numerics(band_rows('rankings', ('total_mw',), summary_key='summary',
+                              summary_fields=('total_mw',),
+                              null_fields=('total_investment_millions',)),
+                    locked=('total_mw', 'total_investment_millions', 'summary.total_mw'))
     def rankings_construction():
         limit = min(int(request.args.get('limit', 25)), 50)
         conn = None
@@ -271,6 +283,10 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
     # Power Capacity Rankings
     # ---------------------------------------------------------------
     @rankings_bp.route('/api/rankings/power', methods=['GET'])
+    @tease_numerics(band_rows('rankings', ('total_mw', 'avg_mw_per_facility', 'max_facility_mw'),
+                              summary_key='summary', summary_fields=('total_mw',)),
+                    locked=('total_mw', 'avg_mw_per_facility', 'max_facility_mw',
+                            'summary.total_mw'))
     def rankings_power():
         country = request.args.get('country', 'US').upper()
         limit = min(int(request.args.get('limit', 25)), 50)

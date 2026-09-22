@@ -5002,7 +5002,16 @@ def phase19_geocode():
 # "Market not found" 404 page. The canonical endpoint is
 # /api/v1/grid/intelligence/<region>. Accept query params here and
 # forward so external links continue working.
+# Free/anon tighten (2026-09-21): this alias skipped every gate the canonical
+# path has, so it answers only callers Developer admits, plus pack holders for
+# one credit; everyone else gets the 403 wall (util/paid_numeric_gate).
+from util.paid_numeric_gate import (developer_or_pack_wall as _developer_or_pack_wall,
+                                    tease_numerics as _tease_numerics,
+                                    band_rows as _band_rows)
+
+
 @app.route('/api/v1/research/grid-intelligence', methods=['GET'])
+@_developer_or_pack_wall()
 def alias_research_grid_intelligence():
     """Tolerant alias for /api/v1/grid/intelligence/<region>.
     Accepts ?market= / ?iso= / ?region= query params and forwards."""
@@ -5027,9 +5036,13 @@ def alias_research_grid_intelligence():
     region = region.upper() or 'PJM'
     # Forward via test_request_context so we hit the real handler
     # in-process (no HTTP round-trip).
+    # The gate above admitted this caller; the forwarded request says so, so a
+    # paid website session (which carries no API key) gets the full view too.
+    _fwd_headers = dict(request.headers)
+    _fwd_headers['User-Agent'] = (_fwd_headers.get('User-Agent') or '') + ' dchub-alias-admitted'
     with app.test_request_context(
         f'/api/v1/grid/intelligence/{region}',
-        headers=dict(request.headers),
+        headers=_fwd_headers,
     ):
         try:
             return phase19b_grid_intelligence(region)
@@ -41651,6 +41664,7 @@ def cf_stub_ecosystem():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/rankings/states', methods=['GET'])
+@_tease_numerics(_band_rows('data', ('total_mw',)), locked=('total_mw',))
 def cf_stub_state_rankings():
     """Cloudflare Worker failover: state rankings."""
     try:
