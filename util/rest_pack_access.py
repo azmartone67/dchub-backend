@@ -21,6 +21,11 @@ something about the credential, and the route passes them through unchanged.
 A pack is not a tier: pack keys resolve to 'free' everywhere. So the pack path
 runs protect_data as tier 'pack', whose caps api_data_protection pins beside
 Developer's.
+
+Routes gated by api_tier_gating.require_plan(min_plan, pack_opens=True) get
+the same treatment through serve_below_plan, and their refusals answer with
+plan_or_pack_wall (2026-09-21: /api/v1/pipeline, /api/grid/fuel-mix,
+/api/energy/prices/<state>, the keyed operations of the public spec).
 """
 from flask import g, make_response
 
@@ -66,3 +71,47 @@ def serve_below_plan(api_key, serve_full, serve_preview):
     resp.headers["X-DCHub-Access"] = PACK_TIER
     resp.headers["X-DCHub-Credits-Remaining"] = str(int(burn.get("remaining") or 0))
     return resp
+
+
+NO_STORE = {"Cache-Control": "private, no-store, max-age=0",
+            "Surrogate-Control": "no-store", "Pragma": "no-cache"}
+PRICING_URL = "https://dchub.cloud/pricing"
+
+
+def plan_or_pack_wall(min_plan, current_plan, error_code):
+    """The 403 of a route gated by require_plan(min_plan, pack_opens=True).
+
+    It offers only what opens the route over REST: the $10 pack (one credit per
+    full answer) and Developer, each marked `opens: "rest"`
+    (checkout_click_tracker.rest_wall_ladder in its pack mode). The generic
+    paywall it replaces offered Starter and the free key, neither of which
+    opens these routes, and Developer on routes Developer did not open.
+
+    Facts only: the partner catalogues that relay this body verbatim reach
+    their customers' agents. A keyless caller from a declared partner egress
+    gets links carrying a ref recorded to the partner.
+    """
+    from flask import jsonify, request
+    from routes.checkout_click_tracker import rest_wall_ladder
+    try:
+        from routes.partner_attribution import offer_ref_for_request
+        ref = offer_ref_for_request(request.path)
+    except Exception:  # noqa: BLE001 — attribution never costs the wall
+        ref = ""
+    try:
+        import tier_registry as _tr
+        plan_label = _tr.label(min_plan) or min_plan.title()
+    except Exception:  # noqa: BLE001
+        plan_label = min_plan.title()
+    body = {
+        "success": False,
+        "error": error_code,
+        "message": ("A key on the {} plan or above opens this endpoint over REST, and "
+                    "so does any valid key holding pack credits, at one credit per "
+                    "full answer.".format(plan_label)),
+        "required_plan": min_plan,
+        "current_plan": current_plan or "free",
+        "pricing_url": PRICING_URL,
+    }
+    body.update(rest_wall_ladder(opens_on_rest=PACK_TIER, ref=ref))
+    return jsonify(body), 403, NO_STORE

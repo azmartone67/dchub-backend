@@ -647,9 +647,17 @@ def user_has_access(user_plan, required_plan):
 #  DECORATORS
 # ═══════════════════════════════════════════════════════════════
 
-def require_plan(min_plan='pro'):
+def require_plan(min_plan='pro', pack_opens=False):
     """
     Decorator that enforces a minimum plan level.
+
+    pack_opens=True (frontend#1534, "REST honours /pricing"): a VALID key below
+    min_plan that holds unexpired $10-pack credits gets the full answer for one
+    credit, burned only on a delivered 200 (util/rest_pack_access.
+    serve_below_plan). Every refusal then answers with the wall that names what
+    opens the endpoint, the pack and Developer (util/rest_pack_access.
+    plan_or_pack_wall), instead of the generic paywall, which offers rungs that
+    do not open it. Off by default: every other route is unchanged.
     Checks web session cookies, JWT Bearer tokens, AND API keys.
     
     Usage:
@@ -671,6 +679,7 @@ def require_plan(min_plan='pro'):
         def decorated(*args, **kwargs):
             user_plan = 'free'
             auth_method = None
+            api_key = None
 
             try:
                 # ── STEP 0: Check for internal bypass ──────────────────
@@ -876,6 +885,9 @@ def require_plan(min_plan='pro'):
 
                 # ── STEP 4: No auth at all ─────────────────────────────
                 if not auth_method:
+                    if pack_opens:
+                        from util.rest_pack_access import plan_or_pack_wall
+                        return plan_or_pack_wall(min_plan, 'free', 'plan_required')
                     return jsonify(_rich_gate_response(
                         path=request.path,
                         min_plan=min_plan,
@@ -885,6 +897,12 @@ def require_plan(min_plan='pro'):
 
                 # ── STEP 5: Check tier level ───────────────────────────
                 if not user_has_access(user_plan, min_plan):
+                    if pack_opens:
+                        from util.rest_pack_access import plan_or_pack_wall, serve_below_plan
+                        return serve_below_plan(
+                            api_key, lambda: f(*args, **kwargs),
+                            lambda: plan_or_pack_wall(min_plan, user_plan,
+                                                      'plan_upgrade_required'))
                     return jsonify(_rich_gate_response(
                         path=request.path,
                         min_plan=min_plan,

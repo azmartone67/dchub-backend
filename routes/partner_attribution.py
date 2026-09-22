@@ -16,6 +16,12 @@ already understands, so no webhook or reader changes meaning:
              caller and puts on its checkout links as client_reference_id
              (be#4872). The /pricing links get it as ?ref=, which /pricing
              forwards to /go/p and Stripe as ref_<code>__tool_<t>__ts_<n>.
+  go_c       an a-<hex> anonymous offer id, fresh per wall, on the /go/c links
+             of a wall built for one request (rest_wall_ladder(ref=...)).
+             It is the shape the MCP server already mints for callers with no
+             key and no session, so /go/c, the webhooks and the click->pay
+             join read it as they always have. One per offer, never shared:
+             a pack bought on an a- ref is filed under that ref.
 
 A payment is the partner's when its client_reference_id is a recorded ref, or
 /pricing's ref_<ref>__ wrapper around one (read_attribution).
@@ -32,6 +38,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+import secrets
 import threading
 
 PRICING_URL = "https://dchub.cloud/pricing"
@@ -141,6 +148,20 @@ def flush(conn) -> dict:
         return {"refs": 0, "error": str(ex)[:200]}
 
 
+def offer_ref_for_request(path="") -> str:
+    """A fresh a-<hex> ref for the /go/c links of a wall built for THIS request,
+    recorded to the partner, when the request is keyless from a declared
+    partner egress. '' for everyone else, whose links stay caller-independent."""
+    try:
+        partner = partner_of_request()
+        if not partner:
+            return ""
+        ref = "a-" + secrets.token_hex(12)
+        return ref if note_offer_ref(ref, partner, "go_c", path) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _with_ref(url, ref):
     sep = "&" if "?" in url else "?"
     return url + sep + "ref=" + ref
@@ -206,6 +227,9 @@ def read_attribution(cur, days: int) -> dict:
         # a /pricing button press (/go/p) that carried a partner ref
         ("pricing_clicks", "pricing_checkout_clicks", "c.ref", "c.clicked_at",
          "c.known_plan IS TRUE"),
+        # a signed /go/c click on a wall link that carried a partner ref
+        ("go_c_clicks", "mcp_checkout_clicks", "c.ref", "c.clicked_at",
+         "c.sig_ok IS TRUE"),
         # a paid checkout: the pair code itself (the wall's checkout links) or
         # /pricing's wrapper around it. Test-mode payments are not counted.
         ("payments", "mcp_checkout_payments", "c.client_reference_id", "c.paid_at",

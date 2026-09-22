@@ -430,7 +430,14 @@ def register_iso_routes(app):
     iso_service = ISOService()
     
     @app.route('/api/grid/fuel-mix', methods=['GET'])
-    @require_plan('pro')
+    # REST honours /pricing (frontend#1534, 2026-09-21). /pricing sells Developer
+    # as grid data with full result sets and the $10 pack as full-depth credits,
+    # and the MCP tool behind this route opens for both. This route was Pro-only,
+    # while its wall sold Starter and Developer: a buyer paid and stayed locked.
+    # Developer and above open it; a valid key below Developer with pack credits
+    # gets the answer for one credit; a free key and no key still get the wall,
+    # which now offers only what opens it (util/rest_pack_access).
+    @require_plan('developer', pack_opens=True)
     def get_fuel_mix():
         """
         Get fuel mix for an ISO

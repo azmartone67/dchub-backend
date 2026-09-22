@@ -798,7 +798,14 @@ def register_scoring_routes(app):
             return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-500:]}), 500
     
     @app.route('/api/energy/prices/<state>', methods=['GET'])
-    @require_plan('pro')
+    # REST honours /pricing (frontend#1534, 2026-09-21). /pricing sells Developer
+    # as grid data with full result sets and the $10 pack as full-depth credits,
+    # and the MCP tool behind this route opens for both. This route was Pro-only,
+    # while its wall sold Starter and Developer: a buyer paid and stayed locked.
+    # Developer and above open it; a valid key below Developer with pack credits
+    # gets the answer for one credit; a free key and no key still get the wall,
+    # which now offers only what opens it (util/rest_pack_access).
+    @require_plan('developer', pack_opens=True)
     def get_energy_prices(state):
         """Get energy prices for a state"""
         result = energy_service.get_state_electricity_prices(state)
