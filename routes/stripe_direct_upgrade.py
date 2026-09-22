@@ -16,6 +16,7 @@ client_reference_id baked in for attribution.
 Endpoints:
   GET /pricing/upgrade?tool=X        → 302 to Stripe (developer tier by default)
   GET /pricing/upgrade?tier=pro      → 302 to pro Stripe URL
+  GET /upgrade/?tier=pro             → 302 straight to Stripe (no email-capture leg)
   GET /api/v1/paywall/checkout       → JSON {checkout_url, client_ref}
 """
 import os
@@ -74,6 +75,14 @@ def _build_url(tier, tool, ref, surface=None, sid=None):
 
 
 @stripe_direct_bp.route("/pricing/upgrade", methods=["GET"], strict_slashes=False)
+# /upgrade/ (trailing slash) is the direct-checkout path: the edge forwards it
+# here and scripts/qa-critical-smoke.mjs check (c) requires a 3xx to Stripe.
+# Bare /upgrade is routes/pair_code.py's. Until 2026-09-21 this view held
+# "/upgrade" with strict_slashes=False; that rule lost /upgrade to pair_code
+# but was the ONLY rule matching /upgrade/, so deleting it as a shadowed
+# duplicate (#5127) turned /upgrade/ into a 404. The slash form is its own
+# rule now, so it is not a duplicate of /upgrade.
+@stripe_direct_bp.route("/upgrade/", methods=["GET"])
 def upgrade_redirect():
     """r39: default behavior now routes through email-capture form so we
     identify every paywall-click. Add ?direct=1 to skip the form and go
@@ -103,9 +112,8 @@ def upgrade_redirect():
         surface, ref, request.cookies.get(PARTNER_COOKIE))
 
     # r39: route through email capture for identity gating BEFORE Stripe.
-    # ?direct=1 keeps the old straight-to-Stripe behaviour. /upgrade itself is
-    # routes/pair_code.py's; this view's /upgrade rule was a shadowed
-    # duplicate that never served, removed 2026-09-21.
+    # ?direct=1 keeps the old straight-to-Stripe behaviour, and so does
+    # /upgrade/: only the /pricing/upgrade paths take the email-capture leg.
     if not direct and request.path.startswith("/pricing/upgrade"):
         from urllib.parse import urlencode
         params = {"tool": tool, "tier": chosen, "ref": ref, "surface": surface, "sid": sid}
