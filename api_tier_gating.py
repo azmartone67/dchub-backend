@@ -1926,11 +1926,15 @@ def _handle_sub_updated_v2(subscription):
     # Try to determine the plan from the price
     items = subscription.get('items', {}).get('data', [])
     plan = 'pro'  # default
+    # True only when the price matched a configured entry. The 'pro' default
+    # above is a guess, so it is never copied into rate_limit_tier.
+    price_known = False
     for item in items:
         price_id = item.get('price', {}).get('id', '')
         for plan_key, stripe_price in STRIPE_PRICES_V2.items():
             if price_id == stripe_price:
                 plan = _map_stripe_plan_to_tier(plan_key)
+                price_known = bool(price_id)
                 break
 
     conn = get_db()
@@ -1946,24 +1950,62 @@ def _handle_sub_updated_v2(subscription):
         if user:
             c.execute("UPDATE api_keys SET plan = %s WHERE user_id = %s AND is_active = 1",
                       (plan, user[0]))
+            if price_known:
+                _v2_raise_rate_limit_tier(c, user[0], plan)
     elif status in ('past_due', 'unpaid'):
         c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
                   (status, customer_id))
     elif status == 'canceled':
         c.execute("""
-            UPDATE users SET plan = 'free', subscription_status = 'canceled' 
+            UPDATE users SET plan = 'free', subscription_status = 'canceled'
             WHERE stripe_customer_id = %s
         """, (customer_id,))
-        # Downgrade API keys
-        c.execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,))
-        user = c.fetchone()
-        if user:
-            c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = %s AND is_active = 1",
-                      (user[0],))
+        _v2_downgrade_customer_keys(c, customer_id)
 
     conn.commit()
     conn.close()
     print(f"📝 Subscription updated: customer={customer_id}, status={status}, plan={plan}")
+
+
+def _v2_raise_rate_limit_tier(c, user_id, plan):
+    """Carry a v2 plan change into api_keys.rate_limit_tier, which both gates
+    read before api_keys.plan (mcp_gatekeeper._tier_of_row,
+    flask_mcp_endpoints._api_key_row_node_tier). Without it an upgrade read
+    the old tier.
+
+    Raise only, as main.handle_subscription_updated does: a lower tier is left
+    to the cancel handlers. Each write is conditional on the value it was
+    computed from, so a concurrent writer is not overwritten.
+    """
+    want = tier_registry.api_tier(plan)
+    c.execute("SELECT id, rate_limit_tier FROM api_keys WHERE user_id = %s AND is_active = 1",
+              (user_id,))
+    for row in c.fetchall():
+        key_id, held = row[0], row[1]
+        if (held or '').strip().lower() == want or keep_higher_plan(held, want) != want:
+            continue
+        c.execute("UPDATE api_keys SET rate_limit_tier = %s "
+                  "WHERE id = %s AND rate_limit_tier IS NOT DISTINCT FROM %s",
+                  (want, key_id, held))
+
+
+def _v2_downgrade_customer_keys(c, customer_id):
+    """A v2 cancel, on the columns the gates read: api_keys.rate_limit_tier
+    (read before api_keys.plan) and mcp_dev_keys.tier (the highest-of source
+    in validate_key), for every user on the customer. The same writes
+    main.handle_subscription_deleted makes. This used to set api_keys.plan
+    alone, for the first matching user only.
+    """
+    c.execute("""
+        UPDATE api_keys SET plan = 'free', rate_limit_tier = 'free'
+         WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)
+    """, (customer_id,))
+    c.execute("""
+        UPDATE mcp_dev_keys SET tier = 'free'
+         WHERE LOWER(email) IN (SELECT LOWER(email) FROM users
+                                 WHERE stripe_customer_id = %s)
+           AND tier IN ('paid', 'enterprise')
+    """, (customer_id,))
 
 
 def _handle_sub_deleted_v2(subscription):
@@ -1973,15 +2015,10 @@ def _handle_sub_deleted_v2(subscription):
     conn = get_db()
     c = conn.cursor()
     c.execute("""
-        UPDATE users SET plan = 'free', subscription_status = 'canceled' 
+        UPDATE users SET plan = 'free', subscription_status = 'canceled'
         WHERE stripe_customer_id = %s
     """, (customer_id,))
-    # Downgrade API keys
-    c.execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,))
-    user = c.fetchone()
-    if user:
-        c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = %s AND is_active = 1",
-                  (user[0],))
+    _v2_downgrade_customer_keys(c, customer_id)
     conn.commit()
     conn.close()
     print(f"❌ Subscription canceled: customer={customer_id}")

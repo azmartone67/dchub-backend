@@ -19789,6 +19789,26 @@ def handle_invoice_paid(invoice):
         )
     except Exception as e:
         print(f"[dunning] restore-on-renewal failed for {customer_id}: {e}")
+    # The MCP key half of the dunning demote: handle_payment_failed recorded
+    # the tier each key held when it lowered it. Put back exactly that, for
+    # either demote reason, and drop the record. A row needs the record AND
+    # must still be bound to this customer's address, which is how the demote
+    # chose it, so a key the demote never lowered is never raised here. A key
+    # raised since keeps the higher tier.
+    try:
+        _pg_execute(
+            """UPDATE mcp_dev_keys
+                  SET tier = CASE WHEN tier = 'enterprise' THEN tier
+                                  ELSE metadata->'dunning_demote'->>'from' END,
+                      metadata = metadata - 'dunning_demote'
+                WHERE metadata->'dunning_demote'->>'customer' = %s
+                  AND metadata->'dunning_demote'->>'from' IN ('paid', 'enterprise')
+                  AND LOWER(email) IN (SELECT LOWER(email) FROM users
+                                        WHERE stripe_customer_id = %s)""",
+            (customer_id, customer_id),
+        )
+    except Exception as e:
+        print(f"[dunning] mcp key restore failed for {customer_id}: {e}")
 
     # SQLite mirror (best-effort)
     try:
@@ -19956,6 +19976,25 @@ def handle_payment_failed(invoice):
                         WHERE user_id = %s""",
                     (now_iso, user_id),
                 )
+                # The MCP key's own tier too. validate_key serves the highest
+                # of mcp_dev_keys.tier, the users row and api_keys, and a
+                # dch_live_ key has no api_keys row, so a key promoted to
+                # 'paid' at checkout was not reached by the demote above. The
+                # tier each key held is recorded on it, so handle_invoice_paid
+                # puts back exactly that and never grants a key more.
+                if email:
+                    _pg_execute(
+                        """UPDATE mcp_dev_keys
+                              SET metadata = COALESCE(metadata, '{}'::jsonb)
+                                  || jsonb_build_object('dunning_demote',
+                                         jsonb_build_object('from', tier,
+                                                            'customer', %s::text,
+                                                            'reason', %s::text)),
+                                  tier = 'free'
+                            WHERE LOWER(email) = LOWER(%s)
+                              AND tier IN ('paid', 'enterprise')""",
+                        (customer_id, demote_reason, email),
+                    )
                 demoted_users.append({"user_id": user_id, "email": email, "plan": plan,
                                       "paid": paid_count, "failed": failed_count,
                                       "reason": demote_reason})

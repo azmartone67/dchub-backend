@@ -47,6 +47,8 @@ EMAIL_MATCH = "email_match"      # rows chosen by an address — MUST carry the 
 POSSESSION = "possession"        # rows chosen by the key itself, or its hash
 ADMIN = "admin"                  # a human operator named the key
 DOWNGRADE = "downgrade"          # never grants a paid tier
+RESTORE = "restore"              # puts back the tier its own downgrade recorded on
+                                 # the row; never raises a key above what it held
 
 # (file, enclosing function) -> the classes of its tier writes, in source order.
 # `proof_in` names the function that must contain the clause, when the SELECT
@@ -68,6 +70,16 @@ REGISTER = {
     ],
     ("main.py", "handle_subscription_deleted"): [
         (DOWNGRADE, "sets tier='free' when a subscription ends"),
+    ],
+    ("main.py", "handle_payment_failed"): [
+        (DOWNGRADE, "the dunning demote sets tier='free' and records the tier it took"),
+    ],
+    ("main.py", "handle_invoice_paid"): [
+        (RESTORE, "puts back the tier handle_payment_failed recorded on the same key, "
+                  "only while it is still bound to the paying customer's address"),
+    ],
+    ("api_tier_gating.py", "_v2_downgrade_customer_keys"): [
+        (DOWNGRADE, "v2 cancel sets tier='free', as handle_subscription_deleted does"),
     ],
     ("main.py", "reconcile_mcp_tiers"): [
         (EMAIL_MATCH, "the twin admin sweep; same users-to-keys join"),
@@ -101,7 +113,7 @@ REGISTER = {
 }
 
 # Pinned. Raise it deliberately when a new tier write is added AND classified.
-FLOOR = 15
+FLOOR = 18
 
 
 def _scan():
@@ -218,3 +230,27 @@ def test_an_email_matched_grant_carries_the_proof_clause(key):
             f"carries no email_verified_for clause. An address is a string "
             f"anyone can type; without the clause this grants a paying "
             f"customer's tier to whoever typed theirs.")
+
+
+def _tier_write_sql(rel, func):
+    """The tier-writing string constants inside one function (not its comments)."""
+    tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == func)
+    return [n.value for n in ast.walk(fn)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and "mcp_dev_keys" in n.value.lower() and _TIER_WRITE.search(n.value)]
+
+
+@pytest.mark.parametrize("key", sorted(k for k, v in REGISTER.items()
+                                       if any(e[0] == RESTORE for e in v)))
+def test_a_restore_puts_back_only_what_its_downgrade_recorded(key):
+    """A restore raises a tier, so it must choose its rows by the record the
+    downgrade left and set the tier from that record, never from a plan."""
+    for sql in _tier_write_sql(*key):
+        flat = " ".join(sql.split())
+        assert "WHERE metadata->'dunning_demote'->>'customer' = %s" in flat, (
+            f"{key}: a restore that does not select on its downgrade's record "
+            f"raises keys the downgrade never lowered")
+        assert "ELSE metadata->'dunning_demote'->>'from' END" in flat, (
+            f"{key}: a restore must set the tier the record says the key held")
