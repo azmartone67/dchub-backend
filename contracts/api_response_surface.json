@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1492,
+  "python_files_scanned": 1493,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
@@ -15598,7 +15598,7 @@
    ]
   },
   "GET /api/v1/land-power/quick-score": {
-   "source": "routes/land_power_mcp.py:444",
+   "source": "routes/land_power_mcp.py:548",
    "handler": "quick_score",
    "resolution": "resolved",
    "open_at": [
@@ -15617,7 +15617,7 @@
    ]
   },
   "GET /api/v1/land-power/site-analysis": {
-   "source": "routes/land_power_mcp.py:410",
+   "source": "routes/land_power_mcp.py:515",
    "handler": "site_analysis",
    "resolution": "opaque",
    "open_at": [],
@@ -22011,7 +22011,7 @@
    "keys": []
   },
   "GET /api/v1/site-selection/canvas": {
-   "source": "routes/site_selection_canvas.py:375",
+   "source": "routes/site_selection_canvas.py:420",
    "handler": "canvas",
    "resolution": "resolved",
    "open_at": [
@@ -29877,7 +29877,7 @@
    ]
   },
   "POST /api/v1/land-power/track": {
-   "source": "routes/land_power_mcp.py:468",
+   "source": "routes/land_power_mcp.py:617",
    "handler": "land_power_track",
    "resolution": "opaque",
    "open_at": [],
@@ -31791,7 +31791,7 @@
    ]
   },
   "POST /api/v1/site-selection/canvas": {
-   "source": "routes/site_selection_canvas.py:375",
+   "source": "routes/site_selection_canvas.py:420",
    "handler": "canvas",
    "resolution": "resolved",
    "open_at": [
