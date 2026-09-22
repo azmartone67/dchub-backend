@@ -1228,6 +1228,7 @@ response says it is a preview; the Developer and Pro plans under "If a call is
 gated" below return them.
 
 - [Platform Stats](https://dchub.cloud/api/v1/stats): Total facilities, countries, providers, capacity (MW)
+- [What's New — machine-readable changelog](https://dchub.cloud/api/v1/whats-new): JSON behind /whats-new — the headline counts (facilities, tools, deals, markets) with `as_of`, per-layer additions over 7 days, and approved platform updates
 - [Facility Search](https://dchub.cloud/api/v1/facilities?q=Virginia&country=US): Search {canon_facilities} distinct facilities by location, provider, market
 - [Markets List](https://dchub.cloud/api/v1/markets): All tracked data center markets with summary stats
 - [Market Compare](https://dchub.cloud/api/v1/markets/compare?markets=dallas,ashburn): Side-by-side market comparison
