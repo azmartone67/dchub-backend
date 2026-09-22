@@ -23,6 +23,7 @@ against the checkout's own ancestors. A checkout under .claude/worktrees/ (where
 Claude Code puts them) once counted as all noise, so every pinned scanner went
 red with "performed NO repo scan at all this run" on a pristine main.
 """
+import glob
 import json
 import os
 import pathlib
@@ -185,6 +186,108 @@ def test_the_wrapper_is_transparent(tmp_path):
     assert any("__pycache__" in g for g in globbed), (
         "rglob stopped yielding noise to the caller — the wrapper is no longer "
         "transparent and every guard's scan just changed")
+
+
+def test_glob_and_iglob_record_the_same_count(tmp_path):
+    """★ 2026-09-21. glob.glob must be counted through the SAME noise filter.
+
+    CPython's glob.glob is `list(iglob(...))`, and that `iglob` resolves from
+    the glob module's globals at call time — so the original runs through
+    iglob_ and records the FILTERED count under kind "glob". glob_ then
+    recorded the raw len(r) under that same kind, and _record keeps a MAX, so
+    the unfiltered number won every time: a glob.glob scan was sized by how
+    much __pycache__ the checkout had accumulated, which is precisely the
+    measurement the ★ 2026-09-05 block in _scan_floors exists to end.
+
+    Measured before the fix, on this exact tree: glob.glob recorded 7,
+    glob.iglob recorded 3.
+
+    ★ The two probes MUST be attributed to different files. _record keeps one
+    max per (file, kind), so recording both against one name merges them into
+    a single number and the comparison passes no matter what the wrapper does
+    — a vacuous test of exactly the mechanism under test.
+    """
+    (tmp_path / "__pycache__").mkdir()
+    for n in ("a", "b", "c"):
+        (tmp_path / "__pycache__" / f"{n}.cpython-313.pyc").write_text("")
+    (tmp_path / "r").mkdir()
+    (tmp_path / "r" / "x.py").write_text("")
+
+    pattern = str(tmp_path / "**")
+    obs = _scan_floors.observations
+    try:
+        with _scan_floors.temporarily_installed():
+            _scan_floors.set_current_file("glob-probe")
+            eager = glob.glob(pattern, recursive=True)
+            _scan_floors.set_current_file("iglob-probe")
+            lazy = list(glob.iglob(pattern, recursive=True))
+
+        eager_n = obs.get("glob-probe", {}).get("glob")
+        lazy_n = obs.get("iglob-probe", {}).get("glob")
+        assert eager_n == lazy_n, (
+            f"glob.glob recorded {eager_n} and glob.iglob {lazy_n} for the "
+            f"same pattern over the same tree. The eager spelling is counting "
+            f"__pycache__ that the lazy one excludes, so its floor tracks the "
+            f"size of the checkout again — and the two disagree about what the "
+            f"same scan covered.")
+        assert eager_n == 3, (
+            f"expected the 3 non-noise items (the root, r/, r/x.py); got "
+            f"{eager_n}. 7 = the __pycache__ dir and its three .pyc files are "
+            f"back in the count.")
+
+        # ...and the caller still receives everything, noise included.
+        assert sorted(eager) == sorted(lazy), (eager, lazy)
+        assert any("__pycache__" in p for p in eager), (
+            "glob.glob stopped yielding noise to the CALLER — the wrapper is "
+            "no longer transparent and every guard's scan just changed")
+    finally:
+        obs.pop("glob-probe", None)
+        obs.pop("iglob-probe", None)
+        _scan_floors.set_current_file(os.path.basename(__file__))
+
+
+def test_glob_glob_is_counted_even_if_it_stops_delegating_to_iglob(tmp_path):
+    """★ glob_ must count on its OWN, not merely inherit iglob_'s tally.
+
+    That CPython's glob.glob is `list(iglob(...))` — resolving `iglob` from
+    the glob module's globals, so it lands in our wrapper — is an
+    implementation detail. Counting only inside iglob_ and leaving glob_
+    silent reads identically today, and would leave the measurement hanging
+    on that detail: an interpreter, a stdlib change or a `glob` shim that
+    does not delegate would record NOTHING for any glob.glob scan. Every
+    file pinned under kind "glob" (22 of them) would then report "performed
+    NO repo scan at all this run" — a total collapse, with nothing actually
+    collapsed.
+
+    That is the fail-open direction, so glob_ counts for itself. Pinned here
+    by un-wrapping iglob while glob.glob stays wrapped, which IS the
+    non-delegating world.
+    """
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "a.cpython-313.pyc").write_text("")
+    (tmp_path / "r").mkdir()
+    (tmp_path / "r" / "x.py").write_text("")
+
+    obs = _scan_floors.observations
+    try:
+        with _scan_floors.temporarily_installed():
+            delegating = glob.iglob
+            glob.iglob = _scan_floors._originals["iglob"]
+            try:
+                _scan_floors.set_current_file("nondelegating-probe")
+                out = glob.glob(str(tmp_path / "**"), recursive=True)
+            finally:
+                glob.iglob = delegating
+
+        assert obs.get("nondelegating-probe", {}).get("glob") == 3, (
+            f"with glob.glob no longer routing through iglob_, the scan "
+            f"recorded {obs.get('nondelegating-probe')} — expected 3. None "
+            f"means glob_ does not count for itself, so every glob.glob floor "
+            f"is one stdlib change away from reading as a total collapse.")
+        assert len(out) == 5, out
+    finally:
+        obs.pop("nondelegating-probe", None)
+        _scan_floors.set_current_file(os.path.basename(__file__))
 
 
 def test_pruning_idiom_still_works(tmp_path):
