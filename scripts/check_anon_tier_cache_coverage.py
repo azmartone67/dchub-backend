@@ -102,6 +102,8 @@ GATE_CALLS = {
     "_resolve_tier", "_detect_tier", "_is_pro", "_gate", "_gate_response",
     "jsonify_gated_snapshot", "_dcpi_is_paid", "_dcpi_gated_meta", "_tier",
     "require_plan", "_require_plan",
+    # util/plan_tease.py (2026-09-21): full answer for a plan, tease otherwise.
+    "gate_or_tease",
 }
 
 # ★ FLOORS. A scan that can silently find nothing is a scan that always passes.

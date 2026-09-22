@@ -245,7 +245,9 @@ def get_h3_heatmap():
     cache_key = f"h3:{min_lat:.2f},{max_lat:.2f},{min_lng:.2f},{max_lng:.2f}:{resolution}"
     cached = _get_cache(cache_key)
     if cached:
-        return jsonify({'success': True, **cached})
+        from util.plan_tease import gate_or_tease
+        return gate_or_tease(_SCORE_PLAN, lambda: jsonify({'success': True, **cached}),
+                             lambda: _tease_heatmap(cached))
     
     # Get all H3 cells covering the bounding box
     # Use polygon_to_cells with the bbox as a polygon
@@ -356,7 +358,81 @@ def get_h3_heatmap():
     
     _set_cache(cache_key, result_data)
     
-    return jsonify({'success': True, **result_data})
+    from util.plan_tease import gate_or_tease
+    return gate_or_tease(_SCORE_PLAN, lambda: jsonify({'success': True, **result_data}),
+                         lambda: _tease_heatmap(result_data))
+
+
+# ── Score is Pro (2026-09-21, frontend#1536) ─────────────────────────────────
+# A cell score and its power / fiber / gas / connectivity / water breakdown are
+# the Land & Power Score. Pro opens them, and so does one $10-pack credit on any
+# valid key; X-Internal-Key and the admin radar are unchanged. A keyless or free
+# caller gets HTTP 200 with the cell ids and grade bands, at most three cells,
+# every score null and coordinates at two decimals (util/plan_tease.py).
+_SCORE_PLAN = 'pro'
+_BREAKDOWN = ('power', 'fiber', 'gas', 'connectivity', 'water')
+
+
+def _r2_coords(coords):
+    from util.plan_tease import round2
+    if isinstance(coords, (list, tuple)):
+        if coords and all(isinstance(c, (int, float)) for c in coords):
+            return [round2(c) for c in coords]
+        return [_r2_coords(c) for c in coords]
+    return coords
+
+
+def _tease_heatmap(data):
+    from util.plan_tease import round2, TEASE_ROWS
+    feats = []
+    for f in (data.get('features') or [])[:TEASE_ROWS]:
+        props = f.get('properties') or {}
+        geom = f.get('geometry') or {}
+        feats.append({
+            'type': 'Feature',
+            'geometry': {'type': geom.get('type'),
+                         'coordinates': _r2_coords(geom.get('coordinates'))},
+            'properties': {
+                'hex_id': props.get('hex_id'),
+                'grade': props.get('grade'),
+                'score': None, 'color': None,
+                **{k: None for k in _BREAKDOWN},
+                'center_lat': round2(props.get('center_lat')),
+                'center_lng': round2(props.get('center_lng')),
+            },
+        })
+    stats = dict(data.get('stats') or {})
+    for k in ('avg_score', 'max_score', 'min_score'):
+        stats[k] = None
+    body = {'success': True, 'type': 'FeatureCollection', 'features': feats,
+            'count': len(feats), 'resolution': data.get('resolution'), 'stats': stats}
+    locked = ['features[].properties.score', 'features[].properties.color'] + \
+             ['features[].properties.' + k for k in _BREAKDOWN] + \
+             ['stats.avg_score', 'stats.max_score', 'stats.min_score']
+    return body, locked, int(data.get('count') or 0)
+
+
+def _tease_cell(data):
+    from util.plan_tease import round2, TEASE_ROWS
+    cell = data.get('cell') or {}
+    center = cell.get('center') or {}
+    breakdown = cell.get('breakdown') or {}
+    body = {
+        'success': True,
+        'cell': {
+            'hex': cell.get('hex'),
+            'score': None,
+            'grade': cell.get('grade'),
+            'breakdown': {k: None for k in (breakdown or dict.fromkeys(_BREAKDOWN))},
+            'center': {'lat': round2(center.get('lat')), 'lng': round2(center.get('lng'))},
+        },
+        'neighbors': [{'hex': n.get('hex'), 'score': None, 'grade': n.get('grade')}
+                      for n in (data.get('neighbors') or [])[:TEASE_ROWS]],
+        'resolution': data.get('resolution'),
+    }
+    locked = ['cell.score'] + ['cell.breakdown.' + k for k in (breakdown or _BREAKDOWN)] + \
+             ['neighbors[].score']
+    return body, locked, 1
 
 
 @h3_bp.route('/api/v2/scoring/h3-cell', methods=['GET'])
@@ -395,12 +471,14 @@ def score_single_cell():
     except Exception:
         pass
     
-    return jsonify({
+    data = {
         'success': True,
         'cell': result,
         'neighbors': neighbors,
         'resolution': resolution
-    })
+    }
+    from util.plan_tease import gate_or_tease
+    return gate_or_tease(_SCORE_PLAN, lambda: jsonify(data), lambda: _tease_cell(data))
 
 
 def register_h3_routes(app):
