@@ -19387,7 +19387,7 @@
    ]
   },
   "GET /api/v1/paywall/checkout": {
-   "source": "routes/stripe_direct_upgrade.py:151",
+   "source": "routes/stripe_direct_upgrade.py:159",
    "handler": "paywall_checkout_json",
    "resolution": "resolved",
    "open_at": [
@@ -19406,7 +19406,7 @@
    ]
   },
   "GET /api/v1/paywall/health": {
-   "source": "routes/stripe_direct_upgrade.py:184",
+   "source": "routes/stripe_direct_upgrade.py:192",
    "handler": "health",
    "resolution": "resolved",
    "open_at": [
