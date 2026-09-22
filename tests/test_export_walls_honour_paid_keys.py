@@ -53,7 +53,7 @@ jwt = pytest.importorskip("jwt")
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-SECRET = "export-walls-test-jwt-secret-of-32-bytes-or-more"
+SECRET = "export-walls-test-jwt-secret-of-32-bytes-or-more"  # secretscan:allow (test placeholder)
 INTERNAL = "export-walls-test-internal-key"
 PUBLIC_ADDR = "203.0.113.9"  # 127.0.0.1 skips the rate limiter and is trusted
 
