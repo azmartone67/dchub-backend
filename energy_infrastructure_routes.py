@@ -552,17 +552,15 @@ def read_site_layers(lat, lng, radius_km):
     return layers
 
 
-def build_site_analysis(lat, lng, radius_km, radius_read):
-    """The full /api/v1/energy/site-analysis answer (Pro and above)."""
-    layers = read_site_layers(lat, lng, radius_km)
-
-    def _items(layer):
-        return layers[layer].get('items') or []
-
+def site_analysis_parts(lat, lng, layers):
+    """(scores, counts, coverage, items by layer, formatted plants, total plant MW)
+    from read_site_layers(). The view assembles them into its response literal,
+    so the response contract (scripts/api_response_contract.py) can read it."""
+    items = {layer: layers[layer].get('items') or [] for layer in LAYERS}
     unavailable = {k: v['reason'] for k, v in layers.items() if v['status'] != 'measured'}
-    score_data = calculate_infrastructure_score(
-        lat, lng, _items('substations'), _items('pipelines'), _items('transmissionLines'),
-        _items('powerPlants'), unavailable)
+    scores = calculate_infrastructure_score(
+        lat, lng, items['substations'], items['pipelines'], items['transmissionLines'],
+        items['powerPlants'], unavailable)
 
     counts, coverage = {}, {}
     for layer in LAYERS:
@@ -582,9 +580,8 @@ def build_site_analysis(lat, lng, radius_km, radius_read):
             entry['reason'] = info['reason']
         coverage[layer] = entry
 
-    plants = _items('powerPlants')
     formatted_plants = []
-    for p in plants[:20]:
+    for p in items['powerPlants'][:20]:
         attr = p.get('attributes', {})
         formatted_plants.append({
             'name': attr.get('NAME', 'Unknown'),
@@ -596,33 +593,11 @@ def build_site_analysis(lat, lng, radius_km, radius_read):
             'operator': attr.get('UTILITY_NA'),
             'source': attr.get('SOURCE', 'EIA'),
         })
-    plants_read = layers['powerPlants']['status'] == 'measured'
-    capacities = [(p.get('attributes') or {}).get('TOTAL_MW') for p in plants]
-    total_capacity_mw = (round(sum(c for c in capacities if c is not None), 1)
-                         if plants_read else None)
-
-    return {
-        'location': {'lat': lat, 'lng': lng},
-        'radius': int(round(radius_km * 1000)),
-        'radius_km': radius_km,
-        'radius_read': radius_read,
-        'scores': score_data,
-        'counts': counts,
-        'coverage': coverage,
-        'infrastructure': {
-            'substations': _items('substations')[:20],  # Limit for response size
-            'pipelines': _items('pipelines')[:20],
-            'transmissionLines': _items('transmissionLines')[:10],
-            'powerPlants': plants[:10],
-        },
-        'power_infrastructure': {
-            'plants': formatted_plants,
-            'total_count': counts['powerPlants'],
-            'total_capacity_mw': total_capacity_mw,
-            # power_plants_eia carries nameplate capacity, not generation.
-            'total_generation_mwh': None,
-        },
-    }
+    total_mw = None
+    if layers['powerPlants']['status'] == 'measured':
+        capacities = [(p.get('attributes') or {}).get('TOTAL_MW') for p in items['powerPlants']]
+        total_mw = round(sum(c for c in capacities if c is not None), 1)
+    return scores, counts, coverage, items, formatted_plants, total_mw
 
 
 # Land & Power details are Pro (owner, 2026-09-22; util/plan_tease.lp_gate). Below
@@ -646,7 +621,7 @@ _PREVIEW_CTA = ("Land & Power preview: the grade, the counts and the names. Scor
 
 
 def site_analysis_preview(full):
-    """The below-Pro view of build_site_analysis(): (body, locked fields, rows)."""
+    """The below-Pro view of the full answer's data: (body, locked fields, rows)."""
     from util.plan_tease import round2, TEASE_ROWS
     scores = full.get('scores') or {}
     details = {k: (v if k in _PREVIEW_NAMES else None)
@@ -718,8 +693,37 @@ def setup_energy_routes(app):
             cached = get_cached(cache_key)
             if cached:
                 return copy.deepcopy(cached), True
-            result = build_site_analysis(lat, lng, radius_km, radius_read)
-            if not result['scores']['unavailable']:
+            layers = read_site_layers(lat, lng, radius_km)
+            scores, counts, coverage, items, plants, total_mw = site_analysis_parts(
+                lat, lng, layers)
+            result = {
+                'location': {'lat': lat, 'lng': lng},
+                'radius': int(round(radius_km * 1000)),
+                'radius_km': radius_km,
+                'radius_read': radius_read,
+                'scores': scores,
+                'counts': {
+                    'substations': counts['substations'],
+                    'pipelines': counts['pipelines'],
+                    'transmissionLines': counts['transmissionLines'],
+                    'powerPlants': counts['powerPlants'],
+                },
+                'coverage': coverage,
+                'infrastructure': {
+                    'substations': items['substations'][:20],  # Limit for response size
+                    'pipelines': items['pipelines'][:20],
+                    'transmissionLines': items['transmissionLines'][:10],
+                    'powerPlants': items['powerPlants'][:10],
+                },
+                'power_infrastructure': {
+                    'plants': plants,
+                    'total_count': counts['powerPlants'],
+                    'total_capacity_mw': total_mw,
+                    # power_plants_eia carries nameplate capacity, not generation.
+                    'total_generation_mwh': None,
+                },
+            }
+            if not scores['unavailable']:
                 set_cache(cache_key, copy.deepcopy(result))
             return result, False
 
