@@ -1226,138 +1226,176 @@ def get_gas_pipelines():
     except Exception:
         _gp_priv = False
 
-    try:
-        with _pg_connection() as conn:
-            c = conn.cursor()
-            c.execute("SET statement_timeout = 10000")  # 10s max - prevents 70s connection hold
+    # 2026-09-21 (free/anon tighten): which rows leave is decided by
+    # util/rest_tease.serve. The two blocks above now answer only X-Internal-Key
+    # and admin callers, exactly as before. Developer and above get the full
+    # set; a key holding $10-pack credits gets it for one credit; everyone else
+    # gets TEASE_ROWS rows, coordinates rounded, operator, name, diameter and
+    # capacity null. The map's own layer sends the signed-in user's JWT or key
+    # (land-power-app.js _lpAuthHeaders), so a paid user still sees every segment.
+    from util import rest_tease
 
-            # ★2026-08-08: the array is filtered to natural gas by the SAME
-            # predicate as the stats block below, so the two cannot describe
-            # different populations again. An endpoint named gas-pipelines was
-            # returning crude-oil, refined-products and HGL segments to the
-            # map overlay and to every agent that called it.
-            from util.gas_pipelines import NG_ONLY as _NG_OK
-            query = """SELECT id, name, operator, pipeline_type, diameter_inches,
-                       capacity_mcf, status, lat, lng, city, state, country, source
-                       FROM gas_pipelines
-                       WHERE lat IS NOT NULL AND lng IS NOT NULL
-                         AND """ + _NG_OK
-            params = []
+    def _gp_answer(eff_limit, priv, preview=False):
+        try:
+            with _pg_connection() as conn:
+                c = conn.cursor()
+                c.execute("SET statement_timeout = 10000")  # 10s max - prevents 70s connection hold
 
-            # Spatial bounding box filter
-            if lat is not None and lng is not None:
-                lat_d = radius / 69.0
-                lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
-                query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
-                params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
+                # ★2026-08-08: the array is filtered to natural gas by the SAME
+                # predicate as the stats block below, so the two cannot describe
+                # different populations again. An endpoint named gas-pipelines was
+                # returning crude-oil, refined-products and HGL segments to the
+                # map overlay and to every agent that called it.
+                from util.gas_pipelines import NG_ONLY as _NG_OK
+                query = """SELECT id, name, operator, pipeline_type, diameter_inches,
+                           capacity_mcf, status, lat, lng, city, state, country, source
+                           FROM gas_pipelines
+                           WHERE lat IS NOT NULL AND lng IS NOT NULL
+                             AND """ + _NG_OK
+                params = []
 
-            if state_filter:
-                query += " AND UPPER(state) = %s"
-                params.append(state_filter)
-            if operator_filter:
-                query += " AND operator ILIKE %s"
-                params.append(f"%{operator_filter}%")
-            if pipeline_type:
-                query += " AND LOWER(pipeline_type) = LOWER(%s)"
-                params.append(pipeline_type)
+                # Spatial bounding box filter
+                if lat is not None and lng is not None:
+                    lat_d = radius / 69.0
+                    lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+                    query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
+                    params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
 
-            query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
-            params.append(_gp_eff_limit)
+                if state_filter:
+                    query += " AND UPPER(state) = %s"
+                    params.append(state_filter)
+                if operator_filter:
+                    query += " AND operator ILIKE %s"
+                    params.append(f"%{operator_filter}%")
+                if pipeline_type:
+                    query += " AND LOWER(pipeline_type) = LOWER(%s)"
+                    params.append(pipeline_type)
 
-            c.execute(query, params)
-            rows = c.fetchall()
+                _where, _where_params = query.split("WHERE", 1)[1], list(params)
+                query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
+                params.append(eff_limit)
 
-            pipelines = []
-            for r in rows:
-                # r-gas-leak-fix: strip operator + pipeline name for non-privileged
-                # callers (anon). Geometry/type/status stay so the map overlay still
-                # renders; the proprietary operator identity is the gated upgrade.
-                _op = r[2] if _gp_priv else None
-                _nm = r[1] if _gp_priv else None
-                pipelines.append({
-                    'id': r[0], 'name': _nm, 'operator': _op,
-                    'pipeline_type': r[3],
-                    'diameter_inches': float(r[4]) if r[4] else None,
-                    'capacity_mcf': float(r[5]) if r[5] else None,
-                    'status': r[6],
-                    'lat': float(r[7]), 'lng': float(r[8]),
-                    'city': r[9], 'state': r[10], 'country': r[11],
-                    'source': r[12]
-                })
+                c.execute(query, params)
+                rows = c.fetchall()
 
-            # Stats query (safe — can't kill the main response). r-gas-stats-cache
-            # (2026-07-14): cached 1h; the expensive recompute runs at most once / 5 min
-            # (was the ~15s endpoint cost — it ran every request and timed out at 10s).
-            import time as _t
-            # ★★2026-08-08 WRONG-TABLE: this `stats` block described a
-            # DIFFERENT POPULATION from the `pipelines` array beside it, in the
-            # same response. The array is read from `gas_pipelines` (33,769
-            # rows) twenty lines above; the stats were
-            # `discovered_pipelines WHERE commodity = 'Natural Gas'` — a
-            # separate crawler table that held 31 rows. Measured live
-            # 2026-08-08 with limit=2:
-            #
-            #     pipelines[]            2 rows out of gas_pipelines
-            #     stats.total_pipelines  31          <- discovered_pipelines
-            #     stats.unique_operators 31
-            #     stats.states_covered   12
-            #
-            # A reader can only conclude the endpoint tracks 31 pipelines. The
-            # two tables were never reconciled and there is no join between
-            # them, so "which is right" is not the question — one response must
-            # not describe two populations. Stats now come from the SAME table
-            # and under the SAME natural-gas predicate as the array.
-            stats = _GAS_STATS_CACHE.get('gas')
-            if stats is None:
-                stats = (0, 0, 0)
-                if (_t.time() - _GAS_STATS_RETRY['at']) >= 300:
-                    _GAS_STATS_RETRY['at'] = _t.time()
-                    try:
-                        from util.gas_pipelines import NG_ONLY as _NG_OK
-                        c.execute("SET statement_timeout = 25000")  # let the DISTINCT aggregate finish
-                        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), "
-                                  "COUNT(DISTINCT state) FROM gas_pipelines "
-                                  "WHERE " + _NG_OK)
-                        _st = c.fetchone()
-                        if _st:
-                            stats = _st
-                            _GAS_STATS_CACHE.set('gas', _st)
-                    except Exception:
-                        pass
-                    finally:
+                pipelines = []
+                for r in rows:
+                    # r-gas-leak-fix: strip operator + pipeline name for non-privileged
+                    # callers (anon). Geometry/type/status stay so the map overlay still
+                    # renders; the proprietary operator identity is the gated upgrade.
+                    _op = r[2] if priv else None
+                    _nm = r[1] if priv else None
+                    pipelines.append({
+                        'id': r[0], 'name': _nm, 'operator': _op,
+                        'pipeline_type': r[3],
+                        'diameter_inches': float(r[4]) if r[4] else None,
+                        'capacity_mcf': float(r[5]) if r[5] else None,
+                        'status': r[6],
+                        'lat': float(r[7]), 'lng': float(r[8]),
+                        'city': r[9], 'state': r[10], 'country': r[11],
+                        'source': r[12]
+                    })
+
+                # Stats query (safe — can't kill the main response). r-gas-stats-cache
+                # (2026-07-14): cached 1h; the expensive recompute runs at most once / 5 min
+                # (was the ~15s endpoint cost — it ran every request and timed out at 10s).
+                import time as _t
+                # ★★2026-08-08 WRONG-TABLE: this `stats` block described a
+                # DIFFERENT POPULATION from the `pipelines` array beside it, in the
+                # same response. The array is read from `gas_pipelines` (33,769
+                # rows) twenty lines above; the stats were
+                # `discovered_pipelines WHERE commodity = 'Natural Gas'` — a
+                # separate crawler table that held 31 rows. Measured live
+                # 2026-08-08 with limit=2:
+                #
+                #     pipelines[]            2 rows out of gas_pipelines
+                #     stats.total_pipelines  31          <- discovered_pipelines
+                #     stats.unique_operators 31
+                #     stats.states_covered   12
+                #
+                # A reader can only conclude the endpoint tracks 31 pipelines. The
+                # two tables were never reconciled and there is no join between
+                # them, so "which is right" is not the question — one response must
+                # not describe two populations. Stats now come from the SAME table
+                # and under the SAME natural-gas predicate as the array.
+                stats = _GAS_STATS_CACHE.get('gas')
+                if stats is None:
+                    stats = (0, 0, 0)
+                    if (_t.time() - _GAS_STATS_RETRY['at']) >= 300:
+                        _GAS_STATS_RETRY['at'] = _t.time()
                         try:
-                            c.execute("SET statement_timeout = 10000")
+                            from util.gas_pipelines import NG_ONLY as _NG_OK
+                            c.execute("SET statement_timeout = 25000")  # let the DISTINCT aggregate finish
+                            c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), "
+                                      "COUNT(DISTINCT state) FROM gas_pipelines "
+                                      "WHERE " + _NG_OK)
+                            _st = c.fetchone()
+                            if _st:
+                                stats = _st
+                                _GAS_STATS_CACHE.set('gas', _st)
                         except Exception:
                             pass
+                        finally:
+                            try:
+                                c.execute("SET statement_timeout = 10000")
+                            except Exception:
+                                pass
 
-            return jsonify({
-                'success': True,
-                'pipelines': pipelines,
-                'count': len(pipelines),
-                'stats': {
-                    'total_pipelines': stats[0],
-                    'unique_operators': stats[1],
-                    'states_covered': stats[2],
-                    'basis': ('gas_pipelines, natural gas only — the same '
-                              'table and the same commodity filter as the '
-                              '`pipelines` array in this response. Excludes '
-                              'crude_oil / petroleum / hgl / offshore rows '
-                              '(util/gas_pipelines.py).'),
-                },
-                'filters': {
-                    'state': state_filter or 'all',
-                    'operator': operator_filter or 'all',
-                    'type': pipeline_type or 'all'
-                },
-                '_debug': {
-                    'lat_received': lat,
-                    'lng_received': lng,
-                    'radius': radius,
-                    'spatial_filter_applied': lat is not None and lng is not None
+                if preview:
+                    pipelines = [rest_tease.tease_row(
+                        p, keep=_GP_PREVIEW_KEEP, coords=('lat', 'lng'),
+                        null=('name', 'operator', 'diameter_inches', 'capacity_mcf'))
+                        for p in pipelines]
+                out = {
+                    'success': True,
+                    'pipelines': pipelines,
+                    'count': len(pipelines),
+                    'stats': {
+                        'total_pipelines': stats[0],
+                        'unique_operators': stats[1],
+                        'states_covered': stats[2],
+                        'basis': ('gas_pipelines, natural gas only — the same '
+                                  'table and the same commodity filter as the '
+                                  '`pipelines` array in this response. Excludes '
+                                  'crude_oil / petroleum / hgl / offshore rows '
+                                  '(util/gas_pipelines.py).'),
+                    },
+                    'filters': {
+                        'state': state_filter or 'all',
+                        'operator': operator_filter or 'all',
+                        'type': pipeline_type or 'all'
+                    },
+                    '_debug': {
+                        'lat_received': lat,
+                        'lng_received': lng,
+                        'radius': radius,
+                        'spatial_filter_applied': lat is not None and lng is not None
+                    }
                 }
-            })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+                if preview:
+                    c.execute("SELECT COUNT(*) FROM gas_pipelines WHERE" + _where,
+                              _where_params)
+                    _total = (c.fetchone() or [0])[0]
+                    # A literal dict (not the call) keeps `out` measurable by
+                    # scripts/api_response_contract.py.
+                    out.update({**rest_tease.envelope('developer', _GP_PREVIEW_LOCKED,
+                                                      _total, coords=True)})
+                return jsonify(out)
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    return rest_tease.serve(
+        'developer',
+        lambda: _gp_answer(min(limit, 500), True),
+        lambda: _gp_answer(rest_tease.TEASE_ROWS, False, preview=True),
+        lambda: _gp_answer(_gp_eff_limit, _gp_priv))
+
+
+# What the gas-pipeline previews keep and null (2026-09-21, util/rest_tease).
+_GP_PREVIEW_KEEP = ('id', 'pipeline_type', 'status', 'city', 'state', 'country',
+                    'source', 'commodity')
+_GP_PREVIEW_LOCKED = ('pipelines[].name', 'pipelines[].operator',
+                      'pipelines[].diameter_inches', 'pipelines[].capacity_mcf')
 
 
 @deals_bp.route('/api/v1/deals', methods=['GET'])
@@ -2107,26 +2145,40 @@ def get_gas_pipelines_test():
         radius = int(float(radius)) if radius else 50
     except:
         lat = lng = None
-    conn = None
-    try:
-        conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        c = conn.cursor()
-        if lat is not None and lng is not None:
-            lat_d = radius / 69.0
-            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
-            c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s LIMIT 10",
-                      [lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
-        else:
-            c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines LIMIT 10")
-        rows = c.fetchall()
-        # DB info
-        c2 = conn.cursor()
-        c2.execute("SELECT current_database(), count(*) FROM gas_pipelines")
-        db_info = c2.fetchone()
-        c2.execute("SELECT count(*) FROM gas_pipelines WHERE lat IS NOT NULL")
-        has_lat = c2.fetchone()[0]
-        return jsonify({'count': len(rows), 'db': db_info[0], 'total_rows': db_info[1], 'rows_with_lat': has_lat, 'rows': [{'id':r[0],'name':r[1],'lat':float(r[3]),'lng':float(r[4]),'state':r[5]} for r in rows]})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        _release_db(conn)  # issue #1649: direct psycopg2 conn — close on ALL paths
+    # 2026-09-21: the same preview as /api/v1/gas-pipelines (util/rest_tease)
+    # for callers below Developer; internal / admin unchanged.
+    from util import rest_tease
+
+    def _answer(n, preview):
+        conn = None
+        try:
+            conn = psycopg2.connect(os.environ['DATABASE_URL'])
+            c = conn.cursor()
+            if lat is not None and lng is not None:
+                lat_d = radius / 69.0
+                lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+                c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s LIMIT %s",
+                          [lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d, n])
+            else:
+                c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines LIMIT %s", [n])
+            rows = c.fetchall()
+            # DB info
+            c2 = conn.cursor()
+            c2.execute("SELECT current_database(), count(*) FROM gas_pipelines")
+            db_info = c2.fetchone()
+            c2.execute("SELECT count(*) FROM gas_pipelines WHERE lat IS NOT NULL")
+            has_lat = c2.fetchone()[0]
+            out = {'count': len(rows), 'db': db_info[0], 'total_rows': db_info[1], 'rows_with_lat': has_lat, 'rows': [{'id':r[0],'name':r[1],'lat':float(r[3]),'lng':float(r[4]),'state':r[5]} for r in rows]}
+            if preview:
+                out['rows'] = [rest_tease.tease_row(x, keep=('id', 'state'), coords=('lat', 'lng'),
+                                                    null=('name',)) for x in out['rows']]
+                out.update({**rest_tease.envelope('developer', ('rows[].name',), has_lat,
+                                                  coords=True)})
+            return jsonify(out)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        finally:
+            _release_db(conn)  # issue #1649: direct psycopg2 conn — close on ALL paths
+
+    return rest_tease.serve('developer', lambda: _answer(10, False),
+                            lambda: _answer(rest_tease.TEASE_ROWS, True))
