@@ -1417,10 +1417,6 @@ def _api_key_row_node_tier(rate_limit_tier, plan, user_plan):
     api_tier(plan) in rate_limit_tier, and each tier_registry.TIERS name maps
     to the same Node tier as its api_tier, so a row whose columns agree
     answers exactly as before.
-
-    Known gap, shared with #5193: handle_invoice_paid restores only
-    'dunning_prior_payer', so a 'first_charge_never_succeeded' demote that
-    later pays keeps rate_limit_tier='free' and reads free here.
     """
     name = next((str(v).strip() for v in (rate_limit_tier, plan, user_plan)
                  if v is not None and str(v).strip()), "free")

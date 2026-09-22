@@ -28,8 +28,8 @@ One account, two answers, decided by which surface the caller hit.
     access" through Stripe's retry cycle ON PURPOSE. test_grace_* pins that.
 
   * the stamp alone could lock someone out permanently. r46-restore clears
-    demoted_at only for demoted_reason='dunning_prior_payer'; a
-    'first_charge_never_succeeded' stamp has no clearer in this repo. Requiring
+    demoted_at only for the two reasons handle_payment_failed writes, and only
+    best-effort; a hand-set stamp has no clearer in this repo. Requiring
     the status means handle_invoice_paid (which sets subscription_status
     ='active') restores web access by the act of paying, whether or not anything
     ever clears the stamp. test_paying_restores_* pins that.
