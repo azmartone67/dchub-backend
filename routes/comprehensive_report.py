@@ -648,7 +648,9 @@ def _attach_narrative_safe(d, kind):
 
 
 # /reports/monthly and /api/v1/reports/monthly are routes/monthly_trend.py's.
-# This module's rules on both were removed 2026-09-21: a shadowed duplicate that never served.
+# This module's rules on both were removed 2026-09-21 as shadowed duplicates.
+# The /api/v1/reports/monthly one (strict_slashes=False) did serve one URL, the
+# trailing-slash form; monthly_trend's rule answers that now.
 
 
 @comprehensive_report_bp.route("/reports/quarterly-deep", methods=["GET"], strict_slashes=False)
