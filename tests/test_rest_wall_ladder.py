@@ -101,10 +101,11 @@ def test_the_deals_free_wall_renders_the_honest_ladder(signed, monkeypatch):
     with app.app_context():
         body = dr._get_transactions_free().get_json()
     assert body["tier"] == "free"
-    assert _go(body["upgrade_url"])[0] == "pro"
+    # frontend#1534 step 2 (2026-09-22): the pack and Developer open the deal
+    # routes over REST now, so the pack leads and both say so.
+    assert _go(body["upgrade_url"])[0] == "metered"
     opts = body["upgrade_options"]
-    assert [(o["plan"], o["opens"]) for o in opts] == [("pro", "rest"), ("pack", "mcp"), ("developer", "mcp")]
-    assert all(o.get("mcp_tool") == "list_transactions" for o in opts[1:])
+    assert [(o["plan"], o["opens"]) for o in opts] == [("pack", "rest"), ("developer", "rest")]
 
 
 def _cheapest_rest_opener_of_list_facilities(tree):

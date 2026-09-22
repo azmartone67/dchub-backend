@@ -66,7 +66,8 @@ def client(monkeypatch):
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test@127.0.0.1:1/test')
     monkeypatch.setattr(dr, 'DEALS_CACHE', BoundedCache(max_size=50, ttl=300))
     dr.init_deals_routes(
-        require_plan=lambda _plan: _passthrough,
+        # The real gate takes options (pack_opens=True on /api/v1/transactions).
+        require_plan=lambda _plan, **_opts: _passthrough,
         protect_data=_passthrough,
         get_db=lambda: None,
         pg_connection=_fake_pg_connection,
