@@ -500,7 +500,33 @@ def rate_limit_before():
     # back off BEFORE hitting 429).
     g._rl_remaining = remaining
     g._rl_reset = int(time.time()) + (60 - int(time.time()) % 60)  # next per-minute window (epoch s)
+    # What this request was charged, so refund_request() can give it back.
+    g._rl_charged = (key, limits['rpm'], limits['rph'])
     return None
+
+
+def refund_request():
+    """Give back the token rate_limit_before charged THIS request.
+
+    For a response that only sends the caller on to the URL it will request
+    next: the trailing-slash 301 (routes/trailing_slash_redirect.py). Without
+    this a visitor pays for the hop and again for the page. Returns True when a
+    token went back. It is a no-op for a request that was never charged (a
+    bypass, a skipped path, or a 429), and for a second call in the same request.
+    """
+    charged = getattr(g, '_rl_charged', None)
+    if not charged:
+        return False
+    g._rl_charged = None
+    key, rpm, rph = charged
+    for suffix, cap in ((':min', rpm), (':hr', rph)):
+        bucket = _buckets.get(key + suffix)
+        if bucket is not None:
+            bucket['tokens'] = min(cap, bucket['tokens'] + 1)
+    remaining = getattr(g, '_rl_remaining', None)
+    if remaining is not None:
+        g._rl_remaining = min(rpm, remaining + 1)
+    return True
 
 
 def rate_limit_after(response):

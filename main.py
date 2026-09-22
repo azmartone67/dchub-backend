@@ -14460,6 +14460,20 @@ def smart_404(e):
         response.headers['Access-Control-Allow-Origin'] = origin
     return response
 
+
+# r-slash-301 (2026-09-22): a trailing-slash spelling of a real page answers 301
+# to the page instead of 404 (/pricing/, /connect/ and /facilities/in/nl/ all
+# 404'd at the edge). Only a final 404 response is converted, so a path that
+# smart_404's prefix table or _check_prefix_redirects already redirects keeps
+# that answer. The hop's rate-limit token is refunded. Pages only, not /api/.
+# See routes/trailing_slash_redirect.py.
+try:
+    from routes.trailing_slash_redirect import install as _install_slash_301
+    _install_slash_301(app)
+    print("[main] trailing-slash 404 -> 301 installed", flush=True)
+except Exception as _slash_301_e:
+    print(f"[main] trailing-slash 301 install failed: {_slash_301_e}", flush=True)
+
 # =============================================================================
 # ENERGY ROUTES BLUEPRINT (Phase 2 Extract 1)
 # 31 routes: GridStatus, FCC, EPA, PeeringDB, EIA, HIFLD, Oil & Gas

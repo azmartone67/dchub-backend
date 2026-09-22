@@ -101,9 +101,12 @@ jobs:
           DCHUB_CONTRACT_GATE_STRICT: "1"
         # + the real-app door check (2026-09-21): it GETs every agent door
         #   through the booted app and skips in unit-tests for the same reason.
+        # + the trailing-slash 301 (2026-09-22): its test_real_app_* cases read
+        #   the booted app's redirects and rate-limit buckets, same skip.
         run: >-
           python3 -m pytest tests/test_agentic_loop_inspect.py
           "tests/test_llms_cite_without_mcp.py::test_the_real_app_serves_what_the_one_registration_serves"
+          tests/test_trailing_slash_404_redirect.py
           -v --tb=short
 
       # ── Gate liveness ledger ─────────────────────────────────────────────
