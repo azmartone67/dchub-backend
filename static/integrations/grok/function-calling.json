@@ -6,7 +6,7 @@
       "type": "function",
       "function": {
         "name": "search_facilities",
-        "description": "Search DC Hub's database of 21,000+ data center facilities across 170+ countries.",
+        "description": "Search DC Hub's database of 24,500+ data center facilities across 170+ countries.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -51,7 +51,7 @@
       "type": "function",
       "function": {
         "name": "list_transactions",
-        "description": "Search M&A transactions from DC Hub's database of 4,000+ tracked data-center deals.",
+        "description": "Search M&A transactions from DC Hub's database of 1,600+ tracked data-center deals.",
         "parameters": {
           "type": "object",
           "properties": {

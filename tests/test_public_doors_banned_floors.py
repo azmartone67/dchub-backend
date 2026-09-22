@@ -77,13 +77,45 @@ def find_banned(text, floors):
     return hits
 
 
+def _tracked():
+    return subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True,
+                          text=True, check=True).stdout.split("\n")
+
+
+def _served_integration_files():
+    """Everything under static/integrations/ — served at /integrations/<x>/<file>
+    (READMEs, plugin manifests, function-calling schemas, instructions)."""
+    return [p for p in _tracked() if p.startswith("static/integrations/") and (ROOT / p).is_file()]
+
+
 def _scanned_files():
-    out = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True,
-                         text=True, check=True).stdout.split("\n")
+    out = _tracked()
     readmes = [p for p in out if re.search(r"(^|/)readme(\.[a-z]+)?$", p, re.I)]
     twins = [p for p in out if p.startswith("static/.well-known/") and p.endswith(".json")]
-    files = sorted(set(readmes + twins + [p for p in HAND_SURFACES if (ROOT / p).exists()]))
+    files = sorted(set(readmes + twins + _served_integration_files()
+                       + [p for p in HAND_SURFACES if (ROOT / p).exists()]))
     return [p for p in files if (ROOT / p).is_file()]
+
+
+#: A facility figure at facility magnitude followed (within a few words) by a
+#: facility noun. The 10,000 floor keeps scoped per-market figures ("200+
+#: tracked data center facilities" in one metro) out of the rule, the same band
+#: tests/test_canonical_counts_drift.py uses.
+_FACILITY_FIGURE = re.compile(
+    r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d{5,6})\+?\s*"
+    r"(?:(?:global|distinct|tracked|verified|physical)\s+)*"
+    r"(?:data[\s-]?cent(?:er|re)s?(?:\s+facilities)?|facilities|DCs)\b", re.I)
+
+
+def facility_figures_below(text, floor_int):
+    """[(figure, lineno, line)] for facility-scale figures under the canon floor."""
+    hits = []
+    for i, line in enumerate(text.split("\n"), 1):
+        for m in _FACILITY_FIGURE.finditer(line):
+            v = int(m.group(1).replace(",", ""))
+            if 10_000 <= v < floor_int:
+                hits.append((m.group(0), i, line.strip()[:120]))
+    return hits
 
 
 def test_the_scan_is_not_vacuous():
@@ -103,6 +135,33 @@ def test_no_public_door_publishes_a_banned_floor():
     assert not bad, ("banned facility floor(s) on a public door (owner directive "
                      "2026-09-21) — state the canon floor from /api/v1/canon/phrases:\n"
                      + "\n".join(bad))
+
+
+def test_served_integration_files_state_no_facility_floor_below_canon():
+    """★2026-09-22: the served integration guides and configs were three canon
+    generations behind (10,706+, 10,400+, 21,000+) and no guard read them —
+    they are served byte-identical at /integrations/<x>/<file>, outside every
+    SURFACES list. A facility figure below the canon pin is stale whatever it
+    is, so when the pin next walks, this names every served line that must
+    walk with it."""
+    pinned = _pinned_facilities()
+    floor_int = int(pinned.rstrip("+").replace(",", ""))
+    files = _served_integration_files()
+    assert len(files) >= 30, f"only {len(files)} served integration files found — the scope broke"
+    bad = []
+    for rel in files:
+        text = (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        bad += [f"  {rel}:{i}: {fig!r} -> {line!r}" for fig, i, line in facility_figures_below(text, floor_int)]
+    assert not bad, (f"facility figure(s) below the canon floor {pinned} in served integration "
+                     "files — state the canon floor:\n" + "\n".join(bad))
+
+
+def test_control_below_canon_figures_are_caught_and_scoped_ones_are_not():
+    assert facility_figures_below("Search 10,706+ data centers", 24_500)
+    assert facility_figures_below("more than 21,000 data-center facilities", 24_500)
+    assert facility_figures_below("10,706 DCs", 24_500)
+    assert not facility_figures_below("Northern Virginia has 200+ tracked data center facilities", 24_500)
+    assert not facility_figures_below("Search 24,500+ data centers", 24_500)
 
 
 @pytest.mark.parametrize("floor", OWNER_BANNED_FLOORS)

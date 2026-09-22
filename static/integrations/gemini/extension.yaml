@@ -9,7 +9,7 @@ version: "1.1.0"
 
 manifest:
   name: "dc_hub"
-  description: "Access 20,000+ data centers and real-time grid data via DC Hub API."
+  description: "Access 24,500+ data centers and real-time grid data via DC Hub API."
   api_spec:
     open_api_url: "https://dchub.cloud/openapi.json"
   auth_config:

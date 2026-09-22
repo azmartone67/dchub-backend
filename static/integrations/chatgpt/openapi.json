@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DC Hub — Data Center Intelligence Platform",
-    "description": "DC Hub is a global data center intelligence platform tracking 21,000+ facilities across 170+ countries. Provides real-time energy pricing, grid fuel mix, carbon intensity, M&A transactions, capacity pipeline, site scoring, and market intelligence for AI agents and investment analysts. Free tier endpoints require no authentication. Full-data endpoints require an X-API-Key header (claim a free key via the claim_free_key MCP tool or POST /api/v1/keys/claim).",
+    "description": "DC Hub is a global data center intelligence platform tracking 24,500+ facilities across 170+ countries. Provides real-time energy pricing, grid fuel mix, carbon intensity, M&A transactions, capacity pipeline, site scoring, and market intelligence for AI agents and investment analysts. Free tier endpoints require no authentication. Full-data endpoints require an X-API-Key header (claim a free key via the claim_free_key MCP tool or POST /api/v1/keys/claim).",
     "version": "1.0.0",
     "contact": {
       "name": "DC Hub",
