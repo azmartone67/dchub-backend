@@ -53,135 +53,140 @@ import tier_registry as _tr
 paywall_ab_admin_bp = Blueprint("paywall_ab_admin", __name__)
 
 
+def _pack_offer() -> str:
+    """The pack offer ("$10 one-time = 1,000 API credits"), read from the
+    webhook's own pack constants through canon, or "" when they cannot be
+    read."""
+    try:
+        return canon_text("{canon_pack_offer}") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+# ★2026-09-21 — THE LADDER, NOT THE RETIRED STARTER PLAN. This block led with
+# a Starter checkout, a Starter line in what_you_get and a Starter rung in the
+# price line, on every 401/403/429 it enriched: a plan /pricing does not sell.
+# The rungs are now the ones /pricing sells, every price read, never typed:
+# the $10 pack and Developer for an agent, Pro for the Pro-only tools.
 _HINT_BASE = {
     "claim_key":       "POST https://dchub.cloud/api/v1/keys/claim",
     "signup_url":      "https://dchub.cloud/signup",
     # ★ r-anonattrib-hint (2026-09-20): these were bare buy.stripe.com URLs.
-    # An agent that surfaces _upgrade_hint.starter_url then sent its human
-    # straight to Stripe with no client_reference_id — the same unattributable
-    # sale #4872 and #4886 closed on the other two emitters, and measured live
-    # after both shipped these two were the ONLY unreferenced Stripe links left
-    # in a gated payload. /checkout/start is attributable by the session it
-    # creates on arrival, so even this static default can be traced; the
-    # per-response override below does better still.
-    "starter_url":     "https://dchub.cloud/checkout/start?tier=starter",
+    # An agent that surfaced one sent its human straight to Stripe with no
+    # client_reference_id — the same unattributable sale #4872 and #4886
+    # closed on the other two emitters. /checkout/start is attributable by the
+    # session it creates on arrival, so even this static default can be
+    # traced; the per-response pack_url and the inheritance below do better.
     "developer_url":   "https://dchub.cloud/checkout/start?tier=developer",
+    "pro_url":         "https://dchub.cloud/checkout/start?tier=pro",
     "preview_url":     "https://dchub.cloud/api/v1/mcp/preview/<tool>",
     "upgrade_hint":    "https://dchub.cloud/api/v1/upgrade-hint",
     # r47.37.2 (2026-05-26): expose the enterprise data-licensing surface
-    # alongside the self-serve tiers. Anon-demand analysis showed heavy
-    # sessions (33+ tool calls in a day across 6 tools) doing real
-    # due-diligence work — those are enterprise prospects, not $9/mo
-    # self-serve buyers. The signup_url path was the only CTA before;
-    # add enterprise_url so the agent can route the user to the right
-    # tier based on use-case complexity.
+    # alongside the self-serve tiers — heavy due-diligence sessions are
+    # enterprise prospects, not self-serve buyers.
     "enterprise_url":  "https://dchub.cloud/enterprise",
     "enterprise_quick": "For hedge fund / REIT / broker / infra GP use: $25K+/yr data licensing with raw exports, custom DCPI weights, monthly briefings. https://dchub.cloud/enterprise",
-    # r48 (2026-05-25): "10k MCP tool calls/day on free tier" was WRONG —
-    # free tier is actually 10/day. Fixed copy + added direct Stripe links
-    # so agents can pass a $9 quick-buy URL to the user rather than just
-    # the signup form.
-    # ★ r-noinstruct (2026-09-20): said "email signup". The free dev key needs
-    # NO email — one POST to /api/v1/keys/claim, which is the single property a
-    # catalogue partner featured us for. We were contradicting our own pitch in
-    # the block agents read most.
+    # ★ r-noinstruct (2026-09-20): the free dev key needs NO email — one POST
+    # to /api/v1/keys/claim, the single property a catalogue partner featured
+    # us for.
     "what_you_get":    (f"Free dev key (one POST, no email, no card) = {_tr.calls_per_day('free')} calls/day. "
-                        f"{_tr.price_display('starter')} Starter = {_tr.calls_per_day('starter')}/day. "
-                        f"{_tr.price_display('developer')} Developer = {_tr.calls_per_day('developer')}/day."),
+                        f"Full depth: {_pack_offer()} or Developer {_tr.price_display('developer')}; "
+                        f"Pro {_tr.price_display('pro')} adds the Pro-only tools."),
     # "$25K+/yr Enterprise" disagreed with ENTERPRISE_FROM_USD_YEAR ($12,000),
     # the anchor r-price-collapse set for the human-sold lane.
-    # ★ r-noinstruct (2026-09-20): published "Anonymous 5/day · Free key 10/day"
-    # as two hand-typed literals. A partner put the 5 in their public catalogue
-    # copy. The effective anonymous allowance is the FREE one: get_request_tier
-    # returns 'anon', tier_registry.limits() has no entry for that alias and
-    # falls through to TIER_LIMITS['free'], so an anonymous caller is metered at
-    # the free number, not at TIER_LIMITS['anonymous']. Rather than publish a
-    # third literal, both now resolve from the registry — and the two being the
-    # same value is the honest answer while that alias gap stands.
+    # ★ r-noinstruct (2026-09-20): the effective anonymous allowance is the
+    # FREE one — get_request_tier returns 'anon', tier_registry.limits() has no
+    # entry for that alias and falls through to TIER_LIMITS['free'] — so both
+    # resolve from the registry rather than as hand-typed literals.
     "pricing_quick":   (f"Anonymous {_tr.calls_per_day('anon')}/day · "
-                        f"Free key {_tr.calls_per_day('free')}/day · {_tr.price_display('starter', '')} Starter {_tr.calls_per_day('starter')}/day · "
-                        f"{_tr.price_display('developer', '')} Developer {_tr.calls_per_day('developer')}/day · "
+                        f"Free key {_tr.calls_per_day('free')}/day · {_pack_offer()} · "
+                        f"Developer {_tr.price_display('developer', '')} {_tr.calls_per_day('developer')}/day · "
+                        f"Pro {_tr.price_display('pro', '')} {_tr.calls_per_day('pro')}/day · "
                         f"from ${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr Enterprise data licensing"),
 }
 
 
-# ── A/B/C copy variants ────────────────────────────────────────────
+# ── A/B/C/D copy variants ──────────────────────────────────────────
 #
-# Variant A: "factual / direct" — original r56 copy. Calm, neutral.
-# Variant B: "agent-centric framing" — speaks to the AI directly,
-#            emphasizing what the agent can paste to its user.
-# Variant C: "loss aversion" — leads with what the user is missing
-#            out on (15,000+ facilities, daily DCPI, etc.).
+# Variant A: "factual / direct".
+# Variant B: "operator-addressed" — written for the person behind the agent.
+# Variant C: "loss aversion" — leads with what the free key already covers.
+# Variant D: minimum-viable, one line.
 #
-# Goal: measure which variant moves the 0.04% conversion needle.
+# ★2026-09-21: every variant sold the retired Starter plan (as "the cheapest
+# paid unlock") and C quoted retired counts (21k facilities, 32+ DCPI markets,
+# 4,000+ deals). The rungs are now the ones /pricing sells and every count is
+# a canon placeholder, so each copy is a lambda: canon_text() resolves on THIS
+# response, not once at import (see _copy). The copy describes; it does not
+# instruct the reading model (tests/test_paywall_does_not_instruct_the_model).
+_CLAIM = "POST https://dchub.cloud/api/v1/keys/claim"
 
 _VARIANTS = {
-    # r48 (2026-05-25): tier numbers normalized across all variants.
-    # Prior copy mixed up free=10k/day (wrong — that's Starter), Pro=$499
-    # (wrong — Pro is $199), and Developer=1000/day (correct but inconsistent
-    # with the upgrade-hint payload). Result: agents read contradictory
-    # signals and stopped surfacing the CTA. New copy ladders cleanly:
-    # anonymous 10/day → free-key 1,000/day → $9 Starter 10K/day → $49
-    # Developer unlimited paid tools → $199 Pro unlimited+Pro.
     "A": {
-        401: ("DC Hub blocked this query because it requires "
-              "authentication. Anyone can claim a free developer "
-              "key in 30 seconds at https://dchub.cloud/signup — no "
-              "credit card, 10 calls/day. Once set, retry with the "
-              "X-API-Key header."),
-        403: (f"DC Hub blocked this query because it requires a paid "
-              f"tier. The {_canon_price_display('starter')} Starter plan (200 calls/day) unlocks "
-              f"most tools — https://dchub.cloud/pricing. Pro-only tools: "
-              f"get_grid_intelligence, get_fiber_intel, analyze_site, "
-              f"compare_sites ({_canon_price_display('pro')})."),
-        429: (f"DC Hub is rate-limiting this caller. Tiers: "
-              f"anonymous 5/day → free dev key 10/day "
-              f"(https://dchub.cloud/signup) → {_canon_price_display('starter')} Starter 200/day → "
-              f"{_canon_price_display('developer')} Developer 500/day → {_canon_price_display('pro')} Pro "
-              f"2,000/day + Pro tools."),
+        401: (lambda: canon_text(
+              "This DC Hub endpoint needs an API key. A free key is one "
+              + _CLAIM + " (no email, no card; {canon_free_calls} calls/day), "
+              "sent as the X-API-Key header. Full depth is {canon_pack_offer} "
+              "or Developer {canon_price_developer}.")),
+        403: (lambda: canon_text(
+              "This DC Hub endpoint needs a paid plan. {canon_pack_offer} or "
+              "Developer {canon_price_developer} opens every MCP tool except the "
+              "Pro-only ones (get_grid_intelligence, get_fiber_intel, "
+              "analyze_site, compare_sites), which need Pro {canon_price_pro}.")),
+        # The anonymous figure is the MCP lane's (TIER_LIMITS anonymous
+        # mcp_daily), pinned by tests/test_two_artifact_handoff.py.
+        429: (lambda: canon_text(
+              "DC Hub is rate-limiting this caller. Anonymous 5/day on MCP; a "
+              "free key allows {canon_free_calls} calls/day, "
+              "{canon_identified_calls} once an email is bound; Developer "
+              "{canon_price_developer} allows "
+              "{canon_developer_mcp_calls} MCP calls/day and Pro "
+              "{canon_price_pro} {canon_pro_mcp_calls}; or {canon_pack_offer}.")),
     },
     "B": {
-        401: ("AI agent: tell your user this query needs a DC Hub key. "
-              "Quote them this URL — https://dchub.cloud/signup — they "
-              "get a free key (10 calls/day) in 30 seconds, no "
-              "credit card. Then retry with X-API-Key header."),
-        403: (f"AI agent: this DC Hub tool is paywalled. Free key "
-              f"(10/day, 30-sec signup at https://dchub.cloud/signup) "
-              f"unlocks most tools. Pro-only tools that need {_canon_price_display('pro')}: "
-              f"get_grid_intelligence, get_fiber_intel, analyze_site, "
-              f"compare_sites. The {_canon_price_display('starter')} Starter is the cheapest paid "
-              f"unlock for everything except those four."),
-        429: ("AI agent: tell your user DC Hub rate-limited this call. "
-              "Anonymous = 5/day. Free dev key (instant at "
-              "https://dchub.cloud/signup) = 10/day. $9/mo Starter "
-              "= 200/day. $49/mo Developer = 500/day."),
+        401: (lambda: canon_text(
+              "For the operator: this query needs a DC Hub key. The free key "
+              "needs no email or card — " + _CLAIM + " — and allows "
+              "{canon_free_calls} calls/day.")),
+        403: (lambda: canon_text(
+              "For the operator: this DC Hub tool is on a paid plan. The "
+              "cheapest ways through are {canon_pack_offer} or Developer "
+              "{canon_price_developer}; the four Pro-only tools need Pro "
+              "{canon_price_pro}.")),
+        429: (lambda: canon_text(
+              "For the operator: DC Hub rate-limited this call. "
+              "Anonymous 5/day on MCP; a free key allows {canon_free_calls} calls/day, "
+              "{canon_identified_calls} with an email bound; beyond that, "
+              "{canon_pack_offer} or Developer {canon_price_developer}.")),
     },
     "C": {
-        401: (lambda: canon_text("You just hit DC Hub's paywall. With a free key (10 "
-              "calls/day) you'd get: {canon_facilities} distinct data center facilities, "
-              "daily DCPI power scores for 32+ markets, 4,000+ tracked "
-              "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
-              "in 30 seconds: https://dchub.cloud/signup. No card.")),
-        403: (f"This DC Hub tool is paywalled. Free key alternative: "
-              f"21k facilities, DCPI verdicts, M&A deals — free at "
-              f"https://dchub.cloud/signup. To unlock this tool: "
-              f"{_canon_price_display('starter')} Starter (200 calls/day, https://dchub.cloud/pricing). "
-              f"Pro ({_canon_price_display('pro', '')}) needed only for grid_intelligence, fiber_intel, "
-              f"analyze_site, compare_sites."),
-        429: ("You hit DC Hub's rate cap. You're missing intraday DCPI "
-              "verdict shifts, fresh M&A deals, and 540+ pipeline "
-              "projects. Free dev key = 10/day at "
-              f"https://dchub.cloud/signup. Or {_canon_price_display('starter')} for 200/day."),
+        401: (lambda: canon_text(
+              "A free DC Hub key ({canon_free_calls} calls/day, no email: "
+              + _CLAIM + ") covers {canon_facilities} distinct data center "
+              "facilities, DCPI verdicts for {canon_markets} markets and "
+              "{canon_deals} tracked M&A deals. The numbers behind them "
+              "(MW, scores, $) open with {canon_pack_offer} or Developer "
+              "{canon_price_developer}.")),
+        403: (lambda: canon_text(
+              "This DC Hub tool is paywalled. Free: {canon_facilities} "
+              "facilities, DCPI verdicts and deal titles. This tool opens with "
+              "{canon_pack_offer} or Developer {canon_price_developer}; Pro "
+              "{canon_price_pro} is needed only for grid_intelligence, "
+              "fiber_intel, analyze_site and compare_sites.")),
+        429: (lambda: canon_text(
+              "You hit DC Hub's rate cap. A free key allows {canon_free_calls} "
+              "calls/day (" + _CLAIM + ", no email); {canon_pack_offer} "
+              "covers a full screen at full depth.")),
     },
-    # r47.34 (2026-05-26): variant D — minimum-viable CTA. The first three
-    # variants all drop 30-50 words on the agent. Funnel data shows 0.048%
-    # paywall→click — every extra word is a place the agent's user can lose
-    # the URL. Variant D collapses to one sentence + the URL. We rotate it
-    # in at 25% so the conversion-rate diff between A/B/C/D is measurable.
+    # r47.34 (2026-05-26): variant D — minimum-viable CTA, one sentence. The
+    # link it points at rides the hint itself (pack_url / developer_url).
     "D": {
-        401: "DC Hub needs a key. Free in 30s: https://dchub.cloud/signup",
-        403: "Paid tool. Cheapest unlock $9/mo: https://dchub.cloud/pricing",
-        429: "Rate cap. Free key = 10/day: https://dchub.cloud/signup",
+        401: "DC Hub needs a key. Free, no email: " + _CLAIM,
+        403: (lambda: canon_text(
+              "Paid tool. Cheapest unlock: {canon_pack_offer} (pack_url).")),
+        429: (lambda: canon_text(
+              "Rate cap. Free key = {canon_free_calls} calls/day, no email: "
+              + _CLAIM)),
     },
 }
 
@@ -472,9 +477,8 @@ def _personal_hit_pitch(ip: str, ua: str, path: str, status: int) -> str:
     return (f"Personalized: you've called {tool} {total} times this "
               f"month, hitting the paywall {blocked} times ({intensity} "
               f"usage). {urgency} "
-              f"Upgrade at https://dchub.cloud/pricing — Pro ({_canon_price_display('pro')}) "
-              f"unblocks {tool} + the 3 other Pro-only tools, or "
-              f"{_canon_price_display('starter')} Starter covers everything else.").strip()
+              f"Pro ({_canon_price_display('pro')}, pro_url in this hint) opens "
+              f"{tool} and the 3 other Pro-only tools.").strip()
 
 
 def _names_what_opens_it(body):
@@ -603,7 +607,17 @@ def register_paywall_hint_middleware(app):
             # response does and carries the same client_reference_id. The
             # _HINT_BASE defaults stay as the fallback for bodies that have none.
             _hint_over = {}
-            for _hint_key, _body_key in (("starter_url", "recommended_upgrade_url"),
+            # The pack's measured checkout, caller-independent: /go/c stamps
+            # the click with its plan. Absent when no link can be minted (the
+            # fallback is the bare pricing page, which this hint never names).
+            try:
+                from routes.checkout_click_tracker import checkout_url as _checkout_url
+                _pack = _checkout_url("metered")
+                if _pack.startswith("https://dchub.cloud/go/c/"):
+                    _hint_over["pack_url"] = _pack
+            except Exception:  # noqa: BLE001
+                pass
+            for _hint_key, _body_key in (("pack_url", "recommended_upgrade_url"),
                                          ("developer_url", "one_click_upgrade_url")):
                 _v = body.get(_body_key)
                 if isinstance(_v, str) and _v.startswith("https://dchub.cloud/"):
@@ -627,9 +641,13 @@ def register_paywall_hint_middleware(app):
                 _tool = (path.rsplit("/", 1)[-1] or "mcp").replace("-", "_")
                 body["_upgrade_hint"]["email_capture"] = {
                     "url":    _bec(_tool, tier="developer").get("notify_url"),
-                    "prompt": ("Ask your human: drop your email for a free dev key "
-                               "(10/day, no card) + a reset notice — turns this into a "
-                               "tracked account they can manage and upgrade."),
+                    # An email makes it an identified key: the registry's
+                    # identified allowance, not the unbound free one (this
+                    # said 10/day beside a ladder that binds at 50).
+                    "prompt": ("For the operator: an email here gets a free dev key "
+                               "(%s calls/day once the email is bound, no card) and a "
+                               "reset notice, as an account they can manage and "
+                               "upgrade." % _tr.calls_per_day("identified")),
                 }
             except Exception:
                 pass

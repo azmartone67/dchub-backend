@@ -81,32 +81,11 @@ STRIPE_DEVELOPER_LINK = (
 # Back-compat alias for any external code that imported the old name
 STRIPE_PRO_LINK = STRIPE_DEVELOPER_LINK
 
-# 2026-06-12 conversion-nudge: the funnel teardown showed ~330 distinct free
-# users hammering get_grid_intelligence / get_fiber_intel, but the paywall
-# only ever pitched Developer ($49/mo). The cheapest unblock — Starter
-# ($9/mo, 200 calls/day, all 48 tools) — was never mentioned. For a free
-# user who's already called a tool many times, "$9 unlocks all of it" is a
-# far lower-friction yes than "$49/mo". Lead with Starter; keep Developer as
-# the step-up for heavy API users. Env-overridable; default is the live link.
-STRIPE_STARTER_LINK = (
-    os.environ.get('DCHUB_STRIPE_STARTER_LINK')
-    or 'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g'
-).strip()
-
-
-def _one_click_starter_line(tool_name=None, call_count=0):
-    """Lead CTA: the $9/mo Starter unblock, personalized with the caller's
-    own call count for THIS tool so the pitch is concrete ("you've called
-    this 47×"). Returns '' if no Starter link is configured."""
-    if not STRIPE_STARTER_LINK:
-        return ''
-    used = (f"You've called `{tool_name}` **{call_count}×** — "
-            if (tool_name and call_count and call_count > 0) else "")
-    return (
-        f"💡 **{used}$9/mo Starter unlocks all 48 tools (200 calls/day) — "
-        f"the cheapest way to unblock this:** "
-        f"[{STRIPE_STARTER_LINK}]({STRIPE_STARTER_LINK})\n\n"
-    )
+# ★2026-09-21: the Starter lead is gone. From 2026-06-12 every message here
+# opened with a Starter line ("unlocks all 48 tools") and named Starter as the
+# recommended upgrade: a plan /pricing does not sell. The recommended
+# rung is now the plan this builder already sells (Developer); REST walls on a
+# Pro route replace it with Pro (api_tier_gating._rich_gate_response).
 
 
 DISCOUNT_CODE_TIER2 = 'TRYDCHUB50'   # 50% off first month
@@ -248,9 +227,6 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     # Phase 276: prepend a one-click Stripe upgrade line if configured.
     # Empty string when DCHUB_STRIPE_PRO_LINK is unset — degrades cleanly.
     quick = _one_click_upgrade_line(tool_name, call_count, current_tier)
-    # 2026-06-12: lead with the $9 Starter unblock (personalized to the
-    # caller's count) — the cheapest yes for the high-frequency free users.
-    starter = _one_click_starter_line(tool_name, call_count)
 
     # Tier 3 — hard paywall with urgency (calls 6+)
     if call_count >= 6:
@@ -261,9 +237,8 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
         return (
             f"🔒 **Free tier limit reached.** You've used `{tool_name}` {call_count} times "
             f"this week — your free preview is exhausted.\n\n"
-            f"{starter}"
             f"{quick}"
-            f"**Need more than 200/day? [Upgrade to Developer → {discount_url}]({discount_url})** "
+            f"**[Upgrade to Developer → {discount_url}]({discount_url})** "
             f"Apply code `{DISCOUNT_CODE_TIER3}` for 30% off your first month.\n\n"
             f"_$49/mo unlocks {pretty_tool} + 500 calls/day, all 7 ISOs grid intel + fiber + queue analytics._"
         )
@@ -277,7 +252,6 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
         email_url = _attribution_url(EMAIL_CAPTURE_URL, tool_name, call_count, current_tier)
         return (
             f"🎯 **You've hit `{tool_name}` {call_count} times — looks like you need this.**\n\n"
-            f"{starter}"
             f"{quick}"
             f"**Or get 50% off Developer's first month** with code `{DISCOUNT_CODE_TIER2}`: "
             f"[Upgrade to Developer →]({discount_url})\n\n"
@@ -289,8 +263,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     # Tier 1 — standard preview (calls 1-2)
     return (
         f"🔓 **This is a SAMPLE PREVIEW — not your actual query result. The free tier shows one pre-canned record.** Get full `{tool_name}` data + 6 more ISOs grid intel "
-        f"+ fiber routes — **from just $9/mo (Starter, all 48 tools)**.\n\n"
-        f"{starter}"
+        f"+ fiber routes on the **Developer plan**.\n\n"
         f"{quick}"
         f"**[Start 7-day free trial →]({pricing_url})** — no credit card required.\n\n"
         f"_Free tier shows partial data. Upgrade for live, complete results._"
@@ -424,13 +397,6 @@ def build_paywall_response(
         base['one_click_upgrade_url'] = _stripe_with_attrib(STRIPE_DEVELOPER_LINK)
         base['one_click_upgrade_tier'] = 'developer'  # phase 281
         base['one_click_upgrade_price'] = '$49/mo'    # phase 281
-    # 2026-06-12: lead structured CTA is the $9 Starter (cheapest unblock,
-    # all 48 tools). Discrete field so AI clients render it as the primary
-    # button; the markdown human_message already leads with it too.
-    if STRIPE_STARTER_LINK:
-        base['recommended_upgrade_url'] = _stripe_with_attrib(STRIPE_STARTER_LINK)
-        base['recommended_upgrade_tier'] = 'starter'
-        base['recommended_upgrade_price'] = '$9/mo'
 
     # Phase DD (2026-05-12): inject pair-code structured fields when we
     # successfully minted one above. Lets agents pass the redeem URL to
@@ -564,29 +530,11 @@ def build_paywall_response(
         if STRIPE_DEVELOPER_LINK:
             base['one_click_upgrade_url_direct_stripe'] = base.get('one_click_upgrade_url')
             base['one_click_upgrade_url'] = _ec['checkout_start_url']
-        # ★ r-anonattrib (2026-09-20): the DEVELOPER cta was re-routed here in
-        # FF+16 and the STARTER one was not — but `recommended_upgrade_url` is
-        # the field we literally name "recommended", it is the cheapest unblock,
-        # and the human_message leads with it. So the CTA an agent is most
-        # likely to surface was the one raw Stripe link left, and it took its
-        # sale out of DC Hub entirely. Same override, same _direct_stripe
-        # convention, tier='starter' so the PRODUCT does not change.
-        if STRIPE_STARTER_LINK:
-            try:
-                _ec_starter = build_email_capture_urls(
-                    tool=tool_name, api_key=user_id,
-                    tier='starter', client_reference_id=_pair_code,
-                )
-                base['recommended_upgrade_url_direct_stripe'] = base.get(
-                    'recommended_upgrade_url')
-                base['recommended_upgrade_url'] = _ec_starter['checkout_start_url']
-            except Exception:
-                pass  # keep the direct link rather than lose the CTA
         # ★ r-anonattrib-prose (2026-09-20) — THE OTHER HALF, and the half that
         # reaches more humans. #4872 attributed the STRUCTURED fields; measured
         # live straight after it deployed, an anonymous gated call still carried
         # four unreferenced buy.stripe.com links — every one of them inside
-        # `human_message`, written as [URL](URL) by _one_click_starter_line and
+        # `human_message`, written as [URL](URL) by the Starter line builder (removed 2026-09-21) and
         # _one_click_upgrade_line, which are module-level and never see
         # _pair_code.
         #
@@ -603,8 +551,6 @@ def build_paywall_response(
         # left alone.
         if isinstance(base.get('human_message'), str):
             _swaps = []
-            if STRIPE_STARTER_LINK and base.get('recommended_upgrade_url'):
-                _swaps.append((STRIPE_STARTER_LINK, base['recommended_upgrade_url']))
             if STRIPE_DEVELOPER_LINK and base.get('one_click_upgrade_url'):
                 _swaps.append((STRIPE_DEVELOPER_LINK, base['one_click_upgrade_url']))
             for _bare, _attributed in _swaps:
@@ -628,6 +574,18 @@ def build_paywall_response(
             base['human_message'] = base['human_message'] + email_cta
     except Exception:
         pass  # paywall still works without email_capture
+
+    # The recommended rung is the plan this builder sells (see the note at the
+    # top): the same attributed checkout as one_click_upgrade_url. REST walls
+    # on a Pro route replace both (api_tier_gating._rich_gate_response).
+    if base.get('one_click_upgrade_url'):
+        base['recommended_upgrade_url'] = base['one_click_upgrade_url']
+        base['recommended_upgrade_tier'] = base.get('one_click_upgrade_tier') or 'developer'
+        if base.get('one_click_upgrade_price'):
+            base['recommended_upgrade_price'] = base['one_click_upgrade_price']
+        # Same _direct_stripe convention: the raw link is moved aside, not lost.
+        if base.get('one_click_upgrade_url_direct_stripe'):
+            base['recommended_upgrade_url_direct_stripe'] = base['one_click_upgrade_url_direct_stripe']
 
     # Partner attribution (2026-09-21): for a keyless caller from a declared
     # partner egress, record this wall's pair code to the partner and put it on

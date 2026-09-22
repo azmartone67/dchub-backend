@@ -48,8 +48,10 @@ def test_the_static_hint_names_no_stripe_link():
 
 
 def test_the_static_defaults_are_dchub_checkout_urls():
+    """starter_url left the hint on 2026-09-21 with the Starter plan (owner
+    rule); the static defaults that remain are Developer's and Pro's."""
     src = _src()
-    for key in ("starter_url", "developer_url"):
+    for key in ("developer_url", "pro_url"):
         m = re.search(rf'"{key}":\s*"([^"]+)"', src)
         assert m, f"{key} missing from _HINT_BASE"
         assert m.group(1).startswith("https://dchub.cloud/checkout/start"), (
@@ -61,8 +63,8 @@ def test_the_hint_inherits_the_bodys_attributed_urls():
     """The body's URLs already hold THIS caller's pair code. Minting again, or
     ignoring them, would make the hint disagree with the response around it."""
     src = _src()
-    assert '("starter_url", "recommended_upgrade_url")' in src, (
-        "starter_url does not inherit the body's attributed recommended URL"
+    assert '("pack_url", "recommended_upgrade_url")' in src, (
+        "pack_url does not inherit the body's attributed recommended URL"
     )
     assert '("developer_url", "one_click_upgrade_url")' in src, (
         "developer_url does not inherit the body's attributed one-click URL"

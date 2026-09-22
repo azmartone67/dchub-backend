@@ -3517,7 +3517,9 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/openapi_dynamic.py': {'markets_232', 'tool_count_literal'},
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/partner_landing.py': {'tool_count_literal'},
-    'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
+    # ★2026-09-21 — routes/paywall_hint_middleware.py ('4,000+' deals in a
+    # variant) and utils/paywall_response.py ('all 48 tools' in the Starter line)
+    # DROPPED: paid when the retired Starter copy that carried both left.
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
     # ★2026-09-07 deals_stale_floor PAID: the '4,000+ tracked M&A deals'
@@ -3536,7 +3538,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'seo_meta_tags.py': {'facilities_stale_floor'},
     'tax_incentives_routes.py': {'facilities_stale_floor'},
     'tools/email_blast_developer_launch.py': {'facilities_stale_floor'},
-    'utils/paywall_response.py': {'tool_count_literal'},
 }
 
 
