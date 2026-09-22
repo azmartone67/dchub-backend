@@ -16,9 +16,9 @@
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 452,
-  "keys_total": 10739,
-  "keys_strictly_protected": 9721,
-  "keys_open_level_unmeasured_on_removal": 1018,
+  "keys_total": 10742,
+  "keys_strictly_protected": 9730,
+  "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
  },
@@ -12357,7 +12357,7 @@
    ]
   },
   "GET /api/v1/energy/compare-sites": {
-   "source": "energy_infrastructure_routes.py:841",
+   "source": "energy_infrastructure_routes.py:911",
    "handler": "compare_sites",
    "resolution": "opaque",
    "open_at": [],
@@ -12494,14 +12494,14 @@
    ]
   },
   "GET /api/v1/energy/pipelines": {
-   "source": "energy_infrastructure_routes.py:685",
+   "source": "energy_infrastructure_routes.py:755",
    "handler": "get_pipelines",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/energy/power-plants": {
-   "source": "energy_infrastructure_routes.py:765",
+   "source": "energy_infrastructure_routes.py:835",
    "handler": "get_power_plants",
    "resolution": "opaque",
    "open_at": [],
@@ -12576,15 +12576,15 @@
    "keys": []
   },
   "GET /api/v1/energy/site-analysis": {
-   "source": "energy_infrastructure_routes.py:409",
+   "source": "energy_infrastructure_routes.py:670",
    "handler": "energy_site_analysis",
    "resolution": "resolved",
    "open_at": [
-    "data",
     "data.counts.pipelines",
     "data.counts.powerPlants",
     "data.counts.substations",
     "data.counts.transmissionLines",
+    "data.coverage",
     "data.infrastructure.pipelines",
     "data.infrastructure.powerPlants",
     "data.infrastructure.substations",
@@ -12594,8 +12594,9 @@
     "data.power_infrastructure.plants",
     "data.power_infrastructure.total_capacity_mw",
     "data.power_infrastructure.total_count",
-    "data.power_infrastructure.total_generation_mwh",
     "data.radius",
+    "data.radius_km",
+    "data.radius_read",
     "data.scores"
    ],
    "keys": [
@@ -12606,6 +12607,7 @@
     "data.counts.powerPlants",
     "data.counts.substations",
     "data.counts.transmissionLines",
+    "data.coverage",
     "data.infrastructure",
     "data.infrastructure.pipelines",
     "data.infrastructure.powerPlants",
@@ -12620,6 +12622,8 @@
     "data.power_infrastructure.total_count",
     "data.power_infrastructure.total_generation_mwh",
     "data.radius",
+    "data.radius_km",
+    "data.radius_read",
     "data.scores",
     "success"
    ]
@@ -12651,7 +12655,7 @@
    ]
   },
   "GET /api/v1/energy/substations": {
-   "source": "energy_infrastructure_routes.py:714",
+   "source": "energy_infrastructure_routes.py:784",
    "handler": "get_substations",
    "resolution": "opaque",
    "open_at": [],
@@ -12665,21 +12669,21 @@
    "keys": []
   },
   "GET /api/v1/energy/texas-pipelines": {
-   "source": "energy_infrastructure_routes.py:815",
+   "source": "energy_infrastructure_routes.py:885",
    "handler": "get_texas_pipelines",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/energy/transmission": {
-   "source": "energy_infrastructure_routes.py:737",
+   "source": "energy_infrastructure_routes.py:807",
    "handler": "get_transmission_lines",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/energy/wells": {
-   "source": "energy_infrastructure_routes.py:789",
+   "source": "energy_infrastructure_routes.py:859",
    "handler": "get_wells",
    "resolution": "opaque",
    "open_at": [],
@@ -20649,28 +20653,28 @@
    ]
   },
   "GET /api/v1/reports/monthly": {
-   "source": "routes/monthly_trend.py:1346",
+   "source": "routes/monthly_trend.py:1354",
    "handler": "monthly_json_current",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/monthly.json": {
-   "source": "routes/comprehensive_report.py:669",
+   "source": "routes/comprehensive_report.py:671",
    "handler": "monthly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/monthly/<int:year>-<int:month>": {
-   "source": "routes/monthly_trend.py:1357",
+   "source": "routes/monthly_trend.py:1365",
    "handler": "monthly_json_specific",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/monthly/narrative": {
-   "source": "routes/monthly_trend.py:1371",
+   "source": "routes/monthly_trend.py:1379",
    "handler": "monthly_narrative_only",
    "resolution": "resolved",
    "open_at": [
@@ -20778,21 +20782,21 @@
    "keys": []
   },
   "GET /api/v1/reports/quarterly-deep": {
-   "source": "routes/comprehensive_report.py:692",
+   "source": "routes/comprehensive_report.py:694",
    "handler": "quarterly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/quarterly-deep.json": {
-   "source": "routes/comprehensive_report.py:692",
+   "source": "routes/comprehensive_report.py:694",
    "handler": "quarterly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/quarterly-deep/narrative": {
-   "source": "routes/comprehensive_report.py:702",
+   "source": "routes/comprehensive_report.py:704",
    "handler": "quarterly_narrative_only",
    "resolution": "resolved",
    "open_at": [
@@ -31339,7 +31343,7 @@
    "keys": []
   },
   "POST /api/v1/reports/monthly/archive": {
-   "source": "routes/monthly_trend.py:1486",
+   "source": "routes/monthly_trend.py:1494",
    "handler": "monthly_archive",
    "resolution": "resolved",
    "open_at": [
