@@ -10031,6 +10031,16 @@ def add_cache_headers(response):
     try:
         if request.method != 'GET' or response.status_code != 200:
             return response
+        # 2026-09-21: a view that marked its answer `private, no-store`
+        # answered ONE caller: a paid full answer (util/numeric_tease.py,
+        # util/rest_tease.py) or a metered location. Overriding that to
+        # public put per-caller bodies under `public, s-maxage` on
+        # /api/v1/dcpi/scores/<slug>, /api/v1/gas-pipelines and
+        # /api/v1/facility/<slug>/location. Shared answers do not say
+        # private, so every path here is cached exactly as before for them.
+        _view_cc = (response.headers.get('Cache-Control') or '').lower()
+        if 'private' in _view_cc and 'no-store' in _view_cc:
+            return response
         path = request.path
         # Exact + prefix match
         ttl = _CACHE_PATHS.get(path)
