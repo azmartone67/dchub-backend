@@ -5,9 +5,9 @@ because routes/partner_key_issuer.py (raw key in api_keys.key_hash) and
 api_tier_gating.generate_api_key (sha256 in key_hash) mint them, and both write
 an active api_keys row for every key they issue. `mcp_gatekeeper.resolve_tier`
 used to return the plan a prefix names without looking the key up. It now
-returns that plan only when `_resolve_from_db_hash` — the raw-or-sha256
-key_hash match on an active row that unprefixed keys already go through —
-finds the key. Otherwise the key is FREE.
+resolves every dchub_ key through `_resolve_from_db_hash` — the raw-or-sha256
+key_hash match on an active row — and a key with no such row is FREE. What
+tier a found row grants is tests/test_key_tier_follows_row.py's subject.
 
 These run the real resolvers (`resolve_tier`, `routes.tier_gate.
 _resolve_caller_tier`, `caller_is_privileged`, `require_tier`) with only the
@@ -91,11 +91,6 @@ def test_the_query_parameter_is_held_to_the_same_rule(rows):
     app = flask.Flask(__name__)
     with app.test_request_context("/?api_key=" + key, environ_base=EXTERNAL):
         assert tier_gate._resolve_caller_tier()[0] == "FREE"
-
-
-def test_every_prefix_the_resolver_grants_is_tested_here():
-    granted = {p: mg.TIER_NAME[t].upper() for p, t in mg._PLAN_KEY_PREFIXES}
-    assert granted == PREFIXES
 
 
 def test_caller_is_privileged_needs_the_row(rows):
