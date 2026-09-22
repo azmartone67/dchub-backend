@@ -49,6 +49,7 @@ on:
       - 'db_utils.py'
       - 'main.py'
       - 'monthly_quota.py'
+      - 'routes/canon_phrases.py'
       - 'routes/capability_announcements.py'
       - 'routes/claim_ledger.py'
       - 'routes/dcpi.py'
