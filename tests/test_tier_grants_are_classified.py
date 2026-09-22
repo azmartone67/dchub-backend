@@ -68,8 +68,9 @@ REGISTER = {
         (POSSESSION, "client_reference_id k-<sha256(api_key)>: the caller opened "
                      "the checkout HOLDING that key, so no address is involved"),
     ],
-    ("main.py", "handle_subscription_deleted"): [
-        (DOWNGRADE, "sets tier='free' when a subscription ends"),
+    ("main.py", "_demote_customer_mcp_keys"): [
+        (DOWNGRADE, "sets tier='free' when a subscription ends: handle_subscription_deleted "
+                    "and the updated->canceled branch both call it"),
     ],
     ("main.py", "handle_payment_failed"): [
         (DOWNGRADE, "the dunning demote sets tier='free' and records the tier it took"),
@@ -254,3 +255,22 @@ def test_a_restore_puts_back_only_what_its_downgrade_recorded(key):
             f"raises keys the downgrade never lowered")
         assert "ELSE metadata->'dunning_demote'->>'from' END" in flat, (
             f"{key}: a restore must set the tier the record says the key held")
+
+
+def test_an_address_chosen_demote_also_matches_the_customer_a_k_checkout_recorded():
+    """handle_checkout_completed's k- branch raises a key by its hash, and that
+    key may carry no address or another one, so the branch records the paying
+    customer on it. A downgrade or restore that chooses its keys by address
+    must match that record too, or such a key is never lowered."""
+    checked = 0
+    for key, entries in sorted(REGISTER.items()):
+        if not any(e[0] in (DOWNGRADE, RESTORE) for e in entries):
+            continue
+        for sql in _tier_write_sql(*key):
+            flat = " ".join(sql.split())
+            if "LOWER(email)" in flat:
+                checked += 1
+                assert "metadata->>'stripe_customer_id' = %s" in flat, (
+                    f"{key}: chooses keys by address only; a key its customer's "
+                    f"k- checkout raised is never reached")
+    assert checked >= 4, f"only {checked} address-chosen demotes found; the scan went blind"

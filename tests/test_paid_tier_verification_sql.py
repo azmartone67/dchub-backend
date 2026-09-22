@@ -54,6 +54,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 
 PAYER = "payer@example.com"
 OTHER = "someone-else@example.com"
+CUSTOMER = "cus_paid_tier_t"
 
 
 # ── read the shipped statements ──────────────────────────────────────────
@@ -268,7 +269,14 @@ def test_the_checkout_reference_grant_needs_no_email_at_all(db):
     with db.cursor() as cur:
         cur.execute("UPDATE mcp_dev_keys SET email = NULL WHERE api_key = 'k_attacker'")
         khash = hashlib.sha256(b"k_attacker").hexdigest()
-        cur.execute(WEBHOOK_KREF_SQL, ("paid", khash, "paid"))
+        cur.execute(WEBHOOK_KREF_SQL, ("paid", CUSTOMER, CUSTOMER, khash, "paid"))
     assert tier_of(db, "k_attacker") == "paid", (
         "possession of the key is sufficient on its own — gating this path too "
         "would break the keyed upgrade flow for no security gain")
+    with db.cursor() as cur:
+        cur.execute("SELECT metadata->>'stripe_customer_id' FROM mcp_dev_keys "
+                    "WHERE api_key = 'k_attacker'")
+        assert cur.fetchone()[0] == CUSTOMER, (
+            "the grant must record the paying customer on the key it raises: the "
+            "cancel and dunning demotes choose keys by the customer's addresses, "
+            "and this key has none")
