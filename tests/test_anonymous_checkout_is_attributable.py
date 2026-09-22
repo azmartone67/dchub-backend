@@ -55,8 +55,7 @@ def paywall(monkeypatch):
     # STRIPE_DEVELOPER_LINK resolves to '' with no env var, so without this the
     # developer CTA is never built and half of every assertion below passes
     # vacuously in CI — while production, which HAS the link configured, is the
-    # case that matters. STRIPE_STARTER_LINK has a hardcoded fallback and needs
-    # no help.
+    # case that matters.
     #
     # Taken from the canon rather than invented: a made-up buy.stripe.com URL
     # here fails tests/test_stripe_link_canonical.py, and rightly — a bare
@@ -118,12 +117,14 @@ def test_the_direct_stripe_link_is_preserved_not_deleted(paywall):
     )
 
 
-def test_the_recommended_product_did_not_change(paywall):
-    """Re-routing must not silently upsell: starter stays starter."""
+def test_the_recommended_product_is_the_plan_the_builder_sells(paywall):
+    """Re-routing must not silently change the product. Since 2026-09-21 the
+    recommended rung is Developer, the plan this builder sells: it was the
+    retired Starter plan, which /pricing no longer offers (owner rule)."""
     pr, _ = paywall
     out = _build(pr)
-    assert out.get("recommended_upgrade_tier") == "starter"
-    assert "tier=starter" in out.get("recommended_upgrade_url", "")
+    assert out.get("recommended_upgrade_tier") == "developer"
+    assert "tier=developer" in out.get("recommended_upgrade_url", "")
 
 
 def test_the_prose_carries_no_unreferenced_stripe_link(paywall):

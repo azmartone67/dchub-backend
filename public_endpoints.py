@@ -453,10 +453,10 @@ def public_transactions():
             return jsonify({
                 'success': True, 'data': transactions,
                 'total': len(transactions), 'gated': True,
-                'tier_required': 'starter',
-                'message': ('Preview: 3 newest deals with value + MW masked. The '
-                            'full M&A tracker requires Starter ($9/mo); a free dev '
-                            'key unlocks the basics — https://dchub.cloud/pricing'),
+                # The gate above is caller_is_privileged("IDENTIFIED"). This
+                # named the retired Starter plan and its price (2026-09-21).
+                'tier_required': 'identified',
+                'message': 'Preview: 3 newest deals with value + MW masked.',
                 'upgrade_url': 'https://dchub.cloud/pricing?utm_source=transactions_public',
             })
         return jsonify({'success': True, 'data': transactions, 'total': len(transactions)})

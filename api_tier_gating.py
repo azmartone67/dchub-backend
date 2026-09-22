@@ -308,7 +308,16 @@ def _build_gate_plans() -> dict:
             out[key] = f"Sign up at {SIGNUP_URL} for {info.get('rate_limit',0)} free API calls/day"
         else:
             tag = info.get('tagline', info.get('name', key))
-            out[key] = f"${info['price_monthly']}/mo — {tag}"
+            # ★2026-09-21: the price is the registry's, the one /pricing reads,
+            # not PLAN_INFO's own: PLAN_INFO still holds Enterprise at a monthly
+            # figure no page sells, and every require_plan wall quoted it. A
+            # plan the registry prices by contact says so.
+            try:
+                price = tier_registry.price_display(key)
+            except Exception:
+                price = ''
+            out[key] = (f"{price} — {tag}" if price
+                        else f"By contact (https://dchub.cloud/enterprise) — {tag}")
     return out
 
 #  API KEY TABLE
@@ -1036,6 +1045,58 @@ def _rich_gate_response(path: str, min_plan: str,
         except Exception as e:
             base['_paywall_build_error'] = str(e)[:200]
 
+    return _offer_the_plan_that_opens_it(base, min_plan)
+
+
+def _offer_the_plan_that_opens_it(base: dict, min_plan: str) -> dict:
+    """Point a require_plan wall's checkout fields at the plan its gate admits.
+
+    ★2026-09-21. build_paywall_response() is plan-blind: it sells Developer on
+    every wall, and until today it led with the retired Starter plan. On a Pro
+    route neither opens anything. This replaces the upgrade fields with
+    rest_wall_ladder(min_plan) — the measured /go/c checkout of the plan the
+    gate requires, each option marked where it opens — and, on a Pro route,
+    drops every Developer offer the builder added. A plan this does not map
+    (identified, enterprise) keeps the builder's fields as they were.
+    """
+    plan = (min_plan or '').strip().lower()
+    if plan not in ('developer', 'pro'):
+        return base
+    try:
+        from routes.checkout_click_tracker import rest_wall_ladder
+        # The wall's pair code rides the /go/c links as client_reference_id,
+        # as it rode the builder's checkout links: the purchase still bridges
+        # to this caller (and, from a partner egress, to that partner).
+        wall = rest_wall_ladder(opens_on_rest=plan,
+                                ref=str(base.get('pair_code') or '')) or {}
+    except Exception:  # noqa: BLE001 — the builder's fields still go out
+        return base
+    url = wall.get('upgrade_url') or ''
+    if not url.startswith('https://dchub.cloud/go/c/'):
+        return base
+    try:
+        price = tier_registry.price_display(plan) or ''
+        label = tier_registry.label(plan) or plan.title()
+    except Exception:
+        price, label = '', plan.title()
+    base['upgrade_url'] = url
+    base['upgrade_options'] = wall.get('upgrade_options') or []
+    base['recommended_upgrade_url'] = url
+    base['recommended_upgrade_tier'] = plan
+    if price:
+        base['recommended_upgrade_price'] = price
+    base.pop('recommended_upgrade_url_direct_stripe', None)
+    if plan == 'pro':
+        base['one_click_upgrade_url'] = url
+        base['one_click_upgrade_tier'] = plan
+        if price:
+            base['one_click_upgrade_price'] = price
+        for k in ('one_click_upgrade_url_direct_stripe', 'checkout_start_url'):
+            base.pop(k, None)
+        base['human_message'] = (
+            f"🔒 **This endpoint opens on the {label} plan"
+            + (f" ({price})" if price else "")
+            + f" or above:** {url}")
     return base
 
 

@@ -3517,7 +3517,9 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/openapi_dynamic.py': {'markets_232', 'tool_count_literal'},
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/partner_landing.py': {'tool_count_literal'},
-    'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
+    # ★2026-09-21 — routes/paywall_hint_middleware.py ('4,000+' deals in a
+    # variant) and utils/paywall_response.py ('all 48 tools' in the Starter line)
+    # DROPPED: paid when the retired Starter copy that carried both left.
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
     # ★2026-09-07 deals_stale_floor PAID: the '4,000+ tracked M&A deals'
@@ -3536,7 +3538,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'seo_meta_tags.py': {'facilities_stale_floor'},
     'tax_incentives_routes.py': {'facilities_stale_floor'},
     'tools/email_blast_developer_launch.py': {'facilities_stale_floor'},
-    'utils/paywall_response.py': {'tool_count_literal'},
 }
 
 
@@ -3782,9 +3783,14 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # TWO SEPARATE DRAINAGES, two decrements, both in the commit that drains
     # them. This entry was written expecting exactly this collision and the
     # ratchet caught it on rebase, as designed.
-    assert len(outside) >= 73, (
+    # ★2026-09-21: 73 -> 71. routes/paywall_hint_middleware.py and
+    # utils/paywall_response.py drained their ledgered tokens (a retired deal
+    # floor in one A/B variant; "all 48 tools" in the Starter lead line) when
+    # the retired Starter copy left both files. Two files, two decrements,
+    # lowered in the SAME commit that drains them.
+    assert len(outside) >= 71, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 75 did when last measured. If debt was genuinely drained, lower this "
+        "— 71 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

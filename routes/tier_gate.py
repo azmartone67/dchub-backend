@@ -17,8 +17,9 @@ This module:
        - current_tier, required_tier, required_tier_price
        - preview: a small "what you would see" sample so the user
          knows what they're missing
-       - upgrade_url + stripe_checkout_url (one-click Stripe link)
-       - utm tagging so /pricing landing knows which gate fired
+       - upgrade_url + upgrade_options: the measured checkout of the plan
+         the gate admits (rest_wall_ladder), never a cheaper plan
+       - utm tagging on pricing_url so /pricing knows which gate fired
 
 Gate points wired in this PR:
   /api/v1/transactions/export.csv     → DEVELOPER  (net-new endpoint)
@@ -34,42 +35,29 @@ from functools import wraps
 from flask import jsonify, request
 
 
-# Phase BBB-3 (2026-05-17) — STARTER tier slot between IDENTIFIED and
-# DEVELOPER. The 7,101 upgrade signals / 0 conversions in 7d suggests
-# the IDENTIFIED→DEVELOPER jump ($0 → $49/mo) is too steep. A $9/mo
-# Starter tier at 500 calls/day gives a cheap stepping stone:
-#   IDENTIFIED (200/day free)
-#   → STARTER ($9/mo, 500/day, no commitment)
-#   → DEVELOPER ($49/mo, 2k/day, support)
-#
-# Activation requires creating a Stripe payment link for the $9 SKU
-# and setting STARTER_MONTHLY_STRIPE_LINK env var. Until then, the
-# link falls back to the founding-member $99 page so the CTA still
-# converts somewhere.
-import os as _os
 from tier_registry import price_display as _canon_price_display
-try:
-    from tier_registry import _stripe_link as _canon
-except Exception:  # pragma: no cover
-    _canon = lambda _k: None  # noqa: E731
-_STRIPE_LINKS = {
-    # Phase BBB-3-LIVE (2026-05-17) — user provided the real Starter
-    # payment link, no longer a fallback to founding-member. $9/mo,
-    # 500 calls/day, no commitment. Env override still honored if
-    # the SKU ever needs to be rotated.
-    "starter_monthly":   _os.environ.get(
-        "STARTER_MONTHLY_STRIPE_LINK",
-        "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"),
-    "developer_monthly": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro_monthly":       _canon("pro") or "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # canon; $299 literal retired 2026-09-05 (r-price-collapse)
-    "pro_annual":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # 50%-off one-time annual
-    "enterprise_monthly":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
-}
 
+# ★2026-09-21 — THE WALL SELLS THE LADDER. _gate_response led every
+# DEVELOPER wall with the retired Starter plan's Stripe link and shipped a
+# `stripe_alternates` map whose keys named Starter and two retired Pro
+# prices: plans and prices /pricing does not sell. Its links now come from
+# routes.checkout_click_tracker.rest_wall_ladder, the measured /go/c
+# checkout of the cheapest plan each required tier admits, so this module
+# holds no Stripe URL and no price of its own.
+#
+# A tier absent here gets no paid ladder: IDENTIFIED opens with a trial
+# key (below), and ENTERPRISE is sold by contact.
+_WALL_PLAN = {
+    "DEVELOPER": "developer",
+    "PRO":       "pro",
+}
+_ENTERPRISE_CONTACT_URL = "https://dchub.cloud/enterprise"
+
+# Read from tier_registry, never typed. STARTER is deliberately absent: no
+# wall offers it, and a row here is how a retired price reaches a response.
 _TIER_PRICE = {
     "FREE":       "$0",
     "IDENTIFIED": "$0 (free with email)",
-    "STARTER":    _canon_price_display("starter"),
     "DEVELOPER":  _canon_price_display("developer"),
     "PRO":        _canon_price_display("pro"),
     "ENTERPRISE": "Custom",
@@ -412,48 +400,52 @@ def jsonify_gated_snapshot(payload, status: int = 200, tier: str = "IDENTIFIED")
 
 def _gate_response(current_tier: str, required_tier: str,
                    gate_id: str, preview: dict | None = None):
-    """Standardized 402 response — conversion-friendly. Includes
-    inline Stripe checkout URL + preview of what's behind the wall.
+    """Standardized 402 response: a preview of what's behind the wall plus
+    the checkout of the plan the gate admits (upgrade_url, upgrade_options).
 
     Phase NN (2026-05-17) — Funnel rescue. The diagnostic showed 7,769
     paywall hits / 0 conversions on auto-trial keys because agents
     don't parse JSON bodies of 402 responses — they treat 402 as a
-    hard error. Now we ALSO put the auto-trial key in HTTP headers
+    hard error. So a minted trial key ALSO rides the HTTP headers
     (X-Trial-Key, X-Trial-Key-Expires, Retry-After) so any agent
     using standard HTTP middleware can detect + retry without parsing
     the body. Adds a WWW-Authenticate header pointing at the claim
     endpoint per RFC 7235 so smart clients can self-onboard.
+    ★ A key is minted only where it opens the gate (IDENTIFIED); see below.
     """
     required_upper = required_tier.upper()
-    # Phase BBB-3-LIVE (2026-05-17): default upgrade target is now the
-    # $9/mo STARTER tier (was DEVELOPER at $49/mo). The cheaper jump
-    # converts better — Round 7 audit showed 7,101 upgrade signals / 0
-    # conversions on the steep $0→$49 jump. STARTER unlocks the same
-    # endpoints as DEVELOPER for the price of two coffees. Pro/Enterprise
-    # paths still surface their own checkout when explicitly required.
-    checkout_key = {"DEVELOPER":  "starter_monthly",   # cheaper alt
-                    "PRO":        "pro_monthly",
-                    "ENTERPRISE": "enterprise_monthly"}.get(required_upper, "starter_monthly")
-    stripe_url = _STRIPE_LINKS.get(checkout_key, _STRIPE_LINKS["starter_monthly"])
-    # Also surface the developer + pro paths explicitly so smart clients
-    # / pricing-aware agents can pick the right tier without re-fetching.
-    stripe_alternates = {
-        "starter_monthly_9":    _STRIPE_LINKS.get("starter_monthly"),
-        "developer_monthly_49": _STRIPE_LINKS.get("developer_monthly"),
-        # 2026-08-21: the key kept its old name for one release so pricing-aware
-        # agents do not break; both point at the canonical $299 link.
-        "pro_monthly_199":      _STRIPE_LINKS.get("pro_monthly"),
-        "pro_monthly_299":      _STRIPE_LINKS.get("pro_monthly"),
-        "pro_annual":           _STRIPE_LINKS.get("pro_annual"),
-    }
-    upgrade_url = (f"https://dchub.cloud/pricing"
+    pricing_url = (f"https://dchub.cloud/pricing"
                    f"?utm_source=rest_gate&utm_medium={gate_id}"
                    f"&utm_campaign={required_upper.lower()}_upgrade")
 
-    # Phase NN — auto-mint a trial key INLINE so the agent can retry
-    # immediately. Mirrors the MCP gatekeeper flow in mcp_gatekeeper.py.
+    # ★2026-09-21 — the ladder, not a price list. Only the plan this tier's
+    # gate admits is offered, through its measured /go/c checkout. What this
+    # replaced led with the retired Starter link and a `stripe_alternates` map
+    # naming Starter and two retired Pro prices, none of which /pricing sells.
+    ladder = {}
+    paid_plan = _WALL_PLAN.get(required_upper)
+    if paid_plan:
+        try:
+            from routes.checkout_click_tracker import rest_wall_ladder
+            ladder = rest_wall_ladder(opens_on_rest=paid_plan) or {}
+        except Exception:  # noqa: BLE001 — a wall still answers without links
+            ladder = {}
+    if ladder.get("upgrade_url"):
+        upgrade_url = ladder["upgrade_url"]
+    elif required_upper == "ENTERPRISE":
+        upgrade_url = _ENTERPRISE_CONTACT_URL
+    else:
+        upgrade_url = pricing_url
+
+    # A trial key resolves IDENTIFIED (mcp_gatekeeper.resolve_tier), so it
+    # opens an IDENTIFIED gate and nothing above it.
+    # ★2026-09-21: this also minted one for a DEVELOPER gate — every keyless
+    # hit on /api/v1/transactions/export.csv got a trial key, an X-Trial-Key
+    # header and the line "Retry with header X-API-Key: <key> and this call
+    # will succeed". The retry came back 402: the key could not open what the
+    # wall promised it would. A gate a trial key cannot open mints nothing.
     auto_trial = None
-    if current_tier == "FREE" and required_upper in ("IDENTIFIED", "DEVELOPER"):
+    if current_tier == "FREE" and required_upper == "IDENTIFIED":
         try:
             from routes.auto_trial import mint_trial_for_request
             t = mint_trial_for_request(request, gate_id)
@@ -474,24 +466,30 @@ def _gate_response(current_tier: str, required_tier: str,
                     f"{current_tier}. The preview field shows a sample "
                     f"of what's behind the gate."),
         "upgrade_url":       upgrade_url,
-        "stripe_checkout":   f"{stripe_url}?prefilled_email={request.args.get('email','')}",
-        # Phase BBB-3-LIVE — full tier ladder so smart clients can pick
-        # the level that fits without parsing the message text.
-        "stripe_alternates": stripe_alternates,
-        "claim_free_key_first": (
-            "https://dchub.cloud/api/v1/keys/claim"
-            if current_tier == "FREE" else None
-        ),
+        "pricing_url":       pricing_url,
+        # ★ Not offered on these walls: a key from /api/v1/keys/claim
+        # (dch_live_) resolves FREE in mcp_gatekeeper.resolve_tier, the
+        # resolver _resolve_caller_tier reads, so claiming one opens none of
+        # them. Kept, as null, for clients that read the field.
+        "claim_free_key_first": None,
     }
+    if paid_plan and ladder.get("upgrade_url"):
+        payload["upgrade_options"] = ladder.get("upgrade_options") or []
+        # Kept for clients that read it: the same measured /go/c checkout as
+        # upgrade_url, never a raw Stripe link and never a cheaper plan than
+        # the gate admits.
+        payload["stripe_checkout"] = ladder["upgrade_url"]
     if auto_trial:
+        _calls = auto_trial.get("daily_calls")
         payload["auto_trial_key"]         = auto_trial.get("api_key")
         payload["auto_trial_expires_at"]  = auto_trial.get("expires_at")
-        payload["auto_trial_daily_calls"] = auto_trial.get("daily_calls", 200)
+        payload["auto_trial_daily_calls"] = _calls
+        # The allowance is the minted row's own, not a typed number: this line
+        # said "200 calls/day" beside an auto_trial_daily_calls of 15.
         payload["message"] = (
-            f"✨ Auto-trial key minted: `{auto_trial.get('api_key')}` "
-            f"(200 calls/day, 30-day expiry). Retry with header "
-            f"`X-API-Key: {auto_trial.get('api_key')}` and this call "
-            f"will succeed."
+            f"Trial key minted: `{auto_trial.get('api_key')}`"
+            + (f" ({_calls} calls/day)" if _calls else "")
+            + f". Retry with header `X-API-Key: {auto_trial.get('api_key')}`."
         )
 
     resp = jsonify(payload)
@@ -499,6 +497,10 @@ def _gate_response(current_tier: str, required_tier: str,
     resp.headers["Access-Control-Expose-Headers"]  = (
         "X-Trial-Key, X-Trial-Key-Expires, Retry-After, Link, WWW-Authenticate"
     )
+    # A minted key is this caller's alone; the wall without one is the same
+    # for every caller.
+    resp.headers["Cache-Control"] = ("private, no-store, max-age=0" if auto_trial
+                                     else "private, max-age=0, must-revalidate")
     # Phase NN — HTTP-header trial-key delivery so middleware can grab
     # the key without parsing the body. Standard HTTP retry-loop
     # patterns will pick this up automatically.
@@ -513,12 +515,14 @@ def _gate_response(current_tier: str, required_tier: str,
             'rel="api-key-redemption"; '
             'type="application/json"'
         )
-    # RFC 7235 WWW-Authenticate signals an auth challenge with a
-    # discoverable claim endpoint
+    # RFC 7235 WWW-Authenticate signals an auth challenge. It named
+    # /api/v1/keys/claim on every wall; a key from there opens none of them
+    # (see claim_free_key_first above), so a paid gate names its checkout and
+    # an IDENTIFIED gate relies on the trial key it just minted.
     resp.headers["WWW-Authenticate"] = (
         f'X-API-Key realm="dchub.cloud", '
-        f'claim="https://dchub.cloud/api/v1/keys/claim", '
-        f'tier="{required_upper}"'
+        + (f'upgrade="{upgrade_url}", ' if paid_plan else '')
+        + f'tier="{required_upper}"'
     )
     return resp, 402
 

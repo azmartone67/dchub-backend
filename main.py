@@ -6788,11 +6788,28 @@ def _issue_session_cookie(response):
 # already auth via internal-key paths, and minting for them would
 # inflate mcp_upgrade_signals with self-traffic (per the brain
 # self-traffic-loop risk in the memory notes).
+def _is_bulk_export_path(path):
+    """A bulk-file download: an /export route, or a .csv / .geojson file.
+
+    Each one that is gated at all is gated above the trial tier (Developer and
+    up), and the public ones (/api/v1/exports) need no key, so a trial key
+    minted for any of them opens nothing it could not already reach."""
+    p = (path or "").lower()
+    return "/export" in p or p.endswith((".csv", ".geojson"))
+
+
 def auto_issue_key_for_ai_agents():
     try:
         path = request.path or ""
         # Only intercept the two surfaces that hit the paywall.
         if not (path == "/mcp" or path.startswith("/api/v1/")):
+            return None
+        # ★2026-09-21: never on a bulk export. A trial key resolves IDENTIFIED
+        # and every export is gated above that (Developer and up), so the key
+        # minted here opened nothing: an AI agent fetching an export got the
+        # wall AND a fresh X-DC-Auto-Issued-Key it could not use on it. The
+        # wall offers the plan that opens the export instead.
+        if _is_bulk_export_path(path):
             return None
         # Bail if the caller already has any auth shape.
         if (request.headers.get("X-API-Key")
