@@ -591,7 +591,14 @@ def test_repo_worker_is_canon_clean_and_current():
     # dashboard, and check_zone_worker_version_drift files
     # zone_worker_commit_not_pasted until then. Verify with (want 4.9.72-…):
     #   curl -sI "https://dchub.cloud/mcp?_=$(date +%s)" | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.72-agent-json-serves-the-a2a-card'" in src
+    # ★2026-09-22 4.9.73: the KV response cache is written only from requests
+    # carrying no caller credential, and only when the origin's Cache-Control
+    # allows a shared copy. (4.9.72 was live on api.dchub.cloud at this commit.)
+    # ⚠ PASTE OUTSTANDING as of this commit: production serves 4.9.72 until
+    # worker.js is pasted into the CF dashboard. Verify with (want 4.9.73-…):
+    #   curl -s -o /dev/null -D - "https://api.dchub.cloud/api/v1/stats?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.73-kv-writes-only-credential-free'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

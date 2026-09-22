@@ -311,6 +311,9 @@
     "test_tier_grants_are_classified.py": {
       "pglob": 2110
     },
+    "test_worker_kv_write_is_credential_free.py": {
+      "walk": 70
+    },
     "test_workflow_continuation_comment.py": {
       "pglob": 140
     },

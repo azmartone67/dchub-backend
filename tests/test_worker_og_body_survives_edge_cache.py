@@ -8,7 +8,7 @@ Measured in production, same URL, one header apart:
     GET  ... same URL + `X-API-Key: <anything>`            -> 200  275KB PNG
     origin dchub-backend-production.up.railway.app/...     -> 200  280KB PNG
 
-The origin was healthy the whole time. `hasApiKey` is the ONLY input that moved,
+The origin was healthy the whole time. `hasApiKey` (now `hasCredential`) is the ONLY input that moved,
 because it is what clears `_pkc` and skips the public-key edge cache. So every
 real visitor and every social unfurl got a blank image while every authenticated
 monitor got a 200 — which is why nothing alarmed.
@@ -118,12 +118,12 @@ const request = new Request('https://api.dchub.cloud{og_path}');
 const url = new URL('https://api.dchub.cloud{og_path}?style=editorial&title=X');
 const pathname = '{og_path}';
 const isGet = true;
-const hasApiKey = {str(has_api_key).lower()};
+const hasCredential = {str(has_api_key).lower()};
 const startTime = Date.now();
 const attempts = 1;
 const WORKER_VERSION = 'test';
 const tier = {{ browserMaxAge: 604800, edgeTtl: 604800, publicKeyCache: true }};
-const _pkc = !!(tier.publicKeyCache && isGet && !hasApiKey);
+const _pkc = !!(tier.publicKeyCache && isGet && !hasCredential);
 const addCORS = (r) => r;
 const cacheControlFor = () => 'public, max-age=604800';
 const kvIsCacheable = () => false;
