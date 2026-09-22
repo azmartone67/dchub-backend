@@ -20649,28 +20649,28 @@
    ]
   },
   "GET /api/v1/reports/monthly": {
-   "source": "routes/monthly_trend.py:1346",
+   "source": "routes/monthly_trend.py:1354",
    "handler": "monthly_json_current",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/monthly.json": {
-   "source": "routes/comprehensive_report.py:669",
+   "source": "routes/comprehensive_report.py:671",
    "handler": "monthly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/monthly/<int:year>-<int:month>": {
-   "source": "routes/monthly_trend.py:1357",
+   "source": "routes/monthly_trend.py:1365",
    "handler": "monthly_json_specific",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/monthly/narrative": {
-   "source": "routes/monthly_trend.py:1371",
+   "source": "routes/monthly_trend.py:1379",
    "handler": "monthly_narrative_only",
    "resolution": "resolved",
    "open_at": [
@@ -20778,21 +20778,21 @@
    "keys": []
   },
   "GET /api/v1/reports/quarterly-deep": {
-   "source": "routes/comprehensive_report.py:692",
+   "source": "routes/comprehensive_report.py:694",
    "handler": "quarterly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/quarterly-deep.json": {
-   "source": "routes/comprehensive_report.py:692",
+   "source": "routes/comprehensive_report.py:694",
    "handler": "quarterly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/quarterly-deep/narrative": {
-   "source": "routes/comprehensive_report.py:702",
+   "source": "routes/comprehensive_report.py:704",
    "handler": "quarterly_narrative_only",
    "resolution": "resolved",
    "open_at": [
@@ -31339,7 +31339,7 @@
    "keys": []
   },
   "POST /api/v1/reports/monthly/archive": {
-   "source": "routes/monthly_trend.py:1486",
+   "source": "routes/monthly_trend.py:1494",
    "handler": "monthly_archive",
    "resolution": "resolved",
    "open_at": [
