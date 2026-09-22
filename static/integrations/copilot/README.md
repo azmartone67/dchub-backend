@@ -11,7 +11,7 @@ DC Hub's MCP server (`https://dchub.cloud/mcp`, streamable HTTP, protocol
 3. **Tools → Add a tool → New tool → Model Context Protocol**
 4. Fill in:
    - Server name: `DC Hub Intelligence`
-   - Server description: `Live data-center infrastructure intelligence: facility search and scoring across 21,000+ facilities, market power-index rankings, real-time grid telemetry and headroom, energy prices, interconnection queues, fiber, water risk, tax incentives, and tracked M&A.`
+   - Server description: `Live data-center infrastructure intelligence: facility search and scoring across 24,500+ facilities, market power-index rankings, real-time grid telemetry and headroom, energy prices, interconnection queues, fiber, water risk, tax incentives, and tracked M&A.`
    - Server URL: `https://dchub.cloud/mcp`
 5. Authentication: **None** works (free tier, 10 calls/day). For full depth pick
    **API key** → Type: `Header` → name: `X-API-Key` — the connection creator
