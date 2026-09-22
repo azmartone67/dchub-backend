@@ -25,8 +25,11 @@ the published sitemap is already in hand: dchub-frontend's
 scripts/build-search-index.py. What IS hermetic here is the list's own
 integrity, which is what this file asserts.
 """
+import ast
 import os
 import re
+
+from tests.test_robots_crawl_hygiene import ROUTES as ROBOTS_ROUTES, can_fetch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(REPO, "main.py")
@@ -88,6 +91,37 @@ WITHHELD = {
 
 # Paths robots.txt refuses. Kept beside WITHHELD so the two cannot disagree.
 ROBOTS_BLOCKED_PREFIXES = ("/sites/",)
+
+
+def _served_robots():
+    """serve_robots_txt()'s literal `content`, returned verbatim, so these ARE
+    the served bytes (byte-identical to https://dchub.cloud/robots.txt, 24,813 B,
+    measured 2026-09-22)."""
+    with open(ROBOTS_ROUTES, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "serve_robots_txt":
+            for stmt in ast.walk(node):
+                if (isinstance(stmt, ast.Assign)
+                        and getattr(stmt.targets[0], "id", None) == "content"
+                        and isinstance(stmt.value, ast.Constant)
+                        and isinstance(stmt.value.value, str)):
+                    return stmt.value.value
+    raise AssertionError("serve_robots_txt() no longer assigns a literal `content`")
+
+
+def _robots_refusals(paths):
+    """{path: the groups that refuse it}, over every named group plus `*`."""
+    text = _served_robots()
+    tokens = sorted({ln.split(":", 1)[1].strip() for ln in text.splitlines()
+                     if ln.lower().startswith("user-agent:")} - {"*"})
+    tokens.append("UnlistedBot/1.0")          # falls through to User-agent: *
+    out = {}
+    for p in sorted(paths):
+        refused = [t for t in tokens if not can_fetch(text, t, p)]
+        if refused:
+            out[p] = refused if len(refused) < 4 else f"{len(refused)} of {len(tokens)} groups"
+    return out
 
 
 def _static_pages():
@@ -158,14 +192,27 @@ def test_no_robots_blocked_path_is_in_the_sitemap():
     URL blocked by robots.txt" and counts it against the sitemap as a whole.
     Two of the nav-linked pages found on 2026-09-05 were exactly this, and the
     eligibility check is the only reason they were not swept in with the other
-    seventeen."""
-    listed = _static_pages()
-    blocked = sorted(p for p in listed
-                     if p.startswith(ROBOTS_BLOCKED_PREFIXES))
-    assert not blocked, (
-        f"{blocked} are in static_pages but robots.txt disallows "
-        f"{ROBOTS_BLOCKED_PREFIXES}. Either drop them, or change robots.txt "
-        f"first and update ROBOTS_BLOCKED_PREFIXES in the same PR.")
+    seventeen.
+
+    ★ 2026-09-22: this used to test a hand-typed ROBOTS_BLOCKED_PREFIXES
+    ("/sites/",). `Disallow: /brain` (added 09-18 for the 403 ops shells) also
+    matches /brain-live, which this list ships, and the tuple never learned it:
+    green for four days while all 50 groups refused a sitemap URL. It now
+    evaluates the served literal, so a new Disallow is checked the day it lands."""
+    refused = _robots_refusals(_static_pages())
+    assert not refused, (
+        f"static_pages lists paths the SERVED robots.txt refuses: {refused}. "
+        f"Search Console reports each as 'Submitted URL blocked by robots.txt'. "
+        f"Drop the entry, or add a longer Allow in ai_discovery_routes.py.")
+
+
+def test_the_robots_evaluation_can_refuse():
+    """NON-VACUITY for the two refusal checks: a literal that failed to parse,
+    or an evaluator that always allows, would pass them on anything. These two
+    are blocked on purpose (robots crawl-hygiene), so every group must refuse."""
+    refused = _robots_refusals(["/sites/value", "/brain"])
+    assert set(refused) == {"/sites/value", "/brain"}, refused
+    assert all(isinstance(v, str) for v in refused.values()), refused
 
 
 def test_this_repo_does_not_pretend_to_own_robots_txt():
@@ -173,8 +220,9 @@ def test_this_repo_does_not_pretend_to_own_robots_txt():
 
     The first version of this leg asserted "Disallow: /sites/" in
     static/robots.txt and FAILED — correctly. That file is not what
-    dchub.cloud serves: the live robots.txt comes from the dchub-frontend repo
-    (verified 2026-09-05 — the served body matches that repo's copy, and
+    dchub.cloud serves: the live robots.txt came from the dchub-frontend repo
+    (★ no longer: since r73 it is ai_discovery_routes.serve_robots_txt(), byte-
+    identical live 2026-09-22, and _robots_refusals() reads that) (verified 2026-09-05 — the served body matches that repo's copy, and
     static/robots.txt here disallows a different set entirely, with no /sites/
     line at all). A guard reading it would have pinned this sitemap's
     behaviour to a file nobody serves — the same defect as the vendored
@@ -244,8 +292,8 @@ def test_the_dynamic_sitemap_obeys_withheld_and_robots():
         f"says they must not be indexed "
         f"({ {p: WITHHELD[p] for p in contradicted} }). Drop the entry, or drop "
         f"the WITHHELD entry with the reason it changed.")
-    blocked = sorted(p for p in listed if p.startswith(ROBOTS_BLOCKED_PREFIXES))
-    assert not blocked, (
-        f"{blocked} are in the dynamic sitemap but robots.txt disallows "
-        f"{ROBOTS_BLOCKED_PREFIXES}. Either drop them, or change robots.txt "
-        f"first and update ROBOTS_BLOCKED_PREFIXES in the same PR.")
+    refused = _robots_refusals(listed)
+    assert not refused, (
+        f"routes/sitemap_auto._STATIC_PAGES lists paths the SERVED robots.txt "
+        f"refuses: {refused}. Drop the entry, or add a longer Allow in "
+        f"ai_discovery_routes.py.")

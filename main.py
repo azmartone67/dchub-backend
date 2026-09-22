@@ -33214,7 +33214,7 @@ def location_meta(slug):
 #   /sitemap-static.xml        → static pages + locations + hubs + landings
 #   /sitemap-markets.xml       → /markets/* metros + DB city-state + pockets
 #   /sitemap-dcpi.xml          → /dcpi/<market> pages
-#   /sitemap-press.xml         → /press-release/<slug> archive
+#   /sitemap-press.xml         → /news/<slug> archive (canonical of /press-release/<slug>)
 #   /sitemap-facilities-N.xml  → canonical /facilities/<slug>, 10k per shard
 # The legacy /facility/<id> collision-loser URLs are GONE from every shard —
 # routes/seo_pages.py facility_page now 301s them to the canonical slug URL.
@@ -34288,13 +34288,13 @@ def _build_sitemap_sections():
         # The /grid/<code> equivalents below are 200 and cover the same ISO
         # surfaces, so nothing is lost from the index.
         ('/grid',          '0.9', 'daily'),
+        # Only routes.grid_public_routes.FREE_TIER_ISOS render a page. The
+        # other ISOs answer the Pro interstitial with `noindex, follow`, and a
+        # noindex URL in a sitemap is GSC "Submitted URL marked noindex"
+        # (2026-09-22: caiso/miso/nyiso/isone/spp were listed). Pinned to the
+        # gate by tests/test_sitemap_lists_only_indexable_forms.py.
         ('/grid/pjm',      '0.8', 'daily'),
         ('/grid/ercot',    '0.8', 'daily'),
-        ('/grid/caiso',    '0.8', 'daily'),
-        ('/grid/miso',     '0.8', 'daily'),
-        ('/grid/nyiso',    '0.8', 'daily'),
-        ('/grid/isone',    '0.8', 'daily'),
-        ('/grid/spp',      '0.8', 'daily'),
         # query-win wave (2026-08-02): per-ISO interconnection-queue dashboard
         # (routes/grid_public_routes.py::grid_queue_iso — ERCOT first) + the
         # static US map landing served by the CF Pages frontend.
@@ -34553,9 +34553,11 @@ def _build_sitemap_sections():
     # one URL per published release, newest first, using the release's own
     # date as <lastmod> when it's a real YYYY-MM-DD. Own try/except + cap so a
     # schema/date hiccup can never break the sitemap (same guard pattern as
-    # the DCPI loop above). NOTE: /press-release/<slug> is the canonical
-    # public URL (the live zone worker rewrites it to /news/<slug> → backend);
-    # both resolve 200, /press-release/* is the indexed form.
+    # the DCPI loop above). The <loc> is /news/<slug>: the page at
+    # /press-release/<slug> (the worker rewrites it to /news/<slug>) declares
+    # rel=canonical /news/<slug>, and GSC shows /news/* in results. Listing
+    # the alternate made every press URL "Alternate page with proper
+    # canonical tag" (2026-09-22: 165 of 165).
     _press_added = 0
     try:
         _pr_conn = get_read_db()
@@ -34576,7 +34578,7 @@ def _build_sitemap_sections():
             except Exception:
                 _plast = today
             sections['press'].append(
-                f'  <url><loc>https://dchub.cloud/press-release/{_pslug}</loc>'
+                f'  <url><loc>https://dchub.cloud/news/{_pslug}</loc>'
                 f'<lastmod>{_plast}</lastmod>'
                 f'<changefreq>monthly</changefreq>'
                 f'<priority>0.7</priority></url>'
