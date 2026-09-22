@@ -1212,6 +1212,28 @@ def request_api_key(req=None):
     return api_key
 
 
+def request_api_keys(req=None):
+    """EVERY distinct API key the request presents, in request_api_key()'s
+    order (X-API-Key, ?api_key=, a Bearer of a BEARER_KEY_PREFIXES shape), so
+    its first element is request_api_key()'s key. [] when there is none.
+
+    For a resolver that takes the highest plan across credentials: a caller can
+    send a free key in one place and the paid one in another, and the first
+    key alone is then the free one (routes/tier_gate._resolve_caller_tier)."""
+    if req is None:
+        from flask import request as req
+    keys = []
+    for k in (req.headers.get('X-API-Key'), req.args.get('api_key')):
+        if k and k not in keys:
+            keys.append(k)
+    _auth_h2 = req.headers.get('Authorization', '') or ''
+    if _auth_h2.startswith('Bearer ') and _auth_h2[7:].startswith(BEARER_KEY_PREFIXES):
+        k = _auth_h2[7:].strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
 def request_credential_count(req=None):
     """How many credentials this request presents: a login cookie, an
     Authorization Bearer token, an API key (header or query). Presence only,

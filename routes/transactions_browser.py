@@ -463,7 +463,7 @@ def transactions_export_csv():
     """DEVELOPER-only: full transactions CSV download. Anonymous gets
     a structured 402 with stripe checkout link + preview of 3 sample
     rows so they see exactly what they'd get."""
-    from routes.tier_gate import require_tier as _rt, _resolve_caller_tier as _rc
+    from routes.tier_gate import caller_meets as _meets
 
     def _preview(req):
         # Cheap preview: 3 sample rows + total count + columns
@@ -492,8 +492,11 @@ def transactions_export_csv():
         except Exception:
             return {"preview_unavailable": True}
 
-    tier, _ = _rc()
-    if (tier or "FREE").upper() not in ("DEVELOPER", "PRO", "ENTERPRISE"):
+    # Developer and every plan ranked at or above it (the list of names this
+    # replaced walled Founding, Team and Research Seed), for a paid key in any
+    # channel it can arrive on (routes/tier_gate.caller_meets).
+    admitted, tier = _meets("DEVELOPER")
+    if not admitted:
         from routes.tier_gate import _gate_response
         return _gate_response(tier, "DEVELOPER",
                               "transactions_csv_export", _preview(request))
