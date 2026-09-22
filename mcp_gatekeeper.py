@@ -19,6 +19,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from utc_clock import utc_now
+import tier_registry
 
 logger = logging.getLogger("dchub-mcp-gate")
 
@@ -336,39 +337,17 @@ def _load_keys_from_db():
         logger.warning(f"⚠️ Could not load keys from DB: {e}")
 
 
-# Key prefixes that name a plan: partner_key_issuer mints the long forms,
-# api_tier_gating.generate_api_key the short ones. Both write an api_keys row.
-_PLAN_KEY_PREFIXES = (
-    ("dchub_enterprise_", Tier.ENTERPRISE),
-    ("dchub_developer_",  Tier.DEVELOPER),
-    ("dchub_starter_",    Tier.STARTER),
-    ("dchub_ent_",        Tier.ENTERPRISE),
-    ("dchub_pro_",        Tier.PRO),
-    ("dchub_dev_",        Tier.DEVELOPER),
-    ("dchub_sta_",        Tier.STARTER),
-)
-
-
 def resolve_tier(api_key: Optional[str]) -> Tier:
     """Resolve API key to tier. No key = Free.
-    Checks: in-memory store → DB hash lookup (cached); a plan-named prefix
-    sets the tier only once that lookup finds the key.
+    Checks: in-memory store → dch_trial_ → the key's api_keys row (cached).
+    A dchub_ key gets the tier its row grants (_tier_of_row), whatever plan
+    its prefix names. No active row: FREE.
     """
     if not api_key:
         return Tier.FREE
     # Check in-memory store first
     if api_key in _key_store:
         return _key_store[api_key]
-    # Plan-named prefixes (r78-b added the long forms partner_key_issuer mints).
-    # 2026-09-22: a prefix names a plan, it does not prove one. The key gets
-    # that plan only when api_keys holds an active row for it — the same
-    # raw-or-sha256 match unprefixed keys use below. No row: FREE.
-    for prefix, tier in _PLAN_KEY_PREFIXES:
-        if api_key.startswith(prefix):
-            if _resolve_from_db_hash(api_key) is None:
-                return Tier.FREE
-            _key_store[api_key] = tier  # cache it, as below
-            return tier
     # Phase DDDDD (2026-05-16): auto-mint trial keys (`dch_trial_`)
     # resolve as IDENTIFIED tier. Validation against DB happens lazily
     # on first call; the prefix check here keeps the hot path fast.
@@ -382,7 +361,12 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
         except Exception:
             return Tier.IDENTIFIED  # be lenient — DB issues shouldn't break gate
 
-    # DB hash lookup for old-style keys (dchub_XXXXX without tier prefix)
+    # Every dchub_ key, plan-named prefix (dchub_pro_…, dchub_developer_…) or
+    # not. The prefix is fixed when the key is minted, and the row is what
+    # changes after that: the reveal-nlr partner's dchub_developer_ keys sit
+    # on enterprise rows, and a dunning demote or a cancel lowers the row, not
+    # the key string. So the row decides (owner decision, 2026-09-22) and the
+    # prefix grants nothing. No active row: FREE.
     if api_key.startswith("dchub_"):
         tier = _resolve_from_db_hash(api_key)
         if tier is not None:
@@ -392,8 +376,34 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
     return Tier.FREE
 
 
+# tier_registry.api_tier values that are not Tier member names. Every other
+# api tier is one; tests/test_key_tier_follows_row.py fails on a new one.
+_API_TIER_ALIASES = {"anonymous": Tier.FREE, "admin": Tier.ENTERPRISE}
+
+
+def _tier_of_row(rate_limit_tier, plan, user_plan) -> Tier:
+    """The tier an api_keys row grants: its first non-empty value among
+    rate_limit_tier, api_keys.plan and users.plan, through tier_registry.api_tier.
+
+    rate_limit_tier comes first because the billing lifecycle writes it:
+    main.handle_payment_failed's dunning demote and the cancel handlers set it
+    to 'free' and leave api_keys.plan alone, and handle_invoice_paid restores
+    it from plan. Read plan first (as this did until 2026-09-22) and every
+    upgrade shows while no demote ever does. api_tier maps every TIERS name;
+    the hand-typed map it replaces had no starter, team or research_seed, so
+    those rows resolved FREE.
+    """
+    name = next((str(v).strip() for v in (rate_limit_tier, plan, user_plan)
+                 if v is not None and str(v).strip()), "free")
+    api = tier_registry.api_tier(name)
+    if api in _API_TIER_ALIASES:
+        return _API_TIER_ALIASES[api]
+    return Tier[api.upper()]
+
+
 def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
-    """Look up an old-style key by its SHA-256 hash in the api_keys table.
+    """The tier an active api_keys row grants this key (_tier_of_row), matched
+    on key_hash = sha256(key) or the raw key; None when there is no such row.
 
     PATCH 2026-04-24 (jm): P0 — every Enterprise customer was being silently
     treated as free tier because this query had `(ak.is_active = 1 OR
@@ -436,20 +446,8 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
             row = cur.fetchone()
         conn.close()
         if row:
-            plan = (row.get("plan") or row.get("rate_limit_tier") or row.get("user_plan") or "free").lower()
-            # r32-sweep (2026-05-20): added 'identified' — every paying
-            # email-signup customer was resolving here to Tier.FREE.
-            # Same bug as the loader paths above + the api_tier_gating
-            # gap fixed in 4e36c4f9.
-            tier_map = {"anonymous": Tier.FREE, "anon": Tier.FREE,
-                        "free": Tier.FREE,
-                        "identified": Tier.IDENTIFIED,
-                        "developer": Tier.DEVELOPER, "dev": Tier.DEVELOPER,
-                        "founding": Tier.PRO,
-                        "pro": Tier.PRO,
-                        "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE,
-                        "admin": Tier.ENTERPRISE}
-            return tier_map.get(plan, Tier.FREE)
+            return _tier_of_row(row.get("rate_limit_tier"), row.get("plan"),
+                                row.get("user_plan"))
     except Exception as e:
         # Promoted from DEBUG → WARNING so silent tier-downgrades surface in logs.
         logger.warning(
