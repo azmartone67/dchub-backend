@@ -33,6 +33,9 @@ import psycopg2.extras
 
 # Phase 225: decorator that returns the fallback page on ANY exception
 from functools import wraps
+from util.db_honesty import close_quietly, open_conn, try_fetchall, try_fetchone
+from util.us_states import NAME_TO_ABBR, state_match_pair
+from util.water_stress import STATE_WATER_STRESS_SQL, water_band
 from tier_registry import price_display as _canon_price_display
 def _safe_dcpi_page(fn):
     @wraps(fn)
@@ -42,6 +45,11 @@ def _safe_dcpi_page(fn):
         except Exception as e:
             return _phase225_dcpi_error_page(str(e))
     return wrapper
+
+
+def _honest_err(e) -> str:
+    """util.db_honesty's error shape, for failures raised outside try_fetch*."""
+    return f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
 
 
 def _safe_round(v, digits=1):
@@ -2675,7 +2683,10 @@ def compute_water_risk_score(metrics: dict) -> float:
     """High = more water stress = worse for cooling-heavy DC builds. 0..100.
 
     Inputs (any may be missing — degrades to neutral 50):
-        water_stress_index    1..5 USGS scale  (5 = extreme)
+        water_stress_index    1..5 band off water_risk.water_stress_score
+                              (5 = extremely high). util.water_stress.water_band
+                              maps the stored 0-100 WRI score onto it; this is
+                              NOT a USGS scale and never was.
         drought_pct           0..100, % of state area in drought
         cooling_water_avail   m³/day available for industrial use (optional)
     """
@@ -5183,7 +5194,7 @@ def _compute_forecast(history: list[dict], current: dict) -> dict:
 
 # ─── Phase SS DCPI v2 enrichment endpoint ──────────────────────────
 # Surfaces water_risk + renewable_arbitrage scores for one market.
-# Pulls signal inputs from usgs_water_stress + eia_retail_rates + the
+# Pulls signal inputs from water_risk + eia_retail_rates + the
 # existing market_power_scores row, then computes the v2 components on
 # the fly. No schema change; consumers opt in by adding `?v=2` or by
 # hitting this dedicated path.
@@ -5193,46 +5204,81 @@ def api_score_market_v2(slug, _paid=None):
         return serve_full_or_tease(lambda: api_score_market_v2(slug, _paid=True),
                                    lambda: api_score_market_v2(slug, _paid=False))
     _ensure_tables()
-    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT * FROM market_power_scores
-             WHERE market_slug = %s
-             ORDER BY computed_at DESC LIMIT 1
-        """, (slug,))
-        row = cur.fetchone()
-        if not row:
-            return jsonify(error="market not found", slug=slug), 404
+    # ★ Each read is INDEPENDENT (#5259). This endpoint used
+    # `with _conn() as c` — psycopg2's connection context manager is a
+    # TRANSACTION manager, not a closer, so `autocommit` did not apply. The
+    # water read named `usgs_water_stress.stress_index`, a column that has
+    # never existed, so it raised UndefinedColumn, aborted the transaction,
+    # and the eia_retail_rates read that FOLLOWED it died of
+    # InFailedSqlTransaction. Both `water_stress_index` and
+    # `ppa_rate_cents_kwh` were served null behind HTTP 200, and
+    # compute_water_risk_score then returned its neutral 50 as if it were a
+    # measurement. See util.db_honesty and util.water_stress.
+    read_errors = {}
+    row = None
+    water_metrics = {}
+    renew_metrics = {}
+    c = None
+    try:
+        c = open_conn()
+    except Exception as e:
+        return jsonify(error="database unavailable",
+                       read_errors={"connection": _honest_err(e)}), 503
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            row, err = try_fetchone(cur, """
+                SELECT * FROM market_power_scores
+                 WHERE market_slug = %s
+                 ORDER BY computed_at DESC LIMIT 1
+            """, (slug,))
+            if err:
+                return jsonify(error="market lookup failed", slug=slug,
+                               read_errors={"market": err}), 503
+            if not row:
+                return jsonify(error="market not found", slug=slug), 404
 
-        state = (row.get("state") or "").upper()
+            state = (row.get("state") or "").upper()
+            renew_metrics = {"curtailment_pct": row.get("curtailment_pct")}
+            if state:
+                abbr, full = state_match_pair(state)
 
-        # Pull water + renewable signals from sibling tables (best effort).
-        water_metrics = {}
-        renew_metrics = {"curtailment_pct": row.get("curtailment_pct")}
-        if state:
-            try:
-                cur.execute("""
-                    SELECT AVG(stress_index) AS stress
-                      FROM usgs_water_stress
+                # ★ NOT usgs_water_stress — it carries no stress column, and
+                # its water_level_ft proxy was withdrawn 2026-07-07 for
+                # reading INVERTED. water_risk holds the verified WRI
+                # Aqueduct roll-up, 0-100, banded to the 1-5 index
+                # compute_water_risk_score documents.
+                r, err = try_fetchone(cur, """
+                    SELECT water_stress_score
+                      FROM water_risk
                      WHERE UPPER(state) = %s
-                """, (state,))
-                r = cur.fetchone()
-                if r and r.get("stress") is not None:
-                    water_metrics["water_stress_index"] = float(r["stress"])
-            except Exception:
-                pass
-            try:
-                cur.execute("""
-                    SELECT DISTINCT ON (UPPER(state)) rate_cents_kwh
+                     ORDER BY computed_at DESC NULLS LAST
+                     LIMIT 1
+                """, (abbr,))
+                if err:
+                    read_errors["water_stress"] = err
+                elif r and r.get("water_stress_score") is not None:
+                    water_metrics["water_stress_index"] = water_band(
+                        float(r["water_stress_score"]))
+
+                # ★ eia_retail_rates.state holds FULL names ("Virginia") and
+                # also census-region rows ("East North Central"), so match
+                # BOTH spellings. `UPPER(state) = 'VA'` returned 0 rows live
+                # on 2026-09-21 while 'VIRGINIA' returned 10 — a clean query
+                # that answered "no data" forever.
+                r, err = try_fetchone(cur, """
+                    SELECT rate_cents_kwh
                       FROM eia_retail_rates
                      WHERE LOWER(sector) = 'industrial'
-                       AND UPPER(state) = %s
-                     ORDER BY UPPER(state), period DESC
-                """, (state,))
-                r = cur.fetchone()
-                if r and r.get("rate_cents_kwh") is not None:
+                       AND UPPER(state) IN (%s, %s)
+                     ORDER BY period DESC
+                     LIMIT 1
+                """, (abbr, full))
+                if err:
+                    read_errors["retail_rate"] = err
+                elif r and r.get("rate_cents_kwh") is not None:
                     renew_metrics["ppa_rate_cents_kwh"] = float(r["rate_cents_kwh"])
-            except Exception:
-                pass
+    finally:
+        close_quietly(c)
 
     water_risk   = compute_water_risk_score(water_metrics)
     renewable_a  = compute_renewable_arbitrage_score(renew_metrics)
@@ -5269,6 +5315,10 @@ def api_score_market_v2(slug, _paid=None):
             },
             "notes": "v2 verdict downgrades BUILD→CAUTION when water_risk≥80, "
                      "upgrades AVOID→CAUTION when renewable_arbitrage≥75 and water_risk≤50",
+            # ★ A signal that is null because its read FAILED names itself
+            # here. Without this, compute_water_risk_score's neutral 50 is
+            # indistinguishable from a measured 50.
+            "read_errors": read_errors,
         },
         computed_at=row.get("computed_at"),
         **({} if _paid_v2 else tease_envelope(1, _DCPI_V2_LOCKED)),
@@ -5360,55 +5410,78 @@ def api_dcpi_recommend():
     top_n                 = max(1, min(20, _i(_g("top_n"), 5)))
 
     # ── Step 1: pull current DCPI snapshot (one row per market, most recent) ──
-    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT DISTINCT ON (market_slug)
-                market_slug, market_name, state, iso, latitude, longitude,
-                constraint_score, excess_power_score, time_to_power_months,
-                queue_capacity_mw, queue_wait_months, reserve_margin_pct,
-                stranded_capacity_mw, curtailment_pct,
-                verdict, top_risks_json, top_opportunities_json,
-                signal_tier,
-                computed_at
-              FROM market_power_scores
-             WHERE published = true
-             ORDER BY market_slug, computed_at DESC
-        """)
-        rows = cur.fetchall()
+    # ★ Independent reads (#5259): the enrichment queries below decide which
+    # markets SURVIVE the filter, so a read that fails must say so rather than
+    # leave an empty dict that reads as "no state has a rate".
+    read_errors = {}
+    rows = []
+    state_rates = {}
+    state_water = {}
+    c = None
+    try:
+        c = open_conn()
+    except Exception as e:
+        return jsonify(error="database unavailable",
+                       read_errors={"connection": _honest_err(e)}), 503
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            rows, err = try_fetchall(cur, """
+                SELECT DISTINCT ON (market_slug)
+                    market_slug, market_name, state, iso, latitude, longitude,
+                    constraint_score, excess_power_score, time_to_power_months,
+                    queue_capacity_mw, queue_wait_months, reserve_margin_pct,
+                    stranded_capacity_mw, curtailment_pct,
+                    verdict, top_risks_json, top_opportunities_json,
+                    signal_tier,
+                    computed_at
+                  FROM market_power_scores
+                 WHERE published = true
+                 ORDER BY market_slug, computed_at DESC
+            """)
+            if err:
+                return jsonify(error="market snapshot unavailable",
+                               read_errors={"markets": err}), 503
 
-        # ── Step 2: enrich with retail rates per state (one query) ──
-        state_rates = {}
-        try:
-            cur.execute("""
+            # ── Step 2: enrich with retail rates per state (one query) ──
+            # ★ KEYED BY USPS CODE, NOT BY WHAT THE COLUMN HOLDS. The rows
+            # come back as "VIRGINIA" because eia_retail_rates.state stores
+            # full names, while Step 4 looks the dict up by the 2-letter code
+            # off market_power_scores. Keying on the raw value meant EVERY
+            # lookup missed, every `rate` was None, and `rate_ok` was
+            # vacuously true — the max_retail_rate_cents filter excluded
+            # nothing it was asked to exclude. Census-region rows ("East
+            # North Central") have no code and are dropped rather than
+            # colliding with a state.
+            rate_rows, err = try_fetchall(cur, """
                 SELECT DISTINCT ON (UPPER(state))
                        UPPER(state) AS state_code, rate_cents_kwh, period
                   FROM eia_retail_rates
                  WHERE LOWER(sector) = 'industrial'
                  ORDER BY UPPER(state), period DESC
             """)
-            for r in cur.fetchall():
-                state_rates[r["state_code"]] = _safe_round(r["rate_cents_kwh"], 2)
-        except Exception:
-            pass  # table may not exist in dev; degrade gracefully
+            if err:
+                read_errors["retail_rates"] = err
+            for r in rate_rows:
+                code = NAME_TO_ABBR.get(r["state_code"], r["state_code"])
+                if len(code) == 2:
+                    state_rates[code] = _safe_round(r["rate_cents_kwh"], 2)
 
-        # ── Step 3: enrich with water stress per state (one query) ──
-        state_water = {}
-        try:
-            cur.execute("""
-                SELECT UPPER(state) AS state_code,
-                       AVG(stress_index) AS avg_stress
-                  FROM usgs_water_stress
-                 WHERE stress_index IS NOT NULL
-                 GROUP BY UPPER(state)
-            """)
-            for r in cur.fetchall():
-                # Normalize to a 1-5 scale (1 = low, 5 = extreme).
-                # USGS stress_index is already 1-5 in our schema; clamp defensively.
-                v = r["avg_stress"]
-                if v is None: continue
-                state_water[r["state_code"]] = max(1, min(5, int(round(float(v)))))
-        except Exception:
-            pass
+            # ── Step 3: enrich with water stress per state (one query) ──
+            # ★ NOT usgs_water_stress.stress_index — that column has never
+            # existed, so this read raised UndefinedColumn on every call and
+            # `state_water` was ALWAYS empty: water_ok was vacuously true and
+            # water_stress_max filtered nothing. water_risk.water_stress_score
+            # is 0-100; band it to the 1-5 index this filter compares on.
+            water_rows, err = try_fetchall(cur, STATE_WATER_STRESS_SQL)
+            if err:
+                read_errors["water_stress"] = err
+            for r in water_rows:
+                v = r["water_stress_score"]
+                band = water_band(float(v)) if v is not None else None
+                if band is not None:
+                    state_water[r["state_code"]] = band
+    finally:
+        close_quietly(c)
 
     total_evaluated = len(rows)
 
@@ -5565,6 +5638,15 @@ def api_dcpi_recommend():
         },
         total_evaluated=total_evaluated,
         passed_filters=len(candidates),
+        # ★ An enrichment read that FAILED names itself. Both filters skip a
+        # market whose signal is None, so an unread rate or band silently
+        # WIDENS the result set — the caller has to be able to tell that
+        # apart from a market that genuinely has no reading.
+        read_errors=read_errors,
+        enrichment_coverage={
+            "states_with_retail_rate":  len(state_rates),
+            "states_with_water_stress": len(state_water),
+        },
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         # GENERATED, never typed (r-deployability-rank 2026-09-06). The
         # literal this replaces described "+ urgency_bonus" and omitted the
