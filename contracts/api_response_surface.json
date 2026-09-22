@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1498,
+  "python_files_scanned": 1499,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
@@ -22117,11 +22117,12 @@
    "keys": []
   },
   "GET /api/v1/site/simulate-buildout": {
-   "source": "routes/site_simulator.py:232",
+   "source": "routes/site_simulator.py:352",
    "handler": "simulate_buildout",
    "resolution": "resolved",
    "open_at": [
     "envelope",
+    "methodology",
     "recommendation",
     "risk_flags",
     "sensitivity_drivers",
