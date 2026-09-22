@@ -59,20 +59,49 @@ def _l3(recs):
 
 # ── 1 · the sink set must name functions that exist ───────────────────
 
+#: Directories whose contents are stale duplicates of every file in the
+#: checkout. Matched BY SEGMENT against the path RELATIVE to the root.
+_SKIP_DIRS = frozenset({".git", ".claude"})
+
+#: The shell defines _OUTBOUND_SINKS, so reading it back would let a dead name
+#: vouch for itself. Matched against the RELATIVE path, which also covers this
+#: file's siblings under tests/.
+_SELF = "route_auth_master_shell"
+
+
+def _repo_sources(root):
+    """[(relative path, source)] for every .py in the checkout at `root`.
+
+    ★ The skip-list is matched by SEGMENT against the path RELATIVE to `root`.
+    It used to be a substring test over the ABSOLUTE path — `"/.claude/" in
+    str(f)` — and Claude Code puts its worktrees at
+    ~/dchub-backend/.claude/worktrees/<name>/, so from one of those every file
+    in the repo matched, the blob came back EMPTY and the loop below had
+    nothing to look for the sink names in. Only the non-vacuity floor made
+    that loud instead of a vacuous pass. See
+    tests/test_repo_scans_are_path_independent.py for the class.
+
+    Nested .claude/ and .git/ copies INSIDE the checkout must stay excluded:
+    those really are stale duplicates of every file here.
+    """
+    root = pathlib.Path(root).resolve()
+    out = []
+    for f in sorted(root.rglob("*.py")):
+        rel = f.relative_to(root)
+        if _SKIP_DIRS.intersection(rel.parts[:-1]) or _SELF in str(rel):
+            continue
+        try:
+            out.append((rel, f.read_text(encoding="utf-8", errors="ignore")))
+        except Exception:
+            continue
+    return out
+
+
 def test_every_outbound_sink_name_exists_in_the_repo():
     """A sink name that matches no definition is a detector arm that can never
     fire. "submit_indexnow" sat in this set matching nothing at all."""
     from routes.route_auth_master_shell import _OUTBOUND_SINKS
-    blob = []
-    for f in sorted(_ROOT.rglob("*.py")):
-        rel = str(f)
-        if "/.git/" in rel or "/.claude/" in rel or "route_auth_master_shell" in rel:
-            continue
-        try:
-            blob.append(f.read_text(encoding="utf-8", errors="ignore"))
-        except Exception:
-            continue
-    src = "\n".join(blob)
+    src = "\n".join(text for _rel, text in _repo_sources(_ROOT))
     # Floor: a reader that finds no source passes the loop below vacuously.
     assert len(src) > 5_000_000, f"source blob too small ({len(src)}) — reader broken"
     # Defined OR called: the detector matches a CALL name, so a sink defined in

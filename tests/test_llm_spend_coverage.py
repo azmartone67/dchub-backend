@@ -44,6 +44,7 @@ that could drift from the thing it guards.
 import os
 import ast
 import logging
+import pathlib
 import collections
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,7 +76,11 @@ WIRED = ("media_published_review", "brain_strategic_planner",
          "brain_layer23_lifecycle")
 
 
-def _load_scanner():
+def _load_scanner(spend_path=SPEND):
+    """Exec the REAL scanner's functions against `spend_path` as their
+    __file__. Defaults to the shipped module; a test passes a miniature
+    checkout's routes/brain_llm_spend.py to run the same scanner from a path
+    built to trip it (tests/test_repo_scans_are_path_independent.py)."""
     src = open(SPEND, encoding="utf-8").read()
     tree = ast.parse(src)
     pieces = []
@@ -87,7 +92,7 @@ def _load_scanner():
             pieces.append(ast.get_source_segment(src, node))
     # __file__ is what _scanned_files() derives routes/ and the repo root from,
     # so it must point at the real module for the scan to see the real tree.
-    ns = {"logger": logging.getLogger("test"), "__file__": SPEND}
+    ns = {"logger": logging.getLogger("test"), "__file__": str(spend_path)}
     exec(compile("\n\n".join(pieces), SPEND, "exec"), ns)
     missing = [n for n in _FUNCS + _NAMES if n not in ns]
     assert not missing, f"AST extraction missed {missing} — update _FUNCS/_NAMES"
@@ -203,13 +208,55 @@ def test_ledger_module_excluded_from_both_sides():
     assert "brain_llm_spend" not in {m for m, _ in NS["uninstrumented_call_sites"]()}
 
 
+#: Directory names that mean "not the deployed tree": vendored copies and whole
+#: stale checkouts. Matched BY SEGMENT against the path relative to the repo
+#: root — see _stale_dirs_reached.
+_STALE_DIRS = frozenset({".claude", "worktrees", "node_modules", "venv",
+                         ".venv", "site-packages"})
+
+
+def _stale_dirs_reached(files, root):
+    """[(path, [segment, ...])] for every scanned file that lies inside a
+    vendored dir or a stale checkout — judged RELATIVE to `root`, by SEGMENT.
+
+    ★ It used to be `bad in str(f)` over the ABSOLUTE path, and an absolute
+    path carries the checkout's own ANCESTORS. Claude Code puts its worktrees
+    at ~/dchub-backend/.claude/worktrees/<name>/, so from one of those EVERY
+    file of a pristine tree matched ".claude" and this guard failed on a clean
+    repo — the "skip-list vs absolute path" class, see
+    tests/test_repo_scans_are_path_independent.py. Substring matching is wrong
+    in the other direction too: routes/venv_probe.py would match "venv".
+
+    A path that is not under `root` at all is an offender in its own right:
+    that is the scan reading some other checkout entirely.
+    """
+    root = pathlib.Path(root).resolve()
+    out = []
+    for f in files:
+        p = pathlib.Path(f).resolve()
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            out.append((str(p), ["<outside the repo root>"]))
+            continue
+        hit = sorted(_STALE_DIRS.intersection(rel.parts[:-1]))
+        if hit:
+            out.append((str(rel), hit))
+    return out
+
+
 def test_scan_excludes_stale_worktree_checkouts():
     """.claude/worktrees holds whole stale copies of these same modules. A
     recursive glob would count code that is not deployed and cannot be."""
-    files = [str(f) for f in NS["_scanned_files"]()]
-    for bad in (".claude", "node_modules", "venv", "site-packages"):
-        offenders = [f for f in files if bad in f]
-        assert not offenders, f"scan reached {bad}: {offenders[:3]}"
+    files = NS["_scanned_files"]()
+    # Floor: zero files would make the check below pass while measuring
+    # nothing — the same shape as the bug it guards.
+    assert len(files) > 200, f"only {len(files)} files scanned — glob is broken"
+    offenders = _stale_dirs_reached(files, ROOT)
+    assert not offenders, (
+        f"scan reached vendored/stale paths: {offenders[:3]} — these are "
+        "judged relative to the repo root, so this is a real reach, not the "
+        "checkout's own ancestors")
 
 
 def test_known_root_level_call_sites_are_seen():
