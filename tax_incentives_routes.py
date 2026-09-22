@@ -692,18 +692,18 @@ def _export_plan(fmt):
 def _export_access(api_key, need):
     """Whether this request may export at plan `need`.
 
-    The caller's tier comes from routes.tier_gate._resolve_caller_tier: an API
-    key of any shape (an MCP key resolves to the plan it bought) or a signed-in
-    user's token, the highest of them. Not caller_is_privileged, which also
-    admits any browser holding the site's session cookie: right for a teaser,
-    wrong for a paid export.
+    The caller's tier comes from routes.tier_gate.caller_meets, the resolver
+    every export wall reads: an API key of any shape in any channel (an MCP
+    key resolves to the plan it bought) or a signed-in user's token, the
+    highest of them, lifted to api_tier_gating's plan when that is higher. Not
+    caller_is_privileged, which also admits any browser holding the site's
+    session cookie: right for a teaser, wrong for a paid export.
     """
     if api_key in _DEMO_EXPORT_KEYS:
         return True
     try:
-        from routes.tier_gate import _resolve_caller_tier, _TIER_RANK
-        tier, _ = _resolve_caller_tier()
-        return _TIER_RANK.get(str(tier or 'FREE').upper(), 0) >= _TIER_RANK[need.upper()]
+        from routes.tier_gate import caller_meets
+        return caller_meets(need)[0]
     except Exception:
         return False
 

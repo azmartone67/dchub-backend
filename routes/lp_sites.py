@@ -14,11 +14,11 @@ required" forever.
   DELETE /api/v1/lp/saved/<id>        unsave a site
   GET  /api/v1/lp/alerts              list this user's alert configs
   POST /api/v1/lp/alerts              create/update an alert
-  GET  /api/v1/lp/export.csv          bulk CSV export of saved sites
-  GET  /api/v1/lp/export.geojson      bulk GeoJSON export of saved sites
+  GET  /api/v1/lp/export.csv          bulk CSV export of saved sites (Developer+)
+  GET  /api/v1/lp/export.geojson      bulk GeoJSON export of saved sites (Pro+)
 
-All PRO-gated via routes.tier_gate.require_tier. user_id resolves
-from the dchub_token cookie OR X-API-Key header.
+Gated through routes.tier_gate. user_id resolves from the X-API-Key
+header, ?api_key=, the dchub_token cookie, or a Bearer key.
 
 Phase JJJJ extends this with nightly alert-firing cron via Resend.
 """
@@ -199,24 +199,48 @@ def _user_id_from_request() -> str | None:
     api_key = (request.headers.get("X-API-Key")
                 or request.args.get("api_key")
                 or request.cookies.get("dchub_token"))
+    if not api_key:
+        # 2026-09-22: a key sent as `Authorization: Bearer <key>` names the
+        # same account as that key in X-API-Key. Read last, so no account an
+        # earlier credential already names can move.
+        try:
+            from api_tier_gating import request_api_key
+            api_key = request_api_key(request)
+        except Exception:
+            api_key = None
     if api_key:
         return "k_" + hashlib.sha256(api_key.encode()).hexdigest()[:16]
     return None
 
 
+_PRO_VALUE = ("PRO subscribers can save Land+Power candidate sites to a "
+              "personal portfolio, configure alerts on DCPI / capacity / "
+              "nearby facility changes, and bulk-export everything as CSV or "
+              "GeoJSON for offline analysis.")
+# Owner decision 2026-09-21: Developer exports CSV; GeoJSON stays Pro.
+_CSV_VALUE = ("Developer and Pro export the Land+Power sites saved to your "
+              "account as CSV for offline analysis. Pro adds GeoJSON for GIS "
+              "tools.")
+_GEOJSON_VALUE = ("Pro exports the Land+Power sites saved to your account as "
+                  "GeoJSON for GIS tools such as QGIS. Developer exports them "
+                  "as CSV.")
+
+
 def _require_pro_user():
     """Returns (user_id, gate_response_or_None). If user is not PRO+
     OR can't be identified, returns the 402 response to send back."""
-    from routes.tier_gate import _resolve_caller_tier, _gate_response
-    tier, _ = _resolve_caller_tier()
-    if (tier or "FREE").upper() not in ("PRO", "ENTERPRISE"):
-        return None, _gate_response(tier, "PRO", "lp_sites",
-            {"value_proposition": ("PRO subscribers can save Land+Power "
-                                    "candidate sites to a personal portfolio, "
-                                    "configure alerts on DCPI / capacity / "
-                                    "nearby facility changes, and bulk-export "
-                                    "everything as CSV or GeoJSON for offline "
-                                    "analysis.")})
+    return _require_plan_user("PRO", _PRO_VALUE)
+
+
+def _require_plan_user(min_tier, value_proposition):
+    """_require_pro_user for a wall that sells `min_tier` and up. The caller
+    resolves through routes/tier_gate.caller_meets: a paid key in any channel,
+    the highest plan across credentials, a plan admitted by its rank."""
+    from routes.tier_gate import caller_meets, _gate_response
+    admitted, tier = caller_meets(min_tier)
+    if not admitted:
+        return None, _gate_response(tier, min_tier, "lp_sites",
+                                    {"value_proposition": value_proposition})
     user_id = _user_id_from_request()
     if not user_id:
         from flask import jsonify as _j
@@ -1109,7 +1133,7 @@ def lp_alert_delete(alert_id):
 @lp_sites_bp.route("/api/v1/lp/export.csv", methods=["GET"])
 @_rl(per_minute=10)  # exports are heavier — tighter cap
 def lp_export_csv():
-    user_id, gate = _require_pro_user()
+    user_id, gate = _require_plan_user("DEVELOPER", _CSV_VALUE)
     if gate is not None: return gate
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503
@@ -1146,7 +1170,7 @@ def lp_export_csv():
 @lp_sites_bp.route("/api/v1/lp/export.geojson", methods=["GET"])
 @_rl(per_minute=10)
 def lp_export_geojson():
-    user_id, gate = _require_pro_user()
+    user_id, gate = _require_plan_user("PRO", _GEOJSON_VALUE)
     if gate is not None: return gate
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503

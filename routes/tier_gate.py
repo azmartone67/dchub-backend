@@ -172,8 +172,24 @@ def _resolve_caller_tier() -> tuple[str, dict]:
     # MCP key now resolves through validate_api_key, the plan the key bought.
     # The MCP server's own calls (valid X-Internal-Key) keep the old path: they
     # are privileged by signal 2 of caller_is_privileged either way.
-    api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
-    if api_key:
+    #
+    # ★2026-09-22 — every key the request presents, not only the first header.
+    # Only X-API-Key and ?api_key= were read here, so a paid key sent as
+    # `Authorization: Bearer dch_live_...` (what an HTTP client library sends)
+    # resolved FREE: the cookie branch below tries a Bearer that is not a JWT
+    # against api_keys only, and MCP keys live in mcp_dev_keys. A free key in
+    # the header also hid a paid one in ?api_key= or the Bearer. The shapes are
+    # api_tier_gating.request_api_keys, the extraction rule every
+    # api_tier_gating resolver reads; each key resolves and the highest wins.
+    try:
+        from api_tier_gating import request_api_keys
+        api_keys = request_api_keys(request)
+    except Exception as e:
+        debug["api_key_extract_err"] = str(e)[:80]
+        api_keys = [request.headers.get("X-API-Key") or request.args.get("api_key")]
+    for api_key in api_keys:
+        if not api_key:
+            continue
         try:
             from util.mcp_key_plan import is_mcp_key, from_mcp_server, rest_plan
             if is_mcp_key(api_key) and not from_mcp_server():
@@ -253,6 +269,43 @@ def _resolve_caller_tier() -> tuple[str, dict]:
         debug["candidates"] = [f"{t}:{s}" for t, s in candidates]
         return _b[0], {"source": _b[1], **debug}
     return "FREE", {"source": "anonymous", **debug}
+
+
+def caller_meets(min_tier: str) -> tuple[bool, str]:
+    """(admitted, tier) for a hard wall that sells `min_tier` and up.
+
+    ★2026-09-22 — the export walls (transactions export.csv, the Land & Power
+    export.csv and export.geojson) read _resolve_caller_tier alone, and two
+    paying callers still got the 402 after it read every key:
+      - the MCP server's export_dataset call. It forwards the user's key next
+        to its X-Internal-Key, and that call resolves FREE above by design
+        (frontend#1534 keeps it for caller_is_privileged), while MCP reads
+        every paid key as Pro and admits it to the tool;
+      - a login whose plan changed after sign-in: the JWT branch above trusts
+        the claim minted at sign-in.
+    Below the wall the caller is lifted to api_tier_gating's
+    request_plan_ceiling(): the highest plan any verified credential on the
+    request resolves to, through validate_api_key and get_user_plan, which
+    every @require_plan gate reads. It only raises, and is read only when the
+    caller would otherwise be walled, so an admitted caller pays nothing for it.
+    Ranks are _TIER_RANK's, so a plan a wall never named (FOUNDING, TEAM) is
+    admitted by its rank rather than walled by a missing name. A `min_tier`
+    the ranks do not know admits nobody: a misspelt wall stays shut."""
+    need = _TIER_RANK.get(str(min_tier or "").upper())
+    if need is None:
+        need = max(_TIER_RANK.values(), default=0) + 1
+    tier, _ = _resolve_caller_tier()
+    tier = str(tier or "FREE").upper()
+    if _TIER_RANK.get(tier, 0) >= need:
+        return True, tier
+    try:
+        from api_tier_gating import request_plan_ceiling
+        ceiling = str(request_plan_ceiling() or "").upper()
+    except Exception:
+        ceiling = ""
+    if _TIER_RANK.get(ceiling, 0) > _TIER_RANK.get(tier, 0):
+        tier = ceiling
+    return _TIER_RANK.get(tier, 0) >= need, tier
 
 
 def caller_is_privileged(min_tier: str = "IDENTIFIED") -> bool:
