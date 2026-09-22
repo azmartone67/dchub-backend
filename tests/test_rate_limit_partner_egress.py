@@ -353,6 +353,7 @@ def _main_limiter(keys=None, clock=None):
         "time": types.SimpleNamespace(time=lambda: clock[0]) if clock else time,
         "is_valid_internal_key": is_valid_internal_key,
         "partner_for_ip": partner_egress.partner_for_ip,   # the real one
+        "partner_rate_limited": partner_egress.partner_rate_limited,   # the real one
         "get_ai_wars_key_info": lambda: None,             # no AI Wars key
         "_pg_execute": keys.pg_execute,
         "JWT_SECRET": "unused-no-jwt-is-sent",
@@ -501,3 +502,233 @@ def test_main_the_address_read_is_cf_connecting_ip():
     for _ in range(free):
         assert _main(ns, UNDECLARED_IP, xff=PARTNER_IP) is None
     assert _main(ns, UNDECLARED_IP, xff=PARTNER_IP)["tier"] == "free"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 3. The 429 body (2026-09-21). The partner bucket is shared by every keyless
+#    customer of the partner, so its 429 says so and names the free key, which
+#    both limiters bucket per key. No other tier's body moves: the anonymous and
+#    keyed 429s are pinned here to what they were before, field for field and
+#    byte for byte.
+# ════════════════════════════════════════════════════════════════════════════
+
+CLAIM = "https://dchub.cloud/api/v1/keys/claim"
+CONNECT = "https://dchub.cloud/connect"
+PARTNER_ONLY_FIELDS = {"shared_allowance", "free_key_url", "connect_url"}
+
+
+def _rl_first_429(ip, headers=None):
+    """(body, raw bytes) of the first 429 rate_limit_before returns this caller."""
+    h = {"User-Agent": UA, "CF-Connecting-IP": ip}
+    h.update(headers or {})
+    for _ in range(2000):
+        with _APP.test_request_context(API_PATH, headers=h,
+                                       environ_base={"REMOTE_ADDR": PROXY_ADDR}):
+            resp = rate_limiter.rate_limit_before()
+            if resp is not None:
+                assert resp.status_code == 429
+                return resp.get_json(), resp.get_data()
+    raise AssertionError(f"{ip}: no 429 within 2000 requests")
+
+
+def _rl_body_before(retry_after):
+    """rate_limiter's 429 body as origin/main built it before 2026-09-21, for
+    every tier alike."""
+    from routes.error_envelope import merge_error_mitigation
+    body = {
+        'error': 'rate_limit_exceeded',
+        'message': f'Too many requests. Retry after {retry_after}s.',
+        'retry_after': retry_after,
+    }
+    merge_error_mitigation(
+        body, 'rate_limit_exceeded', 'transient_backoff',
+        f'Per-window request cap exhausted; wait {retry_after}s '
+        '(Retry-After) and retry the same request.')
+    return body
+
+
+def _bytes(body):
+    with _APP.app_context():
+        return flask.jsonify(body).get_data()
+
+
+@pytest.mark.parametrize("ip,headers", [
+    (UNDECLARED_IP, None),                             # anonymous
+    (NEIGHBOUR_IP, None),                              # anonymous, next door
+    (PARTNER_IP, {"X-API-Key": LIVE_KEY}),             # keyed, from the egress
+    (UNDECLARED_IP, {"Authorization": "Bearer " + DCHUB_KEY}),   # keyed
+], ids=["anonymous", "neighbour", "keyed-from-egress", "keyed-bearer"])
+def test_rl_every_other_429_body_is_byte_identical_to_before(ip, headers):
+    body, raw = _rl_first_429(ip, headers)
+    before = _rl_body_before(body["retry_after"])
+    assert body == before
+    assert raw == _bytes(before)
+
+
+def test_rl_partner_429_names_the_shared_allowance_and_the_free_key():
+    body, _ = _rl_first_429(PARTNER_IP)
+    lim = rate_limiter.LIMITS["partner"]
+    # everything the 429 said before is still there, unchanged
+    before = _rl_body_before(body["retry_after"])
+    assert {k: body[k] for k in before} == before
+    assert set(body) - set(before) == PARTNER_ONLY_FIELDS
+    note = body["shared_allowance"]
+    assert f"{lim['rpm']:,} requests per minute, {lim['rph']:,} per hour" in note
+    assert "without an API key" in note and "that key's own limit" in note
+    assert CLAIM in note and CONNECT in note
+    assert body["free_key_url"] == CLAIM and body["connect_url"] == CONNECT
+
+
+def test_rl_partner_hourly_429_carries_the_note_too(clock):
+    lim = rate_limiter.LIMITS["partner"]
+    sent = 0
+    while sent < lim["rph"]:
+        for _ in range(min(lim["rpm"], lim["rph"] - sent)):
+            assert _rl(PARTNER_IP)[0] is None, f"429 after {sent}"
+            sent += 1
+        clock[0] += 61
+    body, _ = _rl_first_429(PARTNER_IP)
+    assert body["retry_after"] > 60                      # the hourly axis
+    assert PARTNER_ONLY_FIELDS <= set(body)
+
+
+def _main_first_429(ns, ip, headers=None):
+    for _ in range(3000):
+        body = _main(ns, ip, headers)
+        if body is not None:
+            return body
+    raise AssertionError(f"{ip}: no 429 within 3000 requests")
+
+
+def _main_body_before(tier, window, limit):
+    """main.py's 429 body as it was before 2026-09-21, for every tier alike."""
+    if window == "hour":
+        return {'success': False, 'error': 'rate_limited',
+                'message': f"Hourly limit exceeded ({limit}/hr for {tier} tier). "
+                           "Upgrade your plan for higher limits.",
+                'tier': tier, 'limit_per_hour': limit, 'retry_after_seconds': 3600,
+                'upgrade_url': 'https://dchub.cloud/pricing'}
+    return {'success': False, 'error': 'rate_limited',
+            'message': f"Rate limit exceeded ({limit}/min for {tier} tier). "
+                       "Upgrade your plan for higher limits.",
+            'tier': tier, 'limit_per_minute': limit, 'retry_after_seconds': 60,
+            'upgrade_url': 'https://dchub.cloud/pricing'}
+
+
+@pytest.mark.parametrize("ip,headers,tier", [
+    (UNDECLARED_IP, None, "free"),
+    (NEIGHBOUR_IP, None, "free"),
+    (PARTNER_IP, {"X-API-Key": LIVE_KEY}, "developer"),
+    (PARTNER_IP, {"X-API-Key": DCHUB_KEY}, "pro"),
+], ids=["anonymous", "neighbour", "live-key-from-egress", "dchub-key-from-egress"])
+def test_main_every_other_minute_429_body_is_unchanged(live_keys, ip, headers, tier):
+    ns = _main_limiter(live_keys)
+    limit = ns["_tier_rate_limits"][tier]["per_minute"]
+    body = _main_first_429(ns, ip, headers)
+    assert body == _main_body_before(tier, "minute", limit)
+    assert _bytes(body) == _bytes(_main_body_before(tier, "minute", limit))
+
+
+def test_main_the_hourly_429_body_is_unchanged_for_an_undeclared_address():
+    now = [time.time()]
+    ns = _main_limiter(clock=now)
+    free = ns["_tier_rate_limits"]["free"]
+    body = _main_hour(ns, now, UNDECLARED_IP, free["per_minute"], free["per_hour"])
+    assert body == _main_body_before("free", "hour", free["per_hour"])
+
+
+def _assert_main_partner_body(body, window, t):
+    p = t["partner"]
+    assert body["tier"] == "partner"
+    assert "upgrade_url" not in body
+    assert "Upgrade" not in body["message"] and "pricing" not in json.dumps(body)
+    limit = p["per_hour"] if window == "hour" else p["per_minute"]
+    assert body["message"] == (
+        f"Hourly limit exceeded ({limit}/hr for partner tier)." if window == "hour"
+        else f"Rate limit exceeded ({limit}/min for partner tier).")
+    assert f"{p['per_minute']:,} requests per minute, {p['per_hour']:,} per hour" \
+        in body["shared_allowance"]
+    assert body["free_key_url"] == CLAIM and body["connect_url"] == CONNECT
+
+
+def test_main_partner_minute_429_is_the_shared_allowance_not_an_upgrade():
+    ns = _main_limiter()
+    body = _main_first_429(ns, PARTNER_IP)
+    _assert_main_partner_body(body, "minute", ns["_tier_rate_limits"])
+    assert body["limit_per_minute"] == ns["_tier_rate_limits"]["partner"]["per_minute"]
+    assert body["retry_after_seconds"] == 60
+
+
+def test_main_partner_hourly_429_is_the_shared_allowance_not_an_upgrade():
+    now = [time.time()]
+    ns = _main_limiter(clock=now)
+    lim = ns["_tier_rate_limits"]["partner"]
+    body = _main_hour(ns, now, PARTNER_IP, lim["per_minute"], lim["per_hour"])
+    _assert_main_partner_body(body, "hour", ns["_tier_rate_limits"])
+    assert body["limit_per_hour"] == lim["per_hour"]
+    assert body["retry_after_seconds"] == 3600
+
+
+def test_the_partner_line_is_relay_safe():
+    """The partner relays our error bodies verbatim to its customers' agents:
+    the line states facts. No price, and none of the imperatives the paywall
+    test forbids (tests/test_paywall_does_not_instruct_the_model.py)."""
+    import re
+    from tests.test_paywall_does_not_instruct_the_model import _DIRECTIVES
+    lim = rate_limiter.LIMITS["partner"]
+    text = json.dumps(partner_egress.shared_allowance_429(lim["rpm"], lim["rph"]))
+    assert "$" not in text and "/pricing" not in text
+    for pattern in _DIRECTIVES + (r"\b(?:tell|ask|show) (?:your|the) (?:user|human)\b",
+                                  r"\byou (?:must|should)\b"):
+        assert not re.search(pattern, text, re.I), pattern
+
+
+# The 4xx hint middleware (routes/paywall_hint_middleware.py) appends an
+# `_upgrade_hint` to small 401/403/429 JSON bodies. On the partner's 429 that
+# would put back what the line above keeps out, so it skips exactly that 429.
+
+@pytest.fixture
+def stack(monkeypatch):
+    """The real limiter and the real hint middleware on one app. The
+    middleware's two database reads are answered locally; its A/B log is
+    recorded instead of written."""
+    from routes import paywall_hint_middleware as phm
+    events = []
+    monkeypatch.setattr(phm, "_log_ab_event", lambda *a, **k: events.append(a))
+    monkeypatch.setattr(phm, "_personal_hit_pitch", lambda *a, **k: "")
+    app = flask.Flask("partner-429-stack")
+    app.add_url_rule(API_PATH, "search", lambda: "ok")
+    app.before_request(rate_limiter.rate_limit_before)
+    app.after_request(rate_limiter.rate_limit_after)
+    phm.register_paywall_hint_middleware(app)
+    client = app.test_client()
+    client.environ_base["REMOTE_ADDR"] = PROXY_ADDR
+    return client, events
+
+
+def _stack_first_429(client, ip, headers=None):
+    h = {"User-Agent": UA, "CF-Connecting-IP": ip}
+    h.update(headers or {})
+    for _ in range(2000):
+        r = client.get(API_PATH, headers=h)
+        if r.status_code == 429:
+            return r.get_json()
+    raise AssertionError(f"{ip}: no 429 within 2000 requests")
+
+
+def test_the_partner_429_goes_out_without_the_hint(stack):
+    client, events = stack
+    body = _stack_first_429(client, PARTNER_IP)
+    assert PARTNER_ONLY_FIELDS <= set(body)
+    assert "_upgrade_hint" not in body
+    assert events == []                       # no variant shown, none logged
+
+
+@pytest.mark.parametrize("ip,headers", [
+    (UNDECLARED_IP, None), (PARTNER_IP, {"X-API-Key": LIVE_KEY}),
+], ids=["anonymous", "keyed-from-egress"])
+def test_every_other_429_is_still_enriched_as_before(stack, ip, headers):
+    client, events = stack
+    body = _stack_first_429(client, ip, headers)
+    assert "_upgrade_hint" in body and not PARTNER_ONLY_FIELDS & set(body)
+    assert len(events) == 1 and events[0][1] == 429

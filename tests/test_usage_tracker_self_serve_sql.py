@@ -324,3 +324,171 @@ def test_first_use_counts_rest_for_self_serve_keys_and_mcp_as_mcp(first_use):
     text = json.dumps(first_use)
     for key in list(KEYS.values()) + [METERED]:
         assert key not in text and key[:N] not in text, "a key leaked into the public body"
+
+
+# ── keyless partner-egress traffic (2026-09-21) ─────────────────────────────
+# The tracker also COUNTS keyless requests from a declared partner egress into
+# partner_keyless_daily, and flushes the partner pay-link refs
+# (routes/partner_attribution) into partner_offer_refs. Only Postgres runs the
+# upserts, the day grain and the attribution joins. Private schema, dropped.
+
+PSCHEMA = "partner_keyless_t"
+PARTNER_IP = "104.248.242.235"
+PARTNER = "anythingmcp/"
+
+
+def _pscoped_dsn():
+    return DSN + ("&" if "?" in DSN else "?") + "options=" + quote("-c search_path=" + PSCHEMA)
+
+
+def _prows(sql, args=()):
+    c = _REAL_CONNECT(_pscoped_dsn())
+    try:
+        with c.cursor() as cur:
+            cur.execute(sql, args)
+            return cur.fetchall()
+    finally:
+        c.close()
+
+
+def _pexec(sql, args=()):
+    c = _REAL_CONNECT(_pscoped_dsn())
+    try:
+        with c.cursor() as cur:
+            cur.execute(sql, args)
+        c.commit()
+    finally:
+        c.close()
+
+
+@pytest.fixture(scope="module")
+def partner_schema():
+    if not DSN:
+        pytest.skip("USAGE_TRACKER_SQL_DSN not set")
+    import routes.checkout_payment_refs as payment_refs
+    admin = _REAL_CONNECT(DSN)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {PSCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {PSCHEMA}")
+        cur.execute(f"SET search_path TO {PSCHEMA}")
+        cur.execute(tracker._SCHEMA)
+        cur.execute(_meter_ddl())
+        cur.execute(payment_refs._DDL)
+        cur.execute(_string_in("routes/pricing_click_tracker.py", "_ensure_pricing_table",
+                               "CREATE TABLE IF NOT EXISTS pricing_checkout_clicks"))
+    try:
+        yield
+    finally:
+        with admin.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {PSCHEMA} CASCADE")
+        admin.close()
+
+
+@pytest.fixture
+def partner_client(partner_schema, monkeypatch):
+    import rate_limiter
+    import routes.partner_attribution as pa
+    monkeypatch.setenv("DATABASE_URL", _pscoped_dsn())
+    monkeypatch.delenv("DCHUB_PARTNER_EGRESS", raising=False)
+    monkeypatch.setattr(tracker, "_ensure_schema", lambda: None)
+    monkeypatch.setattr(tracker, "_ensure_flusher_running", lambda: None)
+    for table in ("partner_keyless_daily", "api_endpoint_log", "api_usage_meter"):
+        _pexec(f"TRUNCATE {table}")
+    _pexec("DROP TABLE IF EXISTS partner_offer_refs")
+    tracker._drain_partner()
+    tracker._drain_buffer()
+    pa._drain()
+    rate_limiter._buckets.clear()
+    app = flask.Flask("partner-keyless-sql")
+    app.add_url_rule("/api/energy/prices/<state>", "prices", lambda state: "ok")
+    app.add_url_rule("/api/v1/pipeline", "pipeline", lambda: ("walled", 403))
+    app.before_request(rate_limiter.rate_limit_before)
+    tracker.install_tracker(app)
+    app.register_blueprint(tracker.api_usage_tracker_bp)
+    c = app.test_client()
+    c.environ_base["REMOTE_ADDR"] = "100.64.0.9"
+    yield c
+    rate_limiter._buckets.clear()
+
+
+def _partner_get(client, path, n=1):
+    for _ in range(n):
+        client.get(path, headers={"User-Agent": "node", "CF-Connecting-IP": PARTNER_IP})
+
+
+def test_partner_keyless_counts_land_per_day_route_and_status_and_sum(partner_client):
+    _partner_get(partner_client, "/api/energy/prices/TX", 2)
+    _partner_get(partner_client, "/api/v1/pipeline")
+    first = tracker._flush_partner()
+    assert first["partner_keyless_rows"] == 2, first
+    _partner_get(partner_client, "/api/energy/prices/CA")
+    tracker._flush_partner()
+    rows = _prows("SELECT usage_date = (NOW() AT TIME ZONE 'UTC')::date, partner, method, "
+                  "endpoint_rule, status, requests FROM partner_keyless_daily ORDER BY 4, 5")
+    assert rows == [(True, PARTNER, "GET", "/api/energy/prices/<state>", 200, 3),
+                    (True, PARTNER, "GET", "/api/v1/pipeline", 403, 1)]
+    # never in the keyed tables, whose readers assume a key
+    assert _prows("SELECT COUNT(*) FROM api_endpoint_log") == [(0,)]
+    assert _prows("SELECT COUNT(*) FROM api_usage_meter") == [(0,)]
+
+
+def test_a_failed_flush_loses_no_count(partner_client, monkeypatch):
+    _partner_get(partner_client, "/api/v1/pipeline", 2)
+    _pexec("ALTER TABLE partner_keyless_daily RENAME TO partner_keyless_daily_away")
+    try:
+        out = tracker._flush_partner()
+        assert out["partner_keyless_rows"] == 0 and "partner_keyless_error" in out
+    finally:
+        _pexec("ALTER TABLE partner_keyless_daily_away RENAME TO partner_keyless_daily")
+    tracker._flush_partner()
+    assert _prows("SELECT requests FROM partner_keyless_daily") == [(2,)]
+
+
+def test_partner_refs_and_what_they_led_to(partner_client):
+    import routes.partner_attribution as pa
+    code, other = "DCM-ABC1", "DCM-ABC12"          # a prefix of each other, on purpose
+    assert pa.note_offer_ref(code, PARTNER, "pair_code", "/api/v1/pipeline")
+    assert pa.note_offer_ref(code, PARTNER, "pair_code", "/api/v1/pipeline")
+    assert tracker._flush_partner()["partner_refs"] == {"refs": 1}
+    assert pa.note_offer_ref(code, PARTNER, "pair_code", "/api/site-score")
+    tracker._flush_partner()
+    assert _prows("SELECT partner, kind, first_path, served FROM partner_offer_refs") == [
+        (PARTNER, "pair_code", "/api/v1/pipeline", 3)]
+    pays = [("cs_1", code, True), ("cs_2", "ref_" + code + "__tool_pipeline__ts_1", None),
+            ("cs_3", code, False),                          # test mode: not counted
+            ("cs_4", other, True),                          # not a partner ref
+            ("cs_5", "ref_" + other + "__tool_x__ts_2", True)]
+    for sid, cref, live in pays:
+        _pexec("INSERT INTO mcp_checkout_payments (stripe_session_id, client_reference_id, "
+               "livemode) VALUES (%s, %s, %s)", (sid, cref, live))
+    for ref, known in (("ref_" + code + "__tool_pipeline__ts_3", True),
+                       ("ref_" + code + "__tool_pipeline__ts_4", False),
+                       ("ref_" + other + "__tool_x__ts_5", True)):
+        _pexec("INSERT INTO pricing_checkout_clicks (plan, ref, known_plan) "
+               "VALUES ('metered', %s, %s)", (ref, known))
+    c = _REAL_CONNECT(_pscoped_dsn())
+    try:
+        with c.cursor() as cur:
+            out = pa.read_attribution(cur, 30)
+    finally:
+        c.close()
+    assert out["refs"] == [{"partner": PARTNER, "kind": "pair_code", "refs": 1, "served": 3}]
+    assert out["payments"] == {PARTNER: 2}
+    assert out["pricing_clicks"] == {PARTNER: 1}
+
+
+def test_the_admin_read_returns_the_rollup(partner_client, monkeypatch):
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", ADMIN)
+    _partner_get(partner_client, "/api/energy/prices/TX", 2)
+    tracker._flush_partner()
+    r = partner_client.get("/api/v1/admin/usage-tracker/partner-traffic?days=7",
+                           headers={"X-Admin-Key": ADMIN})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    agg = body["keyless_requests"]["partners"][PARTNER]
+    assert agg["total"] == 2
+    assert agg["by_route"] == {"GET /api/energy/prices/<state>": 2}
+    assert agg["by_status"] == {"200": 2}
+    assert body["attribution"]["refs"].startswith("absent")
+    assert body["window_days"] == 7 and set(body["basis"]) == {"keyless_requests", "attribution"}

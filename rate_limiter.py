@@ -1,6 +1,6 @@
 from internal_auth import is_valid_internal_key
 from railway_egress import is_railway_egress
-from partner_egress import partner_for_ip
+from partner_egress import partner_for_ip, shared_allowance_429
 # rate_limiter.py
 # DC Hub - Rate Limiting Middleware
 # Location: root level (alongside main.py)
@@ -217,6 +217,23 @@ def _get_key_and_tier():
 
     # 5. Anonymous - rate limit by IP
     return f'ip:{ip}', 'anonymous'
+
+
+def partner_of_request():
+    """The partner prefix (e.g. 'anythingmcp/') when THIS request is keyless
+    traffic from a declared partner egress, else None.
+
+    It is _get_key_and_tier()'s own answer, so the partner-traffic count and
+    the partner pay-link refs name exactly the requests the 'partner' bucket
+    charges, never a second guess at "keyless". Never raises.
+    """
+    try:
+        key, tier = _get_key_and_tier()
+    except Exception:
+        return None
+    if tier != 'partner' or not key.startswith('partner:'):
+        return None
+    return key[len('partner:'):] or None
 
 
 # ---------------------------------------------------------------------------
@@ -470,14 +487,14 @@ def rate_limit_before():
     if not ok:
         if _should_log_rate_hit(key):
             logger.warning(f"Rate limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
-        return _resp(retry)
+        return _resp(retry, tier)
 
     # Per-hour check
     ok_h, rem_h, retry_h = _check(f"{key}:hr", limits['rph'], 3600)
     if not ok_h:
         if _should_log_rate_hit(key):
             logger.warning(f"Hourly limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
-        return _resp(retry_h)
+        return _resp(retry_h, tier)
 
     # Stash for after_request headers (standard X-RateLimit-* — platform clients
     # back off BEFORE hitting 429).
@@ -505,15 +522,23 @@ def rate_limit_after(response):
     return response
 
 
-def _resp(retry_after):
+def _resp(retry_after, tier=None):
     """429 Too Many Requests — with the standard rate-limit headers so a client
     knows the cap (Limit), that it's exhausted (Remaining 0), and exactly when to
-    retry (Retry-After + Reset)."""
+    retry (Retry-After + Reset).
+
+    `tier` is the tier whose bucket ran out. Only 'partner' changes the body: that
+    bucket is shared by every keyless customer of the partner, so the 429 says so
+    and names the free key, which is bucketed on its own
+    (partner_egress.shared_allowance_429). Every other tier's body is unchanged."""
     body = {
         'error': 'rate_limit_exceeded',
         'message': f'Too many requests. Retry after {retry_after}s.',
         'retry_after': retry_after
     }
+    if tier == 'partner':
+        body.update(shared_allowance_429(LIMITS['partner']['rpm'],
+                                         LIMITS['partner']['rph']))
     # error_version:1 — rate-limit is transient_backoff: NO suggested_params
     # (no param change unlocks it; the agent waits and retries the same call).
     # Fail-soft: the envelope must never break the 429 response.

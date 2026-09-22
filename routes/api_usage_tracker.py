@@ -42,6 +42,12 @@ Identification
   cardinality bounded). For anonymous-traffic counts use cron_observability or
   brain_http_capture.
 
+  One exception (2026-09-21): KEYLESS traffic from a declared partner egress
+  (partner_egress.py), which the limiters bucket as the 'partner' tier, is
+  COUNTED per day, route and status into partner_keyless_daily. Counts only:
+  no row per request, no key, no address. It never touches api_endpoint_log
+  or api_usage_meter, whose readers assume a key.
+
 Privacy
 -------
   We log:
@@ -124,6 +130,7 @@ _SKIP_PATH_PREFIXES = (
     "/static/",
     "/api/v1/admin/partner-usage",   # this endpoint reads tracker data
     "/api/v1/admin/partner-key",
+    "/api/v1/admin/usage-tracker/partner-traffic",   # reads tracker data
     "/alive",
     "/healthz", "/livez", "/readyz",
     "/api/health",
@@ -174,6 +181,58 @@ def _drain_buffer() -> list:
     return out
 
 
+# === Keyless partner-egress counts =======================================
+# (usage_date, partner, method, endpoint_rule, status) -> requests. A counter,
+# not a row per request: the partner's keyless volume is the whole of one
+# hosted catalogue's traffic. Bounded; a key that does not fit is counted in
+# _PARTNER_DROPPED so a full buffer is visible rather than silent.
+_PARTNER_LOCK = threading.Lock()
+_PARTNER_COUNTS: dict = {}
+_PARTNER_MAX_KEYS = 5000
+_PARTNER_DROPPED = [0]
+UNMATCHED_RULE = "(no route)"
+
+
+def _track_partner(partner: str, method: str, rule: str, status: int) -> None:
+    k = (_dt.datetime.now(_dt.timezone.utc).date(), partner, method, rule, int(status))
+    with _PARTNER_LOCK:
+        if k in _PARTNER_COUNTS:
+            _PARTNER_COUNTS[k] += 1
+        elif len(_PARTNER_COUNTS) < _PARTNER_MAX_KEYS:
+            _PARTNER_COUNTS[k] = 1
+        else:
+            _PARTNER_DROPPED[0] += 1
+
+
+def _drain_partner() -> dict:
+    global _PARTNER_COUNTS
+    with _PARTNER_LOCK:
+        out, _PARTNER_COUNTS = _PARTNER_COUNTS, {}
+    return out
+
+
+def _requeue_partner(counts: dict) -> None:
+    with _PARTNER_LOCK:
+        for k, n in counts.items():
+            if k in _PARTNER_COUNTS or len(_PARTNER_COUNTS) < _PARTNER_MAX_KEYS:
+                _PARTNER_COUNTS[k] = _PARTNER_COUNTS.get(k, 0) + n
+            else:
+                _PARTNER_DROPPED[0] += n
+
+
+def _count_partner_keyless(response) -> None:
+    """Count this response if its request is keyless traffic from a declared
+    partner egress: the limiter's own classification (the bucket it charged),
+    so this never disagrees with the 'partner' tier. The route is the matched
+    URL rule (a template), so cardinality stays bounded."""
+    from rate_limiter import partner_of_request
+    partner = partner_of_request()
+    if not partner:
+        return
+    rule = request.url_rule.rule if request.url_rule is not None else UNMATCHED_RULE
+    _track_partner(partner, request.method, rule, int(response.status_code))
+
+
 # === Schema ============================================================
 
 _SCHEMA = """
@@ -190,6 +249,16 @@ CREATE INDEX IF NOT EXISTS ix_endpoint_log_key_called
     ON api_endpoint_log (api_key_prefix, called_at DESC);
 CREATE INDEX IF NOT EXISTS ix_endpoint_log_path_called
     ON api_endpoint_log (endpoint_path, called_at DESC);
+CREATE TABLE IF NOT EXISTS partner_keyless_daily (
+    usage_date     DATE         NOT NULL,
+    partner        TEXT         NOT NULL,
+    method         TEXT         NOT NULL,
+    endpoint_rule  TEXT         NOT NULL,
+    status         SMALLINT     NOT NULL,
+    requests       BIGINT       NOT NULL DEFAULT 0,
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (usage_date, partner, method, endpoint_rule, status)
+);
 """
 
 
@@ -328,15 +397,79 @@ def _flush() -> dict:
         _safe_close(c)
 
 
-def _flush_loop() -> None:
+_PARTNER_UPSERT = """
+INSERT INTO partner_keyless_daily
+       (usage_date, partner, method, endpoint_rule, status, requests, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, NOW())
+ON CONFLICT (usage_date, partner, method, endpoint_rule, status) DO UPDATE
+   SET requests   = partner_keyless_daily.requests + EXCLUDED.requests,
+       updated_at = NOW()
+"""
+
+
+def _flush_partner() -> dict:
+    """Roll the keyless partner counts, and the partner pay-link refs
+    (routes/partner_attribution), into their tables. Additive, so every
+    replica's counts sum. On failure the counts go back into the buffer."""
+    counts = _drain_partner()
+    try:
+        from routes import partner_attribution
+    except Exception:
+        partner_attribution = None
+    if not counts and not (partner_attribution and partner_attribution.pending()):
+        return {"partner_keyless_rows": 0, "partner_refs": {"refs": 0}}
+    c = _pg_conn()
+    out = {}
+    if not counts:
+        out["partner_keyless_rows"] = 0
+    elif c is None:
+        _requeue_partner(counts)
+        out["partner_keyless_rows"] = 0
+        out["partner_keyless_skipped"] = "no_db"
+    else:
+        try:
+            with c.cursor() as cur:
+                for (day, partner, method, rule, status), n in counts.items():
+                    cur.execute(_PARTNER_UPSERT,
+                                (day, partner, method, rule[:200], status, n))
+            c.commit()
+            out["partner_keyless_rows"] = len(counts)
+        except Exception as ex:
+            try:
+                c.rollback()
+            except Exception:
+                pass
+            _requeue_partner(counts)
+            out["partner_keyless_rows"] = 0
+            out["partner_keyless_error"] = str(ex)[:200]
+    try:
+        out["partner_refs"] = (partner_attribution.flush(c) if partner_attribution
+                               else {"refs": 0, "error": "partner_attribution unavailable"})
+    except Exception as ex:
+        out["partner_refs"] = {"refs": 0, "error": str(ex)[:200]}
+    _safe_close(c)
+    return out
+
+
+def _tick() -> None:
+    """One flusher pass: the keyed log, then the partner counts and refs. A
+    failure in one never skips the other."""
     global _LAST_FLUSH
+    try:
+        _flush()
+        _LAST_FLUSH = time.time()
+    except Exception:
+        pass
+    try:
+        _flush_partner()
+    except Exception:
+        pass
+
+
+def _flush_loop() -> None:
     while True:
         time.sleep(_FLUSH_INTERVAL_SEC)
-        try:
-            _flush()
-            _LAST_FLUSH = time.time()
-        except Exception:
-            pass
+        _tick()
 
 
 # Per-worker process-local flag.  r78-e (2026-06-03): gunicorn typically
@@ -467,7 +600,10 @@ def install_tracker(app) -> dict:
                 return response
             key_prefix = getattr(g, "_usage_key_prefix", None)
             if not key_prefix:
-                return response  # only track keyed requests
+                # Keyed requests only, with one exception: keyless traffic
+                # from a declared partner egress is COUNTED (not logged).
+                _count_partner_keyless(response)
+                return response
             start = getattr(g, "_usage_start_ns", None)
             latency_ms = (time.time_ns() - start) // 1_000_000 if start else None
             _track({
@@ -509,7 +645,7 @@ def force_flush():
     if not _admin_authorized():
         return jsonify({"ok": False, "error": "admin_key_required"}), 401
     result = _flush()
-    return jsonify({"ok": True, **result}), 200
+    return jsonify({"ok": True, **result, "partner": _flush_partner()}), 200
 
 
 @api_usage_tracker_bp.route("/api/v1/admin/usage-tracker/status", methods=["GET"])
@@ -543,4 +679,79 @@ def status():
                 "latency_ms": e.get("latency_ms"),
             } for e in recent
         ],
+    }), 200
+
+
+PARTNER_TRAFFIC_BASIS = {
+    "keyless_requests": (
+        "Requests the ORIGIN answered with no API key from a declared partner "
+        "egress (partner_egress.py), as the rate limiter classifies them (the "
+        "'partner' tier), counted per UTC day, method, matched route template "
+        "and status, 429s included. A response the edge served from its cache "
+        "never reached the origin and is not here. Each replica flushes every "
+        "flush_interval_sec, so the newest interval is not in the table yet."),
+    "attribution": (
+        "refs: the DCM- pair codes on the paywalls served to those requests "
+        "(routes/partner_attribution.py). pricing_clicks: /go/p presses whose "
+        "ref is /pricing's ref_<code>__ wrapper around one; bot user agents are "
+        "not excluded. payments: live-mode paid checkouts whose "
+        "client_reference_id is a recorded code or that wrapper. Walls served "
+        "from a shared cache carry no partner ref, so these are floors."),
+}
+
+
+@api_usage_tracker_bp.route("/api/v1/admin/usage-tracker/partner-traffic", methods=["GET"])
+def partner_traffic():
+    """Keyless requests from declared partner egresses per day, route and
+    status, and what the pay links served to them led to. Admin only."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 400))
+    except (TypeError, ValueError):
+        days = 30
+    c = _pg_conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "no_db"}), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('partner_keyless_daily') IS NOT NULL")
+            if not cur.fetchone()[0]:
+                keyless = "absent: partner_keyless_daily does not exist yet"
+            else:
+                cur.execute(
+                    "SELECT usage_date, partner, method, endpoint_rule, status, requests "
+                    "  FROM partner_keyless_daily "
+                    " WHERE usage_date > (NOW() AT TIME ZONE 'UTC')::date - %s "
+                    " ORDER BY usage_date DESC, requests DESC, endpoint_rule",
+                    (days,))
+                rows = [{"date": d.isoformat(), "partner": pt, "method": m,
+                         "route": r, "status": int(st), "requests": int(n)}
+                        for d, pt, m, r, st, n in cur.fetchall()]
+                by_partner: dict = {}
+                for row in rows:
+                    agg = by_partner.setdefault(row["partner"], {
+                        "total": 0, "by_day": {}, "by_route": {}, "by_status": {}})
+                    agg["total"] += row["requests"]
+                    for field, val in (("by_day", row["date"]),
+                                       ("by_route", row["method"] + " " + row["route"]),
+                                       ("by_status", str(row["status"]))):
+                        agg[field][val] = agg[field].get(val, 0) + row["requests"]
+                keyless = {"partners": by_partner, "rows": rows}
+            from routes.partner_attribution import read_attribution
+            attribution = read_attribution(cur, days)
+    except Exception as ex:
+        _safe_close(c)
+        return jsonify({"ok": False, "error": str(ex)[:200]}), 500
+    _safe_close(c)
+    with _PARTNER_LOCK:
+        buffered = sum(_PARTNER_COUNTS.values())
+    return jsonify({
+        "ok": True,
+        "window_days": days,
+        "keyless_requests": keyless,
+        "attribution": attribution,
+        "this_process": {"buffered_unflushed": buffered,
+                         "dropped_buffer_full": _PARTNER_DROPPED[0]},
+        "basis": PARTNER_TRAFFIC_BASIS,
     }), 200
