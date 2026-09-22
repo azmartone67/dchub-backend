@@ -406,6 +406,111 @@ def _build_analysis(lat: float, lon: float, state: str,
     return result
 
 
+# ── Score / Evaluate are Pro (2026-09-21, frontend#1536) ─────────────────────
+# The feasibility score and the power, land, water and tax figures behind it
+# are the Land & Power product. Pro opens them, and so does one $10-pack credit
+# on any valid key; the MCP server (X-Internal-Key) is unchanged and applies its
+# own masks. A keyless or free caller gets HTTP 200 with the verdict bands, the
+# counts and the names, every figure null, coordinates at two decimals
+# (util/plan_tease.py).
+_SCORE_PLAN = "pro"
+
+_ANALYSIS_LOCKED = [
+    "feasibility_score",
+    "power.nearest_substation_km", "power.est_substation_capacity_mva",
+    "power.industrial_rate_cents_kwh",
+    "power.nearest_substations[].voltage_kv", "power.nearest_substations[].capacity_mva",
+    "power.nearest_substations[].distance_km",
+    "fiber.nearest_ix.distance_km", "fiber.nearest_ix.peak_tbps",
+    "land.existing_operational_mw", "land.largest_nearby_mw",
+    "water.stress_index", "tax.detail",
+    "dcpi.excess_power_score", "dcpi.constraint_score",
+    "dcpi.time_to_power_months", "dcpi.queue_capacity_mw",
+    "narrative (figures)",
+]
+
+
+def _tease_map_url(lat, lon, capacity_mw):
+    from util.plan_tease import round2
+    return (f"https://dchub.cloud/land-power?lat={round2(lat)}&lon={round2(lon)}"
+            f"&zoom=10&capacity_mw={capacity_mw:.0f}")
+
+
+def _tease_narrative(state, verdict, dcpi_verdict):
+    bits = [f"Site in {state or 'an unspecified state'}: feasibility verdict "
+            f"{verdict or 'unscored'}."]
+    if dcpi_verdict:
+        bits.append(f"DCPI verdict for the state: {dcpi_verdict}.")
+    bits.append("The feasibility score, its drivers and the power, land, water and "
+                "tax figures behind it come with Pro or a credit pack.")
+    return " ".join(bits)
+
+
+def _tease_analysis(full: dict, lat: float, lon: float, state: str,
+                    capacity_mw: float, radius_km: float) -> dict:
+    """The keyless/free view of a site analysis: bands, counts and names only."""
+    from util.plan_tease import round2, TEASE_ROWS
+    power = full.get("power") or {}
+    fiber_ix = (full.get("fiber") or {}).get("nearest_ix") or {}
+    land = full.get("land") or {}
+    tax = full.get("tax") or {}
+    dcpi = full.get("dcpi") or {}
+    subs = power.get("nearest_substations") or []
+    out = {
+        "site": {"lat": round2(lat), "lon": round2(lon), "state": state,
+                 "capacity_mw": capacity_mw, "radius_km": radius_km},
+        "power": {
+            "substations_in_radius": power.get("substations_in_radius"),
+            "nearest_substation_km": None,
+            "est_substation_capacity_mva": None,
+            "industrial_rate_cents_kwh": None,
+            "nearest_substations": [
+                {"name": s.get("name"), "voltage_kv": None,
+                 "capacity_mva": None, "distance_km": None}
+                for s in subs[:TEASE_ROWS]],
+        },
+        "fiber": ({"nearest_ix": {"name": fiber_ix.get("name"),
+                                  "city": fiber_ix.get("city"),
+                                  "distance_km": None, "peak_tbps": None}}
+                  if fiber_ix else {}),
+        "land": {"comparable_facilities_in_radius":
+                 land.get("comparable_facilities_in_radius"),
+                 "existing_operational_mw": None, "largest_nearby_mw": None},
+        "water": {"stress_index": None},
+        "tax": ({"sales_tax_exempt": tax.get("sales_tax_exempt"),
+                 "property_tax_abatement": tax.get("property_tax_abatement"),
+                 "data_center_specific": tax.get("data_center_specific"),
+                 "detail": None, "status": tax.get("status"),
+                 "last_verified": tax.get("last_verified"),
+                 "source_url": tax.get("source_url")} if tax else {}),
+        "dcpi": ({"verdict": dcpi.get("verdict"),
+                  "best_market_in_state": dcpi.get("best_market_in_state"),
+                  "excess_power_score": None, "constraint_score": None,
+                  "time_to_power_months": None, "queue_capacity_mw": None}
+                 if dcpi else {}),
+        "feasibility_score": None,
+        "verdict": full.get("verdict"),
+        "interactive_map_url": _tease_map_url(lat, lon, capacity_mw),
+        "narrative": _tease_narrative(state, full.get("verdict"), dcpi.get("verdict")),
+    }
+    if full.get("generated_at"):
+        out["generated_at"] = full["generated_at"]
+    return out
+
+
+def _analysis(lat, lon, state, capacity_mw, radius_km):
+    """(payload, cache_state) through the 60s in-process cache."""
+    key = _cache_key(lat, lon, capacity_mw, radius_km)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached, "hit"
+    out = _build_analysis(lat, lon, state, capacity_mw, radius_km)
+    out["generated_at"] = (datetime.datetime.now(datetime.timezone.utc)
+                           .isoformat().replace("+00:00", "Z"))
+    _cache_set(key, out)
+    return out, "miss"
+
+
 @land_power_mcp_bp.route("/api/v1/land-power/site-analysis", methods=["GET", "OPTIONS"])
 def site_analysis():
     if request.method == "OPTIONS":
@@ -423,21 +528,20 @@ def site_analysis():
     capacity_mw = max(1.0, _safe_float(request.args.get("capacity_mw"), 100.0))
     radius_km   = max(5.0, min(100.0, _safe_float(request.args.get("radius_km"), 25.0)))
 
-    key = _cache_key(lat, lon, capacity_mw, radius_km)
-    cached = _cache_get(key)
-    if cached is not None:
-        resp = jsonify({**cached, "_cache": "hit"})
+    def _full():
+        out, state_ = _analysis(lat, lon, state, capacity_mw, radius_km)
+        resp = jsonify({**out, "_cache": state_})
         resp.headers["Cache-Control"] = "public, max-age=60"
-        resp.headers["X-LP-Cache"] = "hit"
+        resp.headers["X-LP-Cache"] = state_
         return resp, 200
 
-    out = _build_analysis(lat, lon, state, capacity_mw, radius_km)
-    out["generated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
-    _cache_set(key, out)
-    resp = jsonify({**out, "_cache": "miss"})
-    resp.headers["Cache-Control"] = "public, max-age=60"
-    resp.headers["X-LP-Cache"] = "miss"
-    return resp, 200
+    def _tease():
+        out, _ = _analysis(lat, lon, state, capacity_mw, radius_km)
+        return (_tease_analysis(out, lat, lon, state, capacity_mw, radius_km),
+                _ANALYSIS_LOCKED, 1)
+
+    from util.plan_tease import gate_or_tease
+    return gate_or_tease(_SCORE_PLAN, _full, _tease)
 
 
 @land_power_mcp_bp.route("/api/v1/land-power/quick-score", methods=["GET", "OPTIONS"])
@@ -454,14 +558,59 @@ def quick_score():
     if lat is None or lon is None:
         return jsonify(error="lat and lon required"), 400
     capacity_mw = max(1.0, _safe_float(request.args.get("capacity_mw"), 100.0))
-    out = _build_analysis(lat, lon, state, capacity_mw, radius_km=25.0)
-    return jsonify({
-        "feasibility_score": out.get("feasibility_score"),
-        "verdict":           out.get("verdict"),
-        "dcpi_verdict":      out.get("dcpi", {}).get("verdict"),
-        "interactive_map_url": out.get("interactive_map_url"),
-        "narrative":         out.get("narrative"),
-    }), 200
+
+    def _full():
+        out = _build_analysis(lat, lon, state, capacity_mw, radius_km=25.0)
+        return jsonify({
+            "feasibility_score": out.get("feasibility_score"),
+            "verdict":           out.get("verdict"),
+            "dcpi_verdict":      out.get("dcpi", {}).get("verdict"),
+            "interactive_map_url": out.get("interactive_map_url"),
+            "narrative":         out.get("narrative"),
+        }), 200
+
+    def _tease():
+        out, _ = _analysis(lat, lon, state, capacity_mw, 25.0)
+        dcpi_verdict = (out.get("dcpi") or {}).get("verdict")
+        return ({
+            "feasibility_score": None,
+            "verdict":           out.get("verdict"),
+            "dcpi_verdict":      dcpi_verdict,
+            "interactive_map_url": _tease_map_url(lat, lon, capacity_mw),
+            "narrative":         _tease_narrative(state, out.get("verdict"), dcpi_verdict),
+        }, ["feasibility_score", "narrative (figures)"], 1)
+
+    from util.plan_tease import gate_or_tease
+    return gate_or_tease(_SCORE_PLAN, _full, _tease)
+
+
+# ── The Land & Power map's upgrade modal (2026-09-21) ───────────────────────
+# The map is a static page and cannot sign a /go/c link, so it asks here. Three
+# rungs, each saying what it opens on the map: the $10 pack (one Score or
+# Evaluate per credit), Developer (every layer, not the three-layer preview),
+# Pro (Score and Evaluate without counting, plus every layer). Prices come from
+# tier_registry and the pack constants. A caller presenting a valid key gets
+# links bound to that key's hash, so the purchase lands on the key the map is
+# using; anyone else gets caller-independent links.
+@land_power_mcp_bp.route("/api/v1/land-power/upgrade-ladder", methods=["GET", "OPTIONS"])
+def upgrade_ladder():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    from util import plan_tease as pt
+    key = pt.presented_key()
+    pack_ref, sub_ref = pt.key_refs(key)
+    opens = {"pack": "score_evaluate_per_credit", "developer": "all_layers", "pro": "all"}
+    rungs = [
+        pt._pack_rung(pack_ref, "each Score or Evaluate uses one"),
+        pt._plan_rung("developer", sub_ref, "— every map layer, not the three-layer preview"),
+        pt._plan_rung("pro", sub_ref, "— unlimited Score and Evaluate, plus every map layer"),
+    ]
+    rungs = [r for r in rungs if r]
+    for r in rungs:
+        r["opens"] = opens[r["plan"]]
+    resp = jsonify({"success": True, "rungs": rungs, "key_bound": bool(pack_ref)})
+    resp.headers["Cache-Control"] = pt.NO_STORE if key else pt.TEASE_CACHE
+    return resp, 200
 
 
 @land_power_mcp_bp.route("/api/v1/land-power/track", methods=["POST", "OPTIONS"])
