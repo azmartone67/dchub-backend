@@ -857,11 +857,11 @@ def require_plan(min_plan='pro', pack_opens=False):
                 # ── STEP 3: Check API Key ──────────────────────────────
                 if not auth_method:
                     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-                    # Also accept Authorization: Bearer dchub_... (JWT decode in STEP 2
-                    # failed because dchub_ keys are not JWTs — treat as API key here).
+                    # Also accept Authorization: Bearer <key> (JWT decode in STEP 2
+                    # failed because keys are not JWTs — treat as API key here).
                     if not api_key:
                         _auth_h = request.headers.get('Authorization', '')
-                        if _auth_h.startswith('Bearer ') and _auth_h[7:].startswith('dchub_'):
+                        if _auth_h.startswith('Bearer ') and _auth_h[7:].startswith(BEARER_KEY_PREFIXES):
                             api_key = _auth_h[7:].strip()
                     if api_key:
                         info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
@@ -903,6 +903,19 @@ def require_plan(min_plan='pro', pack_opens=False):
                         current_tier='free',
                         error_code='plan_required',
                     )), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
+
+                # ★2026-09-22: a caller holding more than one credential gets the
+                # highest plan among them (request_plan_ceiling). This chain
+                # stops at the FIRST credential that resolves, the login cookie,
+                # so a paid dch_live_ key sent beside a free-plan cookie was
+                # refused here while get_request_principal() admitted it.
+                # Raise-only, and only once a credential already resolved.
+                if request_credential_count() > 1:
+                    _ceiling = request_plan_ceiling()
+                    if (_ceiling != 'admin'
+                            and PLAN_LEVELS.get(_ceiling, 0) > PLAN_LEVELS.get(user_plan, 0)):
+                        user_plan = _ceiling
+                        request.user_plan = user_plan
 
                 # ── STEP 5: Check tier level ───────────────────────────
                 if not user_has_access(user_plan, min_plan):
@@ -1160,9 +1173,19 @@ def _principal_email(value):
     return None
 
 
+#: Key shapes a Bearer token may carry. A JWT decode is always tried first, so a
+#: token of one of these shapes is only read as a key once it failed as a JWT.
+#: ★2026-09-22: was `dchub_` alone, so a self-serve dch_live_ key sent as
+#: `Authorization: Bearer` (the MCP server accepts it that way) resolved to no
+#: key at all on REST: a paying Developer or Pro key was served the keyless
+#: preview on every gated route.
+BEARER_KEY_PREFIXES = ('dchub_', 'dch_live_', 'dch_trial_')
+
+
 def request_api_key(req=None):
     """The API key a request presents: X-API-Key, then ?api_key=, then
-    `Authorization: Bearer dchub_...`. None when there is none.
+    `Authorization: Bearer <key>` for the shapes in BEARER_KEY_PREFIXES. None
+    when there is none.
 
     The ONE extraction rule. get_request_principal() reads the key through
     this, and so does any caller that needs the raw key for a lookup the
@@ -1170,12 +1193,102 @@ def request_api_key(req=None):
     if req is None:
         from flask import request as req
     api_key = req.headers.get('X-API-Key') or req.args.get('api_key')
-    # Also accept Authorization: Bearer dchub_... (a JWT decode is tried first)
+    # Also accept Authorization: Bearer <key> (a JWT decode is tried first)
     if not api_key:
         _auth_h2 = req.headers.get('Authorization', '')
-        if _auth_h2.startswith('Bearer ') and _auth_h2[7:].startswith('dchub_'):
+        if _auth_h2.startswith('Bearer ') and _auth_h2[7:].startswith(BEARER_KEY_PREFIXES):
             api_key = _auth_h2[7:].strip()
     return api_key
+
+
+def request_credential_count(req=None):
+    """How many credentials this request presents: a login cookie, an
+    Authorization Bearer token, an API key (header or query). Presence only,
+    no lookup, so a caller can skip request_plan_ceiling() for the common
+    single-credential request (its resolver already looked that one up)."""
+    if req is None:
+        from flask import request as req
+    n = 0
+    if (req.cookies.get('session_token') or req.cookies.get('dchub_token')
+            or req.cookies.get('token')):
+        n += 1
+    if (req.headers.get('Authorization', '') or '').startswith('Bearer '):
+        n += 1
+    if req.headers.get('X-API-Key') or req.args.get('api_key'):
+        n += 1
+    return n
+
+
+def request_plan_ceiling():
+    """The HIGHEST plan any verified credential on this request resolves to.
+
+    ★2026-09-22. A request can carry more than one credential, and the two
+    resolvers pick different winners: get_request_principal() takes the API key
+    before the login cookie, require_plan() the cookie before the key. So a
+    paying caller was served the free preview whenever the OTHER credential was
+    free: a Pro web session whose page also sent a free dch_live_ key (the map
+    mints one per visitor) on the principal-based gates, and a paid dch_live_
+    key sent alongside a free-plan cookie on the require_plan-based ones.
+    Every credential here is verified (a signed JWT, a key validated against
+    its row), so the highest one is what the caller has paid for; a credential
+    can only RAISE the plan, never lower it. This is the entitlement only:
+    get_request_principal() still names WHO is asking, unchanged.
+
+    Returns a plan name, 'admin' for an admin-role key, or 'anon'. Memoised on
+    flask.g for the request. Never raises.
+    """
+    try:
+        cached = getattr(g, '_dchub_plan_ceiling', None)
+        if cached is not None:
+            return cached
+    except Exception:
+        cached = None
+    best = None
+
+    def _consider(plan):
+        nonlocal best
+        if plan and (best is None or PLAN_LEVELS.get(plan, 0) > PLAN_LEVELS.get(best, 0)):
+            best = plan
+
+    try:
+        decode_jwt = _get_decode_jwt()
+        tokens = []
+        _auth = request.headers.get('Authorization', '')
+        if _auth.startswith('Bearer '):
+            tokens.append(_auth.split(' ', 1)[1])
+        _cookie = (request.cookies.get('session_token') or request.cookies.get('dchub_token')
+                   or request.cookies.get('token'))
+        if _cookie:
+            tokens.append(_cookie)
+        for _tok in tokens:
+            if not decode_jwt:
+                break
+            try:
+                payload = decode_jwt(_tok)
+            except Exception:
+                payload = None
+            if payload:
+                uid = payload.get('user_id') or payload.get('sub') or payload.get('email')
+                _consider(get_user_plan(user_id=uid, email=payload.get('email')) or 'free')
+        _key = request_api_key(request)
+        if _key:
+            info = validate_api_key(_key)
+            if isinstance(info, dict):
+                _consider('admin' if info.get('role') == 'admin' else (info.get('plan') or 'free'))
+            else:
+                try:
+                    from api_data_protection import _resolve_key_tier as _rkt
+                    _consider(_rkt(_key))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    out = best or 'anon'
+    try:
+        g._dchub_plan_ceiling = out
+    except Exception:
+        pass
+    return out
 
 
 def get_request_principal(honor_internal_key=True):

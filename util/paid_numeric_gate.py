@@ -91,6 +91,7 @@ def access(min_plan: str = "developer"):
     key the request presents, for the pack ledger."""
     try:
         from api_tier_gating import (get_request_principal, request_api_key,
+                                     request_credential_count, request_plan_ceiling,
                                      user_has_access)
         if _admin_key_ok():
             return SAME, None
@@ -100,7 +101,16 @@ def access(min_plan: str = "developer"):
         api_key = request_api_key()
         if not principal.get("credential"):
             return ANON, api_key
-        if user_has_access(principal.get("tier") or "free", min_plan):
+        tier = principal.get("tier") or "free"
+        # ★2026-09-22: a caller with several credentials gets the highest plan
+        # among them (api_tier_gating.request_plan_ceiling). The principal names
+        # the API key first, so a paying web session whose page also sent a
+        # free key was served this route's preview.
+        if request_credential_count() > 1:
+            ceiling = request_plan_ceiling()
+            if ceiling != "admin" and user_has_access(ceiling, tier) and not user_has_access(tier, ceiling):
+                tier = ceiling
+        if user_has_access(tier, min_plan):
             return FULL, api_key
         return BELOW, api_key
     except Exception:  # noqa: BLE001 — a broken gate serves the tease

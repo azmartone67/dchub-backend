@@ -61,6 +61,18 @@ def access(min_plan: str) -> str:
     tier = (_principal().get("tier") or "anon").lower()
     if tier == "admin":
         return UNCHANGED
+    # ★2026-09-22: several credentials -> the highest plan among them
+    # (api_tier_gating.request_plan_ceiling); the principal alone names the API
+    # key first, so a paying web session beside a free key got the tease.
+    try:
+        from api_tier_gating import (PLAN_LEVELS, request_credential_count,
+                                     request_plan_ceiling)
+        if request_credential_count() > 1:
+            ceiling = request_plan_ceiling()
+            if ceiling != "admin" and PLAN_LEVELS.get(ceiling, 0) > PLAN_LEVELS.get(tier, 0):
+                tier = ceiling
+    except Exception:  # noqa: BLE001 — the principal's tier stands
+        pass
     try:
         import tier_registry
         if tier_registry.satisfies(tier, min_plan):
