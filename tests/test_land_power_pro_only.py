@@ -105,6 +105,19 @@ PLANT_ROWS = [("W A Parish", "NRG Texas Power LLC", 3632.0, "coal", 29.482812, -
               ("Limestone", "NRG", 1850.0, "coal", 31.421567, -96.252123)]
 SUB_ROWS = [("HARTBURG", 500.0, 500.0, 30.266668, -93.73866),
             ("CYPRESS", 500.0, 500.0, 30.303635, -94.2572)]
+# /api/v1/energy/site-analysis (energy_infrastructure_routes), per table, near the site.
+ENERGY_ROWS = {
+    "substations": [("Ashburn 500kV", "Ashburn", "VA", "20147", "SUBSTATION", "IN SERVICE",
+                     "Dominion", 500.0, 230.0, 39.0519, -77.4812)],
+    "gas_pipelines": [("Line 1", "Columbia Gas Trans Co", "Interstate", 30.0, "active",
+                       39.0345, -77.4752)],
+    "power_plants_eia": [("Loudoun Station", "Example Utility", 285.0, "Natural Gas",
+                          39.0631, -77.4502)],
+}
+ENERGY_LINE = ({"line_name": "PLEASANT VIEW", "voltage_kv": 230.0,
+                "owner": "VIRGINIA ELECTRIC & POWER CO", "status": "IN SERVICE",
+                "volt_class": None, "distance_miles": 1.0, "matched_substation": "ASHBURN"},
+               True)
 
 
 class _Cur:
@@ -118,7 +131,9 @@ class _Cur:
     def execute(self, sql, params=None):
         s = " ".join(sql.split())
         cols = None
-        if "FROM market_power_profiles ORDER BY power_readiness_score" in s:
+        if "ORDER BY POWER(lat - %s, 2)" in s:       # energy site-analysis
+            rows = ENERGY_ROWS[re.search(r"FROM (\w+)", s).group(1)]
+        elif "FROM market_power_profiles ORDER BY power_readiness_score" in s:
             rows = PROFILE_ROWS
         elif s.startswith("SELECT * FROM market_power_profiles WHERE market"):
             rows = [(1, "Houston", "TX")]
@@ -332,6 +347,16 @@ def app(ledger, monkeypatch):
     a.add_url_rule("/api/v1/land-power/data", "land_power_consolidated", _main_land_power_data())
     it2.register_iteration_2_routes(a)
     a.add_url_rule("/api/site-score", "api_site_score", _main_site_score())
+    import energy_infrastructure_routes as eir      # /api/v1/energy/site-analysis
+    import site_planner
+    monkeypatch.setattr(sys.modules["main"], "get_pg_connection", lambda: _Conn(), raising=False)
+    monkeypatch.setattr(sys.modules["main"], "return_pg_connection", lambda c: None,
+                        raising=False)
+    monkeypatch.setattr(site_planner, "find_nearest_transmission_measured",
+                        lambda *a, **k: TOUCHED.append("transmission") or
+                        copy.deepcopy(ENERGY_LINE))
+    monkeypatch.setattr(eir, "_CACHE", {})
+    eir.setup_energy_routes(a)
     a.before_request(_auto_issue_hook(monkeypatch))
     return a
 
@@ -353,13 +378,23 @@ PROFILE = "/api/land-power/market-profile/Houston"
 LP_DATA = "/api/v1/land-power/data"
 SNAPSHOT = "/api/v1/land-power/snapshot?bbox=-77.7,38.9,-77.3,39.2&layers=facilities,substations"
 SITE_SCORE = "/api/site-score?lat=39.04123&lon=-77.48456&state=VA"
+ENERGY = "/api/v1/energy/site-analysis?lat=39.04123&lng=-77.48456&state=VA&radius=25"
 ROUTES = [ANALYSIS_PATH, QUICK, CELL_PATH, HEATMAP, PROFILES, PROFILE, LP_DATA,
-          SNAPSHOT, SITE_SCORE]
+          SNAPSHOT, SITE_SCORE, ENERGY]
 
 
 def _details(path, body):
     """Every Land & Power figure the route's answer carries. Full: some are set.
     Preview: all are null. Never empty, or the check would be vacuous."""
+    if "energy/site-analysis" in path:
+        data = body.get("data") or {}
+        s, power = data.get("scores") or {}, data.get("power_infrastructure") or {}
+        d = s.get("details") or {}
+        return ([s.get("overallScore"), s.get("powerScore"), s.get("gasScore"),
+                 power.get("total_capacity_mw")]
+                + [d.get(k) for k in ("nearestSubstationKm", "nearestTransmissionKm",
+                                      "nearestTransmissionVoltage", "nearestPowerPlantKm",
+                                      "nearestPowerPlantMW", "nearestPipelineKm")])
     if "site-analysis" in path:
         p, d = body.get("power") or {}, body.get("dcpi") or {}
         out = [body.get("feasibility_score"), p.get("nearest_substation_km"),
@@ -403,13 +438,18 @@ def _details(path, body):
 
 
 def _rows(path, body):
-    return {"site-analysis": lambda b: (b.get("power") or {}).get("nearest_substations"),
+    return {"energy/site-analysis": lambda b: (
+                [x for v in ((b.get("data") or {}).get("infrastructure") or {}).values()
+                 for x in v]
+                + ((b.get("data") or {}).get("power_infrastructure") or {}).get("plants", [])),
+            "site-analysis": lambda b: (b.get("power") or {}).get("nearest_substations"),
             "h3-cell": lambda b: b.get("neighbors"),
             "h3-heatmap": lambda b: b.get("features"),
             "market-profiles": lambda b: b.get("markets"),
             "market-profile/": lambda b: b.get("large_power_plants"),
             "snapshot": lambda b: (b.get("layers") or {}).get("facilities"),
-            }.get(next((k for k in ("site-analysis", "h3-cell", "h3-heatmap",
+            }.get(next((k for k in ("energy/site-analysis", "site-analysis", "h3-cell",
+                                    "h3-heatmap",
                                     "market-profiles", "market-profile/", "snapshot")
                         if k in path), ""), lambda b: [])(body) or []
 
@@ -669,6 +709,20 @@ def test_the_preview_keeps_grades_verdicts_names_and_counts(client):
     assert "substations" not in snap["layers"] and snap["counts"]["substations"] == 4
     assert len(snap["layers"]["facilities"]) == 3
 
+
+
+def test_the_energy_site_analysis_preview_sells_pro_to_a_keyed_caller(client):
+    """/api/v1/energy/site-analysis gave a free key the full scores beside a note
+    that exact detail needed "a free key or sign-in" (measured live 2026-09-22,
+    with a free key). Below Pro it serves the preview, which asks a keyed caller
+    for Pro and never for a key, and keeps the grade, the counts and the names."""
+    r = _get(client, ENERGY, FREE_KEY)
+    data = _assert_preview(r, ENERGY, _k(FREE_KEY))["data"]
+    assert "free key" not in r.get_data(as_text=True).lower()
+    assert data["_upgrade_cta"].endswith("come with Pro.")
+    assert data["counts"]["substations"] == 1 and data["scores"]["rating"] == "Good"
+    assert data["scores"]["details"]["nearestSubstationName"] == "Ashburn 500kV"
+    assert data["location"] == {"lat": 39.04, "lng": -77.48}
 
 def test_main_serves_land_power_data_through_the_land_power_gate():
     tree = _main_tree()

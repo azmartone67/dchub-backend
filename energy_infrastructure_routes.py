@@ -103,50 +103,77 @@ def point_to_line_distance(point_lat, point_lng, line_coords):
     
     return min_dist
 
-def calculate_infrastructure_score(lat, lng, substations, pipelines, transmission_lines, power_plants):
+# The four layers the score reads. A layer whose read failed is UNMEASURED: it
+# scores no points, it is not scored as zero, and every score that depends on it
+# is null. Before 2026-09-22 a failed or empty read scored 0 and the site still got
+# the 30-point base: Ashburn, VA, with no data at all, was published as 30
+# "Challenging".
+LAYERS = ('substations', 'transmissionLines', 'powerPlants', 'pipelines')
+_POWER_LAYERS = ('substations', 'transmissionLines', 'powerPlants')
+
+
+def _distance_m(lat, lng, item):
+    """Metres from (lat, lng) to one layer item, or inf when it has no position.
+
+    An item carries a measured `distance_km`, a point (geometry x/y, or
+    coordinates), or a polyline (geometry paths). Pipelines and plants arrive as
+    points: before 2026-09-22 the pipeline distance read only `paths`, so no
+    pipeline was ever found and gasScore was 0 wherever pipelines were mapped."""
+    try:
+        if item.get('distance_km') is not None:
+            return float(item['distance_km']) * 1000
+        geom = item.get('geometry') or {}
+        if geom.get('x') is not None and geom.get('y') is not None:
+            return haversine_distance(lat, lng, float(geom['y']), float(geom['x']))
+        if geom.get('coordinates'):
+            x, y = geom['coordinates'][:2]
+            return haversine_distance(lat, lng, float(y), float(x))
+        best = inf
+        for path in geom.get('paths') or []:
+            best = min(best, point_to_line_distance(lat, lng, path))
+        return best
+    except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+        return inf
+
+
+def _nearest(lat, lng, items):
+    """(metres, item) for the nearest positioned item, or (inf, None)."""
+    best, best_item = inf, None
+    for item in items or []:
+        dist = _distance_m(lat, lng, item)
+        if dist < best:
+            best, best_item = dist, item
+    return best, best_item
+
+
+def calculate_infrastructure_score(lat, lng, substations, pipelines, transmission_lines,
+                                   power_plants, unavailable=None):
     """
-    Calculate infrastructure access score (0-100)
-    Based on proximity to power and gas infrastructure
-    
-    ENHANCED: Better pipeline detection, point-to-line distance
+    Infrastructure access score (0-100) from proximity to power and gas.
+
+    `unavailable` maps a layer in LAYERS to the reason it could not be read.
+    powerScore is null when any power layer is unavailable, gasScore when the
+    pipelines are, and overallScore and rating when either is. A layer that was
+    read and holds nothing within the radius is a measurement, and scores 0.
     """
+    unavailable = {k: v for k, v in (unavailable or {}).items() if k in LAYERS}
     base_score = 30  # Base score
     recommendations = []
     details = {}
-    
+
     # ===================
     # POWER SCORE (max 50)
     # ===================
     power_score = 0
-    
+
     # Substations (max 25 pts)
-    if substations:
-        nearest_sub_dist = inf
-        nearest_sub = None
-        
-        for sub in substations:
-            try:
-                geom = sub.get('geometry', {})
-                # Handle both point and x/y formats
-                if 'x' in geom and 'y' in geom:
-                    sub_lng, sub_lat = geom['x'], geom['y']
-                elif 'coordinates' in geom:
-                    sub_lng, sub_lat = geom['coordinates']
-                else:
-                    continue
-                
-                dist = haversine_distance(lat, lng, sub_lat, sub_lng)
-                if dist < nearest_sub_dist:
-                    nearest_sub_dist = dist
-                    nearest_sub = sub
-            except:
-                pass
-        
-        if nearest_sub_dist < inf:
-            sub_dist_km = nearest_sub_dist / 1000
+    if 'substations' not in unavailable:
+        dist, sub = _nearest(lat, lng, substations)
+        if dist < inf:
+            sub_dist_km = dist / 1000
             details['nearestSubstationKm'] = round(sub_dist_km, 1)
-            details['nearestSubstationName'] = nearest_sub.get('attributes', {}).get('NAME', 'Unknown')
-            
+            details['nearestSubstationName'] = (sub.get('attributes') or {}).get('NAME', 'Unknown')
+
             if sub_dist_km < 5:
                 power_score += 25
                 recommendations.append(f"✅ Substation within {sub_dist_km:.1f}km - excellent grid access")
@@ -158,29 +185,17 @@ def calculate_infrastructure_score(lat, lng, substations, pipelines, transmissio
                 recommendations.append(f"⚠️ Substation {sub_dist_km:.1f}km away - grid extension may be needed")
             elif sub_dist_km < 40:
                 power_score += 5
-    
+        else:
+            recommendations.append("ℹ️ No mapped substation within the search radius")
+
     # Transmission lines (max 15 pts)
-    if transmission_lines:
-        nearest_line_dist = inf
-        nearest_line = None
-        
-        for line in transmission_lines:
-            try:
-                paths = line.get('geometry', {}).get('paths', [])
-                for path in paths:
-                    dist = point_to_line_distance(lat, lng, path)
-                    if dist < nearest_line_dist:
-                        nearest_line_dist = dist
-                        nearest_line = line
-            except:
-                pass
-        
-        if nearest_line_dist < inf:
-            line_dist_km = nearest_line_dist / 1000
+    if 'transmissionLines' not in unavailable:
+        dist, line = _nearest(lat, lng, transmission_lines)
+        if dist < inf:
+            line_dist_km = dist / 1000
             details['nearestTransmissionKm'] = round(line_dist_km, 1)
-            voltage = nearest_line.get('attributes', {}).get('VOLTAGE', 0) if nearest_line else 0
-            details['nearestTransmissionVoltage'] = voltage
-            
+            details['nearestTransmissionVoltage'] = (line.get('attributes') or {}).get('VOLTAGE')
+
             if line_dist_km < 2:
                 power_score += 15
             elif line_dist_km < 5:
@@ -189,42 +204,25 @@ def calculate_infrastructure_score(lat, lng, substations, pipelines, transmissio
                 power_score += 8
             elif line_dist_km < 20:
                 power_score += 4
-    
+
     # Power plants (max 10 pts)
-    if power_plants:
-        nearest_plant_dist = inf
-        nearest_plant = None
-        
-        for plant in power_plants:
-            try:
-                geom = plant.get('geometry', {})
-                if 'x' in geom and 'y' in geom:
-                    plant_lng, plant_lat = geom['x'], geom['y']
-                else:
-                    continue
-                
-                dist = haversine_distance(lat, lng, plant_lat, plant_lng)
-                if dist < nearest_plant_dist:
-                    nearest_plant_dist = dist
-                    nearest_plant = plant
-            except:
-                pass
-        
-        if nearest_plant_dist < inf:
-            plant_dist_km = nearest_plant_dist / 1000
+    if 'powerPlants' not in unavailable:
+        dist, plant = _nearest(lat, lng, power_plants)
+        if dist < inf:
+            plant_dist_km = dist / 1000
             details['nearestPowerPlantKm'] = round(plant_dist_km, 1)
-            attrs = nearest_plant.get('attributes', {}) if nearest_plant else {}
+            attrs = plant.get('attributes') or {}
             details['nearestPowerPlantName'] = attrs.get('NAME', 'Unknown')
-            details['nearestPowerPlantMW'] = attrs.get('TOTAL_MW', 0)
+            details['nearestPowerPlantMW'] = attrs.get('TOTAL_MW')
             details['nearestPowerPlantFuel'] = attrs.get('PRIM_FUEL', 'Unknown')
-            
+
             if plant_dist_km < 10:
                 power_score += 10
             elif plant_dist_km < 25:
                 power_score += 6
             elif plant_dist_km < 50:
                 power_score += 3
-    
+
     # ===================
     # GAS SCORE (max 50)
     # ===================
@@ -232,444 +230,512 @@ def calculate_infrastructure_score(lat, lng, substations, pipelines, transmissio
     has_tallgrass = False
     has_interstate = False
     pipeline_operators = set()
-    
-    if pipelines:
+
+    if 'pipelines' in unavailable:
+        pass
+    elif pipelines:
         # Filter for gas pipelines (case-insensitive!)
         gas_pipelines = []
         for p in pipelines:
             attrs = p.get('attributes', {})
             typepipe = str(attrs.get('typepipe', '')).lower()
             commodity = str(attrs.get('COMMODITY', '')).lower()
-            
+
             # Include if it's a gas pipeline
             if typepipe in ['interstate', 'intrastate'] or 'gas' in commodity:
                 gas_pipelines.append(p)
-                
+
                 # Track operators
                 operator = attrs.get('operator', '')
                 if operator:
                     pipeline_operators.add(operator)
-                    
+
                     # Check for Tallgrass/REX
                     op_lower = operator.lower()
                     if 'tallgrass' in op_lower or 'rockies express' in op_lower or 'rex' in op_lower:
                         has_tallgrass = True
-                
+
                 if typepipe == 'interstate':
                     has_interstate = True
-        
-        details['pipelineOperators'] = list(pipeline_operators)[:5]  # Top 5
+
+        details['pipelineOperators'] = sorted(pipeline_operators)[:5]
         details['hasTallgrass'] = has_tallgrass
         details['hasInterstate'] = has_interstate
-        
-        if gas_pipelines:
-            # Find nearest pipeline using point-to-line distance
-            nearest_pipe_dist = inf
-            nearest_pipe = None
-            
-            for pipe in gas_pipelines:
-                try:
-                    paths = pipe.get('geometry', {}).get('paths', [])
-                    for path in paths:
-                        dist = point_to_line_distance(lat, lng, path)
-                        if dist < nearest_pipe_dist:
-                            nearest_pipe_dist = dist
-                            nearest_pipe = pipe
-                except:
-                    pass
-            
-            if nearest_pipe_dist < inf:
-                pipe_dist_km = nearest_pipe_dist / 1000
-                details['nearestPipelineKm'] = round(pipe_dist_km, 1)
-                
-                if nearest_pipe:
-                    attrs = nearest_pipe.get('attributes', {})
-                    details['nearestPipelineOperator'] = attrs.get('operator', 'Unknown')
-                    details['nearestPipelineType'] = attrs.get('typepipe', 'Unknown')
-                
-                # Score based on distance
-                if pipe_dist_km < 2:
-                    gas_score += 40
-                    recommendations.append(f"✅ Gas pipeline within {pipe_dist_km:.1f}km - excellent for gas-powered generation")
-                elif pipe_dist_km < 5:
-                    gas_score += 35
-                    recommendations.append(f"✅ Gas pipeline within {pipe_dist_km:.1f}km - good gas access")
-                elif pipe_dist_km < 10:
-                    gas_score += 25
-                    recommendations.append(f"✅ Gas pipeline {pipe_dist_km:.1f}km away - feasible connection")
-                elif pipe_dist_km < 20:
-                    gas_score += 15
-                    recommendations.append(f"⚠️ Gas pipeline {pipe_dist_km:.1f}km away - may need lateral")
-                elif pipe_dist_km < 40:
-                    gas_score += 5
-                    recommendations.append(f"⚠️ Nearest pipeline {pipe_dist_km:.1f}km away - limited gas access")
-                else:
-                    recommendations.append(f"❌ Nearest pipeline {pipe_dist_km:.1f}km away - challenging gas access")
-                
-                # Bonus for Tallgrass partnership opportunity
-                if has_tallgrass:
-                    gas_score += 5
-                    recommendations.append("🎯 Tallgrass/REX pipeline in area - potential partnership opportunity")
-                
-                # Bonus for interstate access
-                if has_interstate and not has_tallgrass:
-                    gas_score += 3
-                    recommendations.append("📍 Interstate pipeline access available")
+
+        dist, nearest_pipe = _nearest(lat, lng, gas_pipelines)
+        if dist < inf:
+            pipe_dist_km = dist / 1000
+            details['nearestPipelineKm'] = round(pipe_dist_km, 1)
+            attrs = nearest_pipe.get('attributes', {})
+            details['nearestPipelineOperator'] = attrs.get('operator', 'Unknown')
+            details['nearestPipelineType'] = attrs.get('typepipe', 'Unknown')
+
+            # Score based on distance
+            if pipe_dist_km < 2:
+                gas_score += 40
+                recommendations.append(f"✅ Gas pipeline within {pipe_dist_km:.1f}km - excellent for gas-powered generation")
+            elif pipe_dist_km < 5:
+                gas_score += 35
+                recommendations.append(f"✅ Gas pipeline within {pipe_dist_km:.1f}km - good gas access")
+            elif pipe_dist_km < 10:
+                gas_score += 25
+                recommendations.append(f"✅ Gas pipeline {pipe_dist_km:.1f}km away - feasible connection")
+            elif pipe_dist_km < 20:
+                gas_score += 15
+                recommendations.append(f"⚠️ Gas pipeline {pipe_dist_km:.1f}km away - may need lateral")
+            elif pipe_dist_km < 40:
+                gas_score += 5
+                recommendations.append(f"⚠️ Nearest pipeline {pipe_dist_km:.1f}km away - limited gas access")
             else:
-                recommendations.append("ℹ️ No gas pipelines found within search area")
+                recommendations.append(f"❌ Nearest pipeline {pipe_dist_km:.1f}km away - challenging gas access")
+
+            # Bonus for Tallgrass partnership opportunity
+            if has_tallgrass:
+                gas_score += 5
+                recommendations.append("🎯 Tallgrass/REX pipeline in area - potential partnership opportunity")
+
+            # Bonus for interstate access
+            if has_interstate and not has_tallgrass:
+                gas_score += 3
+                recommendations.append("📍 Interstate pipeline access available")
         else:
             recommendations.append("ℹ️ No gas pipelines found in search area")
     else:
-        recommendations.append("ℹ️ Pipeline data not available for this area")
-    
+        recommendations.append("ℹ️ No active gas pipeline mapped within the search radius")
+
+    for layer, reason in unavailable.items():
+        recommendations.append(f"ℹ️ {layer} could not be read, so it is not scored: {reason}")
+
     # ===================
     # OVERALL SCORE
     # ===================
-    # Weight: 50% power, 50% gas
-    overall_score = int(base_score + (power_score * 0.5) + (gas_score * 0.5))
-    overall_score = min(100, max(0, overall_score))
-    
-    # Add rating
-    if overall_score >= 80:
-        rating = "Excellent"
-    elif overall_score >= 65:
-        rating = "Good"
-    elif overall_score >= 50:
-        rating = "Moderate"
-    else:
-        rating = "Challenging"
-    
+    power_measured = not any(layer in unavailable for layer in _POWER_LAYERS)
+    gas_measured = 'pipelines' not in unavailable
+    overall_score = rating = None
+    if power_measured and gas_measured:
+        # Weight: 50% power, 50% gas
+        overall_score = int(base_score + (power_score * 0.5) + (gas_score * 0.5))
+        overall_score = min(100, max(0, overall_score))
+
+        if overall_score >= 80:
+            rating = "Excellent"
+        elif overall_score >= 65:
+            rating = "Good"
+        elif overall_score >= 50:
+            rating = "Moderate"
+        else:
+            rating = "Challenging"
+
     return {
         'overallScore': overall_score,
         'rating': rating,
-        'powerScore': power_score,
-        'gasScore': gas_score,
+        'powerScore': power_score if power_measured else None,
+        'gasScore': gas_score if gas_measured else None,
         'recommendations': recommendations,
-        'details': details
+        'details': details,
+        'unavailable': unavailable,
     }
+
+
+# =============================================================================
+# SITE ANALYSIS: WHAT IS READ, AND FROM WHERE
+# =============================================================================
+
+# `radius` arrives in two units. js/land-power-enhancements.js sends metres (50000,
+# the documented unit) and so does the legacy Python MCP server (miles * 1609);
+# js/site-scoring-integration.js, js/energy-patch.js and
+# js/land-power-button-fixes.js send kilometres (50 or 25). Read as metres,
+# radius=25 searched a 50 m box: Ashburn, VA came back with every count 0 on
+# 2026-09-22, and 148 substations at radius=25000. No site search is under 1 km
+# or over 1,000 km, so a radius of 1,000 or more is metres and a smaller one is
+# kilometres. `radius_km` is always kilometres.
+RADIUS_KM_DEFAULT = 25.0
+RADIUS_KM_MIN = 1.0
+RADIUS_KM_MAX = 100.0
+_RADIUS_METRES_FROM = 1000.0
+
+# Rows read per layer, nearest first. A layer that fills it publishes its count
+# as a floor (coverage.<layer>.count_is_floor). The lists served are shorter.
+_ROW_CAP = 5000
+_KM_PER_MILE = 1.609344
+
+_SUBSTATIONS_SQL = """
+    SELECT name, city, state, zip, type, status, owner, max_volt, min_volt, lat, lng
+      FROM substations
+     WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+     ORDER BY POWER(lat - %s, 2) + POWER((lng - %s) * %s, 2)
+     LIMIT %s
+"""
+_PIPELINES_SQL = """
+    SELECT name, operator, pipeline_type, diameter_inches, status, lat, lng
+      FROM gas_pipelines
+     WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+       AND status = 'active'
+     ORDER BY POWER(lat - %s, 2) + POWER((lng - %s) * %s, 2)
+     LIMIT %s
+"""
+# The EIA plant fleet (routes/power_plants_ingest.py, the Land & Power plants
+# layer). discovered_power_plants holds source RECORDS from three overlapping
+# catalogs, not plants, and some sit at the wrong place: on 2026-09-22 it put
+# Surry Nuclear 19 km from Ashburn (the plant is in Surry County, ~250 km away),
+# and it filled the old LIMIT of 100 within 25 km, so the count was the cap.
+_PLANTS_SQL = """
+    SELECT name, utility_name, nameplate_capacity_mw, primary_fuel, lat, lng
+      FROM power_plants_eia
+     WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+     ORDER BY POWER(lat - %s, 2) + POWER((lng - %s) * %s, 2)
+     LIMIT %s
+"""
+
+_SOURCES = {
+    'substations': 'substations',
+    'pipelines': "gas_pipelines (status 'active'), one mapped point per segment",
+    'powerPlants': 'power_plants_eia (the EIA plant fleet)',
+    'transmissionLines': ('transmission_lines, through '
+                          'site_planner.find_nearest_transmission_measured'),
+}
+_TRANSMISSION_COUNT_REASON = (
+    'not counted: transmission_lines stores no line geometry, so this endpoint '
+    'measures only the nearest line, placed at the substation its endpoint names')
+
+
+def resolve_radius_km(args):
+    """(radius_km, how the request's radius was read). See RADIUS_KM_DEFAULT."""
+    explicit = args.get('radius_km', type=float)
+    raw = args.get('radius', type=float)
+    if explicit is not None:
+        given, read_as, km = explicit, 'km', explicit
+    elif raw is None:
+        given, read_as, km = None, 'default', RADIUS_KM_DEFAULT
+    elif raw >= _RADIUS_METRES_FROM:
+        given, read_as, km = raw, 'm', raw / 1000.0
+    else:
+        given, read_as, km = raw, 'km', raw
+    radius_km = min(RADIUS_KM_MAX, max(RADIUS_KM_MIN, km))
+    return radius_km, {'given': given, 'read_as': read_as,
+                       'clamped': not (radius_km == km)}
+
+
+def _num(value):
+    """A column value as a float, or None. A NUMERIC column arrives as Decimal,
+    which jsonify would serve as a string."""
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _within(rows, lat, lng, radius_km, lat_i, lng_i):
+    """[(row, metres)] for the rows inside the radius, nearest first."""
+    out = []
+    for row in rows:
+        try:
+            dist = haversine_distance(lat, lng, float(row[lat_i]), float(row[lng_i]))
+        except (TypeError, ValueError):
+            continue
+        if dist <= radius_km * 1000:
+            out.append((row, dist))
+    out.sort(key=lambda pair: pair[1])
+    return out
+
+
+def _read_transmission(lat, lng, radius_km):
+    """([nearest line as a layer item] or [], None) when measured, else (None, reason)."""
+    try:
+        from site_planner import find_nearest_transmission_measured
+        line, measured = find_nearest_transmission_measured(
+            lat, lng, max_distance_miles=radius_km / _KM_PER_MILE)
+    except Exception as e:  # noqa: BLE001 — reported as the layer's reason
+        return None, f'the nearest-line lookup raised {type(e).__name__}'
+    if not measured:
+        return None, 'the nearest-line lookup could not run (a query error or no connection)'
+    if not line or line.get('distance_miles') is None:
+        return [], None
+    km = float(line['distance_miles']) * _KM_PER_MILE
+    if km > radius_km:
+        return [], None
+    return [{
+        'distance_km': round(km, 2),
+        'attributes': {
+            'NAME': line.get('line_name'), 'VOLTAGE': _num(line.get('voltage_kv')),
+            'OWNER': line.get('owner'), 'STATUS': line.get('status'),
+            'SUBSTATION': line.get('matched_substation'),
+        },
+    }], None
+
+
+def read_site_layers(lat, lng, radius_km):
+    """Every layer the score reads, within radius_km of (lat, lng).
+
+    Returns {layer: {'status': 'measured', 'items': [...], 'count': n,
+    'count_is_floor': bool}} or {layer: {'status': 'unavailable', 'reason': ...}}.
+    Each statement runs on its own: one that fails is rolled back, so it cannot
+    abort the transaction the next one runs in, and marks only its own layer."""
+    lat_delta = radius_km / 111.32
+    lng_delta = radius_km / (111.32 * max(0.01, abs(cos(radians(lat)))))
+    box = (lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta)
+    order = (lat, lng, max(0.01, abs(cos(radians(lat)))))
+    layers = {}
+
+    def _item_substation(row):
+        return {'geometry': {'x': _num(row[10]), 'y': _num(row[9])},
+                'attributes': {'NAME': row[0] or 'Unknown', 'CITY': row[1], 'STATE': row[2],
+                               'ZIP': row[3], 'TYPE': row[4], 'STATUS': row[5],
+                               'OWNER': row[6], 'MAX_VOLT': _num(row[7]),
+                               'MIN_VOLT': _num(row[8])}}
+
+    def _item_pipeline(row):
+        return {'geometry': {'x': _num(row[6]), 'y': _num(row[5])},
+                'attributes': {'name': row[0], 'typepipe': row[2] or 'gas', 'operator': row[1],
+                               'status': row[4], 'COMMODITY': 'gas', 'diameter': _num(row[3])}}
+
+    def _item_plant(row):
+        return {'geometry': {'x': _num(row[5]), 'y': _num(row[4])},
+                'attributes': {'NAME': row[0] or 'Unknown', 'UTILITY_NA': row[1],
+                               'TOTAL_MW': _num(row[2]), 'PRIM_FUEL': row[3] or 'Unknown',
+                               'SOURCE': 'EIA'}}
+
+    reads = (('substations', _SUBSTATIONS_SQL, 9, 10, _item_substation),
+             ('pipelines', _PIPELINES_SQL, 5, 6, _item_pipeline),
+             ('powerPlants', _PLANTS_SQL, 4, 5, _item_plant))
+
+    conn = None
+    put_back = None
+    try:
+        from main import get_pg_connection, return_pg_connection
+        conn, put_back = get_pg_connection(), return_pg_connection
+    except Exception as e:  # noqa: BLE001 — reported as each layer's reason
+        conn = None
+        no_conn = f'no database connection ({type(e).__name__})'
+    else:
+        no_conn = 'no database connection'
+    try:
+        for layer, sql, lat_i, lng_i, to_item in reads:
+            if conn is None:
+                layers[layer] = {'status': 'unavailable', 'reason': no_conn}
+                continue
+            try:
+                cur = conn.cursor()
+                try:
+                    cur.execute(sql, box + order + (_ROW_CAP,))
+                    rows = cur.fetchall()
+                finally:
+                    cur.close()
+            except Exception as e:  # noqa: BLE001 — reported as the layer's reason
+                try:
+                    conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                print(f"site-analysis {layer} read failed: {type(e).__name__}: {e}")
+                layers[layer] = {'status': 'unavailable',
+                                 'reason': f'the {layer} read failed ({type(e).__name__})'}
+                continue
+            near = _within(rows, lat, lng, radius_km, lat_i, lng_i)
+            layers[layer] = {'status': 'measured', 'items': [to_item(r) for r, _ in near],
+                             'count': len(near), 'count_is_floor': len(rows) >= _ROW_CAP}
+    finally:
+        if conn is not None:
+            try:
+                put_back(conn)
+            except Exception:  # noqa: BLE001
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    items, reason = _read_transmission(lat, lng, radius_km)
+    if reason:
+        layers['transmissionLines'] = {'status': 'unavailable', 'reason': reason}
+    else:
+        layers['transmissionLines'] = {'status': 'measured', 'items': items, 'count': None,
+                                       'count_is_floor': False}
+    return layers
+
+
+def build_site_analysis(lat, lng, radius_km, radius_read):
+    """The full /api/v1/energy/site-analysis answer (Pro and above)."""
+    layers = read_site_layers(lat, lng, radius_km)
+
+    def _items(layer):
+        return layers[layer].get('items') or []
+
+    unavailable = {k: v['reason'] for k, v in layers.items() if v['status'] != 'measured'}
+    score_data = calculate_infrastructure_score(
+        lat, lng, _items('substations'), _items('pipelines'), _items('transmissionLines'),
+        _items('powerPlants'), unavailable)
+
+    counts, coverage = {}, {}
+    for layer in LAYERS:
+        info = layers[layer]
+        entry = {'status': info['status'], 'source': _SOURCES[layer]}
+        if info['status'] == 'measured':
+            counts[layer] = info['count']
+            entry['count_is_floor'] = info['count_is_floor']
+            if layer == 'transmissionLines':
+                entry['count'] = _TRANSMISSION_COUNT_REASON
+                entry['basis'] = ('distance to the substation the nearest line is '
+                                  'attributed to, not to the line itself')
+            elif layer == 'pipelines':
+                entry['basis'] = 'distance to the nearest mapped pipeline point'
+        else:
+            counts[layer] = None
+            entry['reason'] = info['reason']
+        coverage[layer] = entry
+
+    plants = _items('powerPlants')
+    formatted_plants = []
+    for p in plants[:20]:
+        attr = p.get('attributes', {})
+        formatted_plants.append({
+            'name': attr.get('NAME', 'Unknown'),
+            'fuel_type': attr.get('PRIM_FUEL', 'Unknown'),
+            'capacity_mw': attr.get('TOTAL_MW'),
+            'generation_mwh': None,
+            'capacity_factor': None,
+            'status': None,
+            'operator': attr.get('UTILITY_NA'),
+            'source': attr.get('SOURCE', 'EIA'),
+        })
+    plants_read = layers['powerPlants']['status'] == 'measured'
+    capacities = [(p.get('attributes') or {}).get('TOTAL_MW') for p in plants]
+    total_capacity_mw = (round(sum(c for c in capacities if c is not None), 1)
+                         if plants_read else None)
+
+    return {
+        'location': {'lat': lat, 'lng': lng},
+        'radius': int(round(radius_km * 1000)),
+        'radius_km': radius_km,
+        'radius_read': radius_read,
+        'scores': score_data,
+        'counts': counts,
+        'coverage': coverage,
+        'infrastructure': {
+            'substations': _items('substations')[:20],  # Limit for response size
+            'pipelines': _items('pipelines')[:20],
+            'transmissionLines': _items('transmissionLines')[:10],
+            'powerPlants': plants[:10],
+        },
+        'power_infrastructure': {
+            'plants': formatted_plants,
+            'total_count': counts['powerPlants'],
+            'total_capacity_mw': total_capacity_mw,
+            # power_plants_eia carries nameplate capacity, not generation.
+            'total_generation_mwh': None,
+        },
+    }
+
+
+# Land & Power details are Pro (owner, 2026-09-22; util/plan_tease.lp_gate). Below
+# Pro this route serves the grade, the counts and the names; every score,
+# distance, voltage and MW figure is null and no asset list or coordinate is
+# served. Keyless callers get the wall. Until 2026-09-22 a free key got the full
+# scores beside a note that exact detail needed "a free key or sign-in".
+_PREVIEW_LOCKED = (
+    'scores.overallScore', 'scores.powerScore', 'scores.gasScore',
+    'scores.recommendations', 'scores.details.nearestSubstationKm',
+    'scores.details.nearestTransmissionKm', 'scores.details.nearestTransmissionVoltage',
+    'scores.details.nearestPowerPlantKm', 'scores.details.nearestPowerPlantMW',
+    'scores.details.nearestPipelineKm', 'infrastructure', 'power_infrastructure.plants',
+    'power_infrastructure.total_capacity_mw', 'location',
+)
+_PREVIEW_NAMES = ('nearestSubstationName', 'nearestPowerPlantName', 'nearestPowerPlantFuel',
+                  'nearestPipelineOperator', 'nearestPipelineType', 'hasInterstate',
+                  'hasTallgrass')
+_PREVIEW_CTA = ("Land & Power preview: the grade, the counts and the names. Scores, "
+                "distances, voltages, capacities and asset locations come with Pro.")
+
+
+def site_analysis_preview(full):
+    """The below-Pro view of build_site_analysis(): (body, locked fields, rows)."""
+    from util.plan_tease import round2, TEASE_ROWS
+    scores = full.get('scores') or {}
+    details = {k: (v if k in _PREVIEW_NAMES else None)
+               for k, v in (scores.get('details') or {}).items()}
+    if 'pipelineOperators' in (scores.get('details') or {}):
+        details['pipelineOperators'] = list(scores['details']['pipelineOperators'])[:TEASE_ROWS]
+    loc = full.get('location') or {}
+    power = full.get('power_infrastructure') or {}
+    data = {
+        'location': {'lat': round2(loc.get('lat')), 'lng': round2(loc.get('lng'))},
+        'radius': full.get('radius'),
+        'radius_km': full.get('radius_km'),
+        'radius_read': full.get('radius_read'),
+        'scores': {
+            'overallScore': None,
+            'rating': scores.get('rating'),
+            'powerScore': None,
+            'gasScore': None,
+            'recommendations': [],
+            'details': details,
+            'unavailable': scores.get('unavailable'),
+        },
+        'counts': full.get('counts'),
+        'coverage': full.get('coverage'),
+        'infrastructure': {k: [] for k in (full.get('infrastructure') or {})},
+        'power_infrastructure': {
+            'plants': [],
+            'total_count': power.get('total_count'),
+            'total_capacity_mw': None,
+            'total_generation_mwh': None,
+        },
+        '_gated': True,
+        '_upgrade_cta': _PREVIEW_CTA,
+    }
+    return {'success': True, 'data': data}, list(_PREVIEW_LOCKED), 1
+
 
 # =============================================================================
 # FLASK ROUTES
 # =============================================================================
 
-# Substation detail on /api/v1/energy/site-analysis follows the caller, matching
-# the HIFLD substations feeder (expanded_infrastructure_api.get_substations).
-# Callers that are not privileged get coordinates rounded to 0.1 degree (~11 km),
-# no OWNER or ZIP, and the distance to the nearest substation as a band instead
-# of a figure, in the score details and in the recommendation text. Scores are
-# computed from the full data first, so every caller gets the same scores.
-_SUBSTATION_DISTANCE_TEXT = re.compile(r'Substation (within )?(\d+(?:\.\d+)?)km')
-
-
-def _substation_distance_band(match):
-    km = float(match.group(2))
-    if km < 5:
-        return 'Substation within 5km'
-    if km < 10:
-        return 'Substation within 10km'
-    if km < 20:
-        return 'Substation 10-20km'
-    return 'Substation 20km+'
-
-
-def _coarsen_site_analysis(data):
-    """Reduce a site-analysis payload to public precision, IN PLACE.
-
-    Pass a dict nothing else holds: the fresh result is cached as a copy, and a
-    cached payload is copied before it gets here."""
-    for sub in (data.get('infrastructure') or {}).get('substations') or []:
-        geom = sub.get('geometry') or {}
-        for axis in ('x', 'y'):
-            if geom.get(axis) is not None:
-                geom[axis] = round(geom[axis], 1)
-        attrs = sub.get('attributes') or {}
-        attrs['OWNER'] = None
-        attrs['ZIP'] = None
-    scores = data.get('scores') or {}
-    details = scores.get('details') or {}
-    if 'nearestSubstationKm' in details:
-        details['nearestSubstationKm'] = None
-    if isinstance(scores.get('recommendations'), list):
-        scores['recommendations'] = [
-            _SUBSTATION_DISTANCE_TEXT.sub(_substation_distance_band, r) if isinstance(r, str) else r
-            for r in scores['recommendations']
-        ]
-    data['_gated'] = True
-    data['_upgrade_cta'] = (
-        "Free preview: substation locations are approximate (~11 km). Exact "
-        "coordinates, owner and distance require a free key or sign-in — "
-        "dchub.cloud/pricing")
-    return data
-
-
 def setup_energy_routes(app):
     """Register energy infrastructure routes with Flask app"""
-    
+
     @app.route('/api/v1/energy/site-analysis', methods=['GET'])
     def energy_site_analysis():
         """
         Comprehensive site analysis for energy infrastructure
-        
+
         Query params:
         - lat: Latitude (required)
-        - lng: Longitude (required)  
-        - radius: Search radius in meters (default: 25000)
+        - lng: Longitude (required)
+        - radius: Search radius; 1,000 or more is metres, less is kilometres
+          (default 25 km; see RADIUS_KM_DEFAULT)
+        - radius_km: Search radius in kilometres (wins over radius)
         """
         lat = request.args.get('lat', type=float)
         lng = request.args.get('lng', type=float)
-        radius = request.args.get('radius', 25000, type=int)
-        
-        if not lat or not lng:
+
+        if lat is None or lng is None or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
             return jsonify({'success': False, 'error': 'lat and lng required'}), 400
-        
-        # Check cache
-        cache_key = f"site-analysis:{lat:.4f}:{lng:.4f}:{radius}"
 
-        # Precision follows the caller (see _coarsen_site_analysis). Fails closed.
-        try:
-            from routes.tier_gate import caller_is_privileged
-            _full = caller_is_privileged('IDENTIFIED')
-        except Exception:
-            _full = False
+        from util.plan_tease import lp_gate
+        radius_km, radius_read = resolve_radius_km(request.args)
+        cache_key = f"site-analysis:{lat:.4f}:{lng:.4f}:{radius_km:.3f}"
 
-        cached = get_cached(cache_key)
-        if cached:
-            if not _full:
-                cached = _coarsen_site_analysis(copy.deepcopy(cached))
-            return jsonify({'success': True, 'data': cached, 'cached': True})
-        
-        # Calculate bounds
-        lat_delta = radius / 111000
-        lng_delta = radius / (111000 * abs(cos(radians(lat))))
-        bounds = {
-            'minLat': lat - lat_delta,
-            'maxLat': lat + lat_delta,
-            'minLng': lng - lng_delta,
-            'maxLng': lng + lng_delta
-        }
-        envelope = bounds_to_envelope(bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng'])
-        
-        # Query infrastructure from Neon (replaces external ArcGIS calls)
-        substations = []
-        pipelines = []
-        transmission = []
-        power_plants = []
-        
-        _neon_conn = None
-        try:
-            from main import get_pg_connection, return_pg_connection
-            _neon_conn = get_pg_connection()
-            _nc = _neon_conn.cursor()
-            
-            # Substations from Neon (79K+ HIFLD records)
-            _nc.execute("""
-                SELECT name, city, state, zip, type, status, owner, 
-                       COALESCE(max_volt, 0) as max_volt, 
-                       COALESCE(min_volt, 0) as min_volt, lat, lng
-                FROM substations
-                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
-                LIMIT 500
-            """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
-            for row in _nc.fetchall():
-                substations.append({
-                    'geometry': {'x': row[10], 'y': row[9]},
-                    'attributes': {
-                        'NAME': row[0] or 'Unknown', 'CITY': row[1], 'STATE': row[2],
-                        'ZIP': row[3], 'TYPE': row[4], 'STATUS': row[5],
-                        'OWNER': row[6], 'MAX_VOLT': row[7] or 0, 'MIN_VOLT': row[8] or 0
-                    }
-                })
-        except Exception as e:
-            print(f"Neon substation query error: {e}")
-        
-        # Gas pipelines from Neon (37K+ records)
-        try:
-            if _neon_conn:
-                _nc.execute("""
-                    SELECT name, operator, pipeline_type, diameter_inches, status, lat, lng
-                    FROM gas_pipelines
-                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
-                      AND status = 'active'
-                    LIMIT 500
-                """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
-                for row in _nc.fetchall():
-                    pipelines.append({
-                        'geometry': {'x': row[6], 'y': row[5]},
-                        'attributes': {
-                            'typepipe': row[2] or 'gas', 'operator': row[1],
-                            'status': row[4], 'COMMODITY': 'gas',
-                            'diameter': row[3] or 0
-                        }
-                    })
-        except Exception as e:
-            print(f"Neon pipeline query error: {e}")
-        
-        # Transmission lines from Neon (infrastructure_layers)
-        # Schema guard: the production infrastructure_layers table (kmz_processor.py)
-        # has NO latitude/longitude/operator/metadata columns — geometry lives in the
-        # `coordinates` JSONB and attrs in `attributes` JSONB. Only run the spatial
-        # SELECT when the referenced flat columns actually exist; otherwise degrade to
-        # an empty transmission list rather than raising UndefinedColumn (which would
-        # also abort the shared transaction used by the power-plant query below).
-        try:
-            if _neon_conn:
-                _nc.execute("""
-                    SELECT COUNT(*) FROM information_schema.columns
-                    WHERE table_name = 'infrastructure_layers'
-                      AND column_name IN ('latitude', 'longitude', 'operator', 'metadata')
-                """)
-                _infra_cols_present = (_nc.fetchone() or [0])[0] == 4
-                if _infra_cols_present:
-                    _nc.execute("""
-                        SELECT name, operator, latitude, longitude,
-                               CAST(NULLIF(metadata->>'voltage_kv', '') AS NUMERIC) as voltage
-                        FROM infrastructure_layers
-                        WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
-                          AND LOWER(layer_name) IN ('transmission', 'transmission_line', 'electric_power_transmission_lines', 'transmission lines')
-                        LIMIT 200
-                    """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
-                    for row in _nc.fetchall():
-                        transmission.append({
-                            'geometry': {'x': row[3], 'y': row[2]},
-                            'attributes': {
-                                'VOLTAGE': row[4] or 0, 'OWNER': row[1] or 'Unknown',
-                                'STATUS': 'In Service'
-                            }
-                        })
-        except Exception as e:
-            if _neon_conn:
-                try: _neon_conn.rollback()
-                except: pass
-            print(f"Neon transmission query error: {e}")
-        
-        # Power plants from Neon (discovered_power_plants — 6,900+ records)
-        # Schema guard: the canonical table (energy_auto_discovery.py / _pg.py) defines
-        # total_mw / latitude / longitude (NO capacity_mw / lat / lng / fuel_type /
-        # generation_mwh / operator). A separate OSM loader instead writes capacity_mw /
-        # lat / lng. Resolve the real column names at runtime from information_schema and
-        # alias them to the names the row-mapping below expects, so the query runs on
-        # whichever schema is live and missing columns degrade to NULL (never
-        # UndefinedColumn). Filters, LIMIT, and the capacity-factor math are unchanged.
-        try:
-            if _neon_conn:
-                _nc.execute("""
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_name = 'discovered_power_plants'
-                """)
-                _pp_cols = {r[0] for r in _nc.fetchall()}
-                # Map each logical field -> first matching real column, else SQL NULL.
-                def _pp_pick(candidates, default='NULL'):
-                    for c in candidates:
-                        if c in _pp_cols:
-                            return c
-                    return default
-                _pp_lat = _pp_pick(['latitude', 'lat'])
-                _pp_lng = _pp_pick(['longitude', 'lng'])
-                _pp_cap = _pp_pick(['total_mw', 'capacity_mw'])
-                _pp_fuel = _pp_pick(['fuel_type', 'primary_source'])
-                _pp_gen = _pp_pick(['generation_mwh'])
-                _pp_oper = _pp_pick(['operator'])
-                _pp_status = _pp_pick(['status'])
-                _pp_source = _pp_pick(['source'])
-                # Only apply the spatial bbox filter if real lat/lng columns exist.
-                if _pp_lat != 'NULL' and _pp_lng != 'NULL':
-                    _pp_where = f"WHERE {_pp_lat} BETWEEN %s AND %s AND {_pp_lng} BETWEEN %s AND %s"
-                    _pp_params = (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng'])
-                else:
-                    _pp_where = ""
-                    _pp_params = ()
-                _nc.execute(f"""
-                    SELECT name, {_pp_fuel}, {_pp_cap}, {_pp_gen},
-                           {_pp_oper}, {_pp_status}, {_pp_lat}, {_pp_lng}, {_pp_source}
-                    FROM discovered_power_plants
-                    {_pp_where}
-                    LIMIT 100
-                """, _pp_params)
-                for row in _nc.fetchall():
-                    cap_mw = row[2] or 0
-                    gen_mwh = row[3] or 0
-                    capacity_factor = None
-                    if gen_mwh > 0 and cap_mw > 0:
-                        capacity_factor = round(min(100, (gen_mwh / (cap_mw * 8760)) * 100), 1)
-                    power_plants.append({
-                        'geometry': {'x': row[7], 'y': row[6]},
-                        'attributes': {
-                            'NAME': row[0] or 'Unknown',
-                            'TOTAL_MW': cap_mw,
-                            'PRIM_FUEL': row[1] or 'Unknown',
-                            'STATUS': row[5] or 'Operating',
-                            'UTILITY_NA': row[4] or 'Unknown',
-                            'GENERATION_MWH': gen_mwh,
-                            'CAPACITY_FACTOR': capacity_factor,
-                            'SOURCE': row[8] or 'EIA'
-                        }
-                    })
-        except Exception as e:
-            print(f"Neon power plant query error: {e}")
-        
-        # Close Neon connection
-        try:
-            if _neon_conn:
-                _nc.close()
-                return_pg_connection(_neon_conn)
-        except Exception:
-            if _neon_conn:
-                try: _neon_conn.close()
-                except: pass
-        
-        # Calculate score
-        score_data = calculate_infrastructure_score(lat, lng, substations, pipelines, transmission, power_plants)
-        
-        # Format plants for power_infrastructure (flat structure with generation data)
-        formatted_plants = []
-        total_capacity_mw = 0
-        total_generation_mwh = 0
-        for p in power_plants[:20]:
-            attr = p.get('attributes', {})
-            cap = attr.get('TOTAL_MW', 0) or 0
-            gen = attr.get('GENERATION_MWH', 0) or 0
-            cf = attr.get('CAPACITY_FACTOR')
-            total_capacity_mw += cap
-            total_generation_mwh += gen
-            formatted_plants.append({
-                'name': attr.get('NAME', 'Unknown'),
-                'fuel_type': attr.get('PRIM_FUEL', 'Unknown'),
-                'capacity_mw': cap,
-                'generation_mwh': gen,
-                'capacity_factor': cf,
-                'status': attr.get('STATUS', 'Operating'),
-                'operator': attr.get('UTILITY_NA', 'Unknown'),
-                'source': attr.get('SOURCE', 'HIFLD')
-            })
-        
-        result = {
-            'location': {'lat': lat, 'lng': lng},
-            'radius': radius,
-            'scores': score_data,
-            'counts': {
-                'substations': len(substations),
-                'pipelines': len(pipelines),
-                'transmissionLines': len(transmission),
-                'powerPlants': len(power_plants)
-            },
-            'infrastructure': {
-                'substations': substations[:20],  # Limit for response size
-                'pipelines': pipelines[:20],
-                'transmissionLines': transmission[:10],
-                'powerPlants': power_plants[:10]
-            },
-            'power_infrastructure': {
-                'plants': formatted_plants,
-                'total_count': len(power_plants),
-                'total_capacity_mw': round(total_capacity_mw, 1),
-                'total_generation_mwh': round(total_generation_mwh, 1)
-            }
-        }
-        
-        set_cache(cache_key, copy.deepcopy(result))
-        if not _full:
-            _coarsen_site_analysis(result)
-        return jsonify({'success': True, 'data': result})
+        def _analysis():
+            """(result, cached). A result with an unread layer is not cached."""
+            cached = get_cached(cache_key)
+            if cached:
+                return copy.deepcopy(cached), True
+            result = build_site_analysis(lat, lng, radius_km, radius_read)
+            if not result['scores']['unavailable']:
+                set_cache(cache_key, copy.deepcopy(result))
+            return result, False
+
+        def _full():
+            result, cached = _analysis()
+            body = {'success': True, 'data': result}
+            if cached:
+                body['cached'] = True
+            return jsonify(body)
+
+        def _tease():
+            return site_analysis_preview(_analysis()[0])
+
+        # A keyless caller gets the wall before _full or _tease runs, so nothing
+        # is read for it.
+        return lp_gate(_full, _tease)
     
     # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
     # This route passed its bounding box to the DOT natural-gas pipelines layer
