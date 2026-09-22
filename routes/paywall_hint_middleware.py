@@ -477,6 +477,15 @@ def _personal_hit_pitch(ip: str, ua: str, path: str, status: int) -> str:
               f"{_canon_price_display('starter')} Starter covers everything else.").strip()
 
 
+def _partner_of_request():
+    """rate_limiter's own classification: keyless, from a declared partner egress."""
+    try:
+        from rate_limiter import partner_of_request
+        return partner_of_request()
+    except Exception:
+        return None
+
+
 def register_paywall_hint_middleware(app):
     """Attach the after_request enricher. Idempotent."""
     if getattr(app, "_paywall_hint_attached", False):
@@ -513,6 +522,15 @@ def register_paywall_hint_middleware(app):
 
             # Only enrich 401/403/429
             if response.status_code not in (401, 403, 429):
+                return response
+
+            # A declared partner's shared keyless bucket (rate_limiter's
+            # 'partner' tier): its 429 already states the way out, and the
+            # partner relays error bodies verbatim to its customers' agents.
+            # The hint instructs the reader and quotes prices, so it is not
+            # added there, and no variant was shown, so no A/B event is logged.
+            # Every other 429 is enriched exactly as before.
+            if response.status_code == 429 and _partner_of_request():
                 return response
 
             # Don't enrich responses that aren't JSON

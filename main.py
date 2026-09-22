@@ -46,7 +46,7 @@ from routes.outreach import outreach_bp
 from dotenv import load_dotenv
 from internal_auth import (is_valid_internal_key, get_internal_key_for_client,
                            require_internal_or_admin)
-from partner_egress import partner_for_ip
+from partner_egress import partner_for_ip, partner_rate_limited
 from csp_report import csp_report_bp
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
@@ -13543,6 +13543,14 @@ def enforce_tier_rate_limits():
         recent_hour = len(_tier_requests[client_key])
 
         if recent_minute >= limits['per_minute']:
+            # The partner bucket is shared by every keyless customer of the
+            # partner, so "upgrade your plan" is the wrong ask there: a free key
+            # already gets its own bucket (partner_egress.partner_rate_limited).
+            # Every other tier's 429 below is unchanged.
+            if tier == 'partner':
+                return jsonify(partner_rate_limited(
+                    tier, 'minute', limits['per_minute'],
+                    limits['per_minute'], limits['per_hour'], 60)), 429
             return jsonify({
                 'success': False,
                 'error': 'rate_limited',
@@ -13554,6 +13562,10 @@ def enforce_tier_rate_limits():
             }), 429
 
         if recent_hour >= limits['per_hour']:
+            if tier == 'partner':
+                return jsonify(partner_rate_limited(
+                    tier, 'hour', limits['per_hour'],
+                    limits['per_minute'], limits['per_hour'], 3600)), 429
             return jsonify({
                 'success': False,
                 'error': 'rate_limited',

@@ -629,6 +629,17 @@ def build_paywall_response(
     except Exception:
         pass  # paywall still works without email_capture
 
+    # Partner attribution (2026-09-21): for a keyless caller from a declared
+    # partner egress, record this wall's pair code to the partner and put it on
+    # the /pricing links as ?ref=. The checkout links above already carry it as
+    # client_reference_id. Every other caller's wall is unchanged.
+    try:
+        from flask import request as _rq3
+        from routes.partner_attribution import attribute_wall
+        attribute_wall(base, _pair_code, _rq3.path)
+    except Exception:
+        pass
+
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data
     else:
