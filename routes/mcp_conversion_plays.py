@@ -619,6 +619,46 @@ def get_credit_balance(api_key, mcp_session_id):
         except Exception: pass
 
 
+def credits_paid_before(api_key, mcp_session_id, cutover):
+    """Unspent, unexpired credits on grants PAID before `cutover` (a timezone-
+       aware datetime), matched the way get_credit_status matches: the durable
+       key's hash in either stored form, or the buying MCP session.
+
+       2026-09-22: Land & Power became Pro-only, and a pack no longer opens it.
+       /pricing had sold the packs already bought as full-depth credits, so
+       those keep Land & Power until they are spent (util/plan_tease.py
+       lp_grandfathered). A pack paid after the cutover does not. Fails closed
+       to 0: a ledger error is not a grandfathered pack."""
+    h = _hash_key(api_key) if api_key else None
+    forms = _key_hash_forms(api_key) if api_key else None
+    sid = (mcp_session_id or "").strip()[:200] or None
+    if (not h and not sid) or cutover is None:
+        return 0
+    c = _conn()
+    if c is None:
+        return 0
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(credits_remaining), 0)
+                FROM mcp_topups
+                WHERE paid_at IS NOT NULL
+                  AND paid_at < %s
+                  AND credits_remaining > 0
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                  AND ((%s IS NOT NULL AND api_key_hash = ANY(%s))
+                       OR (%s IS NOT NULL AND mcp_session_id = %s));
+            """, (cutover, h, forms, sid, sid))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] else 0
+    except Exception as e:
+        print(f"[mcp_conversion_plays] credits_paid_before: {e}", file=sys.stderr)
+        return 0
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def get_credit_status(api_key, mcp_session_id):
     """Like get_credit_balance but ALSO returns had_pack — whether the caller EVER
        bought a pack (even if now depleted/expired). Lets the gateway show a 'top up

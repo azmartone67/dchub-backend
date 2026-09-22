@@ -406,14 +406,14 @@ def _build_analysis(lat: float, lon: float, state: str,
     return result
 
 
-# ── Score / Evaluate are Pro (2026-09-21, frontend#1536) ─────────────────────
+# ── Land & Power details are Pro (owner, 2026-09-22) ────────────────────────
 # The feasibility score and the power, land, water and tax figures behind it
-# are the Land & Power product. Pro opens them, and so does one $10-pack credit
-# on any valid key; the MCP server (X-Internal-Key) is unchanged and applies its
-# own masks. A keyless or free caller gets HTTP 200 with the verdict bands, the
-# counts and the names, every figure null, coordinates at two decimals
-# (util/plan_tease.py).
-_SCORE_PLAN = "pro"
+# are the Land & Power product, and only Pro opens them (util/plan_tease.py
+# lp_gate). A keyless caller gets the wall and no data. A key or session below
+# Pro (free, Developer, a $10 pack) gets HTTP 200 with the verdict bands, the
+# counts and the names, every figure null and coordinates at two decimals; a
+# pack paid before the cutover keeps the full answer until it is spent. The
+# MCP server (X-Internal-Key) is unchanged and applies its own masks.
 
 _ANALYSIS_LOCKED = [
     "feasibility_score",
@@ -442,7 +442,7 @@ def _tease_narrative(state, verdict, dcpi_verdict):
     if dcpi_verdict:
         bits.append(f"DCPI verdict for the state: {dcpi_verdict}.")
     bits.append("The feasibility score, its drivers and the power, land, water and "
-                "tax figures behind it come with Pro or a credit pack.")
+                "tax figures behind it come with Pro.")
     return " ".join(bits)
 
 
@@ -528,6 +528,11 @@ def site_analysis():
     capacity_mw = max(1.0, _safe_float(request.args.get("capacity_mw"), 100.0))
     radius_km   = max(5.0, min(100.0, _safe_float(request.args.get("radius_km"), 25.0)))
 
+    from util.plan_tease import lp_early_wall
+    _wall = lp_early_wall()
+    if _wall is not None:
+        return _wall
+
     def _full():
         out, state_ = _analysis(lat, lon, state, capacity_mw, radius_km)
         resp = jsonify({**out, "_cache": state_})
@@ -540,8 +545,8 @@ def site_analysis():
         return (_tease_analysis(out, lat, lon, state, capacity_mw, radius_km),
                 _ANALYSIS_LOCKED, 1)
 
-    from util.plan_tease import gate_or_tease
-    return gate_or_tease(_SCORE_PLAN, _full, _tease)
+    from util.plan_tease import lp_gate
+    return lp_gate(_full, _tease)
 
 
 @land_power_mcp_bp.route("/api/v1/land-power/quick-score", methods=["GET", "OPTIONS"])
@@ -558,6 +563,11 @@ def quick_score():
     if lat is None or lon is None:
         return jsonify(error="lat and lon required"), 400
     capacity_mw = max(1.0, _safe_float(request.args.get("capacity_mw"), 100.0))
+
+    from util.plan_tease import lp_early_wall
+    _wall = lp_early_wall()
+    if _wall is not None:
+        return _wall
 
     def _full():
         out = _build_analysis(lat, lon, state, capacity_mw, radius_km=25.0)
@@ -580,36 +590,33 @@ def quick_score():
             "narrative":         _tease_narrative(state, out.get("verdict"), dcpi_verdict),
         }, ["feasibility_score", "narrative (figures)"], 1)
 
-    from util.plan_tease import gate_or_tease
-    return gate_or_tease(_SCORE_PLAN, _full, _tease)
+    from util.plan_tease import lp_gate
+    return lp_gate(_full, _tease)
 
 
-# ── The Land & Power map's upgrade modal (2026-09-21) ───────────────────────
-# The map is a static page and cannot sign a /go/c link, so it asks here. Three
-# rungs, each saying what it opens on the map: the $10 pack (one Score or
-# Evaluate per credit), Developer (every layer, not the three-layer preview),
-# Pro (Score and Evaluate without counting, plus every layer). Prices come from
-# tier_registry and the pack constants. A caller presenting a valid key gets
-# links bound to that key's hash, so the purchase lands on the key the map is
-# using; anyone else gets caller-independent links.
+# ── The Land & Power map's upgrade modal and wall (2026-09-22) ──────────────
+# The map is a static page and cannot sign a /go/c link, so it asks here. One
+# rung: Pro, the only plan that opens Land & Power. Its price comes from
+# tier_registry. A caller presenting a valid key gets a link bound to that
+# key's hash, so the purchase lands on the key the map is using; anyone else
+# gets a caller-independent link. `access` is what the Land & Power routes
+# give this caller ('full', 'preview' or 'wall', util/plan_tease.lp_access), so
+# the page draws what the server will serve.
 @land_power_mcp_bp.route("/api/v1/land-power/upgrade-ladder", methods=["GET", "OPTIONS"])
 def upgrade_ladder():
     if request.method == "OPTIONS":
         return ("", 204)
     from util import plan_tease as pt
     key = pt.presented_key()
-    pack_ref, sub_ref = pt.key_refs(key)
-    opens = {"pack": "score_evaluate_per_credit", "developer": "all_layers", "pro": "all"}
-    rungs = [
-        pt._pack_rung(pack_ref, "each Score or Evaluate uses one"),
-        pt._plan_rung("developer", sub_ref, "— every map layer, not the three-layer preview"),
-        pt._plan_rung("pro", sub_ref, "— unlimited Score and Evaluate, plus every map layer"),
-    ]
-    rungs = [r for r in rungs if r]
+    lad = pt.lp_ladder(key)
+    rungs = lad.get("upgrade_options") or []
     for r in rungs:
-        r["opens"] = opens[r["plan"]]
-    resp = jsonify({"success": True, "rungs": rungs, "key_bound": bool(pack_ref)})
-    resp.headers["Cache-Control"] = pt.NO_STORE if key else pt.TEASE_CACHE
+        r["opens"] = "all"
+    resp = jsonify({"success": True, "rungs": rungs, "key_bound": lad["key_bound"],
+                    "access": pt.lp_access(), "required_plan": pt.LP_PLAN,
+                    "free_key": pt.lp_free_key()})
+    resp.headers["Cache-Control"] = (pt.TEASE_CACHE if pt.lp_anonymous()
+                                     and not pt._auto_issued_key() else pt.NO_STORE)
     return resp, 200
 
 

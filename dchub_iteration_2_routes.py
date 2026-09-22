@@ -320,6 +320,27 @@ def facility_infrastructure(facility_id):
 # ============================================================
 ALL_LAYERS = {'facilities', 'substations', 'transmission', 'gas', 'fiber', 'pipeline'}
 
+def _snapshot_preview(payload):
+    """Below Pro (owner, 2026-09-22; util/plan_tease.py): the facilities layer
+    only, at most three rows with names and statuses, coordinates at two
+    decimals and capacity null, plus every layer's count. The infrastructure
+    layers are Land & Power details and come with Pro."""
+    from util.plan_tease import TEASE_ROWS, round2
+    layers = payload.get('layers') or {}
+    facilities = [dict(f, lat=round2(f.get('lat')), lon=round2(f.get('lon')),
+                       capacity_mw=None)
+                  for f in (layers.get('facilities') or [])[:TEASE_ROWS]]
+    body = {
+        'bbox': payload.get('bbox'),
+        'layers': {'facilities': facilities} if 'facilities' in layers else {},
+        'counts': payload.get('counts'),
+    }
+    locked = ['layers.' + k for k in sorted(layers) if k != 'facilities']
+    if 'facilities' in layers:
+        locked += ['layers.facilities[%d:]' % TEASE_ROWS, 'layers.facilities[].capacity_mw']
+    return body, locked, sum((payload.get('counts') or {}).values())
+
+
 def land_power_snapshot():
     bbox = request.args.get('bbox', '')
     try:
@@ -488,6 +509,7 @@ def land_power_snapshot():
 # Registration
 # ============================================================
 def register_iteration_2_routes(app):
+    from util.plan_tease import lp_gated_view
     app.add_url_rule(
         '/api/v1/transactions/ingest',
         endpoint='it2_transactions_ingest',
@@ -503,7 +525,9 @@ def register_iteration_2_routes(app):
     app.add_url_rule(
         '/api/v1/land-power/snapshot',
         endpoint='it2_land_power_snapshot',
-        view_func=land_power_snapshot,
+        # Land & Power details are Pro (util/plan_tease.py): the wall for a
+        # keyless caller before any query runs, the preview below Pro.
+        view_func=lp_gated_view(_snapshot_preview)(land_power_snapshot),
         methods=['GET'],
     )
     logger.info("iteration2 v2: registered transactions/ingest, facilities/<id>/infrastructure, land-power/snapshot")

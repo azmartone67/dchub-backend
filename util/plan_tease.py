@@ -29,11 +29,12 @@ binds a purchase to. It is never the key itself.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import hmac
 import os
 
-from flask import jsonify, make_response, request
+from flask import g, jsonify, make_response, request
 
 NO_STORE = "private, no-store, max-age=0"
 TEASE_CACHE = "public, max-age=60"
@@ -242,3 +243,241 @@ def gate_or_tease(min_plan: str, serve_full, serve_tease, serve_unchanged=None):
     if resp.status_code == 200:
         resp.headers["Cache-Control"] = NO_STORE
     return resp
+
+
+# ── Land & Power: the details are Pro (owner, 2026-09-22) ───────────────────
+# Land & Power is sold as Pro, and nothing below Pro opens its details. Every
+# Land & Power route answers through lp_gate():
+#
+#   * X-Internal-Key (the MCP server, which masks per its own caller) and the
+#     X-Admin-Key radar: `serve_unchanged`, exactly as before.
+#   * no key and no session: lp_wall(). No layer, cell, grade or score: only
+#     what opens the details (Pro, through a signed checkout link) and how to
+#     get the preview (a free key). An AI agent whose only credential is the
+#     trial key main.auto_issue_key_for_ai_agents injected counts as keyless
+#     here, which reverses the 2026-09-22 AI-agent preview for these routes.
+#   * a key or session below Pro (free, trial, Developer, a $10 pack): the
+#     preview, the route's `serve_tease`, whose links sell Pro only. A pack
+#     no longer opens these routes. The one exception is lp_grandfathered():
+#     a key still spending a pack PAID before LP_PACK_CUTOVER keeps the full
+#     answer at one credit each, until those credits run out.
+#   * Pro and above (founding, team, enterprise, research_seed, admin): the
+#     full answer, private no-store.
+#
+# A session whose access token lapsed still carries the 90-day refresh cookie.
+# It gets the preview, not the wall, because the map renews the token when it
+# sees `_gated` and asks again (frontend#1556).
+LP_PLAN = "pro"
+LP_PACK_CUTOVER = datetime.datetime(2026, 9, 22, 6, 0, tzinfo=datetime.timezone.utc)
+LP_CLAIM_URL = "https://dchub.cloud/api/v1/keys/claim"
+LP_MAP_URL = "https://dchub.cloud/land-power-map"
+_LP_SESSION_COOKIES = _CREDENTIAL_COOKIES + ("dchub_refresh",)
+_PACK_TIER = "pack"   # util.rest_pack_access.PACK_TIER, set on g before a pack answer
+
+
+def lp_anonymous() -> bool:
+    """No key the caller sent, no Bearer token and no session cookie."""
+    if presented_key() and not _injected_key_only():
+        return False
+    if (request.headers.get("Authorization", "") or "").startswith("Bearer "):
+        return False
+    return not any(request.cookies.get(c) for c in _LP_SESSION_COOKIES)
+
+
+def lp_grandfathered(api_key: str) -> bool:
+    """A key still spending credits from a pack paid before LP_PACK_CUTOVER."""
+    if not api_key:
+        return False
+    try:
+        from routes.mcp_conversion_plays import credits_paid_before
+        return credits_paid_before(api_key, None, LP_PACK_CUTOVER) > 0
+    except Exception:  # noqa: BLE001 — fails closed: a ledger error opens nothing
+        return False
+
+
+def _lp_bindable_key(api_key: str) -> str:
+    """The key a Pro checkout may be bound to. The injected trial key is not one
+    the caller chose, and a dch_trial_ key has no row the webhook's k- branch
+    can stamp, so neither binds."""
+    if not api_key or api_key == _auto_issued_key() or api_key.startswith("dch_trial_"):
+        return ""
+    return api_key
+
+
+def lp_ladder(api_key: str = "", ref: str = "") -> dict:
+    """upgrade_url + upgrade_options for Land & Power: Pro, and nothing else.
+    `ref` is used only when there is no key to bind the checkout to."""
+    _, sub_ref = key_refs(_lp_bindable_key(api_key))
+    rung = _plan_rung("pro", sub_ref or ref,
+                      "opens every Land & Power layer, the score and the evaluation")
+    out = {"key_bound": bool(sub_ref)}
+    if rung:
+        out["upgrade_url"] = rung["url"]
+        out["upgrade_options"] = [rung]
+    return out
+
+
+def lp_free_key() -> dict:
+    return {"url": LP_CLAIM_URL, "method": "POST",
+            "opens": "the preview: three map layers, grades and verdicts, "
+                     "no scores or figures"}
+
+
+def lp_wall():
+    """What a keyless caller gets from a Land & Power route: no data."""
+    body = {
+        "success": False,
+        "error": "plan_required",
+        "_gated": True,
+        "_wall": True,
+        "_required_plan": LP_PLAN,
+        "required_plan": LP_PLAN,
+        "message": ("Land & Power details are Pro. Without a key this endpoint "
+                    "returns no layers, cells, grades or scores. A free key opens "
+                    "the preview: grades and verdicts, no scores or figures."),
+        "free_key": lp_free_key(),
+        "map_url": LP_MAP_URL,
+    }
+    # A keyless caller from a declared partner egress gets a checkout ref
+    # recorded to the partner (routes/partner_attribution.py), as every REST
+    # wall does; everyone else gets caller-independent links.
+    try:
+        from routes.partner_attribution import offer_ref_for_request
+        ref = offer_ref_for_request(request.path)
+    except Exception:  # noqa: BLE001 — attribution never costs the wall
+        ref = ""
+    body.update(lp_ladder("", ref))
+    resp = make_response(jsonify(body), 403)
+    # An injected trial key rides this response's headers, and a partner ref is
+    # this caller's own, so neither body is ever shared.
+    resp.headers["Cache-Control"] = NO_STORE if (_auto_issued_key() or ref) else TEASE_CACHE
+    return resp
+
+
+def lp_preview(serve_tease, api_key: str = ""):
+    body, locked, total = serve_tease()
+    body.update({
+        "_gated": True,
+        "_preview_only": True,
+        "_locked_fields": list(locked),
+        "_total_available": int(total or 0),
+        "_required_plan": LP_PLAN,
+    })
+    body.update(lp_ladder(api_key))
+    resp = make_response(jsonify(body), 200)
+    resp.headers["Cache-Control"] = NO_STORE
+    return resp
+
+
+def _lp_resolve(serve_full, probe=None):
+    """require_plan(LP_PLAN)'s answer for a credentialed caller, with a pack
+    below Pro sent to the preview unless it is grandfathered.
+
+    pack_opens=True keeps require_plan's refusals the light plan_or_pack_wall
+    (the default builds the conversion paywall, which reads and writes the
+    funnel tables on every call). Its pack path hands a pack holder to
+    serve_below_plan, which marks g.user_tier 'pack', calls `_entitled` and
+    burns one credit only if that answers 200. So an ungrandfathered pack is
+    refused here at no cost to its credits.
+
+    `probe` (a dict) asks without answering: a pack holder is recorded in
+    probe["pack"] and refused, so nothing is burned."""
+    key = presented_key()
+
+    def _refused():
+        return jsonify({"success": False, "error": "plan_upgrade_required"}), 403
+
+    def _entitled():
+        tier = getattr(g, "user_tier", None)
+        if tier is None:
+            # require_plan let the call through without resolving a caller (the
+            # allowance it keeps for the site's own map layers). That is not Pro.
+            return _refused()
+        if tier == _PACK_TIER:
+            if probe is not None:
+                probe["pack"] = True
+            if probe is not None or not lp_grandfathered(key):
+                return _refused()
+        return serve_full()
+
+    from api_tier_gating import require_plan
+    return make_response(require_plan(LP_PLAN, pack_opens=True)(_entitled)())
+
+
+def lp_early_wall():
+    """lp_wall() for a keyless caller before a route does any work, else None."""
+    if _is_unchanged_caller() or not lp_anonymous():
+        return None
+    return lp_wall()
+
+
+def lp_gate(serve_full, serve_tease, serve_unchanged=None):
+    """Answer a Land & Power route.
+
+    serve_full()      the full answer, for Pro and above.
+    serve_tease()     (body dict, locked field names, total rows available):
+                      the preview for a key or session below Pro.
+    serve_unchanged() what internal and admin callers got before; defaults to
+                      serve_full.
+    """
+    if _is_unchanged_caller():
+        return (serve_unchanged or serve_full)()
+    if lp_anonymous():
+        return lp_wall()
+    resp = _lp_resolve(serve_full)
+    if resp.status_code == 403:
+        body = resp.get_json(silent=True) or {}
+        if body.get("error") in _REFUSALS:
+            return lp_preview(serve_tease, presented_key())
+    if resp.status_code == 200:
+        resp.headers["Cache-Control"] = NO_STORE
+    return resp
+
+
+def lp_gated_view(tease):
+    """A view decorator for a Land & Power route whose handler builds the full
+    answer itself: lp_early_wall() before the handler runs, then lp_gate() on
+    its 200. `tease(body)` returns (preview body, locked fields, total rows)
+    from the full JSON body. Any other status (400, 404, 5xx) carries no data
+    and passes through as it is.
+
+    The handler stays byte-for-byte the full answer, so the harnesses that run
+    a handler's own body (and the response-contract extractor) still read it."""
+    import functools
+
+    def deco(view):
+        @functools.wraps(view)
+        def wrapped(*args, **kwargs):
+            wall = lp_early_wall()
+            if wall is not None:
+                return wall
+            resp = make_response(view(*args, **kwargs))
+            if resp.status_code != 200:
+                return resp
+            body = resp.get_json(silent=True)
+            if not isinstance(body, dict):
+                # Not a JSON object: nothing the preview could be built from,
+                # so below Pro it is refused rather than passed through.
+                body = {}
+            return lp_gate(lambda: resp, lambda: tease(body))
+        return wrapped
+    return deco
+
+
+def lp_access() -> str:
+    """'full', 'preview' or 'wall': what lp_gate would give this caller, for a
+    page deciding what to draw. Spends no credit."""
+    if _is_unchanged_caller():
+        return "full"
+    if lp_anonymous():
+        return "wall"
+    probe = {"pack": False}
+    resp = _lp_resolve(lambda: (jsonify({"ok": True}), 200), probe)
+    if resp.status_code == 200:
+        return "full"
+    if probe["pack"] and lp_grandfathered(presented_key()):
+        return "full"
+    body = resp.get_json(silent=True) or {}
+    if resp.status_code == 403 and body.get("error") in _REFUSALS:
+        return "preview"
+    return "wall"

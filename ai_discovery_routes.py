@@ -89,7 +89,9 @@ def _llms_paid_heading() -> str:
 # of the spec's own sentence (tests/test_doors_live_vs_stale.py).
 _KEYED_OPENS = {
     "/api/v1/pipeline": "a key that opens it: a trial key or any paid plan",
-    "/api/site-score": "a key on the Developer plan or above",
+    # ★2026-09-22 (owner): the site score is Land & Power, and Land & Power
+    # details are Pro. A key below Pro gets the verdict band only.
+    "/api/site-score": "a key on the Pro plan or above",
     "/api/grid/fuel-mix": "a key on the Developer plan or above",
     "/api/energy/prices/{state}": "a key on the Developer plan or above",
 }
@@ -724,7 +726,7 @@ def register_discovery_routes(app):
                             "Composite 0-100 suitability score for data center development "
                             "at one coordinate, with the component sub-scores behind it. "
                             "A first-pass screen for a specific location, not a substitute "
-                            "for the per-layer power, fiber and risk calls. Requires an X-API-Key header for a key on the Developer plan or above. The free key from /api/v1/keys/claim does not open it."
+                            "for the per-layer power, fiber and risk calls. Requires an X-API-Key header for a key on the Pro plan or above. The free key from /api/v1/keys/claim does not open it: a key below Pro gets the preview, the verdict band and the counts with every score null."
                         ),
                         "parameters": [
                             {"name": "lat", "in": "query", "schema": {"type": "number"}, "required": True},

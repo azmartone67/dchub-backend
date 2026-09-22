@@ -1760,6 +1760,49 @@ def run_land_power_sync(get_db, full_refresh=False):
 # API ROUTE REGISTRATION (add to main.py)
 # ─────────────────────────────────────────────────────────────
 
+
+# ── Land & Power previews (owner, 2026-09-22) ───────────────────────────────
+# What a key or session below Pro gets from the market-profile routes: names,
+# states and counts, at most three rows, every figure null and coordinates at
+# two decimals. Pro gets the stored profile as it is.
+_PROFILE_FIGURES = ("avg_voltage_kv", "transmission_miles", "power_plants",
+                    "total_mw", "solar_mw", "wind_mw", "natural_gas_mw",
+                    "nuclear_mw", "renewable_pct", "power_readiness_score")
+
+
+def _tease_market_profiles(payload):
+    from util.plan_tease import TEASE_ROWS
+    rows = []
+    for m in (payload.get("markets") or [])[:TEASE_ROWS]:
+        row = dict(m)
+        for k in _PROFILE_FIGURES:
+            row[k] = None
+        rows.append(row)
+    body = {"markets": rows, "count": len(rows),
+            "unmeasured": payload.get("unmeasured"), "basis": payload.get("basis")}
+    locked = ["markets[%d:]" % TEASE_ROWS] + ["markets[]." + k for k in _PROFILE_FIGURES]
+    return body, locked, int(payload.get("count") or 0)
+
+
+def _tease_market_profile(payload):
+    from util.plan_tease import TEASE_ROWS, round2
+    plants = [{"name": p.get("name"), "operator": p.get("operator"), "fuel": p.get("fuel"),
+               "mw": None, "lat": round2(p.get("lat")), "lon": round2(p.get("lon"))}
+              for p in (payload.get("large_power_plants") or [])[:TEASE_ROWS]]
+    subs = [{"name": x.get("name"), "voltage_kv": None, "max_voltage_kv": None,
+             "lat": round2(x.get("lat")), "lon": round2(x.get("lon"))}
+            for x in (payload.get("high_voltage_substations") or [])[:TEASE_ROWS]]
+    body = {"market": payload.get("market"), "state": payload.get("state"),
+            "large_power_plants": plants, "high_voltage_substations": subs,
+            "basis": payload.get("basis")}
+    locked = ["large_power_plants[].mw", "high_voltage_substations[].voltage_kv",
+              "high_voltage_substations[].max_voltage_kv",
+              "large_power_plants[%d:]" % TEASE_ROWS,
+              "high_voltage_substations[%d:]" % TEASE_ROWS]
+    total = (len(payload.get("large_power_plants") or [])
+             + len(payload.get("high_voltage_substations") or []))
+    return body, locked, total
+
 def register_land_power_routes(app, get_db, require_admin):
     """
     Register Flask routes for land & power data.
@@ -2143,7 +2186,13 @@ def register_land_power_routes(app, get_db, require_admin):
             if conn:
                 conn.close()
 
+    # Land & Power details are Pro (owner, 2026-09-22; util/plan_tease.py): a
+    # keyless caller gets the wall before any query runs, a key or session
+    # below Pro the preview built from the full answer below.
+    from util.plan_tease import lp_gated_view
+
     @app.route('/api/land-power/market-profiles')
+    @lp_gated_view(_tease_market_profiles)
     def market_profiles():
         """Get all market power profiles."""
         conn = None
@@ -2229,6 +2278,7 @@ def register_land_power_routes(app, get_db, require_admin):
                 conn.close()
 
     @app.route('/api/land-power/market-profile/<market>')
+    @lp_gated_view(_tease_market_profile)
     def market_profile_detail(market):
         """Get detailed power profile for one market."""
         conn = None

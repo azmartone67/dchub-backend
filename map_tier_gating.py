@@ -536,123 +536,53 @@ def _strip_heatmap(markets, tier):
         return markets
 
 
-def _gated_land_power_handler(decode_jwt_func):
-    """Tiered Land & Power data endpoint handler."""
-    import concurrent.futures
+_LP_ISO_NAMES = {
+    'CAISO': 'California ISO', 'ERCOT': 'Electric Reliability Council of Texas',
+    'PJM': 'PJM Interconnection', 'NYISO': 'New York ISO',
+    'MISO': 'Midcontinent ISO', 'SPP': 'Southwest Power Pool',
+    'ISONE': 'ISO New England'
+}
 
-    plan, user_info = _detect_caller_tier(decode_jwt_func)
-    tier = _normalize_tier(plan)
 
-    # ── Anonymous: nothing ──
-    if tier == 'anonymous':
-        return jsonify({
-            'success': False,
-            'error': 'authentication_required',
-            'message': 'Sign up free at dchub.cloud to access Land & Power intelligence.',
-            'tier': 'anonymous',
-            '_upgrade': _upgrade_cta('anonymous', 'Land & Power data'),
-        }), 401
-
-    lat = request.args.get('lat', type=float)
-    lng = request.args.get('lng', type=float)
-    state = request.args.get('state', '')
-
+def _land_power_preview(tier):
+    """Below Pro: the grid operators by name and three market locations."""
+    from util.plan_tease import round2
     result = {
         'success': True,
         'tier': tier,
+        'grid_demand': {iso: {'iso': iso, 'iso_name': name, 'demand_gw': None,
+                              'status': 'gated'}
+                        for iso, name in _LP_ISO_NAMES.items()},
+        'energy_prices': {},
+        'capacity_heatmap': [{'name': m['name'], 'lat': round2(m['lat']),
+                              'lng': round2(m['lng'])}
+                             for m in _strip_heatmap(HEATMAP_FULL, 'free')],
+        'epa_summary': {},
+        'utility_territories': [],
+        '_note': ('Preview: grid operator names and three market locations. Grid '
+                  'demand, energy pricing, the full heatmap, EPA data and utility '
+                  'territories are Land & Power details, and they come with Pro.'),
+    }
+    locked = ['grid_demand.*.demand_gw', 'energy_prices', 'capacity_heatmap[3:]',
+              'epa_summary', 'utility_territories']
+    return result, locked, len(HEATMAP_FULL)
+
+
+def _land_power_full(lat, lng):
+    """Pro and above: everything."""
+    import concurrent.futures
+
+    result = {
+        'success': True,
+        'tier': 'pro',
         'grid_demand': {},
         'energy_prices': {},
         'capacity_heatmap': [],
         'epa_summary': {},
         'utility_territories': [],
     }
-
-    iso_names = {
-        'CAISO': 'California ISO', 'ERCOT': 'Electric Reliability Council of Texas',
-        'PJM': 'PJM Interconnection', 'NYISO': 'New York ISO',
-        'MISO': 'Midcontinent ISO', 'SPP': 'Southwest Power Pool',
-        'ISONE': 'ISO New England'
-    }
+    iso_names = _LP_ISO_NAMES
     isos = list(iso_names.keys())
-
-    # ── FREE TIER: grid names only + 3 heatmap dots ──
-    if tier == 'free':
-        for iso in isos:
-            result['grid_demand'][iso] = {
-                'iso': iso,
-                'iso_name': iso_names[iso],
-                'demand_gw': '██ upgrade to see',
-                'status': 'gated',
-            }
-        result['capacity_heatmap'] = _strip_heatmap(HEATMAP_FULL, 'free')
-        result['energy_prices'] = {'note': 'Upgrade to Developer ($49/mo) to see energy pricing by state.'}
-        result['epa_summary'] = {'note': 'Upgrade to Developer ($49/mo) for EPA facility data.'}
-        result['_note'] = (
-            'Free tier: showing grid operator names and 3 market locations. '
-            'Developer plan ($49/mo) unlocks energy pricing, full heatmap, and grid demand data. '
-            'Pro plan ($99/mo) unlocks EPA data, utility territories, and all infrastructure layers.'
-        )
-        result['_upgrade'] = _upgrade_cta('free', 'Land & Power data')
-        return jsonify(result)
-
-    # ── DEVELOPER TIER: grid demand + energy prices + full heatmap ──
-    if tier == 'developer':
-        # Grid demand — real data
-        try:
-            from main import gridstatus_get_load
-        except ImportError:
-            gridstatus_get_load = lambda iso: None
-
-        for iso in isos:
-            try:
-                data = gridstatus_get_load(iso)
-                if data:
-                    result['grid_demand'][iso] = {
-                        'iso': iso,
-                        'iso_name': iso_names[iso],
-                        'demand_mw': data['load_mw'],
-                        'demand_gw': round(data['load_mw'] / 1000, 2),
-                        'timestamp': data['timestamp'],
-                        'status': 'live',
-                    }
-                else:
-                    result['grid_demand'][iso] = {
-                        'iso': iso, 'iso_name': iso_names[iso],
-                        'demand_gw': None, 'status': 'unavailable',
-                    }
-            except Exception:
-                result['grid_demand'][iso] = {
-                    'iso': iso, 'iso_name': iso_names[iso],
-                    'demand_gw': None, 'status': 'error',
-                }
-
-        # Energy prices — real data
-        dc_states = ["VA", "TX", "AZ", "CA", "GA", "OH", "IL", "NC", "NV", "OR", "WA", "NJ"]
-        try:
-            from capacity_headroom_api import fetch_eia_retail_rate
-            for st in dc_states:
-                try:
-                    price = fetch_eia_retail_rate(st)
-                    result['energy_prices'][st] = {'state': st, 'price_cents_kwh': price}
-                except Exception:
-                    result['energy_prices'][st] = {'state': st, 'price_cents_kwh': None}
-        except ImportError:
-            for st in dc_states:
-                result['energy_prices'][st] = {'state': st, 'price_cents_kwh': None}
-
-        # Heatmap — full markets, basic fields
-        result['capacity_heatmap'] = _strip_heatmap(HEATMAP_FULL, 'developer')
-
-        # EPA + utility: gated for Developer
-        result['epa_summary'] = {'note': 'Upgrade to Pro ($99/mo) for EPA facility data and environmental analysis.'}
-        result['utility_territories'] = []
-
-        result['_note'] = (
-            'Developer tier: grid demand, energy pricing, and market heatmap included. '
-            'Pro plan ($99/mo) adds EPA environmental data, utility territories, and proximity analysis.'
-        )
-        result['_upgrade'] = _upgrade_cta('developer', 'Land & Power data')
-        return jsonify(result)
 
     # ── PRO / ENTERPRISE: everything ──
     import requests as http_req
@@ -731,8 +661,23 @@ def _gated_land_power_handler(decode_jwt_func):
                 result['epa_summary'] = {'lat': lat, 'lng': lng, 'count': 0, 'facilities': []}
         except Exception:
             result['epa_summary'] = {'lat': lat, 'lng': lng, 'count': 0, 'error': 'unavailable'}
+    return result
 
-    return jsonify(result)
+
+def _gated_land_power_handler(decode_jwt_func):
+    """/api/v1/land-power/data. Land & Power details are Pro (owner,
+    2026-09-22; util/plan_tease.py lp_gate): a keyless caller gets the wall, a
+    key or session below Pro (free, Developer, a $10 pack) the preview, Pro and
+    above everything. X-Internal-Key is unchanged. `decode_jwt_func` is kept
+    for the registration signature; require_plan decodes the session itself."""
+    from util.plan_tease import lp_early_wall, lp_gate
+    wall = lp_early_wall()
+    if wall is not None:
+        return wall
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    return lp_gate(lambda: jsonify(_land_power_full(lat, lng)),
+                   lambda: _land_power_preview('preview'))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -829,5 +774,5 @@ def register_map_tier_gating(app, decode_jwt_func=None):
 
     logger.info(f"🗺️ Map Tier Gating: ✅ {replaced} endpoints overridden (anon=blank, free=taste, dev=more, pro=all)")
     logger.info("   /api/v1/map              → anon:0, free:50, dev:1000, pro:10000")
-    logger.info("   /api/v1/land-power/data   → anon:401, free:names-only, dev:demand+prices, pro:all")
+    logger.info("   /api/v1/land-power/data   → anon:wall, below Pro:preview, pro:all")
     logger.info("   /api/v1/capacity/heatmap  → anon:empty, free:3dots, dev:basic, pro:full")

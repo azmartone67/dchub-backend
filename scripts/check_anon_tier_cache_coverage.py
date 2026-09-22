@@ -94,6 +94,9 @@ ORACLE = {
 GATE_DECORATORS = {
     "require_plan", "_require_plan", "_lazy_require_plan", "mcp_tier",
     "soft_gate", "_lazy_protect_data", "require_auth",
+    # util/plan_tease.py (2026-09-22): the Land & Power Pro-only gate, as a view
+    # decorator (main.py's alias for it too).
+    "lp_gated_view", "_lp_gated_view",
 }
 # Gating expressed INLINE in the body. Rule 13's own description records why
 # this set is needed: "inline-gated routes invisible to decorator ratchet".
@@ -104,6 +107,8 @@ GATE_CALLS = {
     "require_plan", "_require_plan",
     # util/plan_tease.py (2026-09-21): full answer for a plan, tease otherwise.
     "gate_or_tease",
+    # util/plan_tease.py (2026-09-22): Land & Power, Pro only.
+    "lp_gate", "lp_early_wall",
 }
 
 # ★ FLOORS. A scan that can silently find nothing is a scan that always passes.

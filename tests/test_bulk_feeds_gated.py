@@ -657,11 +657,22 @@ _SNAP_ROW = ('example-campus-a', 'Example Campus A', PROVIDER, POWER, 'Operation
              LAT, LON, 'example-campus-a-1a2b3c4d')
 
 
+# ★ 2026-09-22 (owner): the snapshot is Land & Power, which is Pro only
+# (util/plan_tease.py lp_gated_view; tests/test_land_power_pro_only.py holds its
+# matrix). A keyless caller gets the wall and no layer. Below Pro the preview
+# keeps the facilities layer, three rows, each still gated by the facility
+# record gate for the caller's tier and then held at two decimals. So the
+# callers here carry a key that resolves to the tier under test.
+_SNAP_KEYS = {'dch_live_' + 'f' * 32: 'free', 'dch_live_' + 'k' * 32: 'pro'}
+
+
 @pytest.fixture
 def snapshot(monkeypatch):
     import dchub_iteration_2_routes as mod
     db = FakeDB([('FROM facilities WHERE latitude BETWEEN', _SNAP_COLS, [_SNAP_ROW])])
     monkeypatch.setattr(mod, '_get_pg_conn', db.connect)
+    monkeypatch.setattr(api_tier_gating, 'validate_api_key',
+                        lambda k: {'plan': _SNAP_KEYS[k], 'user_id': k} if k in _SNAP_KEYS else None)
     app = Flask(__name__)
     mod.register_iteration_2_routes(app)
     return app.test_client()
@@ -670,19 +681,30 @@ def snapshot(monkeypatch):
 _BBOX = '/api/v1/land-power/snapshot?bbox=-46,12,-45,13&layers=facilities'
 
 
-@pytest.mark.parametrize('tier', ['anon', 'free'])
-def test_snapshot_facilities_layer_is_gated(snapshot, as_tier, tier):
-    as_tier(tier)
-    body = snapshot.get(_BBOX).get_json()
-    assert_gated(body['layers'], tier, withheld=('capacity_mw',))
+def _snap(client, tier):
+    key = next(k for k, t in _SNAP_KEYS.items() if t == tier)
+    return client.get(_BBOX, headers={'X-API-Key': key})
+
+
+def test_snapshot_keyless_gets_no_layer(snapshot, as_tier):
+    as_tier('anon')
+    r = snapshot.get(_BBOX)
+    assert r.status_code == 403 and r.get_json()['_wall'] is True
+    assert 'layers' not in r.get_json()
+
+
+def test_snapshot_facilities_layer_is_gated(snapshot, as_tier):
+    as_tier('free')
+    body = _snap(snapshot, 'free').get_json()
+    assert_gated(body['layers'], 'free', withheld=('capacity_mw',))
     row = body['layers']['facilities'][0]
     assert set(row) == set(_SNAP_COLS) | {'coordinates_status'}, (
         "the layer keeps every key; a withheld value is null")
 
 
-def test_snapshot_paid_is_the_full_row(snapshot, as_tier):
-    as_tier(PAID)
-    body = snapshot.get(_BBOX).get_json()
+def test_snapshot_pro_is_the_full_row(snapshot, as_tier):
+    as_tier('pro')
+    body = _snap(snapshot, 'pro').get_json()
     assert body['layers']['facilities'] == [dict(zip(_SNAP_COLS, _SNAP_ROW))]
 
 

@@ -16,10 +16,14 @@ every one of these answered HTTP 200 with the numbers the plans sell:
 
 Now (util/plan_tease.py): a keyless or free caller gets HTTP 200 with names,
 verdicts, bands and counts, at most three rows, every sold number null and
-coordinates at two decimals, plus the ladder. The canvas opens at Developer;
-Score and Evaluate open at Pro. On both, a valid key below the plan with
-$10-pack credits gets the full answer for one credit. The MCP server's
-X-Internal-Key and the admin radar get exactly what they got before.
+coordinates at two decimals, plus the ladder. The canvas opens at Developer,
+and a valid key below it with $10-pack credits gets the full answer for one
+credit. The MCP server's X-Internal-Key and the admin radar get exactly what
+they got before.
+
+★ 2026-09-22 (owner): the four Land & Power routes are Pro-only now, with a
+wall for a keyless caller and no pack path. tests/test_land_power_pro_only.py
+holds their whole matrix; this file keeps the canvas, and the 400s below.
 
 The routes run for real on their own blueprints; only the data sources (the
 DCPI table, the analysis SQL, the H3 scorer) and the key ledger are stubbed.
@@ -286,7 +290,7 @@ def _assert_tease(r, path, required_plan):
 
 # ── keyless: the tease, cacheable, links independent of the caller ──────────
 
-@pytest.mark.parametrize("path", ALL_ROUTES)
+@pytest.mark.parametrize("path", [CANVAS])
 def test_keyless_gets_the_tease(client, ledger, path):
     r = _get(client, path)
     body = _assert_tease(r, path, "developer" if path == CANVAS else "pro")
@@ -334,27 +338,9 @@ def test_canvas_empty_result_rows_are_teased_too(client):
     assert all(v is None for v in _canvas_numbers(body))
 
 
-def test_analysis_tease_keeps_bands_counts_and_names(client):
-    body = _get(client, ANALYSIS_PATH).get_json()
-    assert body["verdict"] == "VIABLE_SITE" and body["dcpi"]["verdict"] == "AVOID"
-    assert body["power"]["substations_in_radius"] == 10
-    assert body["land"]["comparable_facilities_in_radius"] == 685
-    assert [s["name"] for s in body["power"]["nearest_substations"]] == \
-        ["Ashburn 500kV", "ASHBURN", "NIVO"]
-    assert not re.search(r"\d", body["narrative"].replace("DCPI", "")), body["narrative"]
-    assert body["site"] == {"lat": 39.04, "lon": -77.48, "state": "VA",
-                            "capacity_mw": 100.0, "radius_km": 25.0}
-
-
-def test_cell_tease_keeps_the_grade_band(client):
-    body = _get(client, CELL_PATH).get_json()
-    assert body["cell"]["grade"] == "A" and body["cell"]["hex"]
-    assert body["cell"]["center"] == {"lat": 39.04, "lng": -77.47}
-
-
 # ── free keys: the tease, private, links bound to the caller's own key ─────
 
-@pytest.mark.parametrize("path", ALL_ROUTES)
+@pytest.mark.parametrize("path", [CANVAS])
 def test_a_free_key_gets_the_tease_with_links_bound_to_its_key(client, ledger, path):
     r = _get(client, path, FREE_KEY)
     body = _assert_tease(r, path, "developer" if path == CANVAS else "pro")
@@ -365,22 +351,6 @@ def test_a_free_key_gets_the_tease_with_links_bound_to_its_key(client, ledger, p
         {p: want[p] for p in (o["plan"] for o in body["upgrade_options"])}
     assert FREE_KEY not in r.get_data(as_text=True)            # the hash, never the key
     assert body["key_bound"] is True and ledger["burns"] == []
-
-
-@pytest.mark.parametrize("path", SCORE_ROUTES)
-def test_developer_does_not_open_score_or_evaluate(client, ledger, path):
-    _assert_tease(_get(client, path, DEV_KEY), path, "pro")
-    assert ledger["burns"] == []
-
-
-def test_a_signed_in_free_user_gets_the_tease_not_an_error(client, monkeypatch):
-    import api_tier_gating
-    monkeypatch.setattr(api_tier_gating, "_get_decode_jwt",
-                        lambda: (lambda tok: {"user_id": "u-1", "email": "u@example.com"}))
-    monkeypatch.setattr(api_tier_gating, "get_user_plan", lambda **k: "free")
-    r = _get(client, CELL_PATH, Authorization="Bearer header.payload.sig")
-    body = _assert_tease(r, CELL_PATH, "pro")
-    assert body["key_bound"] is False and "no-store" in r.headers["Cache-Control"]
 
 
 # ── plans that open it: the full answer, private ────────────────────────────
@@ -394,7 +364,7 @@ def _assert_full(r, path):
     return body
 
 
-@pytest.mark.parametrize("path", ALL_ROUTES)
+@pytest.mark.parametrize("path", [CANVAS])
 def test_pro_opens_every_route(client, ledger, path):
     _assert_full(_get(client, path, PRO_KEY), path)
     assert ledger["burns"] == []
@@ -408,7 +378,7 @@ def test_developer_opens_the_canvas_with_the_decision_layer(client, ledger):
     assert ledger["burns"] == []
 
 
-@pytest.mark.parametrize("path", ALL_ROUTES)
+@pytest.mark.parametrize("path", [CANVAS])
 def test_a_pack_key_opens_it_for_one_credit(client, ledger, path):
     r = _get(client, path, PACK_KEY)
     _assert_full(r, path)
@@ -416,26 +386,15 @@ def test_a_pack_key_opens_it_for_one_credit(client, ledger, path):
     assert ledger["burns"] == [(PACK_KEY, 1)]
 
 
-@pytest.mark.parametrize("path", [CANVAS, CELL_PATH])
+@pytest.mark.parametrize("path", [CANVAS])
 def test_a_pack_that_cannot_burn_gets_the_tease_not_the_data(client, ledger, path):
     ledger["burn_ok"] = False
     _assert_tease(_get(client, path, PACK_KEY), path, "developer" if path == CANVAS else "pro")
 
 
-@pytest.mark.parametrize("path", SCORE_ROUTES)
-def test_a_signed_in_pro_user_opens_score_and_evaluate(client, monkeypatch, path):
-    import api_tier_gating
-    monkeypatch.setattr(api_tier_gating, "_get_decode_jwt",
-                        lambda: (lambda tok: {"user_id": "u-9", "email": "p@example.com"}))
-    monkeypatch.setattr(api_tier_gating, "get_user_plan", lambda **k: "pro")
-    _assert_full(_get(client, path, Authorization="Bearer header.payload.sig"), path)
-    client.set_cookie("dchub_token", "header.payload.sig")
-    _assert_full(_get(client, path), path)
-
-
 # ── internal and admin: exactly as before ───────────────────────────────────
 
-@pytest.mark.parametrize("path", ALL_ROUTES)
+@pytest.mark.parametrize("path", [CANVAS])
 @pytest.mark.parametrize("hdr", [{"X-Internal-Key": SECRET}, {"X-Admin-Key": ADMIN}])
 def test_internal_and_admin_are_unchanged(client, ledger, path, hdr):
     r = _get(client, path, **hdr)
@@ -457,7 +416,7 @@ def test_internal_canvas_keeps_its_old_tier_logic(client, monkeypatch):
 
 
 def test_an_unknown_key_is_a_401(client):
-    for path in ALL_ROUTES:
+    for path in [CANVAS]:
         assert _get(client, path, UNKNOWN_KEY).status_code == 401, path
 
 
@@ -465,28 +424,6 @@ def test_the_bad_request_paths_still_400(client):
     assert client.get("/api/v2/scoring/h3-cell").status_code == 400
     assert client.get("/api/v2/scoring/h3-heatmap").status_code == 400
     assert client.get("/api/v1/land-power/site-analysis").status_code == 400
-
-
-# ── the Land & Power map's upgrade modal ────────────────────────────────────
-
-def test_upgrade_ladder_offers_three_rungs_with_what_each_opens(client):
-    r = _get(client, "/api/v1/land-power/upgrade-ladder")
-    body = r.get_json()
-    assert [x["plan"] for x in body["rungs"]] == ["pack", "developer", "pro"]
-    assert [x["opens"] for x in body["rungs"]] == ["score_evaluate_per_credit", "all_layers", "all"]
-    assert [_token_fields(x["url"])[:2] for x in body["rungs"]] == \
-        [["metered", ""], ["developer", ""], ["pro", ""]]
-    assert [x["price"] for x in body["rungs"]] == ["$10", "$49/mo", "$99/mo"]
-    assert "public" in r.headers["Cache-Control"]
-
-
-def test_upgrade_ladder_binds_to_a_valid_key_only(client):
-    h = hashlib.sha256(FREE_KEY.encode()).hexdigest()
-    body = _get(client, "/api/v1/land-power/upgrade-ladder", FREE_KEY).get_json()
-    assert [_token_fields(x["url"])[1] for x in body["rungs"]] == ["pk-" + h, "k-" + h, "k-" + h]
-    assert body["key_bound"] is True
-    stray = _get(client, "/api/v1/land-power/upgrade-ladder", UNKNOWN_KEY).get_json()
-    assert {_token_fields(x["url"])[1] for x in stray["rungs"]} == {""}
 
 
 # ── an AI-agent user agent with no key (2026-09-22) ─────────────────────────
@@ -527,7 +464,7 @@ def agent_client(client, monkeypatch):
     return client
 
 
-@pytest.mark.parametrize("path", [CANVAS, ANALYSIS_PATH, QUICK])
+@pytest.mark.parametrize("path", [CANVAS])
 def test_an_ai_agent_with_no_key_gets_the_tease_not_a_401(agent_client, ledger, path):
     r = agent_client.get(path, headers={"User-Agent": CLAUDE_UA})
     body = _assert_tease(r, path, "developer" if path == CANVAS else "pro")
