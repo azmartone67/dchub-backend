@@ -23,7 +23,7 @@ This module ships a MONTHLY edition with three extra things:
 Endpoints:
   GET  /reports/monthly                        — current month HTML
   GET  /reports/monthly/<year>-<month>         — historical (e.g. 2026-05)
-  GET  /api/v1/reports/monthly                 — JSON
+  GET  /api/v1/reports/monthly                 — JSON (trailing slash too)
   GET  /api/v1/reports/monthly/<year>-<month>  — JSON of a specific month
   POST /api/v1/reports/monthly/archive         — admin: snapshot current
                                                   into monthly_reports
@@ -1342,7 +1342,15 @@ def _attach_narrative_safe(d):
         return d
 
 
-@monthly_trend_bp.route("/api/v1/reports/monthly", methods=["GET"])
+# strict_slashes=False: /api/v1/reports/monthly/ (trailing slash) is this view
+# too, as /reports/monthly/ is the HTML view's. Until 2026-09-21 the only rule
+# matching the slash form was comprehensive_report's "/api/v1/reports/monthly"
+# with strict_slashes=False. It lost the bare path to this rule, but it was
+# the only rule for /api/v1/reports/monthly/, so deleting it as a shadowed
+# duplicate (#5127) turned the slash form into a 404. Its payload still has
+# its own URL, /api/v1/reports/monthly.json.
+@monthly_trend_bp.route("/api/v1/reports/monthly", methods=["GET"],
+                        strict_slashes=False)
 def monthly_json_current():
     d = _attach_narrative_safe(_attach_license(_compute_report()))
     resp = jsonify(d)
