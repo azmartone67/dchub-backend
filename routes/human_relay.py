@@ -291,6 +291,13 @@ def _identify_form(token: str, info: dict | None) -> str:
         "<label for='e'>Email me the receipt and the key</label>"
         "<input id='e' type='email' name='email' required "
         "placeholder='you@company.com' autocomplete='email'>"
+        # frontend#1534 (2026-09-22): marketing consent is a separate, unticked
+        # choice. Ticking it asks routes/marketing_opt_in for the double
+        # opt-in (one confirmation email, requested by this person); nothing
+        # else is ever sent unless they confirm it.
+        "<label class='optin'><input type='checkbox' name='marketing_opt_in' "
+        "value='1'> Also email me DC Hub product updates. I will get one email "
+        "to confirm first, and can unsubscribe anytime.</label>"
         "<button type='submit'>Continue &rarr;</button>"
         "<span class='hint'>So the credits and the API key reach you — your "
         "agent has no inbox. We do not sell or share it.</span>"
@@ -311,6 +318,17 @@ def _relay_identify(token: str, info: dict | None):
                     tool=(info or {}).get("tool") or "")
         except Exception:  # noqa: BLE001
             logger.warning("relay identify capture failed", exc_info=True)
+        # Consent only when the box was ticked, and only through the double
+        # opt-in: request_opt_in validates, honours suppression and its
+        # per-address cooldown, and sends the one confirmation email. The
+        # address becomes marketable only when that email's link is clicked.
+        # An unticked box sends nothing and records nothing.
+        if request.form.get("marketing_opt_in") == "1":
+            try:
+                from routes.marketing_opt_in import request_opt_in
+                request_opt_in((request.form.get("email") or ""), source="relay_page")
+            except Exception:  # noqa: BLE001
+                logger.warning("relay marketing opt-in request failed", exc_info=True)
     return redirect(dest, code=302)
 
 
