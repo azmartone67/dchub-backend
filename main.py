@@ -21127,11 +21127,26 @@ def compare_markets():
                 'top_providers': top_providers
             })
 
-        return jsonify({
-            'success': True,
-            'comparison': comparison,
-            'generated_at': utc_iso_z()
-        })
+        # 2026-09-21: the MW columns are paid. Developer and above, a key with
+        # $10-pack credits, the MCP server and admin get them; everyone else
+        # gets the counts and names with the MW null (util/numeric_tease.py).
+        from util.numeric_tease import (TEASE_ROWS, null_fields,
+                                        serve_full_or_tease, tease_envelope)
+        _generated = utc_iso_z()
+        _mw = ('total_power_mw', 'avg_power_mw', 'max_power_mw')
+
+        def _full_answer():
+            return jsonify({'success': True, 'comparison': comparison,
+                            'generated_at': _generated})
+
+        def _tease_answer():
+            _shown = [dict(m, metrics=null_fields(m['metrics'], _mw))
+                      for m in comparison[:TEASE_ROWS]]
+            return jsonify({'success': True, 'comparison': _shown,
+                            'generated_at': _generated,
+                            **tease_envelope(len(comparison), _mw)})
+
+        return serve_full_or_tease(_full_answer, _tease_answer)
     except Exception as e:
         logger.error(f"Markets compare error: {e}")
         return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
@@ -47999,7 +48014,9 @@ def _markets_list_rich():
                 LIMIT %s;
             """, (limit,))
             rows = cur.fetchall()
-        return jsonify({
+            cur.execute("SELECT COUNT(*) FROM market_power_scores WHERE published = true")
+            _published = int((cur.fetchone() or [0])[0] or 0)
+        full = {
             "markets": [{
                 "slug": r[0],
                 "name": r[1],
@@ -48015,7 +48032,26 @@ def _markets_list_rich():
             } for r in rows],
             "total": len(rows),
             "note": "filtered to published=true; sub-credible markets hidden",
-        })
+        }
+        # 2026-09-21: the scores and cents per kWh are paid. Developer and
+        # above, a key with $10-pack credits, the MCP server and admin get
+        # them; everyone else gets names and verdicts (util/numeric_tease.py),
+        # in slug order, so the preview cannot rank markets by a hidden score.
+        from util.numeric_tease import (TEASE_ROWS, null_fields,
+                                        serve_full_or_tease, tease_envelope)
+        _locked = ("constraint_score", "excess_power_score", "avg_kwh_cents",
+                   "quality_score")
+
+        def _full_answer():
+            return jsonify(full)
+
+        def _tease_answer():
+            _shown = [null_fields(m, _locked) for m in
+                      sorted(full["markets"], key=lambda m: m["slug"] or "")[:TEASE_ROWS]]
+            return jsonify({"markets": _shown, "total": len(_shown), "note": full["note"],
+                            **tease_envelope(_published, _locked)})
+
+        return serve_full_or_tease(_full_answer, _tease_answer)
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 # === /Phase 232.E ===

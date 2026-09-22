@@ -17,9 +17,14 @@ Data source: dcpi_daily_snapshots (snapshot_date, market_slug, market_name,
 excess_power_score, constraint_score, verdict) — written daily by
 routes/dcpi.py.
 
-Endpoints (open — discovery surfaces, cite "DC Hub (dchub.cloud)"):
+Endpoints (discovery surfaces, cite "DC Hub (dchub.cloud)"):
   GET /api/v1/dcpi/history?market=<slug>&days=90   per-market time-series
   GET /api/v1/dcpi/changes?days=30&limit=25        markets that moved, newest vs prior snapshot
+
+The scores and deltas are the paid numbers. Developer and above, a key holding
+$10-pack credits, the MCP server and admin get them; everyone else gets the
+same shape with at most TEASE_ROWS rows, dates and verdicts filled in and the
+numbers null (util/numeric_tease.py, 2026-09-21).
 """
 from __future__ import annotations
 
@@ -28,7 +33,12 @@ import datetime as _dt
 
 from flask import Blueprint, jsonify, request
 
+from util.numeric_tease import (TEASE_ROWS, null_fields, serve_full_or_tease,
+                                tease_envelope)
+
 dcpi_temporal_bp = Blueprint("dcpi_temporal", __name__)
+
+_SCORES = ("excess_power_score", "constraint_score")
 
 
 def _conn():
@@ -50,7 +60,7 @@ def _depth_meta(cur) -> dict:
 
 
 @dcpi_temporal_bp.route("/api/v1/dcpi/history", methods=["GET"])
-def dcpi_history():
+def dcpi_history(_paid=None):
     """Per-market DCPI time-series — excess/constraint/verdict over time."""
     market = (request.args.get("market") or "").strip().lower()
     if not market:
@@ -64,8 +74,13 @@ def dcpi_history():
         # all-markets contract -> delegate (its anon paywall nulling stays
         # intact). ?market=<slug> keeps the per-market temporal contract
         # documented in AGENTS.md / skill.json.
+        # api_history gates itself; gating here as well would run the gate
+        # (and burn a pack credit) twice.
         from routes.dcpi import api_history as _legacy_all_markets_history
         return _legacy_all_markets_history()
+    if _paid is None:
+        return serve_full_or_tease(lambda: dcpi_history(_paid=True),
+                                   lambda: dcpi_history(_paid=False))
     try:
         days = max(1, min(730, int(request.args.get("days", 90))))
     except (TypeError, ValueError):
@@ -105,7 +120,7 @@ def dcpi_history():
         except (TypeError, ValueError):
             return None
 
-    return jsonify({
+    body = {
         "ok": True,
         "market": last["market_name"],
         "market_slug": market,
@@ -120,7 +135,14 @@ def dcpi_history():
         "snapshot_record": meta,            # depth-honesty: how deep history goes
         "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "cite": "DC Hub (dchub.cloud)",
-    }), 200
+    }
+    if not _paid:
+        # The latest points, dates and verdicts kept, scores and deltas null.
+        shown = [null_fields(p, _SCORES) for p in series[-TEASE_ROWS:]]
+        return jsonify({**body, "series": shown, "points": len(shown),
+                        "net_change": null_fields(body["net_change"], _SCORES),
+                        **tease_envelope(len(series), _SCORES)}), 200
+    return jsonify(body), 200
 
 
 def _linfit(xs, ys):
@@ -145,7 +167,7 @@ def _clamp(v, lo=0.0, hi=100.0):
 
 
 @dcpi_temporal_bp.route("/api/v1/dcpi/forecast", methods=["GET"])
-def dcpi_forecast():
+def dcpi_forecast(_paid=None):
     """Forward DCPI-score projection (L23 proposal get_dcpi_forecast #1139).
 
     HONEST: this is a TREND EXTRAPOLATION over the available snapshot history,
@@ -157,6 +179,9 @@ def dcpi_forecast():
     if not market:
         return jsonify({"ok": False, "error": "market_required",
                         "hint": "Pass ?market=<dcpi slug> (see /api/v1/dcpi/scores)."}), 400
+    if _paid is None:
+        return serve_full_or_tease(lambda: dcpi_forecast(_paid=True),
+                                   lambda: dcpi_forecast(_paid=False))
     try:
         horizon_q = max(1, min(8, int(request.args.get("horizon", 4))))  # quarters
     except (TypeError, ValueError):
@@ -212,7 +237,7 @@ def dcpi_forecast():
         })
 
     trend = ("improving" if e_slope > 0.02 else "declining" if e_slope < -0.02 else "flat")
-    return jsonify({
+    body = {
         "ok": True,
         "market": pts[-1] and rows[-1]["market_name"],
         "market_slug": market,
@@ -231,12 +256,24 @@ def dcpi_forecast():
         "snapshot_record": meta,
         "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "cite": "DC Hub (dchub.cloud)",
-    }), 200
+    }
+    if not _paid:
+        _locked = ("excess_power_score", "excess_power_band",
+                   "constraint_score", "constraint_band")
+        _basis = ("excess_power_slope_per_day", "current_excess_power_score")
+        return jsonify({**body, "basis": null_fields(body["basis"], _basis),
+                        "projection": [null_fields(q, _locked)
+                                       for q in projection[:TEASE_ROWS]],
+                        **tease_envelope(len(projection), _locked + _basis)}), 200
+    return jsonify(body), 200
 
 
 @dcpi_temporal_bp.route("/api/v1/dcpi/changes", methods=["GET"])
-def dcpi_changes():
+def dcpi_changes(_paid=None):
     """Change-feed: markets that moved between the two most recent snapshot dates."""
+    if _paid is None:
+        return serve_full_or_tease(lambda: dcpi_changes(_paid=True),
+                                   lambda: dcpi_changes(_paid=False))
     try:
         limit = max(1, min(100, int(request.args.get("limit", 25))))
     except (TypeError, ValueError):
@@ -290,7 +327,7 @@ def dcpi_changes():
     # Biggest movers first (by absolute excess-power delta).
     changes.sort(key=lambda x: abs(x["excess_power_delta"] or 0), reverse=True)
 
-    return jsonify({
+    body = {
         "ok": True,
         "between": {"from": str(old_d), "to": str(new_d)},
         "count": len(changes),
@@ -298,4 +335,14 @@ def dcpi_changes():
         "snapshot_record": meta,
         "as_of": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "cite": "DC Hub (dchub.cloud)",
-    }), 200
+    }
+    if not _paid:
+        # Verdict changes first and then by name: the order must not rank
+        # markets by the delta it hides.
+        _deltas = ("excess_power_delta", "constraint_delta")
+        shown = sorted(changes, key=lambda x: (x["verdict_change"] is None,
+                                               x["market_slug"] or ""))
+        return jsonify({**body, "changes": [null_fields(x, _deltas)
+                                            for x in shown[:TEASE_ROWS]],
+                        **tease_envelope(len(changes), _deltas)}), 200
+    return jsonify(body), 200

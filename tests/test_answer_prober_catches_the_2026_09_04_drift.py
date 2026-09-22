@@ -132,6 +132,31 @@ def test_the_poe_probe_catches_a_stale_ANSWER_not_just_a_count(monkeypatch):
     assert scores[0]["observed"] == 14.5 and scores[0]["expected"] == 33.1
 
 
+def test_the_canon_row_is_read_with_the_admin_key(monkeypatch):
+    """Since 2026-09-21 a keyless read of /api/v1/dcpi/scores/<slug> is the
+    preview with its scores null (util/numeric_tease.py). The canon the answer
+    is compared against has to be the full row."""
+    seen = []
+
+    def fetch(path, method="GET", payload=None, headers=None, timeout=None):
+        seen.append((path, headers))
+        return 200, json.dumps({"verdict": "AVOID", "excess_power_score": 14.5})
+    monkeypatch.setattr(ap, "_fetch", fetch)
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "k-admin")
+    ap._canon_market("northern-virginia")
+    assert seen == [("/api/v1/dcpi/scores/northern-virginia", {"X-Admin-Key": "k-admin"})]
+
+
+def test_a_gated_canon_is_skipped_never_scored_as_drift(monkeypatch):
+    """With no admin key in the process the canon is the preview: its null is
+    not a disagreement with the answer's number."""
+    _install(monkeypatch, PRE_FIX, rows={"northern-virginia": {
+        "verdict": "AVOID", "excess_power_score": None, "_gated": True}})
+    out = ap.run_answer_probe("poe_answer")
+    scores = _by(out["comparisons"], "poe_answer", "excess_power_score")
+    assert scores and scores[0]["verdict"] == "skipped", scores
+
+
 # ── the ways a probe lies about itself ───────────────────────────────────────
 
 def test_an_extractor_that_matches_nothing_is_a_failure_not_a_pass(monkeypatch):

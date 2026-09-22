@@ -1348,8 +1348,12 @@ def _lane_closeout() -> list[dict]:
         critical=False))
 
     # SH52-138: DCPI forecast no longer prints excess=100 AND constraint=100
-    # with an AVOID verdict (the clamp artifact).
-    d, err = _jget(_local("/api/v1/dcpi/scores/allen"), timeout=8)
+    # with an AVOID verdict (the clamp artifact). Read as the MCP server reads
+    # it: since 2026-09-21 a keyless read is the preview, whose forecast is
+    # locked, and this check would pass on nothing (util/numeric_tease.py).
+    _ik = (os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    d, err = _jget(_local("/api/v1/dcpi/scores/allen"), timeout=8,
+                   headers={"X-Internal-Key": _ik} if _ik else None)
     proj = (((d or {}).get("forecast") or {}).get("projection") or {})
     bad = any(isinstance(p, dict) and p.get("excess_power_score") == 100
               and p.get("constraint_score") == 100 for p in proj.values()
