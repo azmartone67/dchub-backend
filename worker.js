@@ -19,6 +19,20 @@
  * historical entry should name the version it shipped in. Only the title line,
  * which claims to describe the file as it stands, was the lie.
  * ================================================================================
+ * v4.9.73 CHANGES (Sep 22 2026) — Phase kv-writes-only-credential-free:
+ *   - The KV response cache is written only from a request that carries no
+ *          caller credential, and only when the origin's Cache-Control allows
+ *          a shared copy (not private / no-store). Applies to the proxy write
+ *          (STEP 2), the Render failover write (STEP 2.5) and the Flask HTML
+ *          lane. carriesCallerCredential() covers X-API-Key / ?api_key,
+ *          Authorization in any scheme, the other credential headers and
+ *          cookies the origin reads, and every query param kvCacheKey() drops.
+ *          hasApiKey is now hasCredential and uses the same predicate, so it
+ *          also gates the KV read, the edge cacheTtl and the public rewrite.
+ *   ★ This worker deploys by DASHBOARD PASTE, not by merge.
+ *          Verify: curl -s -o /dev/null -D - "https://api.dchub.cloud/api/v1/stats?_=$(date +%s)"
+ *          | grep -i x-dc-worker-version  -> 4.9.73-kv-writes-only-credential-free
+ * ================================================================================
  * v4.9.72 CHANGES (Sep 21 2026) — Phase agent-json-serves-the-a2a-card:
  *   - /.well-known/agent.json returns what the public
  *          /.well-known/agent-card.json returns: the A2A card from
@@ -616,7 +630,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.72-agent-json-serves-the-a2a-card';
+const WORKER_VERSION = '4.9.73-kv-writes-only-credential-free';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -1258,10 +1272,41 @@ function cacheControlFor(originCacheControl, tierMaxAge) {
 // ============================================================
 // KV RESPONSE CACHE
 // ============================================================
+// Query params kvCacheKey() leaves OUT of the key. A request carrying one lands
+// on the same entry as a request without it, so it must never write that entry.
+const KV_KEY_STRIP_PARAMS = ['api_key', 'token', 'admin_key', 'key', 'session_id'];
+
+// 2026-09-22: a KV entry is served to EVERY later caller of its URL, so only a
+// request that carries no caller credential may fill one — the origin shapes a
+// credentialed response to its caller. PRESENCE, never validity: the edge cannot tell an expired token from a paid
+// one. Matched by NAME SHAPE, not a list: the origin reads well over a dozen
+// such headers (X-API-Key, Authorization in any scheme — it strips "Bearer "
+// and decodes the rest — X-Admin-Key, X-Internal-Key, X-Payment,
+// Mcp-Session-Id, …) and as many cookies, and one added later must stay out of
+// shared entries without a worker edit. A false positive costs one cache hit.
+// tests/test_worker_kv_write_is_credential_free.py fails on any header or
+// cookie the origin reads that is neither matched here nor listed as benign.
+const CREDENTIAL_HEADER_NAME = /key|token|auth|secret|session|admin|internal|payment|identity|delegat|reviewer|^x-user-/i;
+const CREDENTIAL_COOKIE_NAME = /token|key|auth|sess|sid|refresh|admin/i;
+
+function carriesCallerCredential(request, url) {
+  for (const [name] of request.headers) {
+    if (name !== 'cookie' && CREDENTIAL_HEADER_NAME.test(name)) return true;
+  }
+  if (KV_KEY_STRIP_PARAMS.some((p) => url.searchParams.get(p))) return true;
+  return (request.headers.get('Cookie') || '').split(';')
+    .some((c) => CREDENTIAL_COOKIE_NAME.test(c.split('=')[0]));
+}
+
+// The origin's own "no shared copy" beats the route tier: a response it marks
+// private or no-store never enters KV, whoever asked for it.
+function originAllowsSharedStore(resp) {
+  return !/\b(?:private|no-store)\b/i.test(resp.headers.get('Cache-Control') || '');
+}
+
 function kvCacheKey(url) {
   const u = new URL(url);
-  const STRIP_PARAMS = ['api_key', 'token', 'admin_key', 'key', 'session_id'];
-  for (const p of STRIP_PARAMS) { u.searchParams.delete(p); }
+  for (const p of KV_KEY_STRIP_PARAMS) { u.searchParams.delete(p); }
   const sorted = new URLSearchParams();
   const entries = [...u.searchParams.entries()]
     .filter(([, v]) => v !== '' && v !== 'undefined' && v !== 'null')
@@ -3804,7 +3849,8 @@ export default {
           const ct  = seoResp.headers.get('content-type')
                       || (isOg ? 'image/png' : 'text/html; charset=utf-8');
           // Store as text if small enough; OG images stored as base64 in KV
-          if (request.method === 'GET' && env.DCHUB_CACHE && buf.byteLength < 2_000_000) {
+          if (request.method === 'GET' && env.DCHUB_CACHE && buf.byteLength < 2_000_000
+              && !carriesCallerCredential(request, url) && originAllowsSharedStore(seoResp)) {
             try {
               let bodyForKv;
               if (isOg) {
@@ -4055,7 +4101,9 @@ export default {
     const timeoutMs = isVerdictRoute(pathname)
       ? VERDICT_ROUTE_TIMEOUT_MS
       : getTimeout(pathname);
-    const hasApiKey = request.headers.get('X-API-Key') || url.searchParams.get('api_key');
+    // Any caller credential, not only an API key. The same predicate gates the
+    // KV read (STEP 1), the edge copy (edgeTtl) and the KV writes (STEP 2/2.5).
+    const hasCredential = carriesCallerCredential(request, url);
 
     // Publish proxy
     if (pathname === '/api/publish') {
@@ -4183,7 +4231,7 @@ export default {
     }
 
     // STEP 1: KV fresh cache
-    if (isGet && !hasApiKey && env.DCHUB_CACHE && kvHasFreshCache(pathname)) {
+    if (isGet && !hasCredential && env.DCHUB_CACHE && kvHasFreshCache(pathname)) {
       const kvResult = await kvCacheGet(env.DCHUB_CACHE, kvCacheKey(url.toString()), false, tier.kvFreshTtl, tier.kvStaleTtl);
       if (kvResult) {
         const resp = addCORS(kvResult.response, request);
@@ -4195,7 +4243,7 @@ export default {
     }
 
     // STEP 1.5: public-key edge cache (asset tier only — see assetCacheMatch).
-    const _pkc = !!(tier.publicKeyCache && isGet && !hasApiKey);
+    const _pkc = !!(tier.publicKeyCache && isGet && !hasCredential);
     if (_pkc) {
       const hit = await assetCacheMatch(url);
       if (hit) {
@@ -4213,12 +4261,12 @@ export default {
     // ★ publicKeyCache tiers pass edgeTtl 0 on purpose: letting `cf.cacheTtl`
     //   ALSO cache under the Railway URL recreates the unpurgeable copy this
     //   change exists to remove. One cache, one key, owned by this zone.
-    const edgeTtl = (isGet && !hasApiKey && !_pkc) ? tier.edgeTtl : 0;
+    const edgeTtl = (isGet && !hasCredential && !_pkc) ? tier.edgeTtl : 0;
     const { resp, attempts } = await proxyWithRetry(request, pathname, url.search, edgeTtl, timeoutMs);
 
     if (resp && resp.status < 500) {
       let cacheClone = null;
-      if (isGet && resp.status === 200 && env.DCHUB_CACHE && kvIsCacheable(pathname)) cacheClone = resp.clone();
+      if (isGet && !hasCredential && resp.status === 200 && env.DCHUB_CACHE && kvIsCacheable(pathname) && originAllowsSharedStore(resp)) cacheClone = resp.clone();
       // ★★★ CLONE BEFORE THE BODY IS SPENT. `new Response(resp.body, resp)` below
       // hands the origin stream to the client, after which `resp` has no body left
       // to give. Cloning here (like cacheClone above) is what makes the asset-cache
@@ -4230,7 +4278,7 @@ export default {
       result.headers.set('X-DC-Worker-Version', WORKER_VERSION);
       result.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
       result.headers.set('X-DC-Attempts', String(attempts));
-      if (isGet && !hasApiKey) {
+      if (isGet && !hasCredential) {
         const _cc = cacheControlFor(resp.headers.get('Cache-Control'), tier.browserMaxAge);
         if (_cc) result.headers.set('Cache-Control', _cc);
       }
@@ -4301,14 +4349,14 @@ export default {
       // the secondary is stale. Fall through to KV stale / 503 instead.
       if (renderResp && renderResp.status < 400) {
         let cacheClone = null;
-        if (renderResp.status === 200 && env.DCHUB_CACHE && kvIsCacheable(pathname)) cacheClone = renderResp.clone();
+        if (!hasCredential && renderResp.status === 200 && env.DCHUB_CACHE && kvIsCacheable(pathname) && originAllowsSharedStore(renderResp)) cacheClone = renderResp.clone();
         const result = addCORS(new Response(renderResp.body, renderResp), request);
         result.headers.set('x-dc-hub-backend',      'render');
         result.headers.set('x-dc-hub-failover',     'true');
         result.headers.set('X-Failover-Mode',       'render-active');
         result.headers.set('X-DC-Worker-Version',   WORKER_VERSION);
         result.headers.set('X-DC-Response-Time',    `${Date.now() - startTime}ms`);
-        if (!hasApiKey && tier.browserMaxAge > 0) result.headers.set('Cache-Control', `public, max-age=${tier.browserMaxAge}, stale-while-revalidate=${tier.browserMaxAge * 2}`);
+        if (!hasCredential && tier.browserMaxAge > 0) result.headers.set('Cache-Control', `public, max-age=${tier.browserMaxAge}, stale-while-revalidate=${tier.browserMaxAge * 2}`);
         if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
         return result;
       }
@@ -4320,7 +4368,7 @@ export default {
       if (kvResult) {
         const staleResp = addCORS(kvResult.response, request);
         staleResp.headers.set('x-dc-hub-source', 'kv-stale-cache');
-        staleResp.headers.set('X-Failover-Mode', hasApiKey ? 'stale-authenticated' : 'stale-anonymous');
+        staleResp.headers.set('X-Failover-Mode', hasCredential ? 'stale-authenticated' : 'stale-anonymous');
         staleResp.headers.set('X-DC-Worker-Version', WORKER_VERSION);
         staleResp.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
         return staleResp;
