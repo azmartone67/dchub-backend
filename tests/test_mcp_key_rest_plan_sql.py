@@ -17,8 +17,10 @@ _resolve_key_tier. The MCP server's own calls (a valid X-Internal-Key) must
 resolve exactly as they did before, so MCP behaviour does not change.
 
 The database tests skip without PACK_EXPIRY_SQL_DSN. The db-parity job in
-pre-merge.yml sets it and then FAILS if this file skipped. Owns and recreates
-only users, mcp_dev_keys, mcp_conversions and mcp_checkout_payments.
+pre-merge.yml sets it and then FAILS if this file skipped. Everything lives in
+its own schema, which every resolver's connection reaches through the DSN's
+search_path, and which is dropped afterwards: the public users and
+mcp_dev_keys that later steps of that job create or reuse are never touched.
 mcp_conversions is created with the columns the resolver reads (the module DDL
 carries a foreign key to a table this file does not own); mcp_checkout_payments
 comes from its own module's DDL.
@@ -35,6 +37,13 @@ sys.path.insert(0, str(ROOT))
 
 DSN = os.environ.get("PACK_EXPIRY_SQL_DSN")
 INTERNAL = "test-internal-key-mcp-key-rest-plan"
+SCHEMA = "mcp_key_rest_plan"
+
+
+def _in_schema(dsn):
+    """The DSN with this file's schema as the only search_path."""
+    sep = "&" if "?" in dsn else "?"
+    return f"{dsn}{sep}options=-csearch_path%3D{SCHEMA}"
 
 # name: (email, mcp_dev_keys.tier, status)
 KEYS = {
@@ -97,15 +106,21 @@ def db(monkeypatch):
     if not DSN:
         pytest.skip("PACK_EXPIRY_SQL_DSN not set")
     import psycopg2
-    monkeypatch.setenv("DATABASE_URL", DSN)
-    monkeypatch.setenv("NEON_DATABASE_URL", DSN)
+    admin = psycopg2.connect(DSN)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {SCHEMA}")
+    dsn = _in_schema(DSN)
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    monkeypatch.setenv("NEON_DATABASE_URL", dsn)
     monkeypatch.delenv("DATABASE_READ_URL", raising=False)
     monkeypatch.setenv("DCHUB_INTERNAL_KEY", INTERNAL)
-    conn = psycopg2.connect(DSN)
+    conn = psycopg2.connect(dsn)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS users, mcp_dev_keys, mcp_conversions, "
-                    "mcp_checkout_payments CASCADE")
+        cur.execute("SELECT current_schemas(false)")
+        assert cur.fetchone()[0] == [SCHEMA], "search_path did not isolate this file"
         cur.execute("""CREATE TABLE users (
                          id SERIAL PRIMARY KEY,
                          email TEXT,
@@ -158,10 +173,15 @@ def db(monkeypatch):
         kw.pop("sslmode", None)
         return real_connect(*a, **kw)
     monkeypatch.setattr(psycopg2, "connect", _no_tls)
-    yield conn
-    mkp._rest_plan_cache.clear()
-    adp._KEY_TIER_CACHE.clear()
-    conn.close()
+    try:
+        yield conn
+    finally:
+        mkp._rest_plan_cache.clear()
+        adp._KEY_TIER_CACHE.clear()
+        conn.close()
+        with admin.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+        admin.close()
 
 
 @pytest.fixture
