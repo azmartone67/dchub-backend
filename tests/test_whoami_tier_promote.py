@@ -109,16 +109,15 @@ def test_dch_live_is_never_mapped_to_a_paid_tier_by_prefix():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     src = open(os.path.join(repo, "mcp_gatekeeper.py"), encoding="utf-8").read()
 
-    # Floor: prove the scan can see the resolver's prefix table at all — its
-    # rows are lines holding a prefix literal and the Tier it names
-    # (_PLAN_KEY_PREFIXES since 2026-09-22). Anchored on that assignment:
-    # generate_key's mint map also has "dchub_pro_" and Tier.PRO on one line.
-    table = next((n for n in ast.parse(src).body if isinstance(n, ast.Assign)
-                  and any(getattr(t, "id", None) == "_PLAN_KEY_PREFIXES"
-                          for t in n.targets)), None)
-    rows = src.splitlines()[table.lineno - 1:table.end_lineno] if table else []
-    assert any('"dchub_pro_"' in l and "Tier.PRO" in l for l in rows), (
-        "the tier-prefix table moved — this guard is aimed at a dead target"
+    # Floor: prove the scan can see the resolver at all. Since 2026-09-22 no
+    # prefix names a tier there: resolve_tier sends every dchub_ key to its
+    # api_keys row (tests/test_key_tier_follows_row.py). Anchored on that
+    # function: generate_key's mint map also has "dchub_pro_" and Tier.PRO.
+    fn = next((n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)
+               and n.name == "resolve_tier"), None)
+    body = src.splitlines()[fn.lineno - 1:fn.end_lineno] if fn else []
+    assert any('startswith("dchub_")' in l and "#" not in l for l in body), (
+        "resolve_tier moved — this guard is aimed at a dead target"
     )
 
     live_prefix = "dch_" + "live_"
