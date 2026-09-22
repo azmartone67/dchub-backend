@@ -574,8 +574,9 @@ jobs:
         # flask: the module under test is a blueprint, and _load executes its
         # module-level imports. psycopg2-binary: the parity test connects.
         # psycopg[binary]: the pack-expiry lane loads its instant through
-        # psycopg 3 too, the driver that refuses 'infinity'.
-        run: python3 -m pip install pytest flask psycopg2-binary "psycopg[binary]" requests
+        # psycopg 3 too, the driver that refuses 'infinity'. PyJWT (the
+        # requirements.txt pin): the tier-gates token test mints a real JWT.
+        run: python3 -m pip install pytest flask psycopg2-binary "psycopg[binary]" requests "PyJWT==2.12.0"
       - name: Fiber provider/name lane parity against a real Postgres
         run: python3 -m pytest tests/test_fiber_provider_backfill.py -v --tb=short
       - name: Prove the parity test actually RAN
@@ -650,13 +651,14 @@ jobs:
       - name: Tier-grant gates + legacy backfill SQL against a real Postgres
         env:
           TIER_GATES_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
-        run: python3 -m pytest tests/test_tier_grant_gates_sql.py tests/test_prefixed_key_row_sql.py tests/test_key_tier_follows_row_sql.py -v --tb=short
+        run: python3 -m pytest tests/test_tier_grant_gates_sql.py tests/test_prefixed_key_row_sql.py tests/test_key_tier_follows_row_sql.py tests/test_tier_gate_token_users_sql.py -v --tb=short
 
       - name: Prove the tier-gates SQL test actually RAN
         env:
           TIER_GATES_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
         run: |
-          python3 -m pytest tests/test_tier_grant_gates_sql.py tests/test_prefixed_key_row_sql.py tests/test_key_tier_follows_row_sql.py \
+          python3 -m pytest tests/test_tier_grant_gates_sql.py tests/test_prefixed_key_row_sql.py \
+            tests/test_key_tier_follows_row_sql.py tests/test_tier_gate_token_users_sql.py \
             -q -rs --tb=no > tg.txt 2>&1 || { cat tg.txt; exit 1; }
           cat tg.txt
           if grep -qi "skipped" tg.txt; then

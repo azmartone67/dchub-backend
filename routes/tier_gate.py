@@ -198,7 +198,7 @@ def _resolve_caller_tier() -> tuple[str, dict]:
                 debug["jwt_decode_err"] = str(e)[:80]
         # DB fallback — only when we don't already hold a PRO+ signal (keeps the
         # common logged-in path DB-free while still catching a plan that lives
-        # only in api_keys.rate_limit_tier / users.plan).
+        # only in api_keys.rate_limit_tier).
         _have = max([_TIER_RANK.get(t, 0) for t, _ in candidates], default=0)
         if _have < _TIER_RANK.get("PRO", 3):
             try:
@@ -225,18 +225,11 @@ def _resolve_caller_tier() -> tuple[str, dict]:
                                     candidates.append((str(r[0]).upper(), "cookie:api_keys"))
                             except Exception:
                                 pass
-                            # Then users.plan
-                            try:
-                                cur.execute("""
-                                    SELECT plan FROM users
-                                     WHERE session_token = %s OR id::text = %s
-                                     LIMIT 1
-                                """, (token, token))
-                                r = cur.fetchone()
-                                if r and r[0]:
-                                    candidates.append((str(r[0]).upper(), "cookie:users"))
-                            except Exception:
-                                pass
+                            # users is deliberately not consulted here. The
+                            # login credential is the signed JWT handled in 2a;
+                            # nothing writes a users.session_token (the column
+                            # is not in db_persistence.CRITICAL_TABLES), and a
+                            # users.id is an identifier, not a credential.
             except Exception as e:
                 debug["cookie_resolve_err"] = str(e)[:80]
 
