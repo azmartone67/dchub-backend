@@ -414,7 +414,9 @@ def mint_key():
         key_prefix_str = _prefix_map.get(api_tier, 'dchub_dev_')
         raw_key = key_prefix_str + _sec.token_urlsafe(32)
         key_hash = _hl.sha256(raw_key.encode()).hexdigest()
-        key_prefix = raw_key[:raw_key.rindex('_') + 1]
+        # First 16 chars, the api_tier_gating.generate_api_key convention
+        # that key_prefix readers match on (LEFT(key, 16)).
+        key_prefix = raw_key[:16]
         now = _dt.utcnow().isoformat()
         with _get_pg() as conn:
             cur = conn.cursor()

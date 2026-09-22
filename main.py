@@ -19084,7 +19084,9 @@ def handle_checkout_completed(session):
             _key_prefix_str = _tier_prefix_map.get(plan_name, 'dchub_dev_')
             raw_key = _key_prefix_str + sec.token_urlsafe(32)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-            key_prefix = raw_key[:raw_key.rindex('_') + 1]  # e.g. 'dchub_dev_'
+            # First 16 chars, the api_tier_gating.generate_api_key convention
+            # that key_prefix readers match on (LEFT(key, 16)).
+            key_prefix = raw_key[:16]
 
             _pg_execute(
                 "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key_hash) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
