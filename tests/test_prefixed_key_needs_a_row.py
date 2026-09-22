@@ -57,6 +57,7 @@ def rows(monkeypatch):
     r = _Rows()
     monkeypatch.setattr(mg, "_resolve_from_db_hash", r.lookup)
     monkeypatch.setattr(mg, "_key_store", {})
+    monkeypatch.setattr(mg, "_row_tiers", {})
     monkeypatch.delenv("DATABASE_URL", raising=False)
     return r
 

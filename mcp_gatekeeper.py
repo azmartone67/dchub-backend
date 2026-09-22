@@ -243,6 +243,8 @@ REDACT_FIELDS = {
 
 # In-memory key store. On startup, load from DB or env.
 # Format: { "dchub_dev_xxxx": Tier.DEVELOPER, ... }
+# Nothing here expires: a DCHUB_API_KEYS key keeps its tier for the life of the
+# process. The tiers resolve_tier reads from api_keys rows live in _row_tiers.
 _key_store: Dict[str, Tier] = {}
 
 def _load_keys_from_env():
@@ -337,9 +339,32 @@ def _load_keys_from_db():
         logger.warning(f"⚠️ Could not load keys from DB: {e}")
 
 
+# How long a dchub_ key's tier, read from its api_keys row, is served before
+# the row is read again. Billing writes the row (handle_payment_failed's
+# dunning demote, handle_subscription_deleted, handle_invoice_paid's restore,
+# an upgrade), so a process sees the change at most this long after it.
+# DCHUB_KEY_TIER_TTL_S overrides it; 0 reads the row on every call.
+try:
+    _ROW_TIER_TTL_S = max(0.0, float(os.environ.get("DCHUB_KEY_TIER_TTL_S", "300")))
+except ValueError:
+    logger.warning("DCHUB_KEY_TIER_TTL_S=%r is not a number; using 300",
+                   os.environ.get("DCHUB_KEY_TIER_TTL_S"))
+    _ROW_TIER_TTL_S = 300.0
+
+# api_key -> (tier its row granted, _monotonic() time to read the row again).
+# Apart from _key_store, whose DCHUB_API_KEYS entries never expire.
+_row_tiers: Dict[str, tuple] = {}
+_monotonic = time.monotonic   # the clock _row_tiers runs on
+
+
+class _RowReadError(Exception):
+    """_resolve_from_db_hash could not read api_keys. The key's row is unknown,
+    which is not the same as absent."""
+
+
 def resolve_tier(api_key: Optional[str]) -> Tier:
     """Resolve API key to tier. No key = Free.
-    Checks: in-memory store → dch_trial_ → the key's api_keys row (cached).
+    Checks: in-memory store → dch_trial_ → the key's api_keys row (_row_tier).
     A dchub_ key gets the tier its row grants (_tier_of_row), whatever plan
     its prefix names. No active row: FREE.
     """
@@ -368,12 +393,36 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
     # the key string. So the row decides (owner decision, 2026-09-22) and the
     # prefix grants nothing. No active row: FREE.
     if api_key.startswith("dchub_"):
-        tier = _resolve_from_db_hash(api_key)
-        if tier is not None:
-            _key_store[api_key] = tier  # cache it
-            return tier
+        return _row_tier(api_key)
 
     return Tier.FREE
+
+
+def _row_tier(api_key: str) -> Tier:
+    """The tier api_key's row grants, read at most once per _ROW_TIER_TTL_S.
+
+    Only a read that succeeds replaces the cached tier: no active row drops
+    the key to FREE. A read that fails keeps the tier the row last granted, so
+    a database blip does not turn a paying key FREE, and retries a TTL later
+    rather than on the next call, which would add psycopg2.connect's
+    connect_timeout (5s) to every request for the key while the DB is down.
+    """
+    now = _monotonic()
+    cached = _row_tiers.get(api_key)
+    if cached is not None and now < cached[1]:
+        return cached[0]
+    try:
+        tier = _resolve_from_db_hash(api_key)
+    except _RowReadError:
+        if cached is None:
+            return Tier.FREE
+        _row_tiers[api_key] = (cached[0], now + _ROW_TIER_TTL_S)
+        return cached[0]
+    if tier is None:
+        _row_tiers.pop(api_key, None)
+        return Tier.FREE
+    _row_tiers[api_key] = (tier, now + _ROW_TIER_TTL_S)
+    return tier
 
 
 # tier_registry.api_tier values that are not Tier member names. Every other
@@ -404,6 +453,8 @@ def _tier_of_row(rate_limit_tier, plan, user_plan) -> Tier:
 def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
     """The tier an active api_keys row grants this key (_tier_of_row), matched
     on key_hash = sha256(key) or the raw key; None when there is no such row.
+    Raises _RowReadError when the row cannot be read, so resolve_tier can
+    tell a failed read from no row and keep the tier it last read.
 
     PATCH 2026-04-24 (jm): P0 — every Enterprise customer was being silently
     treated as free tier because this query had `(ak.is_active = 1 OR
@@ -454,6 +505,7 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
             "mcp_gatekeeper._resolve_from_db_hash failed for key prefix %s: %s",
             (api_key or "")[:12], e, exc_info=True
         )
+        raise _RowReadError(e) from e
     return None
 
 
