@@ -19047,13 +19047,21 @@ def handle_checkout_completed(session):
                     and _kref.lower().startswith('k-')):
                 _khash = _kref[2:].strip().lower()
                 if len(_khash) == 64 and all(_ch in '0123456789abcdef' for _ch in _khash):
+                    # Record the paying customer on the key this raises. The
+                    # cancel and dunning demotes choose keys by the customer's
+                    # addresses, and a key raised here may carry no address or
+                    # another one; they also match this record.
+                    _kcus = (session.get('customer') or '').strip()
                     _kc2, _ = _pg_execute(
-                        "UPDATE mcp_dev_keys SET tier = %s "
+                        "UPDATE mcp_dev_keys SET tier = %s, "
+                        "       metadata = CASE WHEN %s = '' THEN metadata "
+                        "                  ELSE COALESCE(metadata, '{}'::jsonb) "
+                        "                       || jsonb_build_object('stripe_customer_id', %s::text) END "
                         "WHERE encode(sha256(api_key::bytea), 'hex') = %s "
                         "  AND status = 'active' "
                         "  AND tier IS DISTINCT FROM %s "
                         "  AND tier <> 'enterprise'",
-                        (_paid_mcp_tier, _khash, _paid_mcp_tier))
+                        (_paid_mcp_tier, _kcus, _kcus, _khash, _paid_mcp_tier))
                     print(f"🔑 k- sub tier '{_paid_mcp_tier}' → durable key "
                           f"(hash={_khash[:12]}…, rows={_kc2})")
                     # r-keybound-attr (2026-07-18, #1660): same attribution gap
@@ -19600,6 +19608,29 @@ def _handle_subscription_plan_change(subscription, customer_id):
             print(f"⚠️ upgrade welcome email failed (non-fatal): {_pw_err}")
 
 
+def _demote_customer_mcp_keys(customer_id):
+    """A subscription that ended, on the MCP keys it paid for. validate_key
+    serves the highest of mcp_dev_keys.tier, the users row and api_keys, so
+    lowering the users row and api_keys alone leaves a paid key paid.
+
+    The keys: those bound to an address on the customer, and those a k-
+    checkout by this customer raised (handle_checkout_completed records the
+    customer on the key as metadata.stripe_customer_id). Best-effort: never
+    breaks the webhook.
+    """
+    try:
+        _mc, _ = _pg_execute(
+            "UPDATE mcp_dev_keys SET tier = 'free' "
+            "WHERE (LOWER(email) IN (SELECT LOWER(email) FROM users WHERE stripe_customer_id = %s) "
+            "       OR metadata->>'stripe_customer_id' = %s) "
+            "AND tier IN ('paid','enterprise')",
+            (customer_id, customer_id))
+        if _mc:
+            print(f"🔑 Demoted {_mc} MCP dev key(s) → free for canceled customer {customer_id}")
+    except Exception as _mcp_err:
+        print(f"⚠️ mcp_dev_keys demote failed (non-fatal): {str(_mcp_err)[:120]}")
+
+
 def handle_subscription_updated(subscription):
     """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
@@ -19617,6 +19648,7 @@ def handle_subscription_updated(subscription):
         if pg_rows:
             for row in pg_rows:
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
+        _demote_customer_mcp_keys(customer_id)
         print(f"🔑 Downgraded API keys to free tier for customer: {customer_id}")
 
     conn = get_db()
@@ -19660,18 +19692,8 @@ def handle_subscription_deleted(subscription):
             _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
 
     # r77 (2026-06-07): demote the MCP dev key(s) too — symmetric to the payment
-    # upgrade. The MCP gate reads mcp_dev_keys.tier (keyed on email), so without
-    # this a churned customer keeps paid MCP tools forever (free-riding). Best-effort.
-    try:
-        _mc, _ = _pg_execute(
-            "UPDATE mcp_dev_keys SET tier = 'free' "
-            "WHERE LOWER(email) IN (SELECT LOWER(email) FROM users WHERE stripe_customer_id = %s) "
-            "AND tier IN ('paid','enterprise')",
-            (customer_id,))
-        if _mc:
-            print(f"🔑 Demoted {_mc} MCP dev key(s) → free for canceled customer {customer_id}")
-    except Exception as _mcp_err:
-        print(f"⚠️ mcp_dev_keys demote failed (non-fatal): {str(_mcp_err)[:120]}")
+    # upgrade. Best-effort.
+    _demote_customer_mcp_keys(customer_id)
 
     conn = get_db()
     try:
@@ -19792,7 +19814,8 @@ def handle_invoice_paid(invoice):
     # The MCP key half of the dunning demote: handle_payment_failed recorded
     # the tier each key held when it lowered it. Put back exactly that, for
     # either demote reason, and drop the record. A row needs the record AND
-    # must still be bound to this customer's address, which is how the demote
+    # must still be bound to this customer (its address, or the customer a k-
+    # checkout recorded on it), which is how the demote
     # chose it, so a key the demote never lowered is never raised here. A key
     # raised since keeps the higher tier.
     try:
@@ -19803,9 +19826,10 @@ def handle_invoice_paid(invoice):
                       metadata = metadata - 'dunning_demote'
                 WHERE metadata->'dunning_demote'->>'customer' = %s
                   AND metadata->'dunning_demote'->>'from' IN ('paid', 'enterprise')
-                  AND LOWER(email) IN (SELECT LOWER(email) FROM users
-                                        WHERE stripe_customer_id = %s)""",
-            (customer_id, customer_id),
+                  AND (LOWER(email) IN (SELECT LOWER(email) FROM users
+                                         WHERE stripe_customer_id = %s)
+                       OR metadata->>'stripe_customer_id' = %s)""",
+            (customer_id, customer_id, customer_id),
         )
     except Exception as e:
         print(f"[dunning] mcp key restore failed for {customer_id}: {e}")
@@ -19981,7 +20005,8 @@ def handle_payment_failed(invoice):
                 # dch_live_ key has no api_keys row, so a key promoted to
                 # 'paid' at checkout was not reached by the demote above. The
                 # tier each key held is recorded on it, so handle_invoice_paid
-                # puts back exactly that and never grants a key more.
+                # puts back exactly that and never grants a key more. A key a
+                # k- checkout raised is matched by the customer recorded on it.
                 if email:
                     _pg_execute(
                         """UPDATE mcp_dev_keys
@@ -19991,9 +20016,10 @@ def handle_payment_failed(invoice):
                                                             'customer', %s::text,
                                                             'reason', %s::text)),
                                   tier = 'free'
-                            WHERE LOWER(email) = LOWER(%s)
+                            WHERE (LOWER(email) = LOWER(%s)
+                                   OR metadata->>'stripe_customer_id' = %s)
                               AND tier IN ('paid', 'enterprise')""",
-                        (customer_id, demote_reason, email),
+                        (customer_id, demote_reason, email, customer_id),
                     )
                 demoted_users.append({"user_id": user_id, "email": email, "plan": plan,
                                       "paid": paid_count, "failed": failed_count,

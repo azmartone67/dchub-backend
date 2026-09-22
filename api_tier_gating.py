@@ -1992,7 +1992,8 @@ def _v2_raise_rate_limit_tier(c, user_id, plan):
 def _v2_downgrade_customer_keys(c, customer_id):
     """A v2 cancel, on the columns the gates read: api_keys.rate_limit_tier
     (read before api_keys.plan) and mcp_dev_keys.tier (the highest-of source
-    in validate_key), for every user on the customer. The same writes
+    in validate_key), for every user on the customer and every key a k-
+    checkout by the customer raised. The same writes
     main.handle_subscription_deleted makes. This used to set api_keys.plan
     alone, for the first matching user only.
     """
@@ -2002,10 +2003,11 @@ def _v2_downgrade_customer_keys(c, customer_id):
     """, (customer_id,))
     c.execute("""
         UPDATE mcp_dev_keys SET tier = 'free'
-         WHERE LOWER(email) IN (SELECT LOWER(email) FROM users
-                                 WHERE stripe_customer_id = %s)
+         WHERE (LOWER(email) IN (SELECT LOWER(email) FROM users
+                                  WHERE stripe_customer_id = %s)
+                OR metadata->>'stripe_customer_id' = %s)
            AND tier IN ('paid', 'enterprise')
-    """, (customer_id,))
+    """, (customer_id, customer_id))
 
 
 def _handle_sub_deleted_v2(subscription):

@@ -15,6 +15,12 @@ So each writer below has to reach those columns:
                                mcp_dev_keys.tier for every user on the
                                customer; active/trialing raises
                                rate_limit_tier for a recognised price only
+  main.handle_subscription_*   .deleted and .updated with status canceled
+                               both lower mcp_dev_keys.tier
+  main.handle_checkout_completed  a k-<sha256(api_key)> checkout records the
+                               paying customer on the key it raises, and every
+                               demote above matches that record as well as the
+                               customer's addresses
 
 Real handlers against a real Postgres. main.py cannot be imported in a unit
 test, so its two handlers are compiled out of its AST with _pg_execute bound to
@@ -29,6 +35,8 @@ and fails if this file skipped.
 import ast
 import builtins
 import copy
+import hashlib
+import logging
 import os
 import pathlib
 import re
@@ -186,6 +194,24 @@ class _Harness:
         self.payment_failed_fn = _compile("handle_payment_failed", ns)
         self.invoice_paid_fn = _compile("handle_invoice_paid", ns)
 
+        sub_ns = dict(ns, _handle_subscription_plan_change=lambda *a, **k: None)
+        sub_ns["_demote_customer_mcp_keys"] = _compile("_demote_customer_mcp_keys", sub_ns)
+        self.sub_updated_fn = _compile("handle_subscription_updated", sub_ns)
+        self.sub_deleted_fn = _compile("handle_subscription_deleted", sub_ns)
+
+        def _pg_execute_many(stmts):
+            for q, p in stmts:
+                _pg_execute(q, p)
+
+        co_ns = dict(ns, _pg_execute_many=_pg_execute_many, hashlib=hashlib,
+                     logger=logging.getLogger("lifecycle_writers_t"),
+                     hash_password=lambda pw: "x",
+                     _apply_plan_guard=lambda s, p, t, u, e: (p, t, None),
+                     _plan_write_floor=lambda e, u, p, t: (p, t),
+                     send_admin_alert_email=lambda *a, **k: None,
+                     send_welcome_email_sendgrid=lambda *a, **k: None)
+        self.checkout_fn = _compile("handle_checkout_completed", co_ns)
+
         monkeypatch.setattr(api_tier_gating, "get_db",
                             lambda *a, **k: db_utils.PGConnectionWrapper(
                                 _connect(), return_func=lambda c: c.close()))
@@ -242,6 +268,26 @@ class _Harness:
     def invoice_paid(self, customer=CUS):
         self.invoice_paid_fn({"customer": customer})
 
+    def k_checkout(self, api_key=DCH, customer=CUS, email=EMAIL):
+        """A Pro subscription checkout opened by whoever holds api_key
+        (client_reference_id k-<sha256(api_key)>) and paid from `email`."""
+        self.checkout_fn({
+            "id": "cs_lifecycle_t", "mode": "subscription", "customer": customer,
+            "customer_details": {"email": email}, "amount_total": 9900,
+            "metadata": {"plan": "pro_monthly"}, "subscription": "sub_lifecycle_t",
+            "client_reference_id": "k-" + hashlib.sha256(api_key.encode()).hexdigest()})
+
+    # The subscription handlers open their mirror block with get_db() outside
+    # a try, after every Postgres write. The mirror is not under test, so the
+    # stub raises there; reaching it means the Postgres writes all ran.
+    def sub_updated(self, status, customer=CUS):
+        with pytest.raises(RuntimeError, match="no SQLite mirror"):
+            self.sub_updated_fn({"customer": customer, "status": status})
+
+    def sub_deleted(self, customer=CUS):
+        with pytest.raises(RuntimeError, match="no SQLite mirror"):
+            self.sub_deleted_fn({"customer": customer})
+
     def v2_deleted(self):
         api_tier_gating._handle_sub_deleted_v2({"customer": CUS})
 
@@ -264,7 +310,10 @@ def h(monkeypatch):
     cur.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
     cur.execute(f"CREATE SCHEMA {SCHEMA}")
     cur.execute(f"SET search_path TO {SCHEMA}")
+    # handle_checkout_completed writes users.plan_updated_at (and
+    # routes/auth_routes.py reads it); no DDL in the tree declares it.
     for stmt in [_critical_ddl("users"), *_users_migrations(),
+                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_updated_at TIMESTAMPTZ",
                  _critical_ddl("api_keys"), _mcp_dev_keys_ddl()]:
         cur.execute(stmt)
     harness = _Harness(monkeypatch)
@@ -497,3 +546,85 @@ def test_an_empty_configured_price_does_not_match_an_item_without_one(h, monkeyp
     h.api_key(rate_limit_tier="starter", plan="starter")
     h.v2_updated("active", price="")
     assert h.api_row()[0] == "starter"
+
+
+# ═══ main.handle_subscription_updated: a cancel reaches the MCP key ═══════════
+
+def test_an_update_to_canceled_lowers_the_mcp_key_as_deleted_does(h):
+    h.user(plan="pro")
+    h.api_key(rate_limit_tier="pro", plan="pro")
+    h.mcp_key(tier="paid", email=EMAIL.upper())          # matched case-blind
+    h.sub_updated("canceled")
+    assert h.api_row()[0] == "free"
+    assert h.mcp_row()[0] == "free"
+    assert h.node_tier() == "free"
+
+
+@pytest.mark.parametrize("status", ["active", "trialing", "past_due", "unpaid"])
+def test_an_update_that_is_not_a_cancel_leaves_the_mcp_keys(h, status):
+    h.user(plan="pro")
+    h.mcp_key(tier="paid")
+    h.mcp_key(api_key=OTHER, email=None, tier="paid", metadata={"stripe_customer_id": CUS})
+    h.sub_updated(status)
+    assert h.mcp_row()[0] == "paid"
+    assert h.mcp_row(OTHER)[0] == "paid"
+
+
+# ═══ a key a k- checkout raised: every demote reaches it by its customer ══════
+
+HOLDERS = pytest.mark.parametrize("holder", [None, "holder@else.example"],
+                                  ids=["no_address", "another_address"])
+
+
+@HOLDERS
+def test_a_k_checkout_records_the_paying_customer_on_the_key_it_raises(h, holder):
+    h.mcp_key(email=holder, tier="free", metadata={"email_verified_for": holder})
+    h.k_checkout()
+    assert h.mcp_row() == ("paid", {"email_verified_for": holder, "stripe_customer_id": CUS})
+    assert h.node_tier() == "paid"
+
+
+@HOLDERS
+@pytest.mark.parametrize("cancel", ["deleted", "updated_canceled", "v2_deleted",
+                                    "v2_updated_canceled"])
+def test_every_cancel_lowers_a_key_its_customers_k_checkout_raised(h, holder, cancel):
+    h.mcp_key(email=holder, tier="free")
+    h.k_checkout()
+    assert h.mcp_row()[0] == "paid"
+    {"deleted": h.sub_deleted,
+     "updated_canceled": lambda: h.sub_updated("canceled"),
+     "v2_deleted": h.v2_deleted,
+     "v2_updated_canceled": lambda: h.v2_updated("canceled")}[cancel]()
+    assert h.mcp_row()[0] == "free"
+    assert h.node_tier() == "free"
+
+
+@HOLDERS
+def test_the_dunning_demote_and_restore_reach_a_key_its_customers_k_checkout_raised(h, holder):
+    h.mcp_key(email=holder, tier="free")
+    h.k_checkout()
+    h.sql("UPDATE users SET invoices_paid_count = 1, payment_failed_count = 3 "
+          "WHERE stripe_customer_id = %s", (CUS,))
+    h.payment_failed()                                   # failure #4
+    tier, meta = h.mcp_row()
+    assert tier == "free"
+    assert meta["dunning_demote"] == {"from": "paid", "customer": CUS,
+                                      "reason": "dunning_prior_payer"}
+    h.invoice_paid()
+    assert h.mcp_row() == ("paid", {"stripe_customer_id": CUS})
+
+
+def test_another_customers_cancel_leaves_a_key_this_customer_raised(h):
+    h.mcp_key(email=None, tier="free")
+    h.k_checkout()
+    h.sub_deleted(customer="cus_someone_else")
+    h.sub_updated("canceled", customer="cus_someone_else")
+    assert h.mcp_row() == ("paid", {"stripe_customer_id": CUS})
+
+
+def test_a_k_checkout_leaves_an_enterprise_key_unrecorded_so_its_cancel_does_too(h):
+    h.mcp_key(email=None, tier="enterprise")
+    h.k_checkout()
+    assert h.mcp_row() == ("enterprise", None)
+    h.sub_deleted()
+    assert h.mcp_row()[0] == "enterprise"
