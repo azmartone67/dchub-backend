@@ -29714,8 +29714,32 @@ try:
 except Exception:  # pragma: no cover - import guard only
     _HEATMAP_PROVENANCE = {"source": "static_fixture", "live": False, "as_of": None}
 
+# Land & Power details are Pro (owner, 2026-09-22; util/plan_tease.py). Every
+# Land & Power route answers through the same gate: a keyless caller gets the
+# wall before any work, a key or session below Pro the preview, Pro the answer.
+from util.plan_tease import lp_gated_view as _lp_gated_view  # noqa: E402
+
+
+def _land_power_data_preview(full):
+    """/api/v1/land-power/data below Pro: the grid operators and three market
+    names, with every figure null and coordinates at two decimals."""
+    from util.plan_tease import round2, TEASE_ROWS
+    grid = {iso: {'iso': iso, 'iso_name': (g or {}).get('iso_name'), 'demand_gw': None,
+                  'status': 'gated'}
+            for iso, g in (full.get('grid_demand') or {}).items()}
+    heat = [{'name': m.get('name'), 'lat': round2(m.get('lat')), 'lng': round2(m.get('lng'))}
+            for m in (full.get('capacity_heatmap') or [])[:TEASE_ROWS]]
+    body = {'success': True, 'grid_demand': grid, 'energy_prices': {},
+            'capacity_heatmap': heat,
+            'capacity_heatmap_provenance': full.get('capacity_heatmap_provenance'),
+            'epa_summary': {}, 'utility_territories': []}
+    locked = ['grid_demand.*.demand_gw', 'energy_prices', 'capacity_heatmap[].capacity_mw',
+              'capacity_heatmap[%d:]' % TEASE_ROWS, 'epa_summary', 'utility_territories']
+    return body, locked, len(full.get('capacity_heatmap') or [])
+
+
 @app.route('/api/v1/land-power/data', methods=['GET'])
-@require_plan('pro')
+@_lp_gated_view(lambda body: _land_power_data_preview(body))
 def land_power_consolidated():
     """
     Consolidated data endpoint for Land & Power page.
@@ -39272,9 +39296,6 @@ def get_facility_by_id(facility_id):
         return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-300:]}), 500
     finally:
         if conn: conn.close()
-
-from util.plan_tease import lp_gated_view as _lp_gated_view  # noqa: E402
-
 
 def _site_score_preview(full):
     """/api/site-score below Pro: the verdict band, the counts and the names.

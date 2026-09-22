@@ -198,6 +198,40 @@ def _auto_issue_hook(monkeypatch):
     return ns["auto_issue_key_for_ai_agents"]
 
 
+def _main_land_power_data():
+    """main.py's live /api/v1/land-power/data handler and its preview, served
+    through the decorator main.py puts on it (asserted separately). Only the
+    grid feed and the state power prices behind it are stubbed."""
+    tree = _main_tree()
+    nodes = []
+    for name in ("_land_power_data_preview", "land_power_consolidated"):
+        found = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+        assert len(found) <= 1, name
+        if found:
+            node = copy.deepcopy(found[0])
+            node.decorator_list = []
+            nodes.append(node)
+    assert nodes and nodes[-1].name == "land_power_consolidated"
+    markets = [{"name": n, "lat": lat, "lng": lng, "capacity_mw": mw, "utilization": 70, "growth": 12}
+               for n, lat, lng, mw in (("Northern Virginia", 39.0438, -77.4874, 4500),
+                                       ("Dallas-Fort Worth", 32.7767, -96.797, 2800),
+                                       ("Phoenix", 33.4484, -112.074, 1200),
+                                       ("Chicago", 41.8781, -87.6298, 1800))]
+    ns = {"request": flask.request, "jsonify": flask.jsonify, "logger": logging.getLogger("t"),
+          "requests": None, "CAPACITY_HEATMAP_MARKETS": markets,
+          "_HEATMAP_PROVENANCE": {"source": "static_fixture", "live": False},
+          "gridstatus_get_load": lambda iso: TOUCHED.append("grid") or
+          {"load_mw": 81234.5, "timestamp": "2026-09-22T06:00Z"}}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "main.py", "exec"), ns)  # noqa: S102
+    if "_land_power_data_preview" not in ns:
+        # The tree before this route joined the Land & Power gate: it carried
+        # require_plan('pro'), so the matrix runs (and fails) there too.
+        from api_tier_gating import require_plan
+        return require_plan("pro")(ns["land_power_consolidated"])
+    from util.plan_tease import lp_gated_view
+    return lp_gated_view(lambda body: ns["_land_power_data_preview"](body))(ns["land_power_consolidated"])
+
+
 def _main_site_score():
     """main.py's api_site_score and the helpers it calls, decorators stripped.
 
@@ -264,7 +298,6 @@ def app(ledger, monkeypatch):
     import h3_scoring
     import routes.land_power_mcp as lpm
     import land_power_crawler as lpc
-    import map_tier_gating as mtg
     import dchub_iteration_2_routes as it2
     monkeypatch.setattr(h3_scoring, "h3", FAKE_H3)
     monkeypatch.setattr(h3_scoring, "get_db", lambda: None)
@@ -279,18 +312,24 @@ def app(ledger, monkeypatch):
     monkeypatch.setattr(it2, "_get_pg_conn", lambda: _Conn())
     import routes.connectivity_score as cs      # site-score's parcel fiber read: none here
     monkeypatch.setattr(cs, "score_connectivity", lambda *a, **k: {"error": "no_db"})
-    # land-power/data's Pro answer reads grid demand and state power prices.
-    monkeypatch.setitem(sys.modules, "main", types.SimpleNamespace(
-        gridstatus_get_load=lambda iso: TOUCHED.append("grid") or
-        {"load_mw": 81234.5, "timestamp": "2026-09-22T06:00Z"}))
+    # land-power/data's answer reads state power prices, and decides its own
+    # heatmap redaction from the caller's plan (routes.dcpi._dcpi_is_paid).
     monkeypatch.setitem(sys.modules, "capacity_headroom_api", types.SimpleNamespace(
         fetch_eia_retail_rate=lambda st: 8.37))
+    # As the real check does, it counts Starter and Developer as paid
+    # (routes/dcpi._DCPI_PAID_PLANS), so a Developer key reaches the preview
+    # with the unredacted body: the preview itself has to hold the line.
+    import routes.dcpi as _dcpi
+    monkeypatch.setattr(_dcpi, "_dcpi_is_paid", lambda: PLANS.get(
+        flask.request.headers.get("X-API-Key") or "") in ("starter", "developer", "pro"))
 
     a = flask.Flask("lp-pro-only")
     a.register_blueprint(lpm.land_power_mcp_bp)
     a.register_blueprint(h3_scoring.h3_bp)
     lpc.register_land_power_routes(a, lambda: _Conn(), lambda f: f)
-    mtg.register_map_tier_gating(a, decode_jwt_func=lambda t: None)
+    # /api/v1/land-power/data is main.py's own handler. (map_tier_gating also
+    # defines one, but main.py never registers that module.)
+    a.add_url_rule("/api/v1/land-power/data", "land_power_consolidated", _main_land_power_data())
     it2.register_iteration_2_routes(a)
     a.add_url_rule("/api/site-score", "api_site_score", _main_site_score())
     a.before_request(_auto_issue_hook(monkeypatch))
@@ -611,6 +650,36 @@ def test_the_preview_keeps_grades_verdicts_names_and_counts(client):
     snap = _get(client, SNAPSHOT, FREE_KEY).get_json()
     assert "substations" not in snap["layers"] and snap["counts"]["substations"] == 4
     assert len(snap["layers"]["facilities"]) == 3
+
+
+def test_main_serves_land_power_data_through_the_land_power_gate():
+    tree = _main_tree()
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "land_power_consolidated")
+    decos = [ast.unparse(d) for d in fn.decorator_list]
+    assert decos[0].startswith("app.route('/api/v1/land-power/data'"), decos
+    assert any(d.startswith("_lp_gated_view(") and "_land_power_data_preview" in d for d in decos), decos
+    assert not any("require_plan" in d for d in decos), decos
+
+
+def test_the_map_session_wall_on_land_power_sells_pro_only(ledger, monkeypatch):
+    """free_tier_gate's map-session cap answers before the route does. On a
+    Land & Power route its wall offers Pro alone; elsewhere it is unchanged."""
+    import free_tier_gate as ftg
+    monkeypatch.setattr("routes.email_capture.build_agent_coaching", lambda *a, **k: {}, raising=False)
+    app = flask.Flask("cap")
+    for path, lp in (("/api/site-score", True), ("/api/v1/land-power/data", True),
+                     ("/api/v1/site-planner/composite-score", True), ("/api/v1/fiber/routes", False)):
+        with app.test_request_context(path):
+            resp, status = ftg._metered_402()
+            body = resp.get_json()
+        assert status == 402, path
+        if lp:
+            assert [o["plan"] for o in body["upgrade_options"]] == ["pro"], path
+            assert _token(body["upgrade_url"])[0] == "pro" and "Pro" in body["message"], path
+            _assert_no_lower_rung(json.dumps(body))
+        else:
+            assert "upgrade_options" not in body, path
 
 
 def test_main_serves_site_score_through_the_land_power_gate():
