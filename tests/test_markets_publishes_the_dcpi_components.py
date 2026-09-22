@@ -174,12 +174,20 @@ def test_the_json_twin_publishes_the_same_measures(monkeypatch):
         def close(self): pass
     monkeypatch.setattr(m, "read_deep_dive", lambda s: dict(BRIEF))
     monkeypatch.setattr(m, "_conn", lambda: Conn())
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "twin-test-internal-key")
     app = flask.Flask(__name__)
     app.register_blueprint(m.market_deep_dive_bp)
     with app.test_client() as c:
-        body = json.loads(c.get("/markets/ashburn.json").data)
+        # 2026-09-21: the numbers go to a caller util/numeric_tease.py opens
+        # them for (here the MCP server's key); a keyless caller gets the same
+        # measures with the paid values null.
+        body = json.loads(c.get("/markets/ashburn.json",
+                                headers={"X-Internal-Key": "twin-test-internal-key"}).data)
+        anon = json.loads(c.get("/markets/ashburn.json").data)
     assert SHARED_MEASURES <= set(_by_name(body))
     assert _by_name(body)["Excess Power Score"]["value"] == 46.1
+    assert SHARED_MEASURES <= set(_by_name(anon))
+    assert _by_name(anon)["Excess Power Score"]["value"] is None
 
 
 # ── fail-soft: absent, never stale ──────────────────────────────────────

@@ -12,6 +12,9 @@ import os, csv, io, datetime
 from flask import Blueprint, jsonify, Response, request
 import psycopg2, psycopg2.extras
 
+from util.numeric_tease import (TEASE_ROWS, null_fields, serve_full_or_tease,
+                                tease_envelope, unlock_url)
+
 open_data_bp = Blueprint("open_data", __name__)
 
 
@@ -40,7 +43,8 @@ a{color:#818cf8}code{background:#1f2030;padding:0.2rem 0.5rem;border-radius:4px;
 .card p{margin:0 0 0.6rem;color:#9ca3af;font-size:0.9rem}</style></head><body>
 <h1>DC Hub · Open Data</h1><p style="color:#9ca3af">Free for citation. Updated daily.</p>
 <h2>Datasets</h2>
-<div class="card"><h3>DCPI History</h3><p>Daily Excess Power + Constraint scores for every U.S. data center market since launch.</p>
+<div class="card"><h3>DCPI History</h3><p>Daily Excess Power + Constraint scores for every U.S. data center market since launch.
+Without a key the files are a preview (a few rows with names and verdicts, scores empty); a Developer key or a credit-pack key returns every market with its scores.</p>
 <a href="/data/dcpi-history.csv">Download CSV →</a> · <a href="/data/dcpi-current.json">JSON snapshot</a></div>
 <div class="card"><h3>API Manifest</h3><p>Machine-readable catalog of every dataset.</p>
 <a href="/api/v1/data/manifest">JSON →</a></div>
@@ -48,27 +52,69 @@ a{color:#818cf8}code{background:#1f2030;padding:0.2rem 0.5rem;border-radius:4px;
 <h2>Contact</h2><p>jonathan@dchub.cloud</p></body></html>""", mimetype="text/html")
 
 
+# Both DCPI files carry the three paid DCPI numbers for every market. Developer
+# and above, a key holding $10-pack credits, the MCP server and admin get the
+# file; everyone else gets the same file shape with at most TEASE_ROWS rows, the
+# verdict and the names filled in and the three numbers empty
+# (util/numeric_tease.py, 2026-09-21).
+DCPI_FILE_COLUMNS = ("computed_at", "market_slug", "market_name", "state", "iso",
+                     "excess_power_score", "constraint_score",
+                     "time_to_power_months", "verdict")
+DCPI_FILE_NUMERICS = ("excess_power_score", "constraint_score",
+                      "time_to_power_months")
+
+
 @open_data_bp.route("/data/dcpi-history.csv", methods=["GET"])
 def dcpi_history_csv():
+    return serve_full_or_tease(lambda: _dcpi_history_csv(preview=False),
+                               lambda: _dcpi_history_csv(preview=True))
+
+
+def _dcpi_history_csv(preview):
     out = io.StringIO()
     w = csv.writer(out)
-    w.writerow(["computed_at","market_slug","market_name","state","iso",
-                "excess_power_score","constraint_score","time_to_power_months","verdict"])
+    w.writerow(list(DCPI_FILE_COLUMNS))
+    rows, total, err = [], 0, None
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""SELECT computed_at, market_slug, market_name, state, iso,
                            excess_power_score, constraint_score, time_to_power_months, verdict
                            FROM market_power_scores ORDER BY computed_at DESC LIMIT 100000""")
-            for row in cur.fetchall():
-                w.writerow(row)
+            rows = cur.fetchall()
+            total = len(rows)
     except Exception as e:
-        w.writerow([f"# error: {e}"])
-    return Response(out.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=dcpi-history.csv"})
+        err = e
+    if not preview:
+        for row in rows:
+            w.writerow(row)
+        if err is not None:
+            w.writerow([f"# error: {err}"])
+        return Response(out.getvalue(), mimetype="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=dcpi-history.csv"})
+    blank = {DCPI_FILE_COLUMNS.index(k) for k in DCPI_FILE_NUMERICS}
+    for row in rows[:TEASE_ROWS]:
+        w.writerow(["" if i in blank else v for i, v in enumerate(row)])
+    env = tease_envelope(total, DCPI_FILE_NUMERICS)
+    rungs = " | ".join("%s: %s" % (o.get("label"), o.get("url"))
+                       for o in env.get("upgrade_options") or [])
+    w.writerow(["# preview_only: %d of %d rows; %s are empty. %s"
+                % (min(TEASE_ROWS, total), total, ", ".join(DCPI_FILE_NUMERICS),
+                   rungs or env.get("upgrade_url", ""))])
+    return Response(out.getvalue(), mimetype="text/csv", headers={
+        "Content-Disposition": "attachment; filename=dcpi-history-preview.csv",
+        "X-DCHub-Total-Available": str(total),
+        "X-DCHub-Locked-Fields": ",".join(DCPI_FILE_NUMERICS),
+        "X-DCHub-Upgrade-Url": env.get("upgrade_url", ""),
+    })
 
 
 @open_data_bp.route("/data/dcpi-current.json", methods=["GET"])
 def dcpi_current_json():
+    return serve_full_or_tease(lambda: _dcpi_current_json(preview=False),
+                               lambda: _dcpi_current_json(preview=True))
+
+
+def _dcpi_current_json(preview):
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""SELECT DISTINCT ON (market_slug) market_slug, market_name, state, iso,
@@ -79,8 +125,13 @@ def dcpi_current_json():
             if r.get("computed_at"): r["computed_at"] = r["computed_at"].isoformat()
     except Exception:
         rows = []
-    return jsonify(snapshot=rows, count=len(rows),
-                   citation="DC Hub Open Data, dchub.cloud/data"), 200
+    if not preview:
+        return jsonify(snapshot=rows, count=len(rows),
+                       citation="DC Hub Open Data, dchub.cloud/data"), 200
+    shown = [null_fields(r, DCPI_FILE_NUMERICS) for r in rows[:TEASE_ROWS]]
+    return jsonify(snapshot=shown, count=len(shown),
+                   citation="DC Hub Open Data, dchub.cloud/data",
+                   **tease_envelope(len(rows), DCPI_FILE_NUMERICS)), 200
 
 
 @open_data_bp.route("/api/v1/data/manifest", methods=["GET"])
@@ -109,7 +160,13 @@ def manifest():
 
 
 @open_data_bp.route("/research/<slug>", methods=["GET"])
-def research_market(slug):
+def research_market(slug, _paid=None):
+    # The report prints the market's DCPI scores and time-to-power, the same
+    # numbers /dcpi/<slug> gates: a paid reader gets them, everyone else the
+    # verdict (util/numeric_tease.py).
+    if _paid is None:
+        return serve_full_or_tease(lambda: research_market(slug, _paid=True),
+                                   lambda: research_market(slug, _paid=False))
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""SELECT * FROM market_power_scores WHERE market_slug=%s
@@ -142,13 +199,25 @@ def research_market(slug):
     constraint = r.get("constraint_score") or 0
     excess_color = "#10b981" if excess >= 65 else "#f59e0b" if excess >= 40 else "#ef4444"
     constraint_color = "#ef4444" if constraint >= 70 else "#f59e0b" if constraint >= 45 else "#10b981"
+    excess_big, constraint_big = int(excess), int(constraint)
+    excess_txt, constraint_txt = f"{int(excess)}/100", f"{int(constraint)}/100"
+    ttp_txt = f"~{int(r.get('time_to_power_months') or 0)} months"
+    og_scores = f"Excess Power {excess} · Constraint {constraint} · "
+    if not _paid:
+        _locked = (f'<li style="color:#9ca3af">🔒 Locked in the free preview · '
+                   f'<a href="{unlock_url()}">unlock</a></li>')
+        risk_html = opps_html = _locked
+        excess_big = constraint_big = "🔒"
+        excess_txt = constraint_txt = ttp_txt = "locked in the free preview"
+        excess_color = constraint_color = "#9ca3af"
+        og_scores = ""
     verdict = r.get("verdict") or "?"
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b", "AVOID": "#ef4444"}.get(verdict, "#9ca3af")
     return Response(f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>{r['market_name']} · DC Hub Research</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta property="og:title" content="DCPI Research · {r['market_name']}">
-<meta property="og:description" content="Excess Power {excess} · Constraint {constraint} · Verdict {verdict}. Updated {r['computed_at'].isoformat()[:10] if r.get('computed_at') else 'today'}.">
+<meta property="og:description" content="{og_scores}Verdict {verdict}. Updated {r['computed_at'].isoformat()[:10] if r.get('computed_at') else 'today'}.">
 <meta property="og:image" content="https://dchub.cloud/api/v1/dcpi/og/{slug}.svg">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -218,11 +287,11 @@ h1{{font-size:clamp(2.4rem,5vw,3.4rem);margin:0 0 0.4rem;font-weight:800;letter-
 
   <div class="scoreboard">
     <div class="sb">
-      <div class="v" style="color:{excess_color}">{int(excess)}</div>
+      <div class="v" style="color:{excess_color}">{excess_big}</div>
       <div class="l">Excess Power Score · Opportunity</div>
     </div>
     <div class="sb">
-      <div class="v" style="color:{constraint_color}">{int(constraint)}</div>
+      <div class="v" style="color:{constraint_color}">{constraint_big}</div>
       <div class="l">Constraint Score · Avoid</div>
     </div>
   </div>
@@ -236,11 +305,11 @@ h1{{font-size:clamp(2.4rem,5vw,3.4rem);margin:0 0 0.4rem;font-weight:800;letter-
   <div class="section-h"><span class="pip"></span>📋 Methodology</div>
   <div class="section">
     <p style="margin:0;color:#ddd;font-size:0.94rem;line-height:1.7">
-      <strong>Excess Power Score</strong> ({int(excess)}/100) combines reserve-margin headroom, generation additions queued &lt;12 months, renewable curtailment volume, queue approval rate, stranded interconnection at retiring plants, and behind-the-meter industrial generation.
+      <strong>Excess Power Score</strong> ({excess_txt}) combines reserve-margin headroom, generation additions queued &lt;12 months, renewable curtailment volume, queue approval rate, stranded interconnection at retiring plants, and behind-the-meter industrial generation.
       <br><br>
-      <strong>Constraint Score</strong> ({int(constraint)}/100) combines queue wait time, reserve margin proximity to NERC floor (13%), demand-growth YoY, and 30-day grid-emergency frequency.
+      <strong>Constraint Score</strong> ({constraint_txt}) combines queue wait time, reserve margin proximity to NERC floor (13%), demand-growth YoY, and 30-day grid-emergency frequency.
       <br><br>
-      <strong>Time-to-power</strong> (~{int(r.get('time_to_power_months') or 0)} months) is the ISO's median interconnection-queue wait time adjusted for reserve-margin headroom (faster fast-track when reserves are abundant).
+      <strong>Time-to-power</strong> ({ttp_txt}) is the ISO's median interconnection-queue wait time adjusted for reserve-margin headroom (faster fast-track when reserves are abundant).
       <br><br>
       Daily refresh from ISO public filings + DC Hub's grid-feed extractors. Free for press citation.
     </p>

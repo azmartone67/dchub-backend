@@ -118,6 +118,9 @@ dcpi_bp = Blueprint("dcpi", __name__)
 # the same day. routes/site_valuation_engine.py imports this name too.
 from util.market_aliases import DCPI_METRO_ALIASES  # noqa: E402,F401
 from util.slug_suffix import normalize_periods  # noqa: E402
+from util.numeric_tease import (  # noqa: E402
+    TEASE_ROWS, null_fields, null_numerics, round_coords, serve_full_or_tease,
+    tease_envelope, unlock_url)
 from util.deployability_rank import (            # noqa: E402
     RANKINGS as _DEPLOY_RANKINGS,
     envelope_fit_score as _envelope_fit_score,
@@ -4383,14 +4386,13 @@ def _dcpi_is_paid(plan=None):
     return (plan if plan is not None else _dcpi_caller_plan()) in _DCPI_PAID_PLANS
 
 
-_DCPI_SINGLE_MARKET_FREE = True  # r-free-per-market (2026-07-03)
-def _dcpi_single_market_paid():
-    """Policy 2026-07-03 (free-per-market, paid-bulk): a SINGLE-market surface
-    (/dcpi/<slug>, /api/v1/dcpi/scores/<slug>, its og/embed) shows the numeric
-    DCPI scores to everyone — one market is free to cite; the BULK/all-market
-    endpoints + CSV export stay Pro-gated (they keep calling _dcpi_is_paid()).
-    Flip _DCPI_SINGLE_MARKET_FREE to revert."""
-    return True if _DCPI_SINGLE_MARKET_FREE else _dcpi_is_paid()
+# Single-market surfaces (/dcpi/<slug>, /api/v1/dcpi/scores/<slug> and its /v2,
+# the og cards and the embed) and the all-market history answer through
+# util.numeric_tease.serve_full_or_tease (2026-09-21). The numeric scores go to
+# Developer and above, a key holding $10-pack credits, the MCP server and admin;
+# everyone else gets the verdict with the numbers null, as the list does.
+# This replaces the 2026-07-03 free-per-market switch, which published every
+# market's scores one URL at a time and, through api_history, all at once.
 
 
 def _dcpi_mask_rows(rows, *, extra=False, paid=None):
@@ -4412,6 +4414,21 @@ def _dcpi_mask_rows(rows, *, extra=False, paid=None):
         _r["locked"] = True
         out.append(_r)
     return out, True
+
+
+# A single-market tease keeps identity, place (coordinates to 2 dp), verdict,
+# signal tier and provenance. Every other numeric or JSON value is nulled, so a
+# column added to market_power_scores later is locked by default rather than
+# published by default (the row is read with SELECT *).
+_DCPI_TEASE_KEEP = ("id", "latitude", "longitude")
+
+
+def _dcpi_tease_row(row):
+    """(copy of `row` for a caller without numeric access, the keys it nulled)."""
+    out, locked = null_numerics(row, keep=_DCPI_TEASE_KEEP, containers=True)
+    out = round_coords(out)
+    out.pop("narrative", None)
+    return out, locked
 
 
 def _dcpi_gated_meta(total_available=None):
@@ -4838,7 +4855,10 @@ def api_dcpi_total():
 
 
 @dcpi_bp.route("/api/v1/dcpi/scores/<slug>", methods=["GET"])
-def api_score_market(slug):
+def api_score_market(slug, _paid=None):
+    if _paid is None:
+        return serve_full_or_tease(lambda: api_score_market(slug, _paid=True),
+                                   lambda: api_score_market(slug, _paid=False))
     _ensure_tables()
     # r47.43 (2026-05-27): metro→city alias resolution. The HTML route at
     # /dcpi/<slug> already 301-redirects metro slugs to their canonical city
@@ -4935,7 +4955,8 @@ def api_score_market(slug):
     # interpretation that human readers get on the HTML page. ?narrative=0
     # opts out for cost-sensitive callers.
     from flask import request as _req
-    if (_req.args.get("narrative") or "1") != "0":
+    # The narrative is written from the scores, so a tease never asks for one.
+    if _paid and (_req.args.get("narrative") or "1") != "0":
         try:
             from routes.report_narrative import attach_market_narrative
             risks = row.get("top_risks_json") or []
@@ -4992,12 +5013,13 @@ def api_score_market(slug):
 
     # r-gate-everywhere (2026-06-27): per-market twin of api_scores() — was a raw
     # jsonify(row) that leaked composite/excess/constraint/time-to-power +
-    # risk/opp to anon. SINGLE-market is free-to-cite (2026-07-03); bulk stays paid.
-    _rows, _g = _dcpi_mask_rows([row], extra=True, paid=_dcpi_single_market_paid())
-    row = _rows[0]
-    if _g:
-        row["forecast"] = {"available": False, "reason": "pro_only"}
-        row.update(_dcpi_gated_meta())
+    # risk/opp to anon. 2026-09-21: the numbers are paid on this surface too
+    # (util/numeric_tease.py); the verdict stays free.
+    if not _paid:
+        row, _locked = _dcpi_tease_row(row)
+        row["locked"] = True
+        row["forecast"] = {"available": False, "reason": "locked_in_preview"}
+        row.update(tease_envelope(1, _locked))
     # provenance-v1 (2026-07-11): collection block, stamped AFTER masking so
     # gating never strips it. as_of = the score's computed_at (already
     # isoformat by here); data_basis/data_basis_source above stay as the
@@ -5166,7 +5188,10 @@ def _compute_forecast(history: list[dict], current: dict) -> dict:
 # the fly. No schema change; consumers opt in by adding `?v=2` or by
 # hitting this dedicated path.
 @dcpi_bp.route("/api/v1/dcpi/scores/<slug>/v2", methods=["GET"])
-def api_score_market_v2(slug):
+def api_score_market_v2(slug, _paid=None):
+    if _paid is None:
+        return serve_full_or_tease(lambda: api_score_market_v2(slug, _paid=True),
+                                   lambda: api_score_market_v2(slug, _paid=False))
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
@@ -5220,8 +5245,8 @@ def api_score_market_v2(slug):
     if row.get("computed_at"):
         row["computed_at"] = row["computed_at"].isoformat()
     # r-gate-everywhere (2026-06-27): mask the numeric v1 + v2 sub-scores for
-    # non-paid (verdicts stay free). SINGLE-market is free-to-cite (2026-07-03).
-    _paid_v2 = _dcpi_single_market_paid()
+    # non-paid (verdicts stay free). 2026-09-21: paid on this surface too.
+    _paid_v2 = bool(_paid)
     return jsonify(
         market_slug=row["market_slug"],
         market_name=row["market_name"],
@@ -5246,8 +5271,13 @@ def api_score_market_v2(slug):
                      "upgrades AVOID→CAUTION when renewable_arbitrage≥75 and water_risk≤50",
         },
         computed_at=row.get("computed_at"),
-        **({} if _paid_v2 else _dcpi_gated_meta()),
+        **({} if _paid_v2 else tease_envelope(1, _DCPI_V2_LOCKED)),
     ), 200
+
+
+_DCPI_V2_LOCKED = ("constraint_score", "excess_power_score", "time_to_power_months",
+                   "water_risk_score", "renewable_arbitrage_score",
+                   "water_stress_index", "ppa_rate_cents_kwh", "curtailment_pct")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -7625,11 +7655,11 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- r78: all ~308 DCPI city pages shipped WITHOUT a meta description (GSC
      indexability drag) — og:description existed but Google reads name=description.
-     r-gate-everywhere (2026-06-27): numeric scores are Pro — anon/crawler meta is
+     r-gate-everywhere (2026-06-27): numeric scores are paid — anon/crawler meta is
      verdict-only (non-cloaking: same gated meta to humans AND Googlebot). -->
-<meta name="description" content="{{ s.market_name }} Data Center Power Index: {{ s.verdict or 'LOW_SIGNAL' }} verdict{{ (', ' ~ s.iso) if s.iso else '' }}.{% if gated %} Numeric power-readiness scores (excess-power, grid-constraint, time-to-power) available to DC Hub Pro at dchub.cloud/pricing — recomputed daily.{% else %} Excess Power {{ (s.excess_power_score or 0)|round(1) }}/100, Grid Constraint {{ (s.constraint_score or 0)|round(1) }}/100. Power availability, time-to-power, and queue context — recomputed daily by DC Hub.{% endif %}">
+<meta name="description" content="{{ s.market_name }} Data Center Power Index: {{ s.verdict or 'LOW_SIGNAL' }} verdict{{ (', ' ~ s.iso) if s.iso else '' }}.{% if gated %} Numeric power-readiness scores (excess-power, grid-constraint, time-to-power) are locked in the free preview; a DC Hub Developer key or credit-pack key opens them. Recomputed daily.{% else %} Excess Power {{ (s.excess_power_score or 0)|round(1) }}/100, Grid Constraint {{ (s.constraint_score or 0)|round(1) }}/100. Power availability, time-to-power, and queue context — recomputed daily by DC Hub.{% endif %}">
 <meta property="og:title" content="{{ s.market_name }}{% if gated %} · DCPI {{ s.verdict or 'LOW_SIGNAL' }}{% else %} · DCPI {{ s.composite_score }} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}{% endif %}">
-<meta property="og:description" content="{{ s.verdict or 'LOW_SIGNAL' }}{% if gated %} · Numeric DCPI scores available to DC Hub Pro. {% else %} · ~{{ (s.time_to_power_months or 0)|round(0)|int }} months to power. {% endif %}Updated daily.">
+<meta property="og:description" content="{{ s.verdict or 'LOW_SIGNAL' }}{% if gated %} · Numeric DCPI scores locked in the free preview. {% else %} · ~{{ (s.time_to_power_months or 0)|round(0)|int }} months to power. {% endif %}Updated daily.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -7648,7 +7678,7 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   "@context": "https://schema.org",
   "@type": "Dataset",
   "name": {{ (s.market_name ~ " — Data Center Power Index (DCPI)")|tojson }},
-  "description": {% if gated %}{{ ((s.market_name ~ ": DCPI verdict " ~ (s.verdict or "LOW_SIGNAL") ~ (", ISO " ~ s.iso if s.iso else "") ~ ". Numeric DCPI scores (Excess Power, Grid Constraint, time-to-power) are available to DC Hub Pro at dchub.cloud/pricing, or to AI agents via the DC Hub MCP (dchub.cloud/mcp). Recomputed daily."))|tojson }}{% else %}{{ ((s.market_name ~ ": DCPI verdict " ~ (s.verdict or "LOW_SIGNAL") ~ ". Excess Power score " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100, Grid Constraint score " ~ ((s.constraint_score or 0)|round(1)) ~ "/100" ~ (", ISO " ~ s.iso if s.iso else "") ~ ". Recomputed daily by DC Hub from interconnection-queue, capacity-pipeline, and grid-emergency signals."))|tojson }}{% endif %},
+  "description": {% if gated %}{{ ((s.market_name ~ ": DCPI verdict " ~ (s.verdict or "LOW_SIGNAL") ~ (", ISO " ~ s.iso if s.iso else "") ~ ". Numeric DCPI scores (Excess Power, Grid Constraint, time-to-power) are locked in the free preview; a DC Hub Developer key or credit-pack key opens them, over the API or the DC Hub MCP (dchub.cloud/mcp). Recomputed daily."))|tojson }}{% else %}{{ ((s.market_name ~ ": DCPI verdict " ~ (s.verdict or "LOW_SIGNAL") ~ ". Excess Power score " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100, Grid Constraint score " ~ ((s.constraint_score or 0)|round(1)) ~ "/100" ~ (", ISO " ~ s.iso if s.iso else "") ~ ". Recomputed daily by DC Hub from interconnection-queue, capacity-pipeline, and grid-emergency signals."))|tojson }}{% endif %},
   "url": "https://dchub.cloud/dcpi/{{ s.market_slug }}",
   "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
   "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
@@ -7696,9 +7726,9 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   "@type": "FAQPage",
   "mainEntity": [
     {"@type": "Question", "name": {{ ("What is the DCPI score for " ~ s.market_name ~ "?")|tojson }},
-     "acceptedAnswer": {"@type": "Answer", "text": {% if gated %}{{ (s.market_name ~ " has a DC Hub Power Index (DCPI) verdict of " ~ (s.verdict or "LOW_SIGNAL") ~ ". The numeric Excess Power and Grid Constraint scores are available to DC Hub Pro at dchub.cloud/pricing (or to AI agents via dchub.cloud/mcp). Recomputed daily.")|tojson }}{% else %}{{ (s.market_name ~ " has a DC Hub Power Index (DCPI) verdict of " ~ (s.verdict or "LOW_SIGNAL") ~ ", with an Excess Power score of " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100 and a Grid Constraint score of " ~ ((s.constraint_score or 0)|round(1)) ~ "/100. Recomputed daily by DC Hub.")|tojson }}{% endif %}}},
+     "acceptedAnswer": {"@type": "Answer", "text": {% if gated %}{{ (s.market_name ~ " has a DC Hub Power Index (DCPI) verdict of " ~ (s.verdict or "LOW_SIGNAL") ~ ". The numeric Excess Power and Grid Constraint scores are locked in the free preview; a DC Hub Developer key or credit-pack key opens them (API or dchub.cloud/mcp). Recomputed daily.")|tojson }}{% else %}{{ (s.market_name ~ " has a DC Hub Power Index (DCPI) verdict of " ~ (s.verdict or "LOW_SIGNAL") ~ ", with an Excess Power score of " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100 and a Grid Constraint score of " ~ ((s.constraint_score or 0)|round(1)) ~ "/100. Recomputed daily by DC Hub.")|tojson }}{% endif %}}},
     {"@type": "Question", "name": {{ ("Is " ~ s.market_name ~ " a good market to build a data center?")|tojson }},
-     "acceptedAnswer": {"@type": "Answer", "text": {% if gated %}{{ ("DC Hub rates " ~ s.market_name ~ " as " ~ (s.verdict or "LOW_SIGNAL") ~ " for new data-center builds" ~ (", in the " ~ s.iso ~ " grid region" if s.iso else "") ~ ". The underlying Excess Power and Grid Constraint scores are DC Hub Pro (dchub.cloud/pricing).")|tojson }}{% else %}{{ ("DC Hub rates " ~ s.market_name ~ " as " ~ (s.verdict or "LOW_SIGNAL") ~ " for new data-center builds, based on an Excess Power score of " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100 and a Grid Constraint score of " ~ ((s.constraint_score or 0)|round(1)) ~ "/100" ~ (", in the " ~ s.iso ~ " grid region" if s.iso else "") ~ ".")|tojson }}{% endif %}}}{% if s.iso %},
+     "acceptedAnswer": {"@type": "Answer", "text": {% if gated %}{{ ("DC Hub rates " ~ s.market_name ~ " as " ~ (s.verdict or "LOW_SIGNAL") ~ " for new data-center builds" ~ (", in the " ~ s.iso ~ " grid region" if s.iso else "") ~ ". The underlying Excess Power and Grid Constraint scores open with a DC Hub Developer key or credit-pack key.")|tojson }}{% else %}{{ ("DC Hub rates " ~ s.market_name ~ " as " ~ (s.verdict or "LOW_SIGNAL") ~ " for new data-center builds, based on an Excess Power score of " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100 and a Grid Constraint score of " ~ ((s.constraint_score or 0)|round(1)) ~ "/100" ~ (", in the " ~ s.iso ~ " grid region" if s.iso else "") ~ ".")|tojson }}{% endif %}}}{% if s.iso %},
     {"@type": "Question", "name": {{ ("Which grid operator (ISO) serves " ~ s.market_name ~ "?")|tojson }},
      "acceptedAnswer": {"@type": "Answer", "text": {{ (s.market_name ~ " is in the " ~ s.iso ~ " ISO/RTO grid region.")|tojson }}}}{% endif %}
   ]
@@ -7972,7 +8002,7 @@ h1 {
         {% if s.time_to_power_months is not none %}<tr><td style="padding:.3rem .4rem">Est. time-to-power</td><td style="padding:.3rem .4rem">{{ s.time_to_power_months|round(0)|int }} months</td><td style="padding:.3rem .4rem">DCPI</td></tr>{% endif %}
         {% if s.queue_wait_months is not none %}<tr><td style="padding:.3rem .4rem">Interconnection queue wait</td><td style="padding:.3rem .4rem">{{ s.queue_wait_months|round(0)|int }} months</td><td style="padding:.3rem .4rem">Serving-ISO queue</td></tr>{% endif %}
         {% else %}
-        <tr><td style="padding:.3rem .4rem">Numeric scores</td><td style="padding:.3rem .4rem">DC Hub Pro — same gated view for humans and crawlers (<a href="/pricing" style="color:var(--acc-light)">pricing</a>)</td><td style="padding:.3rem .4rem">DCPI</td></tr>
+        <tr><td style="padding:.3rem .4rem">Numeric scores</td><td style="padding:.3rem .4rem">Locked in the free preview — same view for humans and crawlers (<a href="{{ unlock_url }}" style="color:var(--acc-light)">unlock</a>)</td><td style="padding:.3rem .4rem">DCPI</td></tr>
         {% endif %}
         <tr><td style="padding:.3rem .4rem">Signal quality</td><td style="padding:.3rem .4rem">{{ (s.signal_tier or 'unrecorded')|upper }}</td><td style="padding:.3rem .4rem">{{ s.signal_tier_basis }}</td></tr>
       </tbody>
@@ -7995,11 +8025,11 @@ h1 {
     {% if gated %}
     <div class="sb">
       <div class="v" style="color:var(--tx2)">🔒</div>
-      <div class="l">Excess Power Score · <a href="/pricing" style="color:#5aa3ff;text-decoration:none">Unlock with Pro</a></div>
+      <div class="l">Excess Power Score · <a href="{{ unlock_url }}" style="color:#5aa3ff;text-decoration:none">Unlock</a></div>
     </div>
     <div class="sb">
       <div class="v" style="color:var(--tx2)">🔒</div>
-      <div class="l">Constraint Score · <a href="/pricing" style="color:#5aa3ff;text-decoration:none">Unlock with Pro</a></div>
+      <div class="l">Constraint Score · <a href="{{ unlock_url }}" style="color:#5aa3ff;text-decoration:none">Unlock</a></div>
     </div>
     {% else %}
     <div class="sb">
@@ -8015,12 +8045,12 @@ h1 {
 
   <div class="section-h"><span class="pip"></span>🌟 Top Opportunities</div>
   <div class="section">
-    <ul>{% if gated %}<li style="color:var(--tx2)">🔒 Top opportunities are a DC Hub Pro feature — <a href="/pricing" style="color:#5aa3ff;text-decoration:none">unlock</a></li>{% else %}{% for o in opps %}<li>{{ o }}</li>{% endfor %}{% endif %}</ul>
+    <ul>{% if gated %}<li style="color:var(--tx2)">🔒 Top opportunities are locked in the free preview — <a href="{{ unlock_url }}" style="color:#5aa3ff;text-decoration:none">unlock</a></li>{% else %}{% for o in opps %}<li>{{ o }}</li>{% endfor %}{% endif %}</ul>
   </div>
 
   <div class="section-h"><span class="pip"></span>⚠️ Top Risks</div>
   <div class="section">
-    <ul>{% if gated %}<li style="color:var(--tx2)">🔒 Top risks are a DC Hub Pro feature — <a href="/pricing" style="color:#5aa3ff;text-decoration:none">unlock</a></li>{% else %}{% for r in risks %}<li>{{ r }}</li>{% endfor %}{% endif %}</ul>
+    <ul>{% if gated %}<li style="color:var(--tx2)">🔒 Top risks are locked in the free preview — <a href="{{ unlock_url }}" style="color:#5aa3ff;text-decoration:none">unlock</a></li>{% else %}{% for r in risks %}<li>{{ r }}</li>{% endfor %}{% endif %}</ul>
   </div>
 
   <div class="section-h"><span class="pip"></span>📊 Underlying Metrics</div>
@@ -8796,7 +8826,13 @@ def _dcpi_not_found_response(slug):
 
 
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
-def public_market_page(slug):
+def public_market_page(slug, _paid=None):
+    # 2026-09-21: the page prints the market's numeric DCPI scores only for a
+    # caller util/numeric_tease.py opens them for; everyone else gets the
+    # verdict. Aliases, redirects and 404s answer the same either way.
+    if _paid is None:
+        return serve_full_or_tease(lambda: public_market_page(slug, _paid=True),
+                                   lambda: public_market_page(slug, _paid=False))
     # r-period-slug (2026-07-06): strip periods and 301 to the '-'-normalized
     # slug BEFORE the candidate lookup below. A malformed period slug like
     # 'st.-louis' has its OWN published market_power_scores row, so the
@@ -8933,8 +8969,8 @@ def public_market_page(slug):
     # the page cache by tier — a slug-only cache key would let the first anon
     # render poison the paid cache (and vice-versa). Masking happens on the render
     # path below; cache hits are already the correct tier variant.
-    # SINGLE-market page is free-to-cite (2026-07-03); bulk endpoints stay paid.
-    _paid = _dcpi_single_market_paid()
+    # 2026-09-21: decided by serve_full_or_tease above, not per template.
+    _paid = bool(_paid)
     _gated = not _paid
     _ckey = slug + (":paid" if _paid else ":anon")
 
@@ -9089,7 +9125,7 @@ def public_market_page(slug):
     # guards every emit site on `gated`; masking s is defense-in-depth (a missed
     # guard then renders empty, never the real number).
     if _gated:
-        s = dict(s)
+        s, _ = _dcpi_tease_row(s)
         for _k in _DCPI_MASK_FIELDS + _DCPI_MASK_EXTRA:
             if _k in s:
                 s[_k] = None
@@ -9098,7 +9134,8 @@ def public_market_page(slug):
             f"DC Hub rates {s.get('market_name', 'this market')} "
             f"{s.get('verdict') or 'LOW_SIGNAL'} for new data-center builds. "
             "The numeric DCPI scores (excess-power, grid-constraint, time-to-power) "
-            "are available to DC Hub Pro — unlock at dchub.cloud/pricing.")
+            "are locked in this free preview; a DC Hub Developer key or a "
+            "credit-pack key opens them.")
     # r-iso-taxonomy-2 (2026-07-28): the SSR page builds its OWN JSON-LD
     # spatialCoverage, separate from the api_scores Dataset block. The first
     # pass fixed only the Python one, so /dcpi/cheyenne-wy kept publishing
@@ -9128,6 +9165,7 @@ def public_market_page(slug):
 
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps, gated=_gated,
+                                          unlock_url=(unlock_url() if _gated else ""),
                                           narrative=narrative_text,
                                           place_label=_place_label(s.get('market_name'),
                                                                    s.get('state')),
@@ -9146,12 +9184,15 @@ def public_market_page(slug):
 
 
 
-def api_history():
+def api_history(_paid=None):
     """Return per-day score history for top BUILD markets, last 30 days.
 
     Not routed itself: /api/v1/dcpi/history is dcpi_temporal.dcpi_history,
     which calls this when no ?market= is given. This function's own rule on
     that path was removed 2026-09-21: a shadowed duplicate that never served."""
+    if _paid is None:
+        return serve_full_or_tease(lambda: api_history(_paid=True),
+                                   lambda: api_history(_paid=False))
     _ensure_tables()
     # r80: read the REAL daily history table. market_power_scores is
     # UPDATE-in-place (computed_at=NOW() per recompute), so grouping it by
@@ -9183,14 +9224,17 @@ def api_history():
         })
     # r-gate-everywhere (2026-06-27): the daily score time-series for ALL ~317
     # markets is the crown-jewel paid dataset (an anon could reconstruct every
-    # composite). Keep the day axis + market names (SEO: "daily history exists"),
-    # null the numeric values for non-paid. SINGLE-market free-to-cite (2026-07-03).
-    if not _dcpi_single_market_paid():
-        for _slug in series:
-            for _d in series[_slug].get("data", []):
-                _d["excess"] = None
-                _d["constraint"] = None
-        return jsonify(series=series, count=len(series), **_dcpi_gated_meta()), 200
+    # composite). 2026-09-21: it was reaching everyone through the single-market
+    # switch. A caller without numeric access gets TEASE_ROWS markets with the
+    # day axis and names kept and every value null (util/numeric_tease.py).
+    if not _paid:
+        shown = {}
+        for _slug in sorted(series)[:TEASE_ROWS]:
+            shown[_slug] = {"name": series[_slug]["name"],
+                            "data": [null_fields(_d, ("excess", "constraint"))
+                                     for _d in series[_slug]["data"]]}
+        return jsonify(series=shown, count=len(shown),
+                       **tease_envelope(len(series), ("excess", "constraint"))), 200
     return jsonify(series=series, count=len(series)), 200
 
 
@@ -9259,8 +9303,11 @@ fetch('/api/v1/dcpi/trending').then(r=>r.json()).then(d=>{
 
 @dcpi_bp.route("/dcpi/og/<slug>.svg", methods=["GET"])
 @dcpi_bp.route("/dcpi/og/<slug>", methods=["GET"])
-def og_card(slug):
+def og_card(slug, _paid=None):
     """1200x630 SVG for LinkedIn/X cards. Phase 121C: fixed layout."""
+    if _paid is None:
+        return serve_full_or_tease(lambda: og_card(slug, _paid=True),
+                                   lambda: og_card(slug, _paid=False))
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT * FROM market_power_scores WHERE market_slug = %s
@@ -9286,11 +9333,11 @@ def og_card(slug):
                     "#10b981" if excess_score >= 65 else
                     "#f59e0b" if excess_score >= 40 else "#ef4444")
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b", "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
-    # the social card is an OCR-able public surface — under free-per-market
-    # (2026-07-03) it shows the single-market scores, not a Pro placeholder.
-    if not _dcpi_single_market_paid():
-        _excess_disp, _constraint_disp = "Pro", "Pro"
-        _ttp_disp = "SCORES: DC HUB PRO"
+    # The social card is an OCR-able public surface (and an SVG is plain text),
+    # so it prints the scores only where the page would (2026-09-21).
+    if not _paid:
+        _excess_disp, _constraint_disp = "Locked", "Locked"
+        _ttp_disp = "SCORES LOCKED IN THE FREE PREVIEW"
         excess_color = verdict_color
     else:
         # "n/a" — never a drawn zero — when a component has no value.
@@ -9355,8 +9402,11 @@ def og_card(slug):
 # SVG inconsistently — most posts come back with bare-link, no thumbnail.
 # PIL-based 1200x630 PNG renders reliably in every platform's link card.
 @dcpi_bp.route("/dcpi/og/<slug>.png", methods=["GET"])
-def og_card_png(slug):
+def og_card_png(slug, _paid=None):
     """1200x630 PNG card for LinkedIn/X/Bluesky/Slack link-card previews."""
+    if _paid is None:
+        return serve_full_or_tease(lambda: og_card_png(slug, _paid=True),
+                                   lambda: og_card_png(slug, _paid=False))
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT * FROM market_power_scores WHERE market_slug = %s
@@ -9438,14 +9488,13 @@ def og_card_png(slug):
     draw.text((pill_x + 10, pill_y - 4), verdict_text,
               fill=(10, 14, 26), font=f_verdict)
 
-    # Score blocks — free-per-market (2026-07-03): single-market card shows the
-    # numeric scores; only bulk/all-market surfaces stay Pro.
-    _og_paid = _dcpi_single_market_paid()
-    _excess_disp = ("Pro" if not _og_paid
+    # Score blocks: printed only where the page would print them (2026-09-21).
+    _og_paid = bool(_paid)
+    _excess_disp = ("Locked" if not _og_paid
                     else ("n/a" if excess is None else f"{excess}"))
-    _constraint_disp = ("Pro" if not _og_paid
+    _constraint_disp = ("Locked" if not _og_paid
                         else ("n/a" if constraint is None else f"{constraint}"))
-    _ttp_disp = ("Pro" if not _og_paid else ("n/a" if ttp is None else f"{ttp}mo"))
+    _ttp_disp = ("Locked" if not _og_paid else ("n/a" if ttp is None else f"{ttp}mo"))
     if not _og_paid:
         excess_color = verdict_color
     draw.text((60, 360), "Excess Power", fill=(156, 163, 175), font=f_score_lbl)
@@ -9490,9 +9539,13 @@ def og_card_png(slug):
 # Static routes outrank /dcpi/<slug> in Flask's URL map, so order is irrelevant.
 
 @dcpi_bp.route("/dcpi/embed/<slug>", methods=["GET"])
-def embed_widget(slug):
+def embed_widget(slug, _paid=None):
     """Compact self-contained HTML score card for iframe embedding.
-    Mirrors og_card's data fetch. Safe: read-only, public market scores."""
+    Mirrors og_card's data fetch. Read-only; numeric scores only where the
+    page would print them."""
+    if _paid is None:
+        return serve_full_or_tease(lambda: embed_widget(slug, _paid=True),
+                                   lambda: embed_widget(slug, _paid=False))
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT * FROM market_power_scores WHERE market_slug = %s
@@ -9501,9 +9554,8 @@ def embed_widget(slug):
     if not s:
         return Response("market not found", status=404, mimetype="text/plain")
 
-    # free-per-market (2026-07-03): a single-market iframe embed shows the numeric
-    # scores; bulk/all-market surfaces stay Pro.
-    if not _dcpi_single_market_paid():
+    # 2026-09-21: the embed prints the scores only where the page would.
+    if not _paid:
         s = dict(s)
         for _k in ("excess_power_score", "constraint_score", "time_to_power_months",
                    "composite_score"):
@@ -9535,6 +9587,9 @@ def embed_widget(slug):
     _e_txt = "n/a" if excess_score is None else str(excess_score)
     _c_txt = "n/a" if constraint_score is None else str(constraint_score)
     _t_txt = "n/a" if ttp is None else str(ttp)
+    if _embed_gated:
+        # Locked, not "n/a": the value exists and is withheld.
+        _e_txt = _c_txt = _t_txt = "locked"
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b",
                      "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
     # r41-dcpi-jsonld (2026-05-25): Dataset + Place schema.org JSON-LD
@@ -9548,11 +9603,14 @@ def embed_widget(slug):
         s.get('excess_power_score'), s.get('constraint_score'),
         s.get('time_to_power_months'), s.get('verdict'),
     )
+    if _embed_gated:
+        _composite = None
+    _comp_txt = "locked" if _embed_gated else _composite
     _dataset = {
         "@type": "Dataset",
         "name": f"DCPI Score — {s['market_name']}",
         "description": (f"Data Center Power Index (DCPI) score for "
-                        f"{s['market_name']}: {_composite}/100 — "
+                        f"{s['market_name']}: {_comp_txt}/100 — "
                         f"verdict {s['verdict']}. Excess power "
                         f"{_e_txt}, constraint {_c_txt}, "
                         f"time-to-power ~{_t_txt} months. ISO: {s['iso']}."),
@@ -9605,7 +9663,7 @@ def embed_widget(slug):
              "name": f"What is the DCPI score for {s['market_name']}?",
              "acceptedAnswer": {"@type": "Answer",
                 "text": (f"{s['market_name']} has a DC Hub Power Index (DCPI) "
-                         f"composite score of {_composite}/100 with a "
+                         f"composite score of {_comp_txt}/100 with a "
                          f"{s['verdict']} verdict.")}},
             {"@type": "Question",
              "name": f"Is {s['market_name']} a good market to build a data center?",

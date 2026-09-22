@@ -32,6 +32,7 @@ from flask import Blueprint, Response, jsonify, request, abort, redirect
 from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
 from util.dcpi_score_row import PUBLISHED_ONLY
 from util.market_entity import SITE as ENTITY_SITE, market_entity
+from util.numeric_tease import serve_full_or_tease
 from util.slug_suffix import normalize_periods
 # mw_coverage_note is re-exported for this module's existing callers, but
 # the STRING lives in util/facility_count_basis.py: four more painters
@@ -1366,16 +1367,44 @@ def market_entity_json(slug):
         _slug, _name, _stats,
         canonical_slug=_canon,
         as_of=_as_of)
-    resp = jsonify(body)
-    # application/ld+json is the honest type for this payload; agents and
-    # validators both accept it, and it tells a crawler the body is structured
-    # data rather than an arbitrary API response.
-    resp.headers["Content-Type"] = "application/ld+json"
-    resp.headers["Cache-Control"] = "public, max-age=900"
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    # Point at the HTML twin so a crawler can reconcile the two representations.
-    resp.headers["Link"] = f'<{ENTITY_SITE}/markets/{_canon}>; rel="canonical"'
-    return resp, 200
+
+    def _respond(payload):
+        resp = jsonify(payload)
+        # application/ld+json is the honest type for this payload; agents and
+        # validators both accept it, and it tells a crawler the body is
+        # structured data rather than an arbitrary API response.
+        resp.headers["Content-Type"] = "application/ld+json"
+        resp.headers["Cache-Control"] = "public, max-age=900"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        # Point at the HTML twin so a crawler can reconcile the two representations.
+        resp.headers["Link"] = f'<{ENTITY_SITE}/markets/{_canon}>; rel="canonical"'
+        return resp, 200
+
+    # 2026-09-21: capacity MW, the DCPI scores and time-to-power are paid.
+    # Developer and above, a key with $10-pack credits, the MCP server and
+    # admin get them; everyone else gets the entity with the facility count
+    # and the verdict, and every other measure's value null
+    # (util/numeric_tease.py).
+    return serve_full_or_tease(lambda: _respond(body),
+                               lambda: _respond(market_entity_tease(body)))
+
+
+# Measures a market-entity tease keeps: a count and a verdict band.
+_ENTITY_FREE_MEASURES = ("Facilities", "DCPI Verdict")
+
+
+def market_entity_tease(body):
+    """The entity with every measure outside _ENTITY_FREE_MEASURES nulled."""
+    from util.numeric_tease import tease_envelope
+    out, locked, measured = dict(body), [], []
+    for m in body.get("variableMeasured") or []:
+        if isinstance(m, dict) and m.get("name") not in _ENTITY_FREE_MEASURES:
+            m = dict(m, value=None)
+            locked.append(m.get("name"))
+        measured.append(m)
+    out["variableMeasured"] = measured
+    out.update(tease_envelope(1, locked))
+    return out
 
 
 @market_deep_dive_bp.route("/api/v1/markets/<slug>/deep-dive", methods=["GET"])

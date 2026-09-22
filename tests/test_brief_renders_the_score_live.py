@@ -165,11 +165,18 @@ def test_the_json_twin_publishes_the_same_score_as_the_page(monkeypatch):
         def close(self): pass
     monkeypatch.setattr(m, "read_deep_dive", lambda s: dict(BRIEF))
     monkeypatch.setattr(m, "_conn", lambda: Conn())
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "twin-test-internal-key")
     app = flask.Flask(__name__)
     app.register_blueprint(m.market_deep_dive_bp)
     with app.test_client() as c:
-        body = json.loads(c.get("/markets/santa-clara.json").data)
+        # 2026-09-21: the score goes to a caller util/numeric_tease.py opens it
+        # for (here the MCP server's key); a keyless caller gets the measure
+        # with its value null.
+        body = json.loads(c.get("/markets/santa-clara.json",
+                                headers={"X-Internal-Key": "twin-test-internal-key"}).data)
+        anon = json.loads(c.get("/markets/santa-clara.json").data)
     assert _measure(body, "DCPI Score")["value"] == DRIFTED_SCORE
+    assert _measure(anon, "DCPI Score")["value"] is None
 
 
 # ── the narrative's own numbers are NOT overlaid ────────────────────────

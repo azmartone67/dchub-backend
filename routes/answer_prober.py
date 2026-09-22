@@ -162,8 +162,14 @@ def _canon_counts() -> dict:
 
 
 def _canon_market(slug: str) -> dict:
-    """The canonical row for one market slug."""
-    code, body = _fetch(f"/api/v1/dcpi/scores/{slug}")
+    """The canonical row for one market slug.
+
+    Read with the admin credential: since 2026-09-21 a keyless read of this
+    endpoint is the preview, whose scores are null (util/numeric_tease.py), and
+    a null canon must not be compared against the answer's number."""
+    ak = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    code, body = _fetch(f"/api/v1/dcpi/scores/{slug}",
+                        headers={"X-Admin-Key": ak} if ak else None)
     if code != 200:
         raise _CanonUnavailable(f"scores/{slug} -> HTTP {code}")
     d = json.loads(body)
@@ -352,6 +358,18 @@ def _probe_poe_answer(canon):
         cites_retired = slug in REDUNDANT_TWIN_SLUGS
     except Exception:
         cites_retired = None
+    if row.get("_gated"):
+        # The canon came back as the preview (no admin key in this process):
+        # it holds no score to compare with, which is not a disagreement.
+        excess = {"surface": "poe_answer", "field": "excess_power_score",
+                  "observed": float(em.group(1)) if em else None,
+                  "expected": None, "verdict": "skipped",
+                  "note": "canonical row is the gated preview; no DCHUB_ADMIN_KEY"}
+    else:
+        excess = _result("poe_answer", "excess_power_score",
+                         float(em.group(1)) if em else None,
+                         round(float(row["excess_power_score"]), 1)
+                         if row.get("excess_power_score") is not None else None)
     return [
         _result("poe_answer", "cites_published_market",
                 (not cites_retired) if cites_retired is not None else None,
@@ -360,10 +378,7 @@ def _probe_poe_answer(canon):
         _result("poe_answer", "verdict",
                 vm.group(1) if vm else None, str(row.get("verdict")),
                 note=f"asked {question!r}, answered as {slug}"),
-        _result("poe_answer", "excess_power_score",
-                float(em.group(1)) if em else None,
-                round(float(row["excess_power_score"]), 1)
-                if row.get("excess_power_score") is not None else None),
+        excess,
     ]
 
 
