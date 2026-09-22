@@ -435,6 +435,36 @@ def rest_wall_ladder(opens_on_rest: str = "pro", mcp_tool: str = "", ref: str = 
     return out
 
 
+#: Tokens a canon-rendered page (static/connect.html) writes where a ladder rung
+#: links its checkout; ladder_links() fills them.
+LADDER_TOKENS = {
+    "{ladder_checkout_pack}": "metered",
+    "{ladder_checkout_developer}": "developer",
+    "{ladder_checkout_pro}": "pro",
+}
+
+
+def ladder_links(text: str) -> str:
+    """Fill the ladder tokens with each plan's caller-independent /go/c checkout.
+
+    ★2026-09-21. /connect links the three rungs it prices. The links are
+    checkout_url(plan) with no ref and no session, so they are safe on a shared,
+    cached page and /go/c still stamps each click with its plan. When no link can
+    be minted checkout_url() answers with the bare pricing page, which a rung
+    must never carry (owner rule), so the fallback is the pricing page tagged
+    with the plan instead.
+    """
+    if not text:
+        return text
+    for token, plan in LADDER_TOKENS.items():
+        if token in text:
+            url = checkout_url(plan)
+            if not url.startswith(_GO_BASE):
+                url = "https://dchub.cloud/pricing?plan=%s&utm_source=ladder_link" % plan
+            text = text.replace(token, url)
+    return text
+
+
 @checkout_click_bp.route("/go/c/<token>", methods=["GET"])
 def checkout_click(token):
     """Stamp the click, then 302 to the canonical Stripe Payment Link."""

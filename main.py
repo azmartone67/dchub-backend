@@ -14666,6 +14666,13 @@ def track_api_request_start():
     if request.path.startswith('/api/'):
         request._analytics_start_time = time.time()
 
+
+# The agent doors: served to agents without MCP, carrying canon floors and the
+# ladder. The after_request cache branch below gives them no stale-while-
+# revalidate (2026-09-21).
+_AGENT_DOOR_PATHS = ('/llms.txt', '/llms-full.txt', '/AGENTS.md', '/agents.md', '/connect')
+
+
 @app.after_request
 def add_security_headers(response):
     """Add CORS safety net, security headers, smart caching, and log API calls"""
@@ -14808,6 +14815,16 @@ def add_security_headers(response):
         response.headers['Cache-Control'] = f'public, max-age={_crawler_ttl}, s-maxage={_crawler_ttl}'
         response.headers['CDN-Cache-Control'] = f'public, s-maxage={_crawler_ttl}'
         response.headers['Surrogate-Control'] = f'public, max-age={_crawler_ttl}'
+    elif path in _AGENT_DOOR_PATHS:
+        # ★2026-09-21 — the agent DOORS get no SWR either, for the reason the
+        # crawler-directive branch above gives. They carry the canon floors and
+        # the ladder, so a canon walk must reach the edge promptly; the catch-all
+        # below lets a stale copy serve for an hour after the origin changed,
+        # and a purge re-pinned it. A no-MCP agent was measured reading a
+        # retired floor off a door. Five minutes of bounded staleness.
+        response.headers['Cache-Control'] = 'public, max-age=300, s-maxage=300'
+        response.headers['CDN-Cache-Control'] = 'public, s-maxage=300'
+        response.headers['Surrogate-Control'] = 'public, max-age=300'
     elif (response.status_code == 200 and request.method in ('GET', 'HEAD')
           and _match_html_cache(path) is not None):
         # r43-htmlcache (2026-05-29): edge-cacheable public HTML pages.
@@ -27691,7 +27708,17 @@ def connect_page():
     _p = os.path.join(app.static_folder or 'static', 'connect.html')
     try:
         with open(_p, 'r', encoding='utf-8') as _f:
-            return Response(_canon_text(_f.read()), mimetype='text/html')
+            # ★2026-09-21: the ladder rungs link their measured /go/c checkouts
+            # (routes.checkout_click_tracker.ladder_links), never the bare
+            # pricing page.
+            from routes.checkout_click_tracker import ladder_links as _ladder_links
+            # Floors from the resolver /api/v1/canon/phrases publishes, so this
+            # door and the endpoint it names agree (ai_surface_canon).
+            try:
+                from ai_surface_canon import canon_text_as_phrases as _door_canon
+            except Exception:  # noqa: BLE001
+                _door_canon = _canon_text
+            return Response(_ladder_links(_door_canon(_f.read())), mimetype='text/html')
     except Exception as _e:  # noqa: BLE001
         # Fail OPEN to the raw file: a canon-resolution hiccup must never 500
         # the connector how-to. A stale number beats a dead page.

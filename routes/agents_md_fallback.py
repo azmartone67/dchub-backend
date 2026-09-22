@@ -52,7 +52,8 @@ def _auth_lines(free) -> str:
     try:
         from ai_surface_canon import canon_text
         paid = canon_text(
-            "- **Pack**: {canon_pack_offer} — credits don't expire, no subscription\n"
+            "- **Pack**: {canon_pack_offer} (1 per call, 5 for heavy tools) — more API "
+            "capacity; credits don't expire, no subscription\n"
             "- **Developer ({canon_price_developer})**: {canon_developer_mcp_calls} MCP "
             "calls/day, full depth on every tool except the Pro-only ones\n"
             "- **Pro ({canon_price_pro})**: {canon_pro_mcp_calls} MCP calls/day + the "

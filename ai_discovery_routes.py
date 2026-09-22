@@ -36,6 +36,14 @@ except Exception:  # pragma: no cover - canon must never break discovery routes
     def canon_text(s):
         return _re.sub(r"\s*\{canon_[a-z_]+\}\s*", " ", s) if s else s
 
+# ★2026-09-21: the two llms doors render their facility / deal / market /
+# country floors from the resolver /api/v1/canon/phrases publishes (see
+# ai_surface_canon.canon_text_as_phrases). Same fail-open contract.
+try:
+    from ai_surface_canon import canon_text_as_phrases
+except Exception:  # pragma: no cover
+    canon_text_as_phrases = canon_text
+
 
 # The live-vs-stale policy block is rendered from agent_door_policy so that
 # /llms.txt and /llms-full.txt cannot drift apart a directory name at a time.
@@ -75,14 +83,15 @@ def _llms_paid_heading() -> str:
 # tests/test_curated_openapi_contract.py reads the spec with ast.literal_eval;
 # tests/test_doors_live_vs_stale.py asserts each phrase is in the served spec
 # description, so the two cannot drift apart.
+# ★2026-09-22 (owner wording rule): the $10 pack is described only as API
+# capacity, never as what opens numbers or depth, so these name the plans that
+# open each operation and leave the pack out. Each phrase is still a substring
+# of the spec's own sentence (tests/test_doors_live_vs_stale.py).
 _KEYED_OPENS = {
-    "/api/v1/pipeline": ("a key that opens it: a trial key or any paid plan, or any key "
-                         "holding pack credits (one credit per full answer)"),
+    "/api/v1/pipeline": "a key that opens it: a trial key or any paid plan",
     "/api/site-score": "a key on the Developer plan or above",
-    "/api/grid/fuel-mix": ("a key on the Developer plan or above, or any key holding pack "
-                           "credits (one credit per full answer)"),
-    "/api/energy/prices/{state}": ("a key on the Developer plan or above, or any key holding "
-                                   "pack credits (one credit per full answer)"),
+    "/api/grid/fuel-mix": "a key on the Developer plan or above",
+    "/api/energy/prices/{state}": "a key on the Developer plan or above",
 }
 def _llms_key_required_line(path: str) -> str:
     """The same fact, phrased for a bullet under KEY REQUIRED."""
@@ -142,9 +151,11 @@ def _llms_unlock_ladder() -> str:
         if PACK10_PRICE_CENTS and PACK10_CREDITS:
             _go = _measured_checkout("metered")
             agent.append(
-                "   - **$%d one-time = %s API credits** — 1 per paid-tool call, 5 for the heavy "
-                "analysis tools; credits don't expire, no subscription. Finish one "
-                "screen at full depth.%s"
+                # ★2026-09-22 (owner wording rule): the pack is API capacity
+                # only; this line no longer promises "full depth".
+                "   - **$%d one-time = %s API credits** — 1 per call, 5 for the heavy "
+                "analysis tools; more API capacity, credits don't expire, no "
+                "subscription.%s"
                 % (int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ","),
                    (" Checkout: %s" % _go) if _go else ""))
     except Exception:
@@ -642,7 +653,7 @@ def register_discovery_routes(app):
                     "get": {
                         "operationId": "getMarketDcpi",
                         "summary": "DC Hub Power Index (DCPI) for one market",
-                        "description": "Per-market power-readiness: the BUILD/CAUTION/AVOID verdict is free; the numeric scores (composite_score, excess_power_score, constraint_score, time_to_power_months) open with pack credits or the Developer plan and come back null otherwise. Recomputed daily. Use for 'is <market> good to build a data center?'.",
+                        "description": "Per-market power-readiness: the BUILD/CAUTION/AVOID verdict is free; the numeric scores (composite_score, excess_power_score, constraint_score, time_to_power_months) come with the Developer plan and above and come back null otherwise. Recomputed daily. Use for 'is <market> good to build a data center?'.",
                         "parameters": [
                             {"name": "market_slug", "in": "path", "required": True, "schema": {"type": "string"}, "description": "Market slug, e.g. phoenix, northern-virginia, dallas"}
                         ],
@@ -1200,7 +1211,7 @@ According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]
         # sources. Server-side render so it always reflects "today".
         import datetime as _llms_dt
         _llms_today = utc_now().strftime('%Y-%m-%d')
-        content = canon_text(f"""# DC Hub — Data Center Intelligence Platform
+        content = canon_text_as_phrases(f"""# DC Hub — Data Center Intelligence Platform
 # Last-Updated: {_llms_today}
 > DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking {{canon_facilities}} distinct facilities across {{canon_countries}} countries. Daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence for the global data center industry.""" + """
 
@@ -1213,8 +1224,8 @@ What is free and what is paid, in one line: verdict free; numerics paid. Names,
 counts, verdicts and bands (DCPI BUILD/CAUTION/AVOID), headlines and teasers are
 keyless. The numbers behind them (MW, scores, time-to-power months, cents/kWh, $ and
 $/MW, excess and constraint) come back null on a keyless or free-key call, and the
-response says it is a preview; they open with the ladder under "If a call is gated"
-below.
+response says it is a preview; the Developer and Pro plans under "If a call is
+gated" below return them.
 
 - [Platform Stats](https://dchub.cloud/api/v1/stats): Total facilities, countries, providers, capacity (MW)
 - [Facility Search](https://dchub.cloud/api/v1/facilities?q=Virginia&country=US): Search {canon_facilities} distinct facilities by location, provider, market
@@ -1227,9 +1238,9 @@ below.
 
 ## KEY REQUIRED — these four are NOT keyless
 Each answers 403 without a key that opens it (site score: 402 once its free session
-is used), and the body lists what does. The free key alone opens none of them. Pack
-credits and plans attach to a key, and a key is one POST — no email, no browser —
-sent back as `X-API-Key`:
+is used), and the body lists what does. The free key alone opens none of them. Plans
+attach to a key, and a key is one POST — no email, no browser — sent back as
+`X-API-Key`:
 
     curl -X POST https://dchub.cloud/api/v1/keys/claim \
       -H 'Content-Type: application/json' -d '{"client_name":"<your agent>"}'
@@ -1538,7 +1549,7 @@ learn the tools existed but not how to install them anywhere.
         # registration anywhere, or if main.py stops calling
         # register_discovery_routes(). Two registrations of one public path
         # let a guard pick the one no request reaches.
-        content = canon_text("""# DC Hub — Data Center Intelligence Platform
+        content = canon_text_as_phrases("""# DC Hub — Data Center Intelligence Platform
 # Full API Documentation for AI Agents & LLM Systems
 # Base URL: https://dchub.cloud
 # API Base: https://dchub.cloud/api
@@ -1628,13 +1639,14 @@ What comes back free, and what is paid: verdict free; numerics paid. Names,
 counts, verdicts and bands (DCPI BUILD/CAUTION/AVOID), headlines and teasers are
 keyless. The numbers behind them (MW, scores, time-to-power months, cents/kWh,
 $ and $/MW, excess and constraint) come back null on a keyless or free-key call,
-and the response says it is a preview; they open with the ladder further down.
+and the response says it is a preview; the Developer and Pro plans further down
+return them.
 
 ### Key required (these are NOT keyless)
 Each of the four below answers 403 without a key that opens it (site score: 402
 once its free session is used), and the body lists what does. The free key alone
-opens none of them. Pack credits and plans attach to a key, and a key is one
-POST — no email, no browser:
+opens none of them. Plans attach to a key, and a key is one POST — no email, no
+browser:
 
     curl -X POST https://dchub.cloud/api/v1/keys/claim \
       -H 'Content-Type: application/json' -d '{"client_name":"<your agent>"}'

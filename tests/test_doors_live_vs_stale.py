@@ -91,9 +91,25 @@ def _canon(ph):
 
 
 def _connect():
-    """/connect as main.connect_page serves it: the static file through canon."""
+    """/connect through main.connect_page itself, run as written: `import main`
+    hard-raises without a database, so the function is lifted out of main.py
+    and executed against the real static file and the real canon."""
+    import ast
+    import logging
+    import os
+    import types
     import ai_surface_canon
-    return ai_surface_canon.canon_text((ROOT / "static" / "connect.html").read_text(encoding="utf-8"))
+    src = (ROOT / "main.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef) and n.name == "connect_page")
+    fn.decorator_list = []
+    ns = {"os": os, "Response": flask.Response, "logger": logging.getLogger("t"),
+          "send_from_directory": flask.send_from_directory,
+          "_canon_text": ai_surface_canon.canon_text,
+          "app": types.SimpleNamespace(static_folder=str(ROOT / "static"))}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "main.py", "exec"), ns)
+    with flask.Flask("doors-connect").test_request_context("/connect"):
+        return ns["connect_page"]().get_data(as_text=True)
 
 
 _POLICY_DOORS = ("/llms.txt", "/llms-full.txt", "/AGENTS.md")
@@ -244,7 +260,7 @@ def test_connect_unlock_links_are_measured_checkouts():
     links = re.findall(r'href="(https://dchub\.cloud/go/c/[^"]+)"', sec)
     assert [_plan_of(u) for u in links] == ["metered", "developer", "pro"], links
     assert not _BARE_PRICING.findall(html), _BARE_PRICING.findall(html)
-    assert "{canon_" not in html
+    assert "{canon_" not in html and "{ladder_" not in html
 
 
 def test_connect_blobs_stay_price_free_and_the_no_egress_one_fails_closed():
@@ -256,3 +272,105 @@ def test_connect_blobs_stay_price_free_and_the_no_egress_one_fails_closed():
     assert "undated or secondary figure" in _flat(blobs[0])
     assert "do not guess a DC Hub number" in _flat(blobs[1])
     assert "https://dchub.cloud/land-power-map" in blobs[1]
+
+
+# ── one origin for the floors, and no retired floor on any door ──────────
+
+_BANNED_FLOORS = re.compile(
+    r"(?<![\d,])(?:22,100\+|22,900\+|24,400\+)"
+    r"|(?<![\d,])20,000\+\s*(?:distinct\s+)?(?:data[- ]cent(?:er|re)s?\s+)?facilit", re.I)
+_DOORS = ("/llms.txt", "/llms-full.txt", "/AGENTS.md", "/connect")
+
+
+def _serve(client, door):
+    return _connect() if door == "/connect" else _get(client, door)
+
+
+def _floors(monkeypatch, phrases, sibling):
+    """Give canon/phrases' resolver and canon_text's sibling cache different
+    facility floors, so a door shows which one it read."""
+    import ai_surface_canon as asc
+    import canonical_stats
+    import routes.agents_md_fallback as amd
+    pub = dict(asc.PINNED.get("public") or {})
+    cache = {**pub, "facilities": phrases, "_source": {}, "_rejected": [], "_cold": False}
+    # The cache canon/phrases publishes from, and the resolver AGENTS.md calls.
+    monkeypatch.setitem(asc._public_floors_cache, "val", cache)
+    monkeypatch.setitem(asc._public_floors_cache, "at", 9e18)   # fresh: no refresh
+    monkeypatch.setattr(amd, "resolve_public_floors_cached", lambda: dict(cache))
+    monkeypatch.setattr(canonical_stats, "live_public_floors", lambda: {"facilities": sibling})
+
+
+@pytest.mark.parametrize("door", _DOORS)
+def test_every_door_reads_the_facility_floor_canon_phrases_publishes(client, monkeypatch, door):
+    _floors(monkeypatch, phrases="25,100+", sibling="24,600+")
+    body = _serve(client, door)
+    assert "25,100+" in body, "%s does not show canon/phrases' floor" % door
+    assert "24,600+" not in body, "%s shows the sibling cache's floor" % door
+
+
+@pytest.mark.parametrize("door", _DOORS)
+@pytest.mark.parametrize("cold", [False, True], ids=["warm", "cold"])
+def test_no_door_serves_a_retired_facility_floor(client, monkeypatch, door, cold):
+    """Cold is the case the owner saw: a freshly booted worker serves the PIN."""
+    if cold:
+        import ai_surface_canon as asc
+        import canonical_stats
+        import routes.agents_md_fallback as amd
+        pub = dict(asc.PINNED.get("public") or {})
+        cold_val = {**pub, "_source": {k: "pinned" for k in pub}, "_rejected": [], "_cold": True}
+        monkeypatch.setitem(asc._public_floors_cache, "val", None)   # never filled
+        monkeypatch.setattr(amd, "resolve_public_floors_cached", lambda: dict(cold_val))
+        monkeypatch.setattr(canonical_stats, "live_public_floors", lambda: {})
+    body = _serve(client, door)
+    hits = sorted(set(m.group(0) for m in _BANNED_FLOORS.finditer(body)))
+    assert not hits, (door, "cold" if cold else "warm", hits)
+
+
+def test_the_doors_carry_no_stale_while_revalidate():
+    """main.py's after_request gives the doors a bounded TTL and no SWR, so a
+    canon walk reaches the edge in minutes and a purge is not re-pinned. Source
+    level, the house pattern (tests/test_crawler_directive_cache_headers.py):
+    `import main` hard-raises without a database."""
+    import ast
+    src = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    doors = next(ast.literal_eval(n.value) for n in tree.body
+                 if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_AGENT_DOOR_PATHS")
+    for door in ("/llms.txt", "/llms-full.txt", "/AGENTS.md", "/connect"):
+        assert door in doors, door
+    m = re.search(r"elif path in _AGENT_DOOR_PATHS:.*?(?=\n    elif |\n    else:)", src, re.S)
+    assert m, "the agent-door cache branch is gone"
+    branch = re.sub(r"#.*?$", "", m.group(0), flags=re.M)   # code, not the comment about it
+    assert "stale-while-revalidate" not in branch
+    assert "s-maxage=300" in branch and "Surrogate-Control" in branch
+
+
+# ── the pack is capacity, not depth (owner wording rule, 2026-09-22) ─────
+
+_PACK_WORD = re.compile(r"\$10 one-time|API credits|\bpack\b", re.I)
+_DEPTH_CLAIM = re.compile(r"full depth|full[- ]answer|full result|full screen|unlock|"
+                          r"\bopens?\b|numbers|numerics|precision", re.I)
+
+
+def _sentences(text):
+    """Each line (a ladder rung is one line) and each sentence within it: the
+    claim can sit in the sentence after the one that names the pack."""
+    plain = re.sub(r"<[^>]+>", " ", text)
+    units = []
+    for line in plain.splitlines():
+        line = _flat(line)
+        if line:
+            units.append(line)
+            units.extend(re.split(r"(?<=[.;!?])\s+|\s+·\s+|\s+—\s+", line))
+    return units
+
+
+@pytest.mark.parametrize("door", _DOORS)
+def test_no_door_says_the_pack_opens_depth(client, door):
+    """Describe the pack only as API capacity ("1,000 API credits, 1 per call,
+    5 for heavy tools"); never as what opens numbers, depth or full results.
+    Checked per line and per sentence, where the claim would sit."""
+    body = _serve(client, door)
+    bad = [s for s in _sentences(body) if _PACK_WORD.search(s) and _DEPTH_CLAIM.search(s)]
+    assert not bad, (door, bad[:4])

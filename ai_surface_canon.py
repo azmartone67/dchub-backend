@@ -326,7 +326,17 @@ PINNED = {
         #  renamed to the KEEPER count (~22,949): 24,400 > 22,949 would have
         #  fired canonical_floor_above_live_reality ~1,451 times and told a
         #  human to undo this walk. Same population, or no verdict.
-        "facilities": "24,400+",
+        # ★2026-09-21, THE ELEVENTH WALK: 24,400+ -> 24,500+. Canon has served
+        #  24,500+ warm since facilities_distinct crossed 24,500, while this
+        #  COLD-START pin kept 24,400+ on every freshly booted worker — and the
+        #  owner banned 24,400+ on the public doors the same day (a no-MCP
+        #  agent was handed it). Same population as the tenth walk, so no
+        #  auditor moves. Floors round DOWN: /api/v1/stats/canonical measured
+        #  facilities_distinct = 24,508 (2026-09-22 ~04:00Z), 24,500 <= 24,508.
+        #  The margin is 8 buildings; a dedupe below 24,500 makes the live
+        #  overlay publish 24,400+ again, which republished_markers() un-bans
+        #  while it is the published floor (the family rule below).
+        "facilities": "24,500+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -546,6 +556,14 @@ PINNED = {
                       # was still serving it (facilities "22,900+") from a
                       # facts file generated 05:25Z, ~16h before the walk.
                       "22,900+",
+                      # ★2026-09-21, THE ELEVENTH WALK: "24,400+" joins the
+                      # family the day the pin walked off it (24,500+), on the
+                      # same argument as "22,900+" above. The owner also named
+                      # "22,100+" (a no-MCP agent was shown it on /connect), so
+                      # it is listed with it. "20,000+" is banned only as a
+                      # FACILITY floor, which a bare marker cannot express;
+                      # tests/test_doors_live_vs_stale.py fences that form.
+                      "24,400+", "22,100+",
                       # ★2026-07-30: the 07-24..07-28 floor "12,650+" is itself
                       # retired (PINNED rebased to 15,000+, live 15,300+). It sat
                       # on the /ai hero CONTRADICTING the same page's live stat
@@ -1175,26 +1193,6 @@ def _pack_offer() -> str:
     return ''
 
 
-def _checkout(plan) -> str:
-    """The caller-independent measured checkout for `plan`: /go/c with no ref
-    and no session (routes.checkout_click_tracker.checkout_url), so it is safe
-    on a shared, cached page and /go/c still stamps the click with its plan.
-
-    ★2026-09-21: when no link can be minted (no signing secret) checkout_url()
-    answers with the bare pricing page. A policy surface must never carry that
-    (owner rule: soft unlock only through /go/c or /upgrade/h), so this falls
-    back to the pricing page tagged with the plan instead.
-    """
-    try:
-        from routes.checkout_click_tracker import checkout_url
-        url = checkout_url(plan)
-        if url.startswith("https://dchub.cloud/go/c/"):
-            return url
-    except Exception:
-        pass
-    return "https://dchub.cloud/pricing?plan=%s&utm_source=canon_checkout" % plan
-
-
 def canon_nums() -> dict:
     """The canonical agent-facing headline numbers, as ready-to-paste strings.
 
@@ -1335,12 +1333,6 @@ def canon_nums() -> dict:
         '{canon_price_developer}': _tier_price('developer'),
         '{canon_price_pro}': _tier_price('pro'),
         '{canon_pack_offer}': _pack_offer(),
-        # ★2026-09-21: the ladder's own links, so a canon-rendered surface
-        # (/connect) can link a rung without typing a checkout or sending a
-        # reader to the bare pricing page. Caller-independent; see _checkout.
-        '{canon_checkout_pack}': _checkout('metered'),
-        '{canon_checkout_developer}': _checkout('developer'),
-        '{canon_checkout_pro}': _checkout('pro'),
     }
 
 
@@ -1365,6 +1357,63 @@ def canon_text(s):
         if _ph in s:
             s = s.replace(_ph, _val)
     return s
+
+
+# ★2026-09-21 — THE PUBLIC DOORS READ THE FLOORS /api/v1/canon/phrases SERVES.
+# canon_text() takes the facility / deal / market / country floors from
+# canonical_stats' cache (_live_public_floors), while /api/v1/canon/phrases
+# publishes resolve_public_floors_cached(): two caches over one truth. Warm, they
+# agree; around a boot or a refresh they need not, and the doors tell agents to
+# read canon/phrases. A no-MCP agent was measured reading one floor on a door and
+# another at canon/phrases. The doors (/llms.txt, /llms-full.txt, /connect)
+# render through here, so each of these numbers has ONE origin: the cache the
+# endpoint the doors send agents to publishes from.
+#
+# ★ A PEEK, not a call. resolve_public_floors_cached() starts a background
+# refresh that probes live HTTP; a door render must not (the unit-tests step
+# fails any off-loopback attempt, and a crawler-hot page should not fan out
+# probes). canon/phrases requests keep that cache refreshed; before its first
+# fill a door falls through to canon_text()'s own value, as it did before.
+_PHRASES_FLOOR_KEYS = ("facilities", "deals", "markets", "countries")
+
+
+def _public_floors_peek() -> dict:
+    """The floors cache /api/v1/canon/phrases reads, as it stands; never
+    starts a refresh. {} before its first fill."""
+    try:
+        with _public_floors_lock:
+            val = _public_floors_cache["val"]
+        return dict(val) if isinstance(val, dict) else {}
+    except Exception:
+        return {}
+
+
+def phrases_floor(key) -> str:
+    """One floor ("facilities", "deals", ...) as /api/v1/canon/phrases publishes
+    it, or "" when that cache has none yet."""
+    val = _public_floors_peek().get(key)
+    return str(val) if val else ""
+
+
+def phrases_floors() -> dict:
+    """{placeholder: value} for the floors /api/v1/canon/phrases publishes."""
+    out = {}
+    for key in _PHRASES_FLOOR_KEYS:
+        val = phrases_floor(key)
+        if val:
+            out["{canon_%s}" % key] = val
+    return out
+
+
+def canon_text_as_phrases(s):
+    """canon_text(), with the floors above taken from canon/phrases' resolver.
+    Any key it cannot read falls through to canon_text()'s own value."""
+    if not s:
+        return s
+    for ph, val in phrases_floors().items():
+        if ph in s:
+            s = s.replace(ph, val)
+    return canon_text(s)
 
 
 # ── The advertised tool count: ONE adoption rule, two callers ──────────────

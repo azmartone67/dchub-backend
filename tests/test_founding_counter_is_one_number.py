@@ -121,11 +121,14 @@ def exporter(monkeypatch):
     return mfe, state
 
 
-def test_facts_carry_the_founding_price_while_the_programme_is_open(exporter):
+def test_facts_never_carry_founding_even_while_the_programme_is_open(exporter):
+    """★2026-09-21 (owner rule): this asserted the facts carried the founding
+    price while the programme was open. The ladder every agent-facing surface
+    sells is now the $10 pack, Developer and Pro, so it asserts the opposite."""
     mfe, _ = exporter
-    import tier_registry
     pricing = mfe.build()["pricing_usd_month"]
-    assert pricing["founding"] == tier_registry.price("founding") == 99
+    assert "founding" not in pricing, pricing
+    assert "starter" not in pricing and "team" not in pricing, pricing
     for k in mfe.PRICE_TIERS:
         assert k in pricing
 
@@ -145,11 +148,14 @@ def test_facts_drop_founding_when_the_programme_is_closed(exporter, counter):
 
 @pytest.mark.parametrize("counter", [{}, {"program_active": "yes", "remaining": 7},
                                      {"program_active": True, "remaining": "7"}])
-def test_facts_refuse_to_guess_when_the_counter_is_unreadable(exporter, counter):
+def test_facts_no_longer_depend_on_the_founding_counter(exporter, counter):
+    """★2026-09-21: this refused to export on an unreadable counter, because the
+    facts advertised the founding price while it was for sale. They no longer
+    advertise it (owner rule), so the counter cannot change the facts and an
+    unreadable one must not block the export of everything else."""
     mfe, state = exporter
     state["counter"] = counter
-    with pytest.raises(mfe.ExportError):
-        mfe.build()
+    assert "founding" not in mfe.build()["pricing_usd_month"]
 
 
 def test_facts_read_the_uncached_counter():

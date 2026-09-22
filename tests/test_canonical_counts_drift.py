@@ -2999,8 +2999,10 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # stay ABOVE the canon floor, because the feed correctly OMITS a count below
     # it (test_capabilities_omits_rather_than_publishing_below_canon_floor), and
     # an omitted field makes the assertion below fail for the wrong reason.
+    # ★2026-09-21: 24,449 -> 24,508 with the eleventh walk (pin 24,500+), the
+    # facilities_distinct reading that day. Same cause as every note above.
     live_like = {
-        "facilities_verified": 24449, "markets": 300,
+        "facilities_verified": 24508, "markets": 300,
         "deals": 2237, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
@@ -3018,7 +3020,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     doc = json.loads(body)
     counts, quotable = doc.get("counts", {}), doc.get("agent_quotable")
 
-    assert counts.get("facilities") == 24449, (
+    assert counts.get("facilities") == 24508, (
         f"counts.facilities is {counts.get('facilities')!r}, not the injected "
         "verified count — the feed is not reading facilities_verified. This is "
         "the assertion that would have failed on the raw COUNT(*) basis."
@@ -3027,7 +3029,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
         "agent_quotable absent although every count resolved — the fence below "
         "would pass vacuously."
     )
-    for field, value in (("facilities", 24449), ("markets_scored", 300),
+    for field, value in (("facilities", 24508), ("markets_scored", 300),
                          ("deals_tracked", 2237), ("countries", 178)):
         assert counts.get(field) == value, f"counts.{field} != injected {value}"
         assert f"{value:,}" in quotable or str(value) in quotable, (

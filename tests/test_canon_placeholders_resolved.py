@@ -165,7 +165,9 @@ _SWEPT = [
 ]
 
 # Functions that resolve a placeholder. _canon_int calls canon_text internally.
-_RESOLVERS = {"canon_text", "_canon_text", "_canon_int"}
+# canon_text_as_phrases (2026-09-21) substitutes canon/phrases' floors and then
+# calls canon_text, so it resolves every placeholder canon_text does.
+_RESOLVERS = {"canon_text", "_canon_text", "_canon_int", "canon_text_as_phrases"}
 
 
 def _known_placeholders() -> set[str]:
