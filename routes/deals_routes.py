@@ -505,10 +505,53 @@ def _deals_provenance(data_source):
     except Exception:
         return None
 
+def _deals_caller_paid():
+    """Whether this caller gets deal $ values and MW (paid intel).
+
+    frontend#1534, REST honours /pricing, step 2 (2026-09-22): /pricing sells
+    M&A "Full + CSV export" at Developer, and the $10 pack as full-depth
+    credits. So the line is Developer, not Pro: caller_is_privileged trusts a
+    key's plan (an MCP key's real plan since the key-resolution change), the
+    MCP server's own calls, loopback and a signed-in browser. A request a pack
+    credit already admitted (util/rest_pack_access.serve_below_plan, through
+    require_plan(..., pack_opens=True) on /api/v1/transactions) is paid too.
+    """
+    try:
+        from routes.tier_gate import caller_is_privileged
+        if caller_is_privileged('DEVELOPER'):
+            return True
+    except Exception:
+        pass
+    try:
+        from flask import g as _g
+        return getattr(_g, 'user_tier', None) == 'pack'
+    except Exception:
+        return False
+
+
 @deals_bp.route('/api/deals', methods=['GET'])
-@_lazy_protect_data
-def get_deals():
-    """Get data center deals/transactions - comprehensive database"""
+def get_deals(paid=None):
+    """Get data center deals/transactions - comprehensive database.
+
+    A valid key below Developer that holds pack credits gets the full answer
+    for one credit, burned only on a delivered 200 (frontend#1534).
+
+    `paid` None is the route: it decides who is paying and re-enters with it
+    explicit, inside protect_data (applied once, after the decision). The
+    answer's dict literals stay in this function so the API response
+    contract can still read them.
+    """
+    if paid is None:
+        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+        if api_key and not _deals_caller_paid():
+            from util.rest_pack_access import serve_below_plan
+            # Full and preview say paid or not EXPLICITLY: when a burn fails,
+            # serve_below_plan serves the preview with g.user_tier still 'pack'.
+            return serve_below_plan(api_key,
+                                    _lazy_protect_data(lambda: get_deals(paid=True)),
+                                    _lazy_protect_data(lambda: get_deals(paid=False)))
+        _paid_now = _deals_caller_paid()
+        return _lazy_protect_data(lambda: get_deals(paid=_paid_now))()
     import time
     
     limit = request.args.get('limit', 200, type=int)
@@ -533,11 +576,7 @@ def get_deals():
     # tier / internal / loopback / a logged-in browser cookie, but NOT the
     # forgeable Referer (tier_gate.py:225). Anon + free-keyed → no $; Pro+ → full.
     # Fail-closed to masked. Masks COPIES so the shared DEALS_CACHE keeps full data.
-    try:
-        from routes.tier_gate import caller_is_privileged
-        _deals_paid = caller_is_privileged('PRO')
-    except Exception:
-        _deals_paid = False
+    _deals_paid = bool(paid)
     # frontend#1534: the wall's fields, computed once and written as explicit keys
     # below. The API contract guard reads upgrade_url from the dict literal, and a
     # ** splat would make it invisible there.
@@ -577,7 +616,7 @@ def get_deals():
             'tier': ('paid' if _deals_paid else 'free'),
             'upgrade_url': (_dw or {}).get('upgrade_url'),
             'upgrade_options': (_dw or {}).get('upgrade_options'),
-            'note': (None if _deals_paid else 'Free: deal $ values + MW are Pro. Upgrade at https://dchub.cloud/pricing for confirmed values + capacity.'),
+            'note': (None if _deals_paid else _DEALS_FREE_NOTE),
         })
     
     # Phase GG (2026-05-14): live DB wins COMPLETELY. The `deals` table
@@ -765,7 +804,8 @@ def get_transactions():
     """Transactions with freemium tier.
     
     Unauthenticated: 3 most recent deals, basic fields only (buyer, seller, market).
-    Authenticated Pro/Enterprise: full deal data as before.
+    Developer and above: full deal data. A key below Developer holding pack
+    credits: full deal data for one credit (frontend#1534).
     AI Wars verification keys also get Pro-tier access.
     """
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -783,10 +823,14 @@ def get_transactions():
         # later in main.py), so EVERY keyed/MCP request hard-503'd ("tier_gating_
         # unavailable"). Use the standard request-time _lazy_require_plan('pro') —
         # the same gate every other Pro route in this file already uses.
-        @_lazy_require_plan('pro')
+        # frontend#1534 step 2: Developer opens the full list (and its $ and
+        # MW), and a key below it holding pack credits gets it for one credit.
+        @_lazy_require_plan('developer', pack_opens=True)
         @_lazy_protect_data
         def _authed_transactions():
-            return get_deals()
+            # The answer, not the route: the route applies protect_data itself,
+            # and the decorator above already does, so records counted once.
+            return get_deals(paid=_deals_caller_paid())
         # r-txinversion (2026-07-26, tier-gating QA): if the pro gate declines a
         # KEYED caller, fall through to the same freemium teaser an anonymous
         # caller gets. Before this, a free/developer key got a hard 403 upsell
@@ -829,13 +873,17 @@ _GAS_STATS_CACHE = BoundedCache(max_size=1, ttl=3600)
 _GAS_STATS_RETRY = {'at': 0.0}
 
 
+_DEALS_FREE_NOTE = ('Free: deal $ values and MW open with pack credits (one credit per '
+                    'full answer) or on the Developer plan and above.')
+
+
 def _rest_wall():
     """The free wall's upgrade fields: a measured /go/c pack checkout plus the
     ladder (routes.checkout_click_tracker.rest_wall_ladder). Falls back to the
     pricing page, never to nothing: a wall with no way through is worse."""
     try:
         from routes.checkout_click_tracker import rest_wall_ladder
-        return rest_wall_ladder(opens_on_rest='pro', mcp_tool='list_transactions')
+        return rest_wall_ladder(opens_on_rest='pack', mcp_tool='list_transactions')
     except Exception:  # noqa: BLE001
         return {'upgrade_url': 'https://dchub.cloud/pricing'}
 
@@ -1399,7 +1447,6 @@ _GP_PREVIEW_LOCKED = ('pipelines[].name', 'pipelines[].operator',
 
 
 @deals_bp.route('/api/v1/deals', methods=['GET'])
-@_lazy_protect_data
 def get_deals_v1():
     """Alias for deals endpoint - matches frontend expectations.
 
@@ -1409,6 +1456,13 @@ def get_deals_v1():
     returned freemium data to anon while /api/v1/deals 403'd them and only let
     callers through via the forgeable dchub.cloud-Referer map bypass — i.e. it
     leaked to scrapers via the apex. Now honestly freemium on both aliases.
+
+    frontend#1534 (2026-09-22): no protect_data of its own. get_deals applies
+    it, once, AFTER deciding who is paying. This alias used to wrap it a second
+    time, and that outer pass reads the tier before the handler runs: a pack
+    buyer was judged free there, so the credit burned inside and the outer
+    pass then counted the full answer against the free daily cap (a 429 after
+    paying), and every caller's records were counted twice.
     """
     return get_deals()
 

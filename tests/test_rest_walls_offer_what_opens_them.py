@@ -6,7 +6,8 @@ be#5091 made rest_wall_ladder(opens_on_rest, mcp_tool) honest; this sweep points
 the remaining literal-/pricing REST walls at it, each with the CHEAPEST plan its
 own gate admits:
 
-  /api/deals ×2           caller_is_privileged('PRO')           → pro
+  /api/deals ×2           caller_is_privileged('DEVELOPER') + pack credits → pack
+                          (frontend#1534 step 2, 2026-09-22; was PRO → pro)
   /api/ai/query           user_has_access(plan, 'pro')          → pro
   /api/site-score         plan in ('pro','enterprise','developer') → developer
   /api/v1/site-forecast   plan in ('pro','enterprise','developer') → developer
@@ -140,8 +141,14 @@ def test_the_main_wall_offers_the_cheapest_plan_its_gate_admits(name):
 
 
 def test_the_deals_walls_go_through_the_honest_ladder_at_its_gate():
-    fn = _fn("routes/deals_routes.py", "get_deals")
-    assert _gate_plans(fn) == {"pro"}
+    # The gate lives in _deals_caller_paid; get_deals sends a key below it
+    # through its pack credits and builds the answer and the wall.
+    gate = _gate_plans(_fn("routes/deals_routes.py", "_deals_caller_paid"))
+    assert gate == {"developer"}
+    route = _fn("routes/deals_routes.py", "get_deals")
+    through_pack = any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "serve_below_plan"
+                       for n in ast.walk(route))
+    fn = route
     assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_rest_wall"
                for n in ast.walk(fn)), "get_deals no longer reaches the ladder"
     # Every upgrade_url the handler writes is computed, never the literal page.
@@ -155,4 +162,6 @@ def test_the_deals_walls_go_through_the_honest_ladder_at_its_gate():
     helper = _fn("routes/deals_routes.py", "_rest_wall")
     kw = {k.arg: k.value.value for n in ast.walk(helper) if isinstance(n, ast.Call)
           and getattr(n.func, "id", "") == "rest_wall_ladder" for k in n.keywords}
-    assert kw.get("opens_on_rest") == "pro"
+    # The cheapest thing that opens it: the pack when the route takes pack
+    # credits, else the gate's own plan.
+    assert kw.get("opens_on_rest") == ("pack" if through_pack else min(gate, key=RANK.get))
