@@ -79,6 +79,31 @@ def presented_key() -> str:
     return key.strip()
 
 
+def _auto_issued_key() -> str:
+    """The trial key main.auto_issue_key_for_ai_agents put on THIS request.
+
+    For an AI-agent user agent with no credential (Claude, ChatGPT, Perplexity,
+    and the Claude desktop app's own browser) that hook mints or reuses a
+    dch_trial_ key and writes it into the request environ as X-API-Key, so it
+    reads exactly like a key the caller sent. The caller sent none.
+    """
+    try:
+        from flask import g
+        return getattr(g, "auto_issued_key", None) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _injected_key_only() -> bool:
+    """True when the only credential on the request is the auto-issued key."""
+    key = presented_key()
+    if not key or key != _auto_issued_key():
+        return False
+    if (request.headers.get("Authorization", "") or "").startswith("Bearer "):
+        return False
+    return not any(request.cookies.get(c) for c in _CREDENTIAL_COOKIES)
+
+
 def carries_credential() -> bool:
     if presented_key():
         return True
@@ -198,6 +223,16 @@ def gate_or_tease(min_plan: str, serve_full, serve_tease, serve_unchanged=None):
         return (serve_unchanged or serve_full)()
     if not carries_credential():
         return _tease(serve_tease, min_plan, "", keyed=False)
+    # ★ 2026-09-22. A key the server injected is not a credential the caller
+    # presented. Sent through require_plan it answered 401 invalid_api_key
+    # whenever the reused trial no longer validated: measured live with the
+    # Claude desktop browser's user agent, with no key at all, on the canvas
+    # and on quick-score. So it gets the keyless tease. The response still
+    # carries that caller's X-DC-Auto-Issued-Key header, so it is never stored
+    # for anyone else (private, no-store), and its links are not bound to a
+    # key the caller never chose.
+    if _injected_key_only():
+        return _tease(serve_tease, min_plan, "", keyed=True)
     from api_tier_gating import require_plan
     resp = make_response(require_plan(min_plan, pack_opens=True)(serve_full)())
     if resp.status_code == 403:

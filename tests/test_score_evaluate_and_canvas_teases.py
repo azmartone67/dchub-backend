@@ -487,3 +487,74 @@ def test_upgrade_ladder_binds_to_a_valid_key_only(client):
     assert body["key_bound"] is True
     stray = _get(client, "/api/v1/land-power/upgrade-ladder", UNKNOWN_KEY).get_json()
     assert {_token_fields(x["url"])[1] for x in stray["rungs"]} == {""}
+
+
+# ── an AI-agent user agent with no key (2026-09-22) ─────────────────────────
+# main.auto_issue_key_for_ai_agents runs before every /api/v1/* view. For an
+# AI-platform user agent with no credential it mints or reuses a dch_trial_ key
+# and writes it into the request environ as X-API-Key. Measured live with the
+# Claude desktop browser's user agent and no key: the canvas and quick-score
+# answered 401 invalid_api_key, because the reused trial no longer validated
+# and the gate read the injected key as one the caller had sent. The hook runs
+# here as main.py's own code, pulled out with ast.
+
+CLAUDE_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Claude/2.2553.1 Chrome/152.0.7977.76 Safari/537.36")
+STALE_TRIAL = "dch_trial_" + "z" * 32      # what the hook hands back; it does not validate
+
+
+def _auto_issue_hook(monkeypatch):
+    import ast as _ast
+    import copy as _copy
+    import routes.auto_trial as at
+    monkeypatch.setattr(at, "mint_trial_for_request",
+                        lambda req=None, **kw: {"ok": True, "api_key": STALE_TRIAL,
+                                                "expires_at": "2026-10-22T00:00:00Z"})
+    tree = _ast.parse((ROOT / "main.py").read_text())
+    names = ("auto_issue_key_for_ai_agents", "_is_bulk_export_path")
+    nodes = [_copy.deepcopy(n) for n in tree.body
+             if isinstance(n, _ast.FunctionDef) and n.name in names]
+    assert sorted(n.name for n in nodes) == sorted(names)
+    ns = {"request": flask.request, "g": flask.g,
+          "_identify_ai_platform": lambda ua: "Claude" if "Claude/" in (ua or "") else None}
+    exec(compile(_ast.Module(body=nodes, type_ignores=[]), "main.py", "exec"), ns)  # noqa: S102
+    return ns["auto_issue_key_for_ai_agents"]
+
+
+@pytest.fixture
+def agent_client(client, monkeypatch):
+    client.application.before_request(_auto_issue_hook(monkeypatch))
+    return client
+
+
+@pytest.mark.parametrize("path", [CANVAS, ANALYSIS_PATH, QUICK])
+def test_an_ai_agent_with_no_key_gets_the_tease_not_a_401(agent_client, ledger, path):
+    r = agent_client.get(path, headers={"User-Agent": CLAUDE_UA})
+    body = _assert_tease(r, path, "developer" if path == CANVAS else "pro")
+    # the response is that caller's (the hook's key header rides it): never shared
+    assert "no-store" in r.headers["Cache-Control"] and "private" in r.headers["Cache-Control"]
+    assert {_token_fields(o["url"])[1] for o in body["upgrade_options"]} == {""}
+    assert body["key_bound"] is False and ledger["burns"] == []
+
+
+def test_the_hook_really_injected_the_key(agent_client):
+    """Control: without this the test above would pass for a hook that never ran."""
+    seen = {}
+
+    @agent_client.application.before_request
+    def _peek():
+        seen["key"] = flask.request.headers.get("X-API-Key")
+        seen["g"] = getattr(flask.g, "auto_issued_key", None)
+    agent_client.get(CANVAS, headers={"User-Agent": CLAUDE_UA})
+    assert seen == {"key": STALE_TRIAL, "g": STALE_TRIAL}
+
+
+def test_an_ai_agent_that_sends_its_own_key_is_judged_on_it(agent_client, ledger):
+    r = agent_client.get(CANVAS, headers={"User-Agent": CLAUDE_UA, "X-API-Key": FREE_KEY})
+    body = _assert_tease(r, CANVAS, "developer")
+    h = hashlib.sha256(FREE_KEY.encode()).hexdigest()
+    assert _token_fields(body["upgrade_url"])[1] == "pk-" + h
+    assert agent_client.get(CANVAS, headers={"User-Agent": CLAUDE_UA,
+                                             "X-API-Key": UNKNOWN_KEY}).status_code == 401
+    _assert_full(agent_client.get(CANVAS, headers={"User-Agent": CLAUDE_UA,
+                                                   "X-API-Key": DEV_KEY}), CANVAS)
