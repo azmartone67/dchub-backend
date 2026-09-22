@@ -580,11 +580,11 @@ def validate_api_key(api_key):
 #   web access on failure #1 and delete that grace — a harsher web path instead
 #   of an agreeing one.
 #
-#   the stamp alone is WRONG TOO. r46-restore clears demoted_at only for
-#   demoted_reason='dunning_prior_payer'; a 'first_charge_never_succeeded' stamp
-#   has no such clearer. Keying on the stamp alone could lock someone out of the
-#   website permanently after they finally paid. handle_invoice_paid sets
-#   subscription_status='active', so requiring the status means recovery is
+#   the stamp alone is WRONG TOO. r46-restore clears demoted_at only for the
+#   two reasons handle_payment_failed writes, and only best-effort; a hand-set
+#   stamp has no clearer at all. Keying on the stamp alone could lock someone
+#   out of the website permanently after they finally paid. handle_invoice_paid
+#   sets subscription_status='active', so requiring the status means recovery is
 #   guaranteed by the payment itself, whether or not anything clears the stamp.
 #
 # So: demoted AND still unresolved. That is exactly the window in which the API

@@ -19739,22 +19739,33 @@ def handle_invoice_paid(invoice):
     except Exception as e:
         print(f"[dunning] invoice_paid pg update failed for {customer_id}: {e}")
 
-    # r46-restore (2026-06-01): RESTORE-ON-RENEWAL. A prior-payer pulled to
-    # 'free' by the dunning guard (handle_payment_failed, demoted_reason=
-    # 'dunning_prior_payer') whose card later succeeds via Stripe's automatic
-    # retry fires invoice.paid (NOT a new checkout), so without this they'd
-    # stay locked on free tier despite paying again. The demote only lowered
-    # api_keys.rate_limit_tier and left api_keys.plan intact, so restore the
-    # tier FROM plan and clear the demote stamp. Scoped strictly to
-    # demoted_reason='dunning_prior_payer' so we never touch a manually-set or
-    # first-charge demote. Idempotent.
+    # r46-restore (2026-06-01): RESTORE-ON-RENEWAL. A payer pulled to 'free'
+    # by the dunning guard (handle_payment_failed) whose card later succeeds
+    # via Stripe's automatic retry fires invoice.paid (NOT a new checkout), so
+    # without this they'd stay locked on free tier despite paying again. The
+    # demote only lowered api_keys.rate_limit_tier and left api_keys.plan
+    # intact, so restore the tier FROM plan and clear the demote stamp.
+    # Idempotent.
     #
-    # BOTH statements carry demoted_at IS NOT NULL. They are two halves of one
-    # operation and must select the same rows: the stamp cleared by the second
-    # is what the first selects on, so clearing it for a row the first did NOT
-    # restore leaves the key on 'free' with nothing left to match — no later
-    # invoice.paid can recover it. The second clause was missing until #4932;
-    # see tests/test_pro_restore_on_renewal.py for the row shape that hit it.
+    # Scoped to the two reasons handle_payment_failed writes, the demotes a
+    # payment resolves. 'first_charge_never_succeeded' was excluded until
+    # 2026-09-22 and nothing else restored it (subscription.updated writes only
+    # subscription_status), yet the demote email promises "the next successful
+    # payment restores your tier automatically", and once this handler sets
+    # subscription_status='active' the web path serves users.plan again while
+    # both MCP gates read rate_limit_tier (#5193, #5205) and served FREE.
+    # Excluded by owner decision: 'tier_expired_onetime' (routes/expired_demote
+    # also set users.plan='free', so restoring from api_keys.plan would invert
+    # the paths the other way) and 'manual'/'abuse' (decisions, not payment
+    # failures; no code writes them).
+    #
+    # BOTH statements carry the same reason list and demoted_at IS NOT NULL.
+    # They are two halves of one operation and must select the same rows: the
+    # stamp cleared by the second is what the first selects on, so clearing it
+    # for a row the first did NOT restore leaves the key on 'free' with nothing
+    # left to match — no later invoice.paid can recover it. The second
+    # demoted_at clause was missing until #4932; see
+    # tests/test_pro_restore_on_renewal.py for the row shape that hit it.
     try:
         _pg_execute(
             """UPDATE api_keys
@@ -19762,7 +19773,8 @@ def handle_invoice_paid(invoice):
                 WHERE user_id IN (
                       SELECT id FROM users
                        WHERE stripe_customer_id = %s
-                         AND demoted_reason = 'dunning_prior_payer'
+                         AND demoted_reason IN ('dunning_prior_payer',
+                                                'first_charge_never_succeeded')
                          AND demoted_at IS NOT NULL)""",
             (customer_id,),
         )
@@ -19770,7 +19782,8 @@ def handle_invoice_paid(invoice):
             """UPDATE users
                   SET demoted_at = NULL, demoted_reason = NULL
                 WHERE stripe_customer_id = %s
-                  AND demoted_reason = 'dunning_prior_payer'
+                  AND demoted_reason IN ('dunning_prior_payer',
+                                         'first_charge_never_succeeded')
                   AND demoted_at IS NOT NULL""",
             (customer_id,),
         )
@@ -19810,8 +19823,10 @@ def handle_payment_failed(invoice):
         payment_failed_count >= 2, demote their api_keys.rate_limit_tier
         to 'free'. The key STAYS ACTIVE — Stripe's recovery email still
         clicks through to a working dashboard — they just lose paid
-        rate limits + paid endpoints. users.plan is preserved so a
-        successful retry will restore them via subscription.updated.
+        rate limits + paid endpoints. users.plan and api_keys.plan are
+        preserved so a successful retry restores the tier from
+        api_keys.plan via invoice.paid (handle_invoice_paid r46-restore;
+        subscription.updated writes only subscription_status).
       - Real customers (paid_count >= 1) ride out the full Stripe retry
         cycle (~21 days) untouched, and get downgraded only when
         Stripe finally cancels (handle_subscription_deleted).

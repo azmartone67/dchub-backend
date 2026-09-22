@@ -72,6 +72,8 @@ DEMOTE_KEY = _statement("handle_payment_failed", "UPDATE api_keys",
                         "rate_limit_tier = 'free'")
 RESTORE_KEY = _statement("handle_invoice_paid", "UPDATE api_keys",
                          "rate_limit_tier = plan")
+RESTORE_USER = _statement("handle_invoice_paid", "UPDATE users",
+                          "demoted_at = NULL")
 CANCEL_USER = _statement("handle_subscription_deleted", "UPDATE users",
                          "subscription_status = 'canceled'")
 CANCEL_KEY = _statement("handle_subscription_deleted", "UPDATE api_keys",
@@ -202,12 +204,17 @@ def test_a_paid_key_through_dunning_restore_and_cancel(db, plan):
 
     _is(key, paid, "minted")
 
-    assert _run(DEMOTE_USER, ("dunning_prior_payer", user)) == 1
-    assert _run(DEMOTE_KEY, (now, user)) == 1
-    _is(key, "FREE", "dunning-demoted")
+    # A first charge that never succeeded, then a prior payer's failed renewal.
+    # The payment that resolves each demote lifts it, through both halves of
+    # the restore; the stamp must be cleared or the next demote cannot land.
+    for reason in ("first_charge_never_succeeded", "dunning_prior_payer"):
+        assert _run(DEMOTE_USER, (reason, user)) == 1
+        assert _run(DEMOTE_KEY, (now, user)) == 1
+        _is(key, "FREE", reason + "-demoted")
 
-    assert _run(RESTORE_KEY, (customer,)) == 1
-    _is(key, paid, "restored")
+        assert _run(RESTORE_KEY, (customer,)) == 1
+        assert _run(RESTORE_USER, (customer,)) == 1
+        _is(key, paid, reason + "-restored")
 
     assert _run(CANCEL_USER, (customer,)) == 1
     assert _run(CANCEL_KEY, (now, user)) == 1

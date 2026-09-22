@@ -4,6 +4,14 @@ r46-restore (main.py ~19407): a prior payer pulled to 'free' by the dunning
 guard whose card later succeeds fires invoice.paid — NOT a new checkout — so
 without this block they stay locked on free tier despite paying again.
 
+SCOPE (owner decision 2026-09-22): both reasons handle_payment_failed writes are
+restored, 'dunning_prior_payer' and 'first_charge_never_succeeded'. The second
+was pinned NOT restored until then, while the demote email promised the next
+payment restores the tier and the web path served paid again on
+status='active', so both MCP gates (which read rate_limit_tier since
+#5193/#5205) served a paying customer FREE. 'tier_expired_onetime', 'manual'
+and 'abuse' stay excluded.
+
 ★ IT HAD NO TEST. tests/test_web_path_honors_dunning_demote.py imports
 `api_tier_gating` and nothing else, so it cannot reach this handler: its two
 mentions of `handle_invoice_paid` are DOCSTRINGS (l.33, l.75), and its 12 tests
@@ -27,6 +35,10 @@ import pytest
 MAIN = "main.py"
 HANDLER = "handle_invoice_paid"
 CUSTOMER = "cus_prior_payer"
+# What a paid invoice lifts (both written by handle_payment_failed), and what it
+# must never touch.
+RESTORED = ("dunning_prior_payer", "first_charge_never_succeeded")
+EXCLUDED = ("tier_expired_onetime", "manual", "abuse")
 
 
 def _load_handler(ns_extra):
@@ -116,10 +128,14 @@ def _invoice(customer=CUSTOMER):
 
 # ── the restore ──────────────────────────────────────────────────────────
 
-def test_a_dunning_demoted_payer_is_restored_from_plan(harness):
+@pytest.mark.parametrize("reason", RESTORED)
+def test_a_dunning_demoted_payer_is_restored_from_plan(harness, reason):
     """The whole point of r46-restore. The demote lowered rate_limit_tier and
-    left `plan` intact, so `plan` is what the tier comes back to."""
-    harness.add_user(1, reason="dunning_prior_payer", tier="free", plan="pro")
+    left `plan` intact, so `plan` is what the tier comes back to.
+
+    Both dunning reasons: the demote email tells either customer "the next
+    successful payment restores your tier automatically"."""
+    harness.add_user(1, reason=reason, tier="free", plan="pro")
     harness.handler(_invoice())
     assert harness.key(1)["rate_limit_tier"] == "pro", (
         "tier stayed %r — a payer whose card recovered is still locked on free"
@@ -149,17 +165,39 @@ def test_the_keys_are_restored_before_the_stamp_they_select_on_is_cleared(harnes
 
 # ── the scoping ──────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("reason", ["first_charge_never_succeeded", "manual", "abuse"])
+@pytest.mark.parametrize("reason", EXCLUDED)
 def test_a_demote_with_another_reason_is_never_touched(harness, reason):
-    """Scoped strictly to 'dunning_prior_payer'. A manual or first-charge demote
-    is a decision, not a payment failure, and paying an invoice must not undo
-    it."""
+    """Scoped to the two dunning reasons. A manual or abuse demote is a
+    decision, not a payment failure, and paying an invoice must not undo it.
+    'tier_expired_onetime' (routes/expired_demote.py) also set users.plan to
+    'free', so restoring its rate_limit_tier from api_keys.plan would make the
+    API path outrank the web path: the inversion the other way round."""
     harness.add_user(1, reason=reason, tier="free", plan="pro")
     harness.handler(_invoice())
     assert harness.key(1)["rate_limit_tier"] == "free", (
         "%r demote was lifted by an invoice payment" % reason
     )
     assert harness.user(1)["demoted_reason"] == reason
+
+
+@pytest.mark.parametrize("demoted_at", ["2026-09-01 00:00:00", None],
+                         ids=["dated", "undated"])
+@pytest.mark.parametrize("reason", RESTORED + EXCLUDED)
+def test_both_statements_select_the_same_rows(harness, reason, demoted_at):
+    """★ #4932's invariant, for EVERY reason. The two restore statements are
+    halves of one operation: a stamp cleared without its key restored leaves
+    the key on 'free' with nothing left for a later invoice.paid to match, and
+    a key restored with its stamp kept still reads as demoted. Widening one
+    statement's reason list and not the other breaks exactly one half, so this
+    compares the two outcomes row by row instead of trusting the SQL text."""
+    harness.add_user(1, reason=reason, demoted_at=demoted_at, tier="free", plan="pro")
+    harness.handler(_invoice())
+    restored = harness.key(1)["rate_limit_tier"] == "pro"
+    cleared = harness.user(1)["demoted_reason"] is None
+    assert restored == cleared, (
+        "%r (demoted_at=%r): key restored=%s but stamp cleared=%s, so the two "
+        "statements selected different rows" % (reason, demoted_at, restored, cleared))
+    assert restored == (reason in RESTORED and demoted_at is not None)
 
 
 def test_another_customers_demote_is_not_restored(harness):
@@ -192,7 +230,8 @@ def test_restoring_twice_is_idempotent(harness):
     assert harness.user(1) == {"demoted_at": None, "demoted_reason": None}
 
 
-def test_a_stamp_with_no_demoted_at_is_left_intact_not_erased(harness):
+@pytest.mark.parametrize("reason", RESTORED)
+def test_a_stamp_with_no_demoted_at_is_left_intact_not_erased(harness, reason):
     """Both restore statements carry `demoted_at IS NOT NULL`, so a row whose
     reason is stamped with a NULL demoted_at is selected by NEITHER.
 
@@ -201,25 +240,26 @@ def test_a_stamp_with_no_demoted_at_is_left_intact_not_erased(harness):
     left on 'free' — and the reason is exactly what a later invoice.paid selects
     on, so that combination was unrecoverable. The requirement is that a stamp
     OUTLIVE a restore that did not happen."""
-    harness.add_user(1, reason="dunning_prior_payer", demoted_at=None,
+    harness.add_user(1, reason=reason, demoted_at=None,
                      tier="free", plan="pro")
     harness.handler(_invoice())
     assert harness.key(1)["rate_limit_tier"] == "free", (
         "no demoted_at means no demote to reverse — the tier is not raised"
     )
-    assert harness.user(1)["demoted_reason"] == "dunning_prior_payer", (
+    assert harness.user(1)["demoted_reason"] == reason, (
         "the stamp must survive; it is what a later restore matches on"
     )
 
 
-def test_a_stamp_that_survives_is_still_restorable_once_dated(harness):
+@pytest.mark.parametrize("reason", RESTORED)
+def test_a_stamp_that_survives_is_still_restorable_once_dated(harness, reason):
     """The point of leaving the stamp alone: recovery stays possible.
 
     Proves the whole path end to end — a NULL-dated stamp survives one
     invoice.paid, and once the missing demoted_at is supplied the NEXT
     invoice.paid restores the tier normally. Without the fix the first call
     erases the reason and this second call has nothing to match."""
-    harness.add_user(1, reason="dunning_prior_payer", demoted_at=None,
+    harness.add_user(1, reason=reason, demoted_at=None,
                      tier="free", plan="pro")
     harness.handler(_invoice())
 
