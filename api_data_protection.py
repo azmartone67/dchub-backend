@@ -618,7 +618,11 @@ _MCP_TIER_TO_PROTECTION = {'enterprise': 'enterprise', 'paid': 'developer',
 def _resolve_key_tier(api_key):
     if not api_key:
         return None
-    kh = _get_key_hash(api_key)
+    # frontend#1534 (2026-09-22): the answer depends on who is calling (below),
+    # so the cache key does too.
+    from util.mcp_key_plan import from_mcp_server, plan_of_paid_key
+    internal = from_mcp_server()
+    kh = (_get_key_hash(api_key), internal)
     now = time.time()
     hit = _KEY_TIER_CACHE.get(kh)
     if hit and hit[1] > now:
@@ -633,10 +637,21 @@ def _resolve_key_tier(api_key):
             try:
                 with conn.cursor() as cur:
                     cur.execute("SET statement_timeout='3000'")
-                    cur.execute("SELECT LOWER(tier) FROM mcp_dev_keys "
+                    cur.execute("SELECT LOWER(tier), email FROM mcp_dev_keys "
                                 "WHERE api_key = %s AND status = 'active' LIMIT 1", (api_key,))
                     row = cur.fetchone()
-                    tier = _MCP_TIER_TO_PROTECTION.get(((row[0] or '') if row else ''))
+                    _t = (row[0] or '') if row else ''
+                    # 'paid' is Developer, Pro and founding alike, and the map
+                    # reads it as Developer, so a Pro key got Developer's caps. A
+                    # direct REST caller gets the caps of the plan the key bought
+                    # (util/mcp_key_plan); the MCP server's calls keep the map.
+                    if _t == 'paid' and not internal:
+                        _t = plan_of_paid_key(cur, api_key, row[1])
+                        if _t not in _MCP_TIER_TO_PROTECTION:
+                            # team, research_seed: the caps of their API tier.
+                            import tier_registry as _tr
+                            _t = _tr.api_tier(_t)
+                    tier = _MCP_TIER_TO_PROTECTION.get(_t)
             finally:
                 try: conn.close()
                 except Exception: pass

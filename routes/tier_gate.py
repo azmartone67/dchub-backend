@@ -163,12 +163,26 @@ def _resolve_caller_tier() -> tuple[str, dict]:
     candidates = []  # (TIER_NAME_UPPER, source)
 
     # 1. X-API-Key path — delegate to mcp_gatekeeper resolver
+    #
+    # frontend#1534 (2026-09-22): mcp_gatekeeper.resolve_tier knows dch_trial_
+    # and dchub_ keys only, so every self-serve MCP key (dch_live_, dch_oauth_)
+    # resolved FREE here, and a paying Pro key got the free teaser on every
+    # route gated through caller_is_privileged (deal $ and MW on /api/deals,
+    # /api/v1/deals and /api/v1/transactions among them). A direct REST caller's
+    # MCP key now resolves through validate_api_key, the plan the key bought.
+    # The MCP server's own calls (valid X-Internal-Key) keep the old path: they
+    # are privileged by signal 2 of caller_is_privileged either way.
     api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
     if api_key:
         try:
-            from mcp_gatekeeper import resolve_tier, TIER_NAME
-            tier_enum = resolve_tier(api_key)
-            candidates.append((TIER_NAME.get(tier_enum, "FREE").upper(), "x-api-key"))
+            from util.mcp_key_plan import is_mcp_key, from_mcp_server, rest_plan
+            if is_mcp_key(api_key) and not from_mcp_server():
+                _plan = rest_plan(api_key)
+                candidates.append(((_plan or "free").upper(), "x-api-key:mcp_dev_keys"))
+            else:
+                from mcp_gatekeeper import resolve_tier, TIER_NAME
+                tier_enum = resolve_tier(api_key)
+                candidates.append((TIER_NAME.get(tier_enum, "FREE").upper(), "x-api-key"))
         except Exception as e:
             debug["api_key_resolve_err"] = str(e)[:80]
 

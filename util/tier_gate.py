@@ -207,6 +207,15 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
                 row = cur.fetchone()
                 if row:
                     plan = (row[0] or "").lower().strip()
+                    # frontend#1534 (2026-09-22): 'paid' is Developer, Pro and
+                    # founding alike (mcp_dev_keys.tier cannot say which), and
+                    # _PLAN_TO_TIER reads it as Pro. A direct REST caller gets
+                    # the plan the key bought; the MCP server's own calls keep
+                    # Pro. See util/mcp_key_plan.
+                    if plan == "paid":
+                        from util.mcp_key_plan import from_mcp_server, plan_of_paid_key
+                        if not from_mcp_server():
+                            plan = plan_of_paid_key(cur, api_key, row[1])
                     ctx["plan"] = plan
                     ctx["email"] = row[1]
                     ctx["user_id"] = row[2]

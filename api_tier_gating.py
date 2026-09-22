@@ -445,7 +445,12 @@ def validate_api_key(api_key):
     # PAYING MCP customer's key resolves to None here -> treated as free/anonymous
     # on any Flask @require_plan path. Today the Node worker validates via
     # /keys/validate; this makes the Flask fallback agree instead of walling payers.
-    if api_key.startswith('dch_live_'):
+    # frontend#1534 (2026-09-22): dch_oauth_ keys (the MCP OAuth sign-in) live in
+    # the same table and resolve the same way. They got a 401 here before.
+    from util.mcp_key_plan import (is_mcp_key as _is_mcp_key,
+                                   from_mcp_server as _from_mcp_server,
+                                   plan_of_paid_key as _plan_of_paid_key)
+    if _is_mcp_key(api_key):
         import psycopg2 as _pg
         _c = None
         try:
@@ -460,15 +465,21 @@ def validate_api_key(api_key):
                 "SELECT email, COALESCE(tier,'free'), COALESCE(status,'active') "
                 "FROM mcp_dev_keys WHERE api_key = %s LIMIT 1", (api_key,))
             _r = _cur.fetchone()
-            _cur.close()
             if not _r or _r[2] != 'active':
                 return None
             _email = _r[0]
             _tier = (_r[1] or 'free').lower()
-            # map mcp_dev_keys.tier -> a plan the @require_plan gates understand
-            _plan = {'paid': 'pro', 'pro': 'pro', 'developer': 'developer',
-                     'founding': 'founding', 'enterprise': 'enterprise',
-                     'starter': 'starter'}.get(_tier, 'free')
+            # map mcp_dev_keys.tier -> a plan the @require_plan gates understand.
+            # 'paid' is Developer, Pro and founding alike (the column cannot say
+            # which), so a direct REST caller gets the plan the key bought
+            # (util/mcp_key_plan). The MCP server's own calls keep 'pro'.
+            if _tier == 'paid' and not _from_mcp_server():
+                _plan = _plan_of_paid_key(_cur, api_key, _email)
+            else:
+                _plan = {'paid': 'pro', 'pro': 'pro', 'developer': 'developer',
+                         'founding': 'founding', 'enterprise': 'enterprise',
+                         'starter': 'starter'}.get(_tier, 'free')
+            _cur.close()
             return {
                 'user_id': api_key,
                 'email': _email,

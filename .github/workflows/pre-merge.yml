@@ -762,6 +762,30 @@ jobs:
             echo "::error::the key-hash format SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── An MCP key's 'paid' tier on REST, against the same Postgres ─────
+      # mcp_dev_keys.tier can only say 'paid' (production's CHECK is carried
+      # here), so the plan a key bought is read from users, mcp_conversions
+      # and mcp_checkout_payments. Only a real Postgres runs those lookups
+      # through the four real resolvers (validate_api_key, routes/tier_gate,
+      # util/tier_gate, protect_data's key tier). frontend#1534.
+      # Owns and recreates only users, mcp_dev_keys, mcp_conversions and
+      # mcp_checkout_payments.
+      - name: MCP-key REST plan SQL against a real Postgres
+        env:
+          PACK_EXPIRY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_mcp_key_rest_plan_sql.py -v --tb=short
+
+      - name: Prove the MCP-key REST plan SQL test actually RAN
+        env:
+          PACK_EXPIRY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_mcp_key_rest_plan_sql.py \
+            -q -rs --tb=no > mkp.txt 2>&1 || { cat mkp.txt; exit 1; }
+          cat mkp.txt
+          if grep -qi "skipped" mkp.txt; then
+            echo "::error::the MCP-key REST plan SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── had_pack reads every pack source, against the same Postgres ─────
       # tests/test_had_pack_reads_every_pack_source.py pins the SQL and binds
       # PACK_SOURCES to it against a fake cursor. Only a real Postgres shows
@@ -1287,6 +1311,7 @@ jobs:
             cc2.txt
             fl.txt
             lm.txt
+            mkp.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
