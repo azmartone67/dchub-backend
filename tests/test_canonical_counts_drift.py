@@ -3783,9 +3783,14 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # TWO SEPARATE DRAINAGES, two decrements, both in the commit that drains
     # them. This entry was written expecting exactly this collision and the
     # ratchet caught it on rebase, as designed.
-    assert len(outside) >= 73, (
+    # ★2026-09-21: 73 -> 71. routes/paywall_hint_middleware.py and
+    # utils/paywall_response.py drained their ledgered tokens (a retired deal
+    # floor in one A/B variant; "all 48 tools" in the Starter lead line) when
+    # the retired Starter copy left both files. Two files, two decrements,
+    # lowered in the SAME commit that drains them.
+    assert len(outside) >= 71, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 75 did when last measured. If debt was genuinely drained, lower this "
+        "— 71 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

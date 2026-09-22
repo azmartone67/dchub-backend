@@ -219,7 +219,9 @@ def _rich(monkeypatch, min_plan):
     import utils.paywall_response as pr
     # Production configures the Developer link (DCHUB_STRIPE_DEVELOPER_LINK);
     # without it the builder's one-click and recommended fields never render.
-    monkeypatch.setattr(pr, "STRIPE_DEVELOPER_LINK", "https://buy.stripe.com/test_developer")
+    # The canonical link, not an invented one (tests/test_stripe_link_canonical).
+    from routes._stripe_links import STRIPE_LINKS
+    monkeypatch.setattr(pr, "STRIPE_DEVELOPER_LINK", STRIPE_LINKS["developer"])
     monkeypatch.setattr(pair_code, "get_or_create_code",
                         lambda *a, **k: {"code": "DCM-TEST", "expires_at": None})
     monkeypatch.setattr(mcp_signal_canonical, "_compute_caller_id", lambda **k: "anon:test")
