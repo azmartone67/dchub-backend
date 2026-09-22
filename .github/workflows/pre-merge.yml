@@ -650,13 +650,13 @@ jobs:
       - name: Tier-grant gates + legacy backfill SQL against a real Postgres
         env:
           TIER_GATES_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
-        run: python3 -m pytest tests/test_tier_grant_gates_sql.py -v --tb=short
+        run: python3 -m pytest tests/test_tier_grant_gates_sql.py tests/test_prefixed_key_row_sql.py -v --tb=short
 
       - name: Prove the tier-gates SQL test actually RAN
         env:
           TIER_GATES_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
         run: |
-          python3 -m pytest tests/test_tier_grant_gates_sql.py \
+          python3 -m pytest tests/test_tier_grant_gates_sql.py tests/test_prefixed_key_row_sql.py \
             -q -rs --tb=no > tg.txt 2>&1 || { cat tg.txt; exit 1; }
           cat tg.txt
           if grep -qi "skipped" tg.txt; then

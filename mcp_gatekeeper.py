@@ -336,31 +336,39 @@ def _load_keys_from_db():
         logger.warning(f"⚠️ Could not load keys from DB: {e}")
 
 
+# Key prefixes that name a plan: partner_key_issuer mints the long forms,
+# api_tier_gating.generate_api_key the short ones. Both write an api_keys row.
+_PLAN_KEY_PREFIXES = (
+    ("dchub_enterprise_", Tier.ENTERPRISE),
+    ("dchub_developer_",  Tier.DEVELOPER),
+    ("dchub_starter_",    Tier.STARTER),
+    ("dchub_ent_",        Tier.ENTERPRISE),
+    ("dchub_pro_",        Tier.PRO),
+    ("dchub_dev_",        Tier.DEVELOPER),
+    ("dchub_sta_",        Tier.STARTER),
+)
+
+
 def resolve_tier(api_key: Optional[str]) -> Tier:
     """Resolve API key to tier. No key = Free.
-    Checks: in-memory store → prefix match → DB hash lookup (cached).
+    Checks: in-memory store → DB hash lookup (cached); a plan-named prefix
+    sets the tier only once that lookup finds the key.
     """
     if not api_key:
         return Tier.FREE
     # Check in-memory store first
     if api_key in _key_store:
         return _key_store[api_key]
-    # Prefix-based resolution (fast path for new-style keys).
-    # r78-b (2026-06-09): partner_key_issuer mints keys with LONG-FORM plan
-    # names — dchub_developer_*, dchub_enterprise_* — but this resolver
-    # only knew the short forms. Long-form fell through to the DB hash
-    # lookup, which doesn't match partner keys (stored raw, not hashed),
-    # so tier resolved to FREE → site_risk_water gate fired 402 on NLR
-    # partner keys. Accept BOTH forms. Long-form match check goes first
-    # because "dchub_enterprise_" startswith "dchub_ent" — short check
-    # would consume the long-form key incorrectly.
-    if api_key.startswith("dchub_enterprise_"): return Tier.ENTERPRISE
-    if api_key.startswith("dchub_developer_"):  return Tier.DEVELOPER
-    if api_key.startswith("dchub_starter_"):    return Tier.STARTER
-    if api_key.startswith("dchub_ent_"):        return Tier.ENTERPRISE
-    if api_key.startswith("dchub_pro_"):        return Tier.PRO
-    if api_key.startswith("dchub_dev_"):        return Tier.DEVELOPER
-    if api_key.startswith("dchub_sta_"):        return Tier.STARTER
+    # Plan-named prefixes (r78-b added the long forms partner_key_issuer mints).
+    # 2026-09-22: a prefix names a plan, it does not prove one. The key gets
+    # that plan only when api_keys holds an active row for it — the same
+    # raw-or-sha256 match unprefixed keys use below. No row: FREE.
+    for prefix, tier in _PLAN_KEY_PREFIXES:
+        if api_key.startswith(prefix):
+            if _resolve_from_db_hash(api_key) is None:
+                return Tier.FREE
+            _key_store[api_key] = tier  # cache it, as below
+            return tier
     # Phase DDDDD (2026-05-16): auto-mint trial keys (`dch_trial_`)
     # resolve as IDENTIFIED tier. Validation against DB happens lazily
     # on first call; the prefix check here keeps the hot path fast.

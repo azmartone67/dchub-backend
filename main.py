@@ -20502,13 +20502,8 @@ def list_markets():
                         tier = (plan.get('plan') or plan.get('tier') or 'free').lower()
             except Exception:
                 pass
-            # Heuristic: the ACTUAL minted prefixes are dchub_dev_/dchub_pro_/dchub_ent_
-            # (api_tier_gating.generate_api_key). The old check used startswith('ent_')
-            # which NEVER matched 'dchub_ent_…' → every paid key fell through to free
-            # (10 markets). Anchor on the real prefixes; bare dev_/pro_/ent_ kept for legacy.
-            if api_key.startswith(('dchub_dev_', 'dev_')):    tier = 'developer'
-            elif api_key.startswith(('dchub_pro_', 'pro_')):  tier = 'pro'
-            elif api_key.startswith(('dchub_ent_', 'ent_')):  tier = 'enterprise'
+            # 2026-09-22: no tier from the key's prefix. A paid key is promoted
+            # below by util.tier_gate.resolve_tier, which looks the key up.
 
         # r-mkt-tiermax (2026-07-26, tier-gating QA): the prefix heuristics
         # never match the real customer key shapes (dchub_live_…, dchub_qa_…,

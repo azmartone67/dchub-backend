@@ -15,6 +15,7 @@ Measured consequence: lbthrall@gmail.com paid $99 and /api/v1/whoami answered
 answer for a garbage key. The endpoint customers are told to verify with was
 the one endpoint that lied.
 """
+import ast
 import os
 import re
 
@@ -108,8 +109,15 @@ def test_dch_live_is_never_mapped_to_a_paid_tier_by_prefix():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     src = open(os.path.join(repo, "mcp_gatekeeper.py"), encoding="utf-8").read()
 
-    # Floor: prove the scan can see the prefix table at all.
-    assert 'startswith("dchub_pro_")' in src, (
+    # Floor: prove the scan can see the resolver's prefix table at all — its
+    # rows are lines holding a prefix literal and the Tier it names
+    # (_PLAN_KEY_PREFIXES since 2026-09-22). Anchored on that assignment:
+    # generate_key's mint map also has "dchub_pro_" and Tier.PRO on one line.
+    table = next((n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                  and any(getattr(t, "id", None) == "_PLAN_KEY_PREFIXES"
+                          for t in n.targets)), None)
+    rows = src.splitlines()[table.lineno - 1:table.end_lineno] if table else []
+    assert any('"dchub_pro_"' in l and "Tier.PRO" in l for l in rows), (
         "the tier-prefix table moved — this guard is aimed at a dead target"
     )
 
