@@ -261,3 +261,22 @@ def test_the_gate_plans_quote_registry_prices(monkeypatch):
     plans = api_tier_gating._build_gate_plans()
     assert tier_registry.price_display("pro") in plans["pro"]
     assert not _retired_in(plans), _retired_in(plans)
+
+
+# ── the pack is capacity, not depth (owner wording rule, 2026-09-22) ─────
+
+_PACK_WORD = re.compile(r"\$10 one-time|API credits|\bpack\b", re.I)
+_DEPTH_CLAIM = re.compile(r"full depth|full[- ]answer|full result|full screen|unlock|"
+                          r"\bopens?\b|numbers|numerics|cheapest|ways through", re.I)
+
+
+@pytest.mark.parametrize("variant", ["A", "B", "C", "D"])
+@pytest.mark.parametrize("status", [401, 403, 429])
+def test_the_hint_describes_the_pack_only_as_capacity(monkeypatch, status, variant):
+    """The $10 pack is free-tier depth plus API capacity; what opens numbers or
+    tools is Developer or Pro. No sentence that names the pack may claim more."""
+    hint = _enriched(monkeypatch, status, variant)
+    for text in (hint["agent_quotable"], hint["what_you_get"], hint["pricing_quick"]):
+        for sentence in re.split(r"(?<=[.;])\s+|\s+·\s+", text):
+            if _PACK_WORD.search(sentence):
+                assert not _DEPTH_CLAIM.search(sentence), (variant, status, sentence)

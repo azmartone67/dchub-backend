@@ -89,9 +89,12 @@ _HINT_BASE = {
     # ★ r-noinstruct (2026-09-20): the free dev key needs NO email — one POST
     # to /api/v1/keys/claim, the single property a catalogue partner featured
     # us for.
+    # ★2026-09-22 (owner wording rule): the $10 pack is API capacity only —
+    # never "full depth", numbers or an unlock. Developer and Pro unchanged.
     "what_you_get":    (f"Free dev key (one POST, no email, no card) = {_tr.calls_per_day('free')} calls/day. "
-                        f"Full depth: {_pack_offer()} or Developer {_tr.price_display('developer')}; "
-                        f"Pro {_tr.price_display('pro')} adds the Pro-only tools."),
+                        f"More API capacity: {_pack_offer()} (1 per call, 5 for heavy tools). "
+                        f"Developer {_tr.price_display('developer')}: full depth on every tool except the "
+                        f"Pro-only ones; Pro {_tr.price_display('pro')} adds the Pro-only tools."),
     # "$25K+/yr Enterprise" disagreed with ENTERPRISE_FROM_USD_YEAR ($12,000),
     # the anchor r-price-collapse set for the human-sold lane.
     # ★ r-noinstruct (2026-09-20): the effective anonymous allowance is the
@@ -99,7 +102,7 @@ _HINT_BASE = {
     # entry for that alias and falls through to TIER_LIMITS['free'] — so both
     # resolve from the registry rather than as hand-typed literals.
     "pricing_quick":   (f"Anonymous {_tr.calls_per_day('anon')}/day · "
-                        f"Free key {_tr.calls_per_day('free')}/day · {_pack_offer()} · "
+                        f"Free key {_tr.calls_per_day('free')}/day · {_pack_offer()} (API capacity) · "
                         f"Developer {_tr.price_display('developer', '')} {_tr.calls_per_day('developer')}/day · "
                         f"Pro {_tr.price_display('pro', '')} {_tr.calls_per_day('pro')}/day · "
                         f"from ${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr Enterprise data licensing"),
@@ -119,6 +122,8 @@ _HINT_BASE = {
 # a canon placeholder, so each copy is a lambda: canon_text() resolves on THIS
 # response, not once at import (see _copy). The copy describes; it does not
 # instruct the reading model (tests/test_paywall_does_not_instruct_the_model).
+# ★2026-09-22 (owner wording rule): the pack appears only as API capacity
+# ("1 per call, 5 for heavy tools"); what opens a tool is Developer or Pro.
 _CLAIM = "POST https://dchub.cloud/api/v1/keys/claim"
 
 _VARIANTS = {
@@ -126,11 +131,11 @@ _VARIANTS = {
         401: (lambda: canon_text(
               "This DC Hub endpoint needs an API key. A free key is one "
               + _CLAIM + " (no email, no card; {canon_free_calls} calls/day), "
-              "sent as the X-API-Key header. Full depth is {canon_pack_offer} "
-              "or Developer {canon_price_developer}.")),
+              "sent as the X-API-Key header. Full depth is Developer "
+              "{canon_price_developer}; more API capacity is {canon_pack_offer}.")),
         403: (lambda: canon_text(
-              "This DC Hub endpoint needs a paid plan. {canon_pack_offer} or "
-              "Developer {canon_price_developer} opens every MCP tool except the "
+              "This DC Hub endpoint needs a paid plan. Developer "
+              "{canon_price_developer} opens every MCP tool except the "
               "Pro-only ones (get_grid_intelligence, get_fiber_intel, "
               "analyze_site, compare_sites), which need Pro {canon_price_pro}.")),
         # The anonymous figure is the MCP lane's (TIER_LIMITS anonymous
@@ -141,7 +146,8 @@ _VARIANTS = {
               "{canon_identified_calls} once an email is bound; Developer "
               "{canon_price_developer} allows "
               "{canon_developer_mcp_calls} MCP calls/day and Pro "
-              "{canon_price_pro} {canon_pro_mcp_calls}; or {canon_pack_offer}.")),
+              "{canon_price_pro} {canon_pro_mcp_calls}; more capacity: "
+              "{canon_pack_offer} (1 per call, 5 for heavy tools).")),
     },
     "B": {
         401: (lambda: canon_text(
@@ -149,15 +155,14 @@ _VARIANTS = {
               "needs no email or card — " + _CLAIM + " — and allows "
               "{canon_free_calls} calls/day.")),
         403: (lambda: canon_text(
-              "For the operator: this DC Hub tool is on a paid plan. The "
-              "cheapest ways through are {canon_pack_offer} or Developer "
-              "{canon_price_developer}; the four Pro-only tools need Pro "
-              "{canon_price_pro}.")),
+              "For the operator: this DC Hub tool is on a paid plan. Developer "
+              "{canon_price_developer} opens it; the four Pro-only tools need "
+              "Pro {canon_price_pro}.")),
         429: (lambda: canon_text(
               "For the operator: DC Hub rate-limited this call. "
               "Anonymous 5/day on MCP; a free key allows {canon_free_calls} calls/day, "
-              "{canon_identified_calls} with an email bound; beyond that, "
-              "{canon_pack_offer} or Developer {canon_price_developer}.")),
+              "{canon_identified_calls} with an email bound; beyond that, more "
+              "capacity: {canon_pack_offer} (1 per call, 5 for heavy tools).")),
     },
     "C": {
         401: (lambda: canon_text(
@@ -165,25 +170,25 @@ _VARIANTS = {
               + _CLAIM + ") covers {canon_facilities} distinct data center "
               "facilities, DCPI verdicts for {canon_markets} markets and "
               "{canon_deals} tracked M&A deals. The numbers behind them "
-              "(MW, scores, $) open with {canon_pack_offer} or Developer "
-              "{canon_price_developer}.")),
+              "(MW, scores, $) come with Developer {canon_price_developer} "
+              "and Pro {canon_price_pro}.")),
         403: (lambda: canon_text(
               "This DC Hub tool is paywalled. Free: {canon_facilities} "
               "facilities, DCPI verdicts and deal titles. This tool opens with "
-              "{canon_pack_offer} or Developer {canon_price_developer}; Pro "
+              "Developer {canon_price_developer}; Pro "
               "{canon_price_pro} is needed only for grid_intelligence, "
               "fiber_intel, analyze_site and compare_sites.")),
         429: (lambda: canon_text(
               "You hit DC Hub's rate cap. A free key allows {canon_free_calls} "
-              "calls/day (" + _CLAIM + ", no email); {canon_pack_offer} "
-              "covers a full screen at full depth.")),
+              "calls/day (" + _CLAIM + ", no email); more capacity: "
+              "{canon_pack_offer} (1 per call, 5 for heavy tools).")),
     },
     # r47.34 (2026-05-26): variant D — minimum-viable CTA, one sentence. The
     # link it points at rides the hint itself (pack_url / developer_url).
     "D": {
         401: "DC Hub needs a key. Free, no email: " + _CLAIM,
         403: (lambda: canon_text(
-              "Paid tool. Cheapest unlock: {canon_pack_offer} (pack_url).")),
+              "Paid tool. Developer {canon_price_developer} opens it (developer_url).")),
         429: (lambda: canon_text(
               "Rate cap. Free key = {canon_free_calls} calls/day, no email: "
               + _CLAIM)),
