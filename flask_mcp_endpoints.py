@@ -2131,13 +2131,23 @@ def mcp_credits_balance():
     api_key = (request.args.get("key") or request.args.get("api_key") or "").strip()
     session = (request.args.get("session") or request.args.get("mcp_session") or "").strip()
     try:
-        from routes.mcp_conversion_plays import get_credit_status
+        from routes.mcp_conversion_plays import get_credit_status, credits_paid_before
         st = get_credit_status(api_key or None, session or None)
         credits = int(st.get("credits") or 0)
+        # lp_grandfathered (2026-09-22): Land & Power is Pro-only and a pack no
+        # longer opens it, except credits from a pack PAID before the cutover,
+        # which keep it until they are spent (util/plan_tease.py). Only asked
+        # when there is a balance to spend.
+        lp_grandfathered = False
+        if credits > 0:
+            from util.plan_tease import LP_PACK_CUTOVER
+            lp_grandfathered = credits_paid_before(
+                api_key or None, session or None, LP_PACK_CUTOVER) > 0
         # had_pack = ever bought a pack (even if depleted) → gateway shows a
         # "top up $5" re-up nudge to a proven buyer instead of claim-free-key.
         return jsonify({"credits": credits, "has_pack": credits > 0,
-                        "had_pack": bool(st.get("had_pack"))}), 200
+                        "had_pack": bool(st.get("had_pack")),
+                        "lp_grandfathered": lp_grandfathered}), 200
     except Exception as e:
         return jsonify({"credits": 0, "had_pack": False, "error": str(e)[:160],
                         "fail_soft": True}), 200

@@ -24,6 +24,9 @@ with a wall that offers only the pack and Developer, both of which open it.
 site-score resolves dch_live_ keys. No key and a free key are refused as
 before: the depth gates are not loosened for them.
 
+★ 2026-09-22 (owner): site-score is Land & Power, which is Pro only; its
+section below says where its gate and its matrix live now.
+
 The routes run for real: fuel-mix and energy prices registered by their own
 modules, pipeline through the deals blueprint behind main.py's require_plan
 stub, site-score as main.py's own handler, pulled out with ast and executed
@@ -330,22 +333,28 @@ def test_pipeline_refuses_a_free_key_and_no_key_with_the_honest_wall(pipeline, l
 
 
 # ── site-score: main.py's own handler ────────────────────────────────────────
+# ★ 2026-09-22 (owner): the site score is Land & Power, and Land & Power details
+# are Pro. Its gate is no longer inside the handler: main.py serves it through
+# util.plan_tease.lp_gated_view, and tests/test_land_power_pro_only.py pins every
+# caller against that (no key: the wall; a key below Pro, Developer and a pack
+# included: the preview; Pro: the answer). What stays here: a keyless caller
+# never reaches the data, and a partner's keyless caller still gets one ref
+# recorded to the partner on the wall's link.
 
 class _GatePassed(Exception):
     """Raised by the database the handler reaches only once its gate opened."""
 
 
 def _site_score(ledger_ok=True):
-    from internal_auth import is_valid_internal_key
+    from util.plan_tease import lp_gated_view
 
     def reached_the_data():
         raise _GatePassed("gate-passed")
-    ns = _exec_main(["_honest_rest_wall", "api_site_score"], {
+    ns = _exec_main(["_site_score_preview", "api_site_score"], {
         "request": flask.request, "jsonify": flask.jsonify,
-        "is_valid_internal_key": is_valid_internal_key,
         "get_read_db": reached_the_data, "logger": logging.getLogger("t"),
     })
-    return ns["api_site_score"]
+    return lp_gated_view(ns["_site_score_preview"])(ns["api_site_score"])
 
 
 def _score(key=None, ip=UNDECLARED_IP):
@@ -355,23 +364,15 @@ def _score(key=None, ip=UNDECLARED_IP):
     handler = _site_score()
     with flask.Flask(__name__).test_request_context(
             "/api/site-score?lat=32.78&lon=-96.8", headers=h):
-        out = handler()
-        resp, status = (out if isinstance(out, tuple) else (out, out.status_code))
-        return status, resp.get_json()
+        out = flask.make_response(handler())
+        return out.status_code, out.get_json()
 
 
-@pytest.mark.parametrize("key", [DEV_KEY, PRO_KEY, DCHUB_DEV_KEY])
-def test_site_score_opens_for_a_developer_or_pro_key_of_any_shape(ledger, key):
-    status, body = _score(key)
-    assert (status, body["error"]) == (500, "gate-passed"), body
-
-
-@pytest.mark.parametrize("key", [None, FREE_KEY, PACK_KEY, STARTER_KEY, TRIAL_KEY, UNKNOWN_KEY])
-def test_site_score_still_refuses_below_developer(ledger, key):
-    status, body = _score(key)
-    assert status == 403 and body["error"] == "plan_required"
-    assert _plan_of(body["upgrade_url"])[0] == "developer"
-    assert [(o["plan"], o["opens"]) for o in body["upgrade_options"]] == [("developer", "rest")]
+def test_site_score_walls_a_keyless_caller_before_the_data(ledger):
+    status, body = _score()
+    assert status == 403 and body["_wall"] is True and body["error"] == "plan_required"
+    assert _plan_of(body["upgrade_url"])[0] == "pro"
+    assert [(o["plan"], o["opens"]) for o in body["upgrade_options"]] == [("pro", "rest")]
 
 
 def test_site_score_partner_wall_links_share_one_partner_ref(ledger):
@@ -410,7 +411,7 @@ def test_the_hint_middleware_still_enriches_other_403s(client, monkeypatch):
 # ── the spec says what opens each one ────────────────────────────────────────
 
 KEYED = {"/api/v1/pipeline": ("a trial key or any paid plan", True),
-         "/api/site-score": ("Developer plan or above", False),
+         "/api/site-score": ("Pro plan or above", False),
          "/api/grid/fuel-mix": ("Developer plan or above", True),
          "/api/energy/prices/{state}": ("Developer plan or above", True)}
 

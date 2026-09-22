@@ -240,14 +240,19 @@ def get_h3_heatmap():
     
     if not all(v is not None for v in [min_lat, max_lat, min_lng, max_lng]):
         return jsonify({'success': False, 'error': 'Bounds required'}), 400
-    
+
+    from util.plan_tease import lp_early_wall
+    _wall = lp_early_wall()
+    if _wall is not None:
+        return _wall
+
     # Cache check
     cache_key = f"h3:{min_lat:.2f},{max_lat:.2f},{min_lng:.2f},{max_lng:.2f}:{resolution}"
     cached = _get_cache(cache_key)
     if cached:
-        from util.plan_tease import gate_or_tease
-        return gate_or_tease(_SCORE_PLAN, lambda: jsonify({'success': True, **cached}),
-                             lambda: _tease_heatmap(cached))
+        from util.plan_tease import lp_gate
+        return lp_gate(lambda: jsonify({'success': True, **cached}),
+                       lambda: _tease_heatmap(cached))
     
     # Get all H3 cells covering the bounding box
     # Use polygon_to_cells with the bbox as a polygon
@@ -358,18 +363,18 @@ def get_h3_heatmap():
     
     _set_cache(cache_key, result_data)
     
-    from util.plan_tease import gate_or_tease
-    return gate_or_tease(_SCORE_PLAN, lambda: jsonify({'success': True, **result_data}),
-                         lambda: _tease_heatmap(result_data))
+    from util.plan_tease import lp_gate
+    return lp_gate(lambda: jsonify({'success': True, **result_data}),
+                   lambda: _tease_heatmap(result_data))
 
 
-# ── Score is Pro (2026-09-21, frontend#1536) ─────────────────────────────────
+# ── Score is Pro (owner, 2026-09-22) ─────────────────────────────────────────
 # A cell score and its power / fiber / gas / connectivity / water breakdown are
-# the Land & Power Score. Pro opens them, and so does one $10-pack credit on any
-# valid key; X-Internal-Key and the admin radar are unchanged. A keyless or free
-# caller gets HTTP 200 with the cell ids and grade bands, at most three cells,
-# every score null and coordinates at two decimals (util/plan_tease.py).
-_SCORE_PLAN = 'pro'
+# the Land & Power Score, and only Pro opens them (util/plan_tease.py lp_gate);
+# X-Internal-Key and the admin radar are unchanged. A keyless caller gets the
+# wall before any cell is scored. A key or session below Pro (free, Developer,
+# a $10 pack) gets HTTP 200 with the cell ids and grade bands, at most three
+# cells, every score null and coordinates at two decimals.
 _BREAKDOWN = ('power', 'fiber', 'gas', 'connectivity', 'water')
 
 
@@ -450,7 +455,12 @@ def score_single_cell():
     
     if lat is None or lng is None:
         return jsonify({'success': False, 'error': 'lat and lng required'}), 400
-    
+
+    from util.plan_tease import lp_early_wall
+    _wall = lp_early_wall()
+    if _wall is not None:
+        return _wall
+
     cell_id = h3.latlng_to_cell(lat, lng, resolution)
     result = score_hex_cell(cell_id)
     
@@ -477,8 +487,8 @@ def score_single_cell():
         'neighbors': neighbors,
         'resolution': resolution
     }
-    from util.plan_tease import gate_or_tease
-    return gate_or_tease(_SCORE_PLAN, lambda: jsonify(data), lambda: _tease_cell(data))
+    from util.plan_tease import lp_gate
+    return lp_gate(lambda: jsonify(data), lambda: _tease_cell(data))
 
 
 def register_h3_routes(app):

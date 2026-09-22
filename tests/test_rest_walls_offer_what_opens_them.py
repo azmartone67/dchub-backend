@@ -10,6 +10,7 @@ own gate admits:
                           (frontend#1534 step 2, 2026-09-22; was PRO → pro)
   /api/ai/query           user_has_access(plan, 'pro')          → pro
   /api/site-score         plan in ('pro','enterprise','developer') → developer
+                          (2026-09-22: now Land & Power, Pro only; see below)
   /api/v1/site-forecast   plan in ('pro','enterprise','developer') → developer
   capacity require_plan   its own min_plan                      → min_plan
 
@@ -131,7 +132,10 @@ def _wall_plans(fn, helper):
             and n.args and isinstance(n.args[0], ast.Constant)}
 
 
-@pytest.mark.parametrize("name", ["api_site_score", "api_site_forecast", "ai_query"])
+# api_site_score left this list on 2026-09-22: it is Land & Power, Pro only, and
+# its gate is util.plan_tease.lp_gated_view on the route, whose wall offers Pro
+# alone (tests/test_land_power_pro_only.py).
+@pytest.mark.parametrize("name", ["api_site_forecast", "ai_query"])
 def test_the_main_wall_offers_the_cheapest_plan_its_gate_admits(name):
     fn = _fn("main.py", name)
     gate = _gate_plans(fn)

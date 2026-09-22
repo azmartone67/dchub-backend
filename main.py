@@ -39273,52 +39273,78 @@ def get_facility_by_id(facility_id):
     finally:
         if conn: conn.close()
 
+from util.plan_tease import lp_gated_view as _lp_gated_view  # noqa: E402
+
+
+def _site_score_preview(full):
+    """/api/site-score below Pro: the verdict band, the counts and the names.
+
+    Every score, cost, MW figure and distance is null and the coordinates are
+    at two decimals. `interpretation` is the band the score falls in, which the
+    Land & Power preview shows as its grade."""
+    from util.plan_tease import round2, TEASE_ROWS
+    loc = full.get('location') or {}
+    nearby = full.get('nearby') or {}
+    fiber = full.get('fiber') or {}
+    carriers = []
+    for c in (fiber.get('top_carriers') or [])[:TEASE_ROWS]:
+        name = (c.get('name') or c.get('carrier')) if isinstance(c, dict) else c
+        if isinstance(name, str) and name:
+            carriers.append(name)
+    body = {
+        'success': True,
+        'location': {'lat': round2(loc.get('lat')), 'lon': round2(loc.get('lon')),
+                     'state': loc.get('state')},
+        'capacity_requested_mw': full.get('capacity_requested_mw'),
+        'overall_score': None,
+        'scores': {k: None for k in (full.get('scores') or {})},
+        'power_cost': None,
+        'nearby': {
+            'facilities_100km': nearby.get('facilities_100km'),
+            'substations_50km': nearby.get('substations_50km'),
+            'gas_pipelines_50km': nearby.get('gas_pipelines_50km'),
+            'power_plants_80km': nearby.get('power_plants_80km'),
+            'fiber_carriers_in_state': nearby.get('fiber_carriers_in_state'),
+            'total_capacity_mw': None,
+            'generation_capacity_mw': None,
+        },
+        'fiber': {
+            'verdict': fiber.get('verdict'),
+            'near_net_bucket': fiber.get('near_net_bucket'),
+            'carrier_count': fiber.get('carrier_count'),
+            'single_carrier_risk': fiber.get('single_carrier_risk'),
+            'top_carriers': carriers,
+            'connectivity_score': None,
+            'nearest_carrier_km': None,
+            'basis': fiber.get('basis'),
+        },
+        'interpretation': full.get('interpretation'),
+        'source': full.get('source'),
+    }
+    if full.get('echo'):
+        body['echo'] = full['echo']
+    locked = ['overall_score', 'scores', 'power_cost', 'capacity_context',
+              'nearby.total_capacity_mw', 'nearby.generation_capacity_mw',
+              'fiber.connectivity_score', 'fiber.nearest_carrier_km']
+    return body, locked, 1
+
+
 # =============================================================================
 # SITE SCORE ENDPOINT — MCP analyze_site tool (v2 — multi-table proximity)
 # Combines substations, gas pipelines, power plants, fiber, facilities, risk
 # =============================================================================
 @app.route('/api/site-score', methods=['GET'])
+@_lp_gated_view(lambda body: _site_score_preview(body))
 def api_site_score():
-    """Composite site suitability score for data center development."""
-    # Auth: internal key, X-API-Key header, Bearer token, or session user
-    internal_key = request.headers.get("X-Internal-Key", "")
-    _authed = is_valid_internal_key(internal_key)
-    if not _authed:
-        # Check X-API-Key / Bearer token against DB
-        _api_key = (
-            request.headers.get('X-API-Key', '') or
-            request.args.get('api_key', '') or
-            (request.headers.get('Authorization', '')[7:].strip()
-             if request.headers.get('Authorization', '').startswith('Bearer ') else '')
-        )
-        if _api_key and _api_key.startswith(('dchub_', 'dch_live_', 'dch_trial_')):
-            # frontend#1534 (2026-09-21): resolve every key shape a buyer holds,
-            # the way require_plan does. This read dchub_ account keys only, so a
-            # self-serve dch_live_ key on Developer or Pro, which is what /pricing
-            # and this wall's Developer checkout sell, was refused.
-            try:
-                from api_tier_gating import validate_api_key, user_has_access
-                _kinfo = validate_api_key(_api_key)
-                if _kinfo and user_has_access(_kinfo.get('plan') or 'free', 'developer'):
-                    _authed = True
-            except Exception as _ke:
-                logger.warning(f"site-score key lookup failed: {_ke}")
-        if not _authed:
-            user = getattr(request, "current_user", None)
-            plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
-            if plan not in ("pro", "enterprise", "developer"):
-                # frontend#1534: the gate above admits developer, so the wall offers
-                # the Developer checkout (it said "requires Pro" and linked /pricing).
-                # One wall per response, so its links share one ref: a keyless
-                # caller from a declared partner egress gets one recorded to the
-                # partner (routes/partner_attribution.py), everyone else none.
-                try:
-                    from routes.partner_attribution import offer_ref_for_request
-                    _ss_ref = offer_ref_for_request(request.path)
-                except Exception:
-                    _ss_ref = ''
-                _ss_wall = _honest_rest_wall('developer', ref=_ss_ref)
-                return jsonify({"error": "plan_required", "message": "Site scoring requires the Developer or Pro plan.", "upgrade_url": _ss_wall["upgrade_url"], "upgrade_options": _ss_wall.get("upgrade_options"), "success": False}), 403
+    """Composite site suitability score for data center development.
+
+    The Land & Power site score. Its details are Pro (owner, 2026-09-22;
+    util/plan_tease.py lp_gated_view, the decorator above): a keyless caller
+    gets the wall before any query runs; a key or session below Pro (free,
+    Developer, a $10 pack) gets _site_score_preview of the answer built here;
+    Pro and above get it whole. X-Internal-Key (the MCP server, which masks per
+    its own caller) is unchanged, and so is a pack paid before the cutover
+    until it is spent."""
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()
