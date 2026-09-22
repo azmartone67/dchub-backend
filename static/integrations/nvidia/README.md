@@ -13,7 +13,7 @@
 │  NVIDIA Agent /  │     │   DC Hub MCP     │     │  NIM Inference   │
 │  Copilot / NIM   │────▶│   (Data Layer)   │────▶│  (Optional AI)   │
 │                  │     │                  │     │                  │
-│  Queries DC Hub  │     │  10,706 DCs      │     │  Summarize news  │
+│  Queries DC Hub  │     │  24,500+ DCs     │     │  Summarize news  │
 │  via MCP tools   │     │  $185B+ M&A      │     │  Score sites     │
 │                  │     │  7 ISO energy    │     │  Predict trends  │
 └──────────────────┘     └──────────────────┘     └──────────────────┘
@@ -57,7 +57,7 @@ curl -H "X-API-Key: YOUR_DCHUB_KEY" \
 
 | Endpoint | Description | Example |
 |----------|-------------|---------|
-| `GET /api/agent/facilities` | Search 10,706+ data centers | `?q=Equinix&country=US` |
+| `GET /api/agent/facilities` | Search 24,500+ data centers | `?q=Equinix&country=US` |
 | `GET /api/agent/stats` | Facility counts, countries, providers | Returns actual platform metrics |
 | `GET /api/transactions` | M&A deals ($185B+ tracked) | `?limit=10` |
 | `GET /api/news` | Industry news (2,000+ sources, 5-min refresh) | `?limit=5` |

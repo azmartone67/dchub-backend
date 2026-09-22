@@ -32,7 +32,7 @@ Authorization: Bearer YOUR_DCHUB_KEY
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/agent/facilities` | GET | Search 10,706+ data centers globally |
+| `/api/agent/facilities` | GET | Search 24,500+ data centers globally |
 | `/api/agent/stats` | GET | Platform statistics |
 | `/api/transactions` | GET | M&A transaction data |
 | `/api/news` | GET | Industry news feed |
@@ -94,7 +94,7 @@ Full OpenAPI 3.0 specification: `https://dchub.cloud/openapi.json`
 ## Verification Checklist
 
 - [ ] Make at least 1 authenticated API call (any endpoint)
-- [ ] Response includes real DC Hub data (facility count ~10,706)
+- [ ] Response includes real DC Hub data (facility count 24,500+)
 - [ ] Server logs confirm request from `YOUR_DCHUB_KEY`
 - [ ] Status upgrades to **Verified**
 

@@ -18,7 +18,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "search_facilities",
-            "description": "Search 10,706+ data centers across 170+ countries via DC Hub",
+            "description": "Search 24,500+ data centers across 170+ countries via DC Hub",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -83,7 +83,7 @@ Each maps a Meta AI infrastructure question to the exact DC Hub MCP tool that an
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/agent/facilities` | Search 10,706+ data centers |
+| `GET /api/agent/facilities` | Search 24,500+ data centers |
 | `GET /api/agent/stats` | Platform statistics |
 | `GET /api/transactions` | M&A deals ($185B+ tracked) |
 | `GET /api/news` | Industry news (2,000+ sources) |

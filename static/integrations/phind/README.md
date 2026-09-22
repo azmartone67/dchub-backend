@@ -65,7 +65,7 @@ energy = query_dchub("/v1/lmp/prices")
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/agent/facilities` | Search 10,706+ data centers |
+| `GET /api/agent/facilities` | Search 24,500+ data centers |
 | `GET /api/agent/stats` | Platform statistics |
 | `GET /api/transactions` | M&A deals ($185B+ tracked) |
 | `GET /api/news` | Industry news (2,000+ sources) |
