@@ -16364,10 +16364,15 @@ def stripe_webhook():
                     _pk_is10 = _p10pc in (_pk_sub, _pk_amt)
                     _pk_grant = None
                     if _pk_mode == 'payment' and (_p5pc in (_pk_sub, _pk_amt) or _pk_is10):
+                        # frontend#1534 (2026-09-22): the price rides along, as
+                        # it does on the keyless branch below. Without it the
+                        # $5 default applied, so every key-bound $10 sale was
+                        # recorded in mcp_topups.price_cents as 500.
                         _pk_grant = _gcp(None, None, (_p10c if _pk_is10 else _p5c),
                                          stripe_session_id=data.get('id'),
                                          source=('pack10_keybound' if _pk_is10 else 'pack5_keybound'),
-                                         api_key_hash=ref[3:].strip())
+                                         api_key_hash=ref[3:].strip(),
+                                         price_cents=(_p10pc if _pk_is10 else _p5pc))
                         print(f"💳 Key-bound pack redemption: {_pk_grant}")
                     else:
                         print(f"⚠️ pk- ref ignored (non-pack amount/mode: "
