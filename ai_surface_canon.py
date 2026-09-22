@@ -1175,6 +1175,26 @@ def _pack_offer() -> str:
     return ''
 
 
+def _checkout(plan) -> str:
+    """The caller-independent measured checkout for `plan`: /go/c with no ref
+    and no session (routes.checkout_click_tracker.checkout_url), so it is safe
+    on a shared, cached page and /go/c still stamps the click with its plan.
+
+    ★2026-09-21: when no link can be minted (no signing secret) checkout_url()
+    answers with the bare pricing page. A policy surface must never carry that
+    (owner rule: soft unlock only through /go/c or /upgrade/h), so this falls
+    back to the pricing page tagged with the plan instead.
+    """
+    try:
+        from routes.checkout_click_tracker import checkout_url
+        url = checkout_url(plan)
+        if url.startswith("https://dchub.cloud/go/c/"):
+            return url
+    except Exception:
+        pass
+    return "https://dchub.cloud/pricing?plan=%s&utm_source=canon_checkout" % plan
+
+
 def canon_nums() -> dict:
     """The canonical agent-facing headline numbers, as ready-to-paste strings.
 
@@ -1315,6 +1335,12 @@ def canon_nums() -> dict:
         '{canon_price_developer}': _tier_price('developer'),
         '{canon_price_pro}': _tier_price('pro'),
         '{canon_pack_offer}': _pack_offer(),
+        # ★2026-09-21: the ladder's own links, so a canon-rendered surface
+        # (/connect) can link a rung without typing a checkout or sending a
+        # reader to the bare pricing page. Caller-independent; see _checkout.
+        '{canon_checkout_pack}': _checkout('metered'),
+        '{canon_checkout_developer}': _checkout('developer'),
+        '{canon_checkout_pro}': _checkout('pro'),
     }
 
 

@@ -169,30 +169,22 @@ def discovery():
     return m
 
 
-def _reset_heading(discovery):
-    discovery._paid_heading_cache.update(at=0.0, val=None)
-
-
-def test_llms_paid_heading_shows_founding_only_while_open(discovery, monkeypatch):
+def test_llms_paid_heading_never_names_founding(discovery, monkeypatch):
+    """★2026-09-21 (owner rule): the heading showed Founding Member while the
+    program was open. The ladder an agent is sold is the $10 pack, Developer and
+    Pro, so it names Developer whether or not founding seats remain."""
     import routes.founding_customers as fc
     import tier_registry as tr
     monkeypatch.setattr(tr, "price", lambda t: {"developer": 49, "founding": 99}.get(t, 0))
-    monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": True})
-    _reset_heading(discovery)
-    h = discovery._llms_paid_heading()
-    assert "Founding Member $99/mo" in h and "Developer $49/mo" in h, h
-    monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": False})
-    _reset_heading(discovery)
-    h = discovery._llms_paid_heading()
-    assert "Founding" not in h and "Developer $49/mo" in h, h
+    for active in (True, False):
+        monkeypatch.setattr(fc, "founding_status", lambda a=active: {"program_active": a})
+        h = discovery._llms_paid_heading()
+        assert "Founding" not in h and "Developer $49/mo" in h, (active, h)
 
 
 def test_llms_paid_heading_tracks_the_registry_price(discovery, monkeypatch):
-    import routes.founding_customers as fc
     import tier_registry as tr
-    monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": False})
     monkeypatch.setattr(tr, "price", lambda t: 77 if t == "developer" else 0)
-    _reset_heading(discovery)
     assert "Developer $77/mo" in discovery._llms_paid_heading()
 
 

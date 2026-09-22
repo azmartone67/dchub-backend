@@ -37,6 +37,32 @@ from ai_surface_canon import (
 agents_md_fallback_bp = Blueprint("agents_md_fallback", __name__)
 
 
+def _auth_lines(free) -> str:
+    """The tier lines of the Authentication section, every price read.
+
+    ★2026-09-21: these were typed, and named a Starter plan at a price /pricing
+    does not sell. The ladder is the one /pricing and /llms.txt sell — the $10
+    pack, Developer, Pro — read through canon (the webhook's pack constants and
+    tier_registry), with each quota named for its lane (MCP calls/day). A value
+    canon cannot read renders as nothing, never as a guess.
+    """
+    head = ("- **Free**: %s calls/day with no key. A free key is one POST to "
+            "https://dchub.cloud/api/v1/keys/claim (no email), sent as the "
+            "X-API-Key header" % free)
+    try:
+        from ai_surface_canon import canon_text
+        paid = canon_text(
+            "- **Pack**: {canon_pack_offer} — credits don't expire, no subscription\n"
+            "- **Developer ({canon_price_developer})**: {canon_developer_mcp_calls} MCP "
+            "calls/day, full depth on every tool except the Pro-only ones\n"
+            "- **Pro ({canon_price_pro})**: {canon_pro_mcp_calls} MCP calls/day + the "
+            "Pro-only tools (grid intelligence, fiber, analyze & compare sites) and "
+            "site-grade coordinates")
+    except Exception:  # noqa: BLE001 — the free line still goes out
+        return head
+    return head + "\n" + paid
+
+
 def _render_agents_md() -> str:
     """★ Wrapped in resolve_gas_copy: AGENTS.md is the agent-facing
     contract and it HARDCODED the DCGI withdrawal, so flipping the kill
@@ -127,6 +153,7 @@ def _render_agents_md() -> str:
     # re-renders nothing. It is interpolated as a VALUE, not as f-string
     # source, so a brace in it could not be read as a field either.
     policy = policy_block(facilities=fac, tools=tools)
+    auth_lines = _auth_lines(free)
     return resolve_gas_copy(f"""# AGENTS.md — DC Hub
 
 > Open standard for AI agent discovery (Linux Foundation / OpenAI).
@@ -247,10 +274,7 @@ from its snapshot; a 503 there carries a `Retry-After` and is not an error to re
 
 ## Authentication
 
-- **Free tier**: {free} calls/day, no signup, no auth header
-- **Starter ($9/mo)**: 200 calls/day — unlocks all {tools} tools + full grid, fiber & market data
-- **Developer ($49/mo)**: 500 calls/day, X-API-Key header — signup at https://dchub.cloud/signup
-- **Pro ($99/mo)**: 2,000 calls/day + analyze_site, compare_sites, PDF reports & CSV export
+{auth_lines}
 - **Enterprise**: SLA + MCP 2025-06-18 OAuth — contact api@dchub.cloud
 
 ## When a call is gated
