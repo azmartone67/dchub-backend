@@ -25,21 +25,16 @@ delta. The top 3 sensitivities are surfaced as `sensitivity_drivers`.
 
 from __future__ import annotations
 
-import os
 import datetime
 from flask import Blueprint, request, jsonify
 import psycopg2
 import psycopg2.extras
 
+from util.db_honesty import close_quietly, open_conn, try_fetchone, unpoison
+from util.us_states import state_match_pair
+
 
 site_simulator_bp = Blueprint("site_simulator", __name__)
-
-
-def _conn():
-    db = os.environ.get("DATABASE_URL")
-    if not db:
-        raise RuntimeError("DATABASE_URL not set")
-    return psycopg2.connect(db, sslmode="require", connect_timeout=8)
 
 
 _REDUNDANCY_MULT = {
@@ -63,86 +58,177 @@ def _safe_float(v, default):
     except (TypeError, ValueError): return default
 
 
-def _pull_signals(state: str):
-    """Pull the upstream signals we need for the model. Each block is
-    wrapped — a missing table just degrades that input to a neutral default
-    rather than failing the whole simulation."""
+def _fmt_err(e) -> str:
+    """util.db_honesty's error shape, for failures raised outside try_fetch*."""
+    return f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
+
+
+# WRI Aqueduct 4.0 baseline water stress reaches us as
+# `water_risk.water_stress_score`: 0-100, 100 = most stressed.
+# routes/water_aqueduct_ingest.py normalises WRI's PUBLISHED bws_cat bucket
+# (-1 Arid & Low Use, 0 Low, 1 Low-Medium, 2 Medium-High, 3 High,
+# 4 Extremely High) with cat/4*100, so the five categories land on
+# 0 / 25 / 50 / 75 / 100 and a state roll-up is a mean of those.
+#
+# ★ Band back to the 1-5 index on the CATEGORY midpoints, not on WRI's
+# withdrawal-percentage cut-offs (<10%, 10-20%, 20-40%, 40-80%, >80%). The
+# stored score is a normalised category, not a withdrawal ratio — reading 25.0
+# as "25% withdrawal, Medium-High" would shift every state a band.
+_WATER_BANDS = ((12.5, 1), (37.5, 2), (62.5, 3), (87.5, 4))
+
+
+def _water_band(score):
+    """0-100 WRI score -> the 1-5 index (1 Low .. 5 Extremely High).
+
+    None passes straight through: a stress index we could not read stays null
+    and never becomes a number.
+    """
+    if score is None:
+        return None
+    for edge, band in _WATER_BANDS:
+        if score < edge:
+            return band
+    return 5
+
+
+def _pull_signals(state: str) -> dict:
+    """Pull the upstream signals the model needs.
+
+    Every read is INDEPENDENT. One that fails leaves its signal null and names
+    itself in `read_errors`; it cannot blank the reads that follow it, and it
+    never degrades to a number nobody measured.
+
+    ★ THE BUG THIS SHAPE REPLACES, measured live 2026-09-21.
+    This function used `with _conn() as c`. psycopg2's connection context
+    manager is a TRANSACTION manager, not a closer, so entering it opened an
+    explicit transaction that `autocommit` does not override. The water read
+    named `usgs_water_stress.stress_index` — a column that has never existed —
+    and every read sat in a bare `except Exception: pass` with NO rollback. So
+    the water failure aborted the transaction and each LATER read on that
+    connection died of InFailedSqlTransaction: the DCPI verdict and the tax
+    offset went dark behind a valid-looking HTTP 200. VA, TX and OH all served
+    retail_rate_cents_kwh, water_stress_index and dcpi_verdict as null with
+    tax_pct_offset 0.0, under a methodology string that claimed the verdict,
+    water stress and retail rate were "pulled live". See util/db_honesty (#2071).
+    """
     sig = {
         "retail_rate_cents_kwh":   None,   # ¢/kWh industrial
-        "water_stress_index":      None,   # 1-5 USGS
+        "water_stress_score":      None,   # 0-100 WRI Aqueduct, 100 = most stressed
+        "water_stress_index":      None,   # 1-5 band derived from that score
         "dcpi_verdict":            None,
         "dcpi_excess":             None,
         "dcpi_constraint":         None,
         "time_to_power_months":    None,
-        "tax_pct_offset":          0.0,    # 0..0.20 typical
+        # ★ None means "not read". 0.0 is reserved for a state we DID read and
+        # that genuinely offers no offset — a consumer can branch on null, it
+        # cannot detect a failure told as a zero.
+        "tax_pct_offset":          None,
         "tax_summary":             "",
         "tax_status":              None,   # registry status, e.g. paused_new_applicants
+        "read_errors":             {},
     }
+    errs = sig["read_errors"]
+    abbr, full = state_match_pair(state)
+
+    c = None
     try:
-        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Retail rate (industrial)
-            try:
-                cur.execute("""
-                    SELECT DISTINCT ON (UPPER(state)) rate_cents_kwh
-                      FROM eia_retail_rates
-                     WHERE LOWER(sector) = 'industrial'
-                       AND UPPER(state) = %s
-                     ORDER BY UPPER(state), period DESC
-                """, (state.upper(),))
-                r = cur.fetchone()
-                if r and r.get("rate_cents_kwh") is not None:
-                    sig["retail_rate_cents_kwh"] = float(r["rate_cents_kwh"])
-            except Exception:
-                pass
-            # Water stress
-            try:
-                cur.execute("""
-                    SELECT AVG(stress_index) AS s FROM usgs_water_stress
-                     WHERE UPPER(state) = %s
-                """, (state.upper(),))
-                r = cur.fetchone()
-                if r and r.get("s") is not None:
-                    sig["water_stress_index"] = float(r["s"])
-            except Exception:
-                pass
-            # DCPI (best-match market for the state — highest excess)
-            try:
-                cur.execute("""
-                    SELECT verdict, excess_power_score, constraint_score,
-                           time_to_power_months
-                      FROM market_power_scores
-                     WHERE UPPER(state) = %s
-                       AND published = true
-                     ORDER BY computed_at DESC, excess_power_score DESC NULLS LAST
-                     LIMIT 1
-                """, (state.upper(),))
-                r = cur.fetchone()
-                if r:
-                    sig["dcpi_verdict"]          = r.get("verdict")
-                    sig["dcpi_excess"]           = _safe_float(r.get("excess_power_score"), None)
-                    sig["dcpi_constraint"]       = _safe_float(r.get("constraint_score"), None)
-                    sig["time_to_power_months"]  = _safe_float(r.get("time_to_power_months"), None)
-            except Exception:
-                pass
-            # Tax incentives → derive a coarse capex-offset percentage
-            # (util.tax_incentives, not tax_incentives_neon: the table froze
-            # on 2026-03-17 and credited programs since paused or repealed.)
+        c = open_conn()
+    except Exception as e:
+        errs["connection"] = _fmt_err(e)
+        return sig
+
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # ── Retail rate (industrial) ──────────────────────────────────
+            # ★ eia_retail_rates.state holds FULL names ("Virginia"), and the
+            # table also carries census-region rows ("East North Central"), so
+            # match BOTH spellings. `UPPER(state) = 'VA'` returned 0 rows on
+            # 2026-09-21 while 'VIRGINIA' returned 10 — a clean query, an empty
+            # result, and a published null that read as "no data for VA".
+            row, err = try_fetchone(cur, """
+                SELECT rate_cents_kwh
+                  FROM eia_retail_rates
+                 WHERE LOWER(sector) = 'industrial'
+                   AND UPPER(state) IN (%s, %s)
+                 ORDER BY period DESC
+                 LIMIT 1
+            """, (abbr, full))
+            if err:
+                errs["retail_rate"] = err
+            elif row and row.get("rate_cents_kwh") is not None:
+                sig["retail_rate_cents_kwh"] = float(row["rate_cents_kwh"])
+
+            # ── Water stress ──────────────────────────────────────────────
+            # ★ NOT usgs_water_stress. That table has no stress column at all
+            # (site_id, site_name, latitude, longitude, state, county,
+            # aquifer_name, well_depth_ft, water_level_ft, water_level_date,
+            # site_type), it covers 16 states, and its water_level_ft
+            # groundwater proxy is the one withdrawn on 2026-07-07 for reading
+            # INVERTED — routes/interconnection_queues.py still refuses to
+            # score off it. water_risk carries the verified WRI Aqueduct
+            # roll-up, whose ingest asserts arid states out-score wet ones
+            # before it will write a row.
+            row, err = try_fetchone(cur, """
+                SELECT water_stress_score
+                  FROM water_risk
+                 WHERE UPPER(state) = %s
+                 ORDER BY computed_at DESC NULLS LAST
+                 LIMIT 1
+            """, (abbr,))
+            if err:
+                errs["water_stress"] = err
+            elif row and row.get("water_stress_score") is not None:
+                score = float(row["water_stress_score"])
+                sig["water_stress_score"] = score
+                sig["water_stress_index"] = _water_band(score)
+
+            # ── DCPI (best-match market for the state — highest excess) ───
+            row, err = try_fetchone(cur, """
+                SELECT verdict, excess_power_score, constraint_score,
+                       time_to_power_months
+                  FROM market_power_scores
+                 WHERE UPPER(state) = %s
+                   AND published = true
+                 ORDER BY computed_at DESC, excess_power_score DESC NULLS LAST
+                 LIMIT 1
+            """, (abbr,))
+            if err:
+                errs["dcpi"] = err
+            elif row:
+                sig["dcpi_verdict"]         = row.get("verdict")
+                sig["dcpi_excess"]          = _safe_float(row.get("excess_power_score"), None)
+                sig["dcpi_constraint"]      = _safe_float(row.get("constraint_score"), None)
+                sig["time_to_power_months"] = _safe_float(row.get("time_to_power_months"), None)
+
+            # ── Tax incentives → a coarse capex-offset percentage ─────────
+            # util.tax_incentives is the ONE read path (#5146): a verified
+            # registry row supersedes the frozen tax_incentives_neon snapshot,
+            # and a program closed to new applicants prices at nothing.
+            # It rolls the connection back itself before re-raising, but
+            # unpoison() here keeps that true if it ever stops.
             try:
                 from util.tax_incentives import state_incentive
-                r = state_incentive(cur, state)
-                if r:
-                    sig["tax_status"] = r.get("status")
-                    offset = 0.0
-                    if r.get("sales_tax_exempt"):      offset += 0.05  # ~5% capex
-                    if r.get("property_tax_abatement"): offset += 0.08  # ~8% over horizon
-                    if r.get("data_center_specific"):   offset += 0.03  # bonus
-                    sig["tax_pct_offset"] = min(0.20, offset)
-                    sig["tax_summary"] = (r.get("incentive_details") or "")[:240]
-            except Exception:
-                pass
-    except Exception:
-        # DB unavailable — return neutral signals.
-        pass
+                rec = state_incentive(cur, abbr)
+            except Exception as e:
+                unpoison(cur)
+                errs["tax"] = _fmt_err(e)
+                rec = None
+            if rec is not None:
+                sig["tax_status"] = rec.get("status")
+                offset = 0.0
+                if rec.get("sales_tax_exempt"):       offset += 0.05  # ~5% capex
+                if rec.get("property_tax_abatement"): offset += 0.08  # ~8% over horizon
+                if rec.get("data_center_specific"):   offset += 0.03  # bonus
+                sig["tax_pct_offset"] = min(0.20, offset)
+                sig["tax_summary"] = (rec.get("incentive_details") or "")[:240]
+            elif "tax" not in errs:
+                # Neither store knows the state: a measured absence, so 0.0 is
+                # an honest answer here rather than a swallowed failure.
+                sig["tax_pct_offset"] = 0.0
+    except Exception as e:
+        errs.setdefault("cursor", _fmt_err(e))
+    finally:
+        close_quietly(c)
     return sig
 
 
@@ -228,6 +314,40 @@ def _risk_flags(sig: dict, capacity_mw: float) -> list[str]:
     return flags
 
 
+def _methodology(sig: dict, rate_measured) -> str:
+    """The methodology string, reporting what THIS call actually read.
+
+    ★ The old string asserted "DCPI verdict + water_stress + retail rate
+    pulled live" unconditionally — including on the responses where all three
+    were null because a dead column had aborted the transaction. A methodology
+    that cannot be falsified by its own response is not a methodology.
+    """
+    text = ("Capex/opex bands grounded in $8-12M/MW greenfield + "
+            "$0.6-1.3M/MW/yr ex-power industry ranges. Redundancy mult "
+            "1.0/1.15/1.6/1.8 for N/N+1/2N/2N+1. Power = capacity × "
+            "8760 × 0.55 utilization × 1.30 PUE × ¢/kWh. Tax offset "
+            "from the state incentive record (sales 5% + property 8% + "
+            "DC-bonus 3%, capped 20%; a program paused or repealed for "
+            "new applicants counts 0). Water stress is WRI Aqueduct baseline "
+            "via water_risk — water_stress_score is 0-100 (100 = most "
+            "stressed) and water_stress_index bands it 1-5. DCPI verdict, "
+            "water stress and the retail rate are read live per request, each "
+            "independently: a read that fails leaves its signal null and is "
+            "named in signals.read_errors, never replaced by a number. "
+            "Sensitivity walks each input ±20%.")
+    if rate_measured is None:
+        text += (" No industrial retail rate was read for this state, so the "
+                 "cost model used the 7.5¢/kWh national fallback and "
+                 "signals.retail_rate_cents_kwh is null.")
+    if sig.get("tax_pct_offset") is None:
+        text += (" The tax incentive record could not be read, so capex is "
+                 "priced at no offset and signals.tax_pct_offset is null.")
+    if sig.get("read_errors"):
+        text += (" Failed reads this call: %s."
+                 % ", ".join(sorted(sig["read_errors"])))
+    return text
+
+
 @site_simulator_bp.route("/api/v1/site/simulate-buildout", methods=["GET", "OPTIONS"])
 def simulate_buildout():
     if request.method == "OPTIONS":
@@ -253,13 +373,21 @@ def simulate_buildout():
 
     sig = _pull_signals(state)
 
-    # Fallback rate if no EIA data for this state — national industrial avg
-    rate = sig.get("retail_rate_cents_kwh") or 7.5
+    # Fallback rate if no EIA data for this state — national industrial avg.
+    # The fallback drives the cost model but is NOT written back into signals:
+    # retail_rate_cents_kwh stays null so the response cannot pass 7.5 off as
+    # a reading, and the methodology below says the substitution happened.
+    rate_measured = sig.get("retail_rate_cents_kwh")
+    rate = rate_measured if rate_measured is not None else 7.5
+
+    # Likewise for the offset: null means we could not read it, and the model
+    # prices such a site at no incentive rather than inventing one.
+    tax_offset = sig["tax_pct_offset"] or 0.0
 
     envelope = _envelope(capacity_mw, redundancy_mult, duration_years,
-                          rate, sig["tax_pct_offset"])
+                          rate, tax_offset)
     sens     = _sensitivity(capacity_mw, redundancy_mult, duration_years,
-                             rate, sig["tax_pct_offset"])
+                             rate, tax_offset)
     flags    = _risk_flags(sig, capacity_mw)
 
     # Recommendation paragraph
@@ -275,7 +403,7 @@ def simulate_buildout():
                     f"(excess {sig.get('dcpi_excess')}, constraint {sig.get('dcpi_constraint')}).")
     if sig.get("time_to_power_months"):
         bits.append(f"Best-case time-to-power: ~{int(sig['time_to_power_months'])} months.")
-    if sig["tax_pct_offset"] > 0:
+    if sig["tax_pct_offset"]:
         bits.append(f"Tax incentives offset ~{int(sig['tax_pct_offset']*100)}% of capex.")
     if flags:
         bits.append("Risk flags: " + ", ".join(flags) + ".")
@@ -294,12 +422,5 @@ def simulate_buildout():
         sensitivity_drivers=sens,
         recommendation=" ".join(bits),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
-        methodology=("Capex/opex bands grounded in $8-12M/MW greenfield + "
-                     "$0.6-1.3M/MW/yr ex-power industry ranges. Redundancy mult "
-                     "1.0/1.15/1.6/1.8 for N/N+1/2N/2N+1. Power = capacity × "
-                     "8760 × 0.55 utilization × 1.30 PUE × ¢/kWh. Tax offset "
-                     "from the state incentive record (sales 5% + property 8% + "
-                     "DC-bonus 3%, capped 20%; a program paused or repealed for "
-                     "new applicants counts 0). DCPI verdict + water_stress + retail rate "
-                     "pulled live. Sensitivity walks each input ±20%."),
+        methodology=_methodology(sig, rate_measured),
     ), 200
