@@ -596,11 +596,11 @@ def _setup_v2_routes(app, incentives_data, db):
     def export_incentives():
         if request.method == 'OPTIONS':
             return '', 204
-        api_key = request.headers.get('X-API-Key', '')
-        if not _check_pro_access(api_key):
-            return jsonify({'status': 'error', 'message': 'Export requires a Pro subscription', 'pro_required': True, 'upgrade_url': 'https://dchub.cloud/pricing'}), 403
-
         fmt = request.args.get('format', 'csv').lower()
+        need = _export_plan(fmt)
+        if not _export_access(request.headers.get('X-API-Key', ''), need):
+            return _export_wall(need)
+
         state_filter = request.args.get('states', '')
         results = list(incentives_data.values())
         if state_filter:
@@ -677,10 +677,51 @@ def _calc_savings(state_data, rates, investment, equipment_pct=0.60, annual_elec
     return savings
 
 
-def _check_pro_access(api_key):
-    """Check Pro-tier access. Integrate with Stripe/auth system."""
-    pro_keys = ['dchub-pro-demo', 'dchub-enterprise-demo']
-    return api_key in pro_keys
+# frontend#1534 (2026-09-22). The export opened for exactly these two literal
+# demo keys and for nothing else, so no paying customer could ever use it,
+# while /pricing sells "PDF reports + exports": CSV on Developer, every format
+# on Pro. The two demo keys keep working.
+_DEMO_EXPORT_KEYS = ('dchub-pro-demo', 'dchub-enterprise-demo')
+
+
+def _export_plan(fmt):
+    """The plan an export format opens at: CSV on Developer, the rest on Pro."""
+    return 'developer' if fmt == 'csv' else 'pro'
+
+
+def _export_access(api_key, need):
+    """Whether this request may export at plan `need`.
+
+    The caller's tier comes from routes.tier_gate._resolve_caller_tier: an API
+    key of any shape (an MCP key resolves to the plan it bought) or a signed-in
+    user's token, the highest of them. Not caller_is_privileged, which also
+    admits any browser holding the site's session cookie: right for a teaser,
+    wrong for a paid export.
+    """
+    if api_key in _DEMO_EXPORT_KEYS:
+        return True
+    try:
+        from routes.tier_gate import _resolve_caller_tier, _TIER_RANK
+        tier, _ = _resolve_caller_tier()
+        return _TIER_RANK.get(str(tier or 'FREE').upper(), 0) >= _TIER_RANK[need.upper()]
+    except Exception:
+        return False
+
+
+def _export_wall(need):
+    """The 403: names the plan that opens this format and its checkout."""
+    body = {'status': 'error',
+            'message': ('CSV export opens on the Developer plan; every other '
+                        'format on Pro.'),
+            'required_plan': need,
+            'pro_required': need == 'pro',
+            'upgrade_url': 'https://dchub.cloud/pricing'}
+    try:
+        from routes.checkout_click_tracker import rest_wall_ladder
+        body.update(rest_wall_ladder(opens_on_rest=need))
+    except Exception:
+        pass
+    return jsonify(body), 403
 
 
 # ─── DB HELPERS ───────────────────────────────────────────────
