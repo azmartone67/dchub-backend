@@ -1479,6 +1479,40 @@ def _qd_fail(conn, iso, note, mode="trigger"):
         return None
 
 
+# ── First-seen registry (2026-09-22): the /whats-new "new projects" count ──
+# The WS6 ledger above records transitions, and its appeared_in_feed event is
+# keyed on "absent from interconnect_queue before this upsert". That table can
+# be DROPped (run_queue_etl.py:188) or DELETEd (04_interconnect_queue.py:179),
+# and after either one every project would read as appeared. The registry is
+# its own table and only ever has rows inserted, so a rebuilt queue table
+# cannot turn old projects into new ones. See util/first_seen.py for the
+# baseline rules. It runs AFTER the upsert, so on a first run the seed read of
+# the table includes rows the feed no longer carries, and those are baselined
+# as well.
+def _fs_record_queue(conn, iso, rows):
+    """Record this ISO's feed keys in the first-seen registry. Never raises,
+    never flips the ISO to failed, never leaves the connection aborted."""
+    try:
+        from util import first_seen
+        first_seen.ensure(conn)
+        keys = [r[0] for r in (rows or []) if r and r[0]]
+
+        def _table_keys():
+            with conn.cursor() as c2:
+                c2.execute("SELECT queue_id FROM interconnect_queue WHERE iso = %s", (iso,))
+                return [r[0] for r in c2.fetchall()]
+
+        with conn.cursor() as cur:
+            out = first_seen.record(cur, "interconnect_queue", iso, keys,
+                                    seed_keys=_table_keys)
+        conn.commit()
+        return out
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
 # ── r-queue-projects-cron (2026-06-20): per-PROJECT interconnect_queue refresh ──
 # Companion to /ingest (which writes AGGREGATE GW totals to iso_queue_snapshots).
 # This refreshes the per-PROJECT `interconnect_queue` table (5,300+ NAMED ISO queue
@@ -1538,6 +1572,11 @@ def ingest_projects(iso=None):
                         _delta[k] = _d
                 if _delta:
                     out[name]["delta"] = _delta
+                if rows:
+                    out[name]["first_seen"] = {
+                        k: _fs_record_queue(conn, k, [r for r in rows
+                                                      if len(r) > 2 and r[2] == k])
+                        for k in _keys}
             except Exception as e:
                 out[name] = {"status": "failed", "mode": "posted",
                              "error": f"{type(e).__name__}: {str(e)[:160]}"}
@@ -1567,6 +1606,8 @@ def ingest_projects(iso=None):
                     _d = _qd_capture(conn, name, rows, _pre)
                     if _d:
                         out[name]["delta"] = _d
+                    if rows:
+                        out[name]["first_seen"] = _fs_record_queue(conn, name, rows)
                 except Exception as e:
                     # most likely Railway egress block -> GH-runner fallback re-fetches
                     out[name] = {"status": "failed",

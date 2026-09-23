@@ -65,6 +65,7 @@ on:
       - 'util/deals.py'
       - 'util/deployability_rank.py'
       - 'util/dominant_source.py'
+      - 'util/first_seen.py'
       - 'util/internal_fetch.py'
       - 'util/iso_taxonomy.py'
       - 'util/market_aliases.py'
