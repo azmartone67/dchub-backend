@@ -8719,8 +8719,9 @@ def check_data_freshness_sla_breach() -> list[dict]:
         # Phase r33-D (2026-05-21) — infrastructure layer SLAs. HIFLD
         # publishes annually, EIA quarterly; we refresh aggressively
         # so the map doesn't go stale. Each pairs with a REFRESH_MAP
-        # entry in brain_autopilot.py (transmission-refresh, gas-
-        # refresh, substations-refresh) for autonomous recovery.
+        # entry in brain_autopilot.py (gas-refresh, substations-refresh)
+        # for autonomous recovery. transmission_lines has none since
+        # 2026-09-23 — its refresher TRUNCATEd the table; a breach escalates.
         ("transmission_lines",     "updated_at",   720,  "HIFLD transmission lines"),
         ("gas_pipelines",          "updated_at",   720,  "EIA gas pipelines"),
         ("substations",            "updated_at",   720,  "HIFLD substations"),
@@ -11018,7 +11019,7 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     #    daily" — that handler does not run these three loaders (its only live
     #    leg is fiber discovery), and its schedule was retired 2026-09-22. The
     #    REFRESH_MAP trigger is the whole reason.)
-    "/api/jobs/transmission-refresh",    # autopilot REFRESH_MAP (table SLA breach)
+    "/api/jobs/transmission-refresh",    # RETIRED 2026-09-23: answers 410, nothing triggers it
     "/api/jobs/gas-refresh",             # autopilot REFRESH_MAP (table SLA breach)
     "/api/jobs/substations-refresh",     # autopilot REFRESH_MAP (table SLA breach)
     "/api/jobs/infra-refresh-status",    # read-only STATUS endpoint, not a job

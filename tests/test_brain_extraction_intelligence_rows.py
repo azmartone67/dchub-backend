@@ -198,10 +198,13 @@ def test_steps_that_insert_nothing_get_no_row(brain, record):
         brain,
         infrastructure=_shape(brain, "infrastructure", fiber_mentions=9, power_mentions=4),
         fiber_infrastructure=_shape(brain, "fiber_infrastructure", dark_fiber=2, carriers=1),
+        # GUARD #3 (2026-09-23): no INSERT left, so no row — even with 'added' set.
+        transmission_infrastructure=_shape(
+            brain, "transmission_infrastructure", transmission_lines=5, added=3),
     ))
     assert sorted(rows) == [
         "autonomous-brain-capacity", "autonomous-brain-deals", "autonomous-brain-gas",
-        "autonomous-brain-quality", "autonomous-brain-transmission",
+        "autonomous-brain-quality",
     ]
 
 
@@ -210,15 +213,14 @@ def test_a_clean_step_reports_the_rows_it_inserted(brain, record):
         brain,
         capacity=_shape(brain, "capacity", new_pipeline=2),
         deals=_shape(brain, "deals", deals_found=1),
-        transmission_infrastructure=_shape(brain, "transmission_infrastructure", added=3),
+        gas_infrastructure=_shape(brain, "gas_infrastructure", added=3),
     ))
     got = {s: (r["outcome"], r["rows_inserted"], r["error"], r["observations"])
            for s, r in rows.items() if s != "autonomous-brain-quality"}
     assert got == {
         "autonomous-brain-capacity": ("success", 2, None, {"cycle": 7}),
         "autonomous-brain-deals": ("success", 1, None, {"cycle": 7}),
-        "autonomous-brain-gas": ("idle", 0, None, {"cycle": 7}),
-        "autonomous-brain-transmission": ("success", 3, None, {"cycle": 7}),
+        "autonomous-brain-gas": ("success", 3, None, {"cycle": 7}),
     }
 
 
@@ -242,14 +244,13 @@ def test_rejected_inserts_are_failure_or_partial_with_no_row_count(brain, record
     rows = record(_cycle(
         brain,
         gas_infrastructure=_shape(brain, "gas_infrastructure", added=0, insert_errors=2),
-        transmission_infrastructure=_shape(
-            brain, "transmission_infrastructure", added=4, insert_errors=1),
+        deals=_shape(brain, "deals", deals_found=4, insert_errors=1),
     ))
     got = {s: (rows[s]["outcome"], rows[s]["rows_inserted"], rows[s]["observations"])
-           for s in ("autonomous-brain-gas", "autonomous-brain-transmission")}
+           for s in ("autonomous-brain-gas", "autonomous-brain-deals")}
     assert got == {
         "autonomous-brain-gas": ("failure", None, {"cycle": 7, "insert_errors": 2}),
-        "autonomous-brain-transmission": ("partial", None, {"cycle": 7, "insert_errors": 1}),
+        "autonomous-brain-deals": ("partial", None, {"cycle": 7, "insert_errors": 1}),
     }
 
 

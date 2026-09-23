@@ -11,13 +11,13 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1503,
+  "python_files_scanned": 1502,
   "endpoints_total": 1808,
-  "endpoints_resolved": 1290,
+  "endpoints_resolved": 1289,
   "endpoints_partial": 66,
-  "endpoints_opaque_not_covered": 452,
-  "keys_total": 10757,
-  "keys_strictly_protected": 9745,
+  "endpoints_opaque_not_covered": 453,
+  "keys_total": 10754,
+  "keys_strictly_protected": 9742,
   "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -874,7 +874,7 @@
    ]
   },
   "GET /api/autonomous/status": {
-   "source": "autonomous_brain.py:1654",
+   "source": "autonomous_brain.py:1638",
    "handler": "get_brain_status",
    "resolution": "resolved",
    "open_at": [
@@ -3782,7 +3782,7 @@
    ]
   },
   "GET /api/jobs/db-backup/list": {
-   "source": "routes/jobs_routes.py:1623",
+   "source": "routes/jobs_routes.py:1626",
    "handler": "job_db_backup_list",
    "resolution": "resolved",
    "open_at": [
@@ -3796,7 +3796,7 @@
    ]
   },
   "GET /api/jobs/db-backup/verify": {
-   "source": "routes/jobs_routes.py:1637",
+   "source": "routes/jobs_routes.py:1640",
    "handler": "job_db_backup_verify",
    "resolution": "resolved",
    "open_at": [
@@ -3819,7 +3819,7 @@
    ]
   },
   "GET /api/jobs/health-probe": {
-   "source": "routes/jobs_routes.py:1667",
+   "source": "routes/jobs_routes.py:1670",
    "handler": "job_health_probe",
    "resolution": "resolved",
    "open_at": [
@@ -3841,7 +3841,7 @@
    ]
   },
   "GET /api/jobs/infra-refresh-status": {
-   "source": "routes/jobs_routes.py:1397",
+   "source": "routes/jobs_routes.py:1400",
    "handler": "job_infra_refresh_status",
    "resolution": "resolved",
    "open_at": [
@@ -4163,7 +4163,7 @@
    ]
   },
   "GET /api/land-power/market-profile/<market>": {
-   "source": "land_power_crawler.py:2282",
+   "source": "land_power_crawler.py:2184",
    "handler": "market_profile_detail",
    "resolution": "resolved",
    "open_at": [
@@ -4188,7 +4188,7 @@
    ]
   },
   "GET /api/land-power/market-profiles": {
-   "source": "land_power_crawler.py:2196",
+   "source": "land_power_crawler.py:2098",
    "handler": "market_profiles",
    "resolution": "resolved",
    "open_at": [
@@ -4221,7 +4221,7 @@
    ]
   },
   "GET /api/land-power/status": {
-   "source": "land_power_crawler.py:2008",
+   "source": "land_power_crawler.py:1907",
    "handler": "land_power_status",
    "resolution": "resolved",
    "open_at": [
@@ -5757,7 +5757,7 @@
    ]
   },
   "GET /api/scheduler/status": {
-   "source": "routes/jobs_routes.py:1657",
+   "source": "routes/jobs_routes.py:1660",
    "handler": "scheduler_status",
    "resolution": "opaque",
    "open_at": [],
@@ -7762,7 +7762,7 @@
    "keys": []
   },
   "GET /api/v1/brain/autopilot/library": {
-   "source": "routes/brain_autopilot.py:2673",
+   "source": "routes/brain_autopilot.py:2677",
    "handler": "autopilot_library",
    "resolution": "resolved",
    "open_at": [
@@ -7836,7 +7836,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2652",
+   "source": "routes/brain_autopilot.py:2656",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -7850,7 +7850,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/recent": {
-   "source": "routes/brain_autopilot.py:3244",
+   "source": "routes/brain_autopilot.py:3248",
    "handler": "autopilot_recent",
    "resolution": "resolved",
    "open_at": [
@@ -7863,7 +7863,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/status": {
-   "source": "routes/brain_autopilot.py:2600",
+   "source": "routes/brain_autopilot.py:2604",
    "handler": "autopilot_status",
    "resolution": "resolved",
    "open_at": [
@@ -7893,7 +7893,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/verification-status": {
-   "source": "routes/brain_autopilot.py:3512",
+   "source": "routes/brain_autopilot.py:3516",
    "handler": "autopilot_verification_status",
    "resolution": "resolved",
    "open_at": [
@@ -8365,14 +8365,14 @@
    ]
   },
   "GET /api/v1/brain/heartbeat": {
-   "source": "routes/brain_autopilot.py:2796",
+   "source": "routes/brain_autopilot.py:2800",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/brain/heartbeat-alt": {
-   "source": "routes/brain_autopilot.py:2796",
+   "source": "routes/brain_autopilot.py:2800",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
@@ -25001,7 +25001,7 @@
    ]
   },
   "POST /api/autonomous/run": {
-   "source": "autonomous_brain.py:1665",
+   "source": "autonomous_brain.py:1649",
    "handler": "run_cycle",
    "resolution": "resolved",
    "open_at": [
@@ -25013,7 +25013,7 @@
    ]
   },
   "POST /api/autonomous/start": {
-   "source": "autonomous_brain.py:1679",
+   "source": "autonomous_brain.py:1663",
    "handler": "start_brain",
    "resolution": "resolved",
    "open_at": [],
@@ -25023,7 +25023,7 @@
    ]
   },
   "POST /api/autonomous/stop": {
-   "source": "autonomous_brain.py:1694",
+   "source": "autonomous_brain.py:1678",
    "handler": "stop_brain",
    "resolution": "resolved",
    "open_at": [],
@@ -25790,7 +25790,7 @@
    ]
   },
   "POST /api/jobs/ambassador": {
-   "source": "routes/jobs_routes.py:1462",
+   "source": "routes/jobs_routes.py:1465",
    "handler": "job_ambassador",
    "resolution": "resolved",
    "open_at": [
@@ -25851,7 +25851,7 @@
    ]
   },
   "POST /api/jobs/backup": {
-   "source": "routes/jobs_routes.py:1481",
+   "source": "routes/jobs_routes.py:1484",
    "handler": "job_backup",
    "resolution": "resolved",
    "open_at": [
@@ -25879,7 +25879,7 @@
    "keys": []
   },
   "POST /api/jobs/capacity-headroom": {
-   "source": "routes/jobs_routes.py:1443",
+   "source": "routes/jobs_routes.py:1446",
    "handler": "job_capacity_headroom",
    "resolution": "resolved",
    "open_at": [
@@ -25937,7 +25937,7 @@
    ]
   },
   "POST /api/jobs/db-backup": {
-   "source": "routes/jobs_routes.py:1604",
+   "source": "routes/jobs_routes.py:1607",
    "handler": "job_db_backup",
    "resolution": "resolved",
    "open_at": [
@@ -26008,7 +26008,7 @@
    ]
   },
   "POST /api/jobs/energy-discovery": {
-   "source": "routes/jobs_routes.py:1405",
+   "source": "routes/jobs_routes.py:1408",
    "handler": "job_energy_discovery",
    "resolution": "resolved",
    "open_at": [
@@ -26080,7 +26080,7 @@
    ]
   },
   "POST /api/jobs/gas-refresh": {
-   "source": "routes/jobs_routes.py:1352",
+   "source": "routes/jobs_routes.py:1355",
    "handler": "job_gas_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -26109,7 +26109,7 @@
    ]
   },
   "POST /api/jobs/health-probe": {
-   "source": "routes/jobs_routes.py:1667",
+   "source": "routes/jobs_routes.py:1670",
    "handler": "job_health_probe",
    "resolution": "resolved",
    "open_at": [
@@ -26205,7 +26205,7 @@
    ]
   },
   "POST /api/jobs/land-power-sync": {
-   "source": "land_power_crawler.py:1831",
+   "source": "land_power_crawler.py:1731",
    "handler": "job_land_power_sync",
    "resolution": "resolved",
    "open_at": [
@@ -26248,7 +26248,7 @@
    ]
   },
   "POST /api/jobs/mcp-rate-cleanup": {
-   "source": "routes/jobs_routes.py:1549",
+   "source": "routes/jobs_routes.py:1552",
    "handler": "job_mcp_rate_cleanup",
    "resolution": "resolved",
    "open_at": [
@@ -26386,7 +26386,7 @@
    "keys": []
   },
   "POST /api/jobs/substations-refresh": {
-   "source": "routes/jobs_routes.py:1381",
+   "source": "routes/jobs_routes.py:1384",
    "handler": "job_substations_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -26420,15 +26420,9 @@
   "POST /api/jobs/transmission-refresh": {
    "source": "routes/jobs_routes.py:1333",
    "handler": "job_transmission_refresh",
-   "resolution": "resolved",
-   "open_at": [
-    "state"
-   ],
-   "keys": [
-    "job",
-    "state",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "POST /api/jobs/welcome-delivery-reconcile": {
    "source": "routes/welcome_delivery_reconciler.py:138",
@@ -26483,7 +26477,7 @@
    ]
   },
   "POST /api/land-power/sync": {
-   "source": "land_power_crawler.py:1815",
+   "source": "land_power_crawler.py:1715",
    "handler": "trigger_land_power_sync",
    "resolution": "resolved",
    "open_at": [
@@ -27681,7 +27675,7 @@
    "keys": []
   },
   "POST /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2652",
+   "source": "routes/brain_autopilot.py:2656",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -27695,7 +27689,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/run": {
-   "source": "routes/brain_autopilot.py:2187",
+   "source": "routes/brain_autopilot.py:2191",
    "handler": "autopilot_run",
    "resolution": "resolved",
    "open_at": [
@@ -27729,7 +27723,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/verify": {
-   "source": "routes/brain_autopilot.py:3291",
+   "source": "routes/brain_autopilot.py:3295",
    "handler": "autopilot_verify",
    "resolution": "resolved",
    "open_at": [

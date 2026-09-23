@@ -7,13 +7,12 @@ DC Hub's Land & Power map current and growing.
 Sources:
   - EIA-860:  Power plants (capacity, fuel type, status, coordinates)
   - EIA-923:  Monthly generation by plant
-  - HIFLD:    Substations, transmission lines (US homeland infrastructure)
+  - HIFLD:    Substations (US homeland infrastructure)
   - EIA NG:   Natural gas pipeline mileage by state/operator
 
 Tables updated:
   - power_plants          (name, capacity_mw, fuel_type, lat, lon, operator, status)
   - substations           (name, voltage_kv, lat, lng, operator, state)
-  - transmission_lines    (name, voltage_kv, from_sub, to_sub, length_miles, operator)
   - gas_pipelines         (name, operator, diameter_in, length_miles, state, commodity)
   - land_power_sync_log   (source, records_fetched, records_upserted, errors, duration_s)
 
@@ -72,7 +71,6 @@ EIA_860_PLANTS_URL = "https://api.eia.gov/v2/electricity/operating-generator-cap
 # HIFLD Open Data: Homeland Infrastructure Foundation-Level Data
 # Public GeoJSON endpoints — no API key needed
 HIFLD_SUBSTATIONS_URL = "https://opendata.arcgis.com/api/v3/datasets/8cb9ba99d67a45e2a5bc0d3d7c2e5d16_0/downloads/data?format=geojson&spatialRefId=4326"
-HIFLD_TRANSMISSION_URL = "https://opendata.arcgis.com/api/v3/datasets/70512b03fe994c6393107cc9946e5c22_0/downloads/data?format=geojson&spatialRefId=4326"
 
 # EIA Natural Gas: Interstate pipeline data
 EIA_NG_PIPELINES_URL = "https://api.eia.gov/v2/natural-gas/trans/ann/data/"
@@ -1186,125 +1184,31 @@ def _upsert_substations(cur, batch):
 
 
 # ─────────────────────────────────────────────────────────────
-# CRAWLER 3: TRANSMISSION LINES (HIFLD Open Data)
+# CRAWLER 3: TRANSMISSION LINES — RETIRED 2026-09-23
 # ─────────────────────────────────────────────────────────────
-
-def crawl_transmission_lines(get_db, full_refresh=False):
-    """
-    Fetch transmission line data from HIFLD.
-    Public GeoJSON — no API key needed.
-    """
-    started = time.time()
-    # Bound HERE, not inside the try — a reporter must never read a name
-    # its own try owns (the #1994 NameError-while-reporting regression).
-    source_note = None
-    fetched = 0
-    upserted = 0
-    errors = 0
-    error_detail = []
-
-    logger.info("🔗 Starting transmission line crawl (HIFLD)...")
-
-    conn = None
-    try:
-        _url, _count, _note = _resolve_arcgis_layer('hifld-transmission')
-        source_note = _note
-        geojson = _fetch_arcgis_geojson(_url)
-        if not geojson or 'features' not in geojson:
-            raise ValueError("No features in HIFLD transmission response")
-
-        features = geojson['features']
-        fetched = len(features)
-        logger.info(f"  🔗 Fetched {fetched} transmission lines")
-
-        conn = _ingest_conn(get_db)
-        cur = conn.cursor()
-        batch = []
-
-        for feat in features:
-            props = feat.get('properties', {})
-
-            hifld_id = str(props.get('ID', props.get('OBJECTID', '')))
-            if not hifld_id:
-                continue
-
-            # Calculate length from geometry if available
-            length_miles = _safe_float(
-                props.get('SHAPE_Length',
-                    props.get('SHAPE_Leng',
-                        props.get('Shape__Length',
-                            props.get('LENGTH', 0)))))
-            # HIFLD sometimes gives length in meters, convert
-            if length_miles and length_miles > 10000:
-                length_miles = length_miles * 0.000621371  # meters to miles
-
-            batch.append((
-                hifld_id,
-                _safe_str(props.get('ID', '')),
-                _safe_str(props.get('OWNER', props.get('OPERATOR', ''))),
-                _safe_float(props.get('VOLTAGE', 0)),
-                _safe_str(props.get('SUB_1', '')),
-                _safe_str(props.get('SUB_2', '')),
-                length_miles,
-                _safe_str(props.get('STATE', '')),
-                _safe_str(props.get('STATUS', 'operational')),
-                _safe_str(props.get('TYPE', '')),
-            ))
-
-            if len(batch) >= 1000:
-                u, e = _upsert_transmission(cur, batch)
-                upserted += u
-                errors += e
-                batch = []
-
-        if batch:
-            u, e = _upsert_transmission(cur, batch)
-            upserted += u
-            errors += e
-
-        conn.commit()
-        logger.info(f"✅ Transmission lines: {upserted} upserted, {errors} errors")
-
-    except Exception as e:
-        errors += 1
-        error_detail.append(f"Fatal: {str(e)[:200]}")
-        logger.error(f"❌ Transmission line crawl failed: {e}")
-        if conn:
-            conn.rollback()
-    finally:
-        if conn:
-            conn.close()
-
-    duration = time.time() - started
-    _log_sync(get_db, 'hifld-transmission', fetched, upserted, fetched - upserted, errors,
-              ('; '.join(error_detail) if error_detail
-               else source_note), duration)
-
-
-def _upsert_transmission(cur, batch):
-    """Batch upsert transmission lines."""
-    upserted = 0
-    errors = 0
-    for row in batch:
-        try:
-            cur.execute("""
-                INSERT INTO transmission_lines (
-                    hifld_id, name, operator, voltage_kv, from_sub, to_sub,
-                    length_miles, state, status, line_type, source, last_updated
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW())
-                ON CONFLICT (hifld_id)
-                DO UPDATE SET
-                    name = EXCLUDED.name,
-                    operator = EXCLUDED.operator,
-                    voltage_kv = EXCLUDED.voltage_kv,
-                    length_miles = EXCLUDED.length_miles,
-                    status = EXCLUDED.status,
-                    last_updated = NOW()
-            """, row)
-            upserted += 1
-        except Exception as e:
-            errors += 1
-    return upserted, errors
+# ★★★ transmission_lines has ONE writer: routes/transmission_ingest.py (EIA
+# US_Electric_Power_Transmission_Lines, weekly full-replace from
+# transmission-ingest.yml). This crawler used to be a second one, upserting the
+# services5 HIFLD layer ON CONFLICT (hifld_id) every night, and the two fought:
+#
+#   · The HIFLD layer is FROZEN — dataLastEditDate 2021-02-25 (EIA's is
+#     2025-08-26). Same id space: 88,810 ids are in both, 934 only in HIFLD.
+#   · Every Monday the EIA replace deleted source='hifld' rows (94,635 left);
+#     the next crawl that survived re-added the 934 (95,569). The layer flapped
+#     by 934 every week and /whats-new published "-934".
+#   · Those 934 are superseded records, not missing lines. Measured 2026-09-23
+#     by geometry: 907 of 934 (17,260 of 17,401 km) lie within 30 m of EIA
+#     lines under other ids (685 of them NEW ids = re-segmented); a 1 km
+#     shifted control scores 0 of 60. Re-adding them double-counts wire.
+#   · On the 88,810 shared ids its DO UPDATE overwrote EIA's 2025 attributes
+#     with 2021 ones (OWNER differs on 18,292, VOLTAGE 14,069, STATUS 5,128)
+#     and set name to the numeric ID.
+#   · It took ~2,300 s per run against a 300 s dispatcher budget, so it landed
+#     only when no deploy hit the ~38 min after 04:30 UTC.
+#
+# The HIFLD layer definition stays in util/hifld_layers.py: the fiber-route
+# discovery lane still queries it spatially. tests/test_transmission_lines_
+# single_writer.py fails if any other module writes rows to transmission_lines.
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1732,11 +1636,7 @@ def run_land_power_sync(get_db, full_refresh=False):
     except Exception as e:
         logger.error(f"❌ Substations crawl failed: {e}")
 
-    # Step 3: Transmission lines (HIFLD) — no key needed
-    try:
-        crawl_transmission_lines(get_db, full_refresh)
-    except Exception as e:
-        logger.error(f"❌ Transmission lines crawl failed: {e}")
+    # Step 3 (transmission lines) retired 2026-09-23 — see CRAWLER 3 above.
 
     # Step 4: Gas pipelines (EIA) — needs API key
     try:
@@ -1903,7 +1803,6 @@ def register_land_power_routes(app, get_db, require_admin):
         _RUNNERS = {
             'eia-860-plants': crawl_power_plants,
             'hifld-substations': crawl_substations,
-            'hifld-transmission': crawl_transmission_lines,
             'eia-ng-pipelines': crawl_gas_pipelines,
             # ★ 2026-09-07 — the LIVE gas producer must be runnable, not just
             #   watched. test_every_monitored_source_is_runnable enforces
@@ -2060,8 +1959,11 @@ def register_land_power_routes(app, get_db, require_admin):
             #   looks like coverage. The bulk-loaded layers are covered by the
             #   `layers` block below instead, which is the right instrument for
             #   a producer that is not a cron.
-            _EXPECTED = ('eia-860-plants', 'hifld-transmission',
-                         'eia-geodot-pipelines')
+            # ★ 2026-09-23 — 'hifld-transmission' left too: that crawl was
+            #   retired (CRAWLER 3 above). transmission_lines is written only by
+            #   routes/transmission_ingest.py, a weekly GitHub-runner job that
+            #   fails its own run loudly; it does not log here.
+            _EXPECTED = ('eia-860-plants', 'eia-geodot-pipelines')
             _STALE_AFTER_DAYS = 7
 
             import datetime as _dt

@@ -66,6 +66,7 @@ Run:  python3 -m pytest tests/test_land_power_per_source_sync.py -v
 """
 import ast
 import os
+import re
 
 import pytest
 
@@ -182,9 +183,15 @@ def test_the_workflow_calls_each_source_in_its_own_request():
     assert "source=${SRC}" in wf, (
         "the workflow does not call the job per source — one request for the "
         "whole chain exceeds both the 300s budget and the deploy gap")
-    for s in ("eia-860-plants", "hifld-substations", "hifld-transmission",
-              "eia-ng-pipelines"):
-        assert s in wf, f"{s} is not dispatched by the workflow"
+    loop = re.search(r"for SRC in ([^;\n]+); do", wf)
+    assert loop, "the per-source loop is gone from the workflow"
+    srcs = loop.group(1).split()
+    for s in ("eia-860-plants", "hifld-substations", "eia-ng-pipelines"):
+        assert s in srcs, f"{s} is not dispatched by the workflow"
+    # Retired 2026-09-23 — transmission_lines has one writer
+    # (transmission-ingest.yml). Read from the loop, not the file: the
+    # workflow's own comment names the retired source.
+    assert "hifld-transmission" not in srcs, srcs
     assert "steps.schedule.outputs.jobs != 'land-power-sync'" in wf, (
         "the generic dispatcher still also POSTs land-power-sync, which would "
         "run the whole chain in one request and be killed mid-flight")

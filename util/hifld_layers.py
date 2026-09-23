@@ -79,6 +79,12 @@ HIFLD_LAYERS = {
         ),
     },
     'hifld-transmission': {
+        # ★ 2026-09-23: this layer's dataLastEditDate is 2021-02-25 — a
+        # frozen vintage, not a maintained one. Its successor is the EIA
+        # layer routes/transmission_ingest.py loads (2025-08-26, same id
+        # space: 88,810 shared ids, 934 only here, 5,809 only there). Fine
+        # for the spatial discovery lane; never write transmission_lines
+        # from it (tests/test_transmission_lines_single_writer.py).
         'label': 'HIFLD electric power transmission lines',
         # live 89,744 (re-verified 2026-08-12) against a maintained
         # transmission_lines table of 94,626 — same population. The

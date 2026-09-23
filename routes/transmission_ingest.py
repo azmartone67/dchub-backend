@@ -13,6 +13,12 @@ SOURCE, VAL_DATE.
 
 Safety:
   - Admin-gated (X-Admin-Key / X-Internal-Key).
+  - ★ THE ONLY ROW WRITER of transmission_lines (2026-09-23;
+    tests/test_transmission_lines_single_writer.py). land_power_crawler's
+    nightly HIFLD upsert was a second one: it re-added 934 superseded 2021
+    records after every Monday replace, so the layer flapped 95,569 <-> 94,635
+    weekly. That crawl, the news-headline writer in autonomous_brain.py and
+    the TRUNCATE loader behind /api/jobs/transmission-refresh are retired.
   - Idempotent FULL-REPLACE inside ONE transaction: deletes the stale HIFLD +
     prior runner rows, then batched INSERT. A schema surprise rolls back cleanly
     so the old rows survive (no partial / empty-layer state). The 94k EIA set
