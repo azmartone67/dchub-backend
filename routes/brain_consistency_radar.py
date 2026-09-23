@@ -9374,6 +9374,12 @@ def check_ai_platform_crawl_drop() -> list[dict]:
                     "issue":  f"ai_platform_crawl_drop:{platform}",
                     "url":    "ai_requests",
                     "count":  cur_7d,
+                    # cur_7d is this platform's request VOLUME, not how often
+                    # the drop was seen. Undeclared, 503 sat under the 10k
+                    # untyped ceiling and rendered as "(seen x503)", so the
+                    # agenda filed be#5316 asking to dedup a flood that was
+                    # one row.
+                    "count_kind": "item_count",  # magnitude, not a recurrence tally
                     "detail": (f"AI platform `{platform}` crawl/request volume "
                                f"dropped {drop_frac*100:.0f}% week-over-week: "
                                f"prior 7d = {prior_7d}, current 7d = {cur_7d}. "
