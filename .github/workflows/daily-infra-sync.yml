@@ -1,45 +1,76 @@
-# Restored 2026-08-10. This workflow was absent from the default branch, so
-# GitHub carried it as state=deleted and its 04:08 cron stopped firing after
-# 2026-07-25 — 16 days of nothing, with no alarm anywhere. A workflow that does
-# not exist cannot fail, and the dead-man board only watches feeds that BEAT
-# it, so nothing noticed. routes/ingestion_integrity_master_shell.py lane
-# `workflow_present` now convicts exactly this shape.
+# ★ 2026-09-22 — SCHEDULE RETIRED. MANUAL ONLY. (owner decision)
 #
-# Restored FIXED, not verbatim. The previous body could not have worked even
-# while it was scheduled:
+# /api/jobs/infrastructure-sync has one real leg left — fiber discovery via
+# fiber_network_discovery.run_fiber_discovery — and that leg has NO SOURCE:
+# PeeringDB /api/ix carries no coordinates, and on 2026-09-07 the owner ruled
+# that pairing PeeringDB facilities into synthetic routes is not an acceptable
+# route source. So every run was an honest 500 (fiber no_source), and this
+# workflow went red every day after 2026-09-02 with nothing any PR could do
+# about it. The owner chose to stop running the sourceless step rather than
+# carry a red nobody can clear. Fiber routes still arrive through their real
+# lanes, which this retirement does not touch — measured 2026-09-23,
+# fiber_routes rows created in the prior 30 days: kmz 1,863, peeringdb 1,179
+# (the fiber_integration carrier/PeeringDB syncs), osm 2.
 #
-#   1. WRONG CREDENTIAL. It sent `X-Internal-Key`. /api/jobs/infrastructure-sync
-#      is gated by _require_admin_key (routes/jobs_routes.py:957), which reads
-#      X-Admin-Key / X-API-Key / Authorization / ?admin_key= / ?key= and
-#      compares against DCHUB_ADMIN_KEY. X-Internal-Key is not in that set, so
-#      the call was a 401.
-#   2. COULD NOT GO RED. `set +e`, `exit 0` on a missing secret, and a bare
-#      `::warning::` on failure — the run concluded success no matter what.
-#   3. PARSED A FIELD THAT DOES NOT EXIST. It read `data.ok_count`; the handler
-#      returns {'success', 'job', 'results': {...}, 'ts'}. `ok_count` was always
-#      absent, so OK defaulted to 0 and the warning fired on every single run
-#      while the step still went green.
-#   4. WENT THROUGH THE EDGE. It POSTed dchub.cloud with --max-time 1500, but
-#      admin POSTs through the Cloudflare worker time out at 15s
-#      (ROUTE_TIMEOUTS DEFAULT). Hit the Railway origin directly, as
-#      white-glove-tick-daily.yml already does.
+# Retired in lockstep:
+#   · this file's cron and its dead-man beat. The ledger row for feed
+#     'daily-infra-sync' must also be removed once, by
+#     POST /api/v1/admin/ingest-runs/purge {"feed":"daily-infra-sync"} —
+#     otherwise its last `error` beat sits on /api/v1/ops/deadman and ages
+#     into STALE with nothing left to refresh it;
+#   · dchub-jobs.yml's '0 1 * * *' arm, the endpoint's other scheduled caller
+#     (its dropdown entry too: that workflow judges a relayed 202 as success);
+#   · brain_consistency_radar._INTENTIONAL_STALE_CRONS += 'infrastructure-sync',
+#     so check_cron_freshness does not file cron_silently_dead about a job
+#     nothing is supposed to fire.
 #
-# The endpoint is in _WORKER_PROXY_POST_PATHS, so web relays it to dchub-worker
-# and answers 202 while the job continues there. 202 is SUCCESS here.
-name: daily-infra-sync
+# ★ WHY THE FILE STAYS. Deleting it would leave GitHub carrying it as
+# state=deleted with a run inside 60 days — exactly the shape
+# routes/ingestion_integrity_master_shell.py `workflow_present` convicts as a
+# GHOST (it was built from this file's 16-day disappearance in July).
+# Dispatch-only is the retirement that lane can read.
+#
+# ★ TO RE-SCHEDULE: only once run_fiber_discovery has a real surveyed source
+# (the still-open owner item of 2026-09-07: NTIA BEAD / FCC BDC, or retuning
+# the fiber SLA). Restore the cron AND a dead-man beat together — a beat with
+# no cron ages to a red that means nothing, and a cron with no beat is
+# invisible to /api/v1/ops/deadman.
+#
+# ★ A manual run does NOT beat the dead-man board. The feed is retired; a
+# hand-fired beat would re-create it with a 30h cadence and it would read
+# STALE two days later.
+#
+# ★ A 202 IS NOT A VERDICT — AND IS NO LONGER JUDGED AS ONE. The endpoint is
+# in main.py's _WORKER_PROXY_POST_PATHS + _WORKER_PROXY_SYNC_PATHS: web relays
+# it to dchub-worker on a 180s budget and answers 202 {"completed": false}
+# when the job outlives it (measured 2026-09-23 01:16 -> 01:19, 193s). The
+# previous body said "a 202 carries no verdict" in a comment and then judged
+# the empty 202 body anyway — loaders_total=0, "NO loader succeeded (0/0)" —
+# which is the red it printed every day. A 202 is now POLLED: the completion
+# watermark is cron_last_run via GET /api/jobs/last-run (read its docstring in
+# routes/jobs_routes.py). last_completed_at is stamped only by the process that
+# actually RAN the handler, and last_status is that handler's own verdict
+# ('ok' for a 2xx, 'http_500' for the honest no_source failure).
+#
+# History (2026-08-10 restore): the pre-restore body sent X-Internal-Key (a
+# 401 against _require_admin_key), could not go red (`set +e`, `exit 0`),
+# parsed a field the handler never returns, and went through the Cloudflare
+# edge. Those four stay fixed below: X-Admin-Key, fail-closed, the handler's
+# real fields, Railway origin direct.
+name: daily-infra-sync (schedule retired — manual only)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '8 4 * * *'   # 04:08 UTC daily (staggered off the 0 4 herd)
+
+permissions:
+  contents: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Trigger /api/jobs/infrastructure-sync
-        id: sync
+      - name: Run /api/jobs/infrastructure-sync and judge the handler's own verdict
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
@@ -53,76 +84,79 @@ jobs:
             echo "::error::DCHUB_ADMIN_KEY secret not set — the sync would 401 silently"
             exit 1
           fi
-          CODE=$(curl -sS --max-time 300 -o /tmp/infra.json -w '%{http_code}' \
+          JOB=infrastructure-sync
+          T="${RUNNER_TEMP:-/tmp}"
+
+          # Prints "<last_completed_at>|<last_status>" from cron_last_run, or
+          # nothing when the watermark could not be read (UNKNOWN, never "0").
+          read_watermark() {
+            local code
+            code=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              -o "$T/wm.json" -w '%{http_code}' \
+              "$RAILWAY/api/jobs/last-run?job=$JOB") || code="000"
+            if [ "$code" != "200" ]; then
+              echo "::warning::/api/jobs/last-run returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;r=((json.load(sys.stdin).get('jobs') or {}).get('$JOB') or {});print('%s|%s' % (r.get('last_completed_at') or '', r.get('last_status') or ''))" \
+              < "$T/wm.json" 2>/dev/null || true
+          }
+
+          BEFORE=$(read_watermark)
+          BEFORE_AT="${BEFORE%%|*}"
+          echo "pre-run $JOB last_completed_at=${BEFORE_AT:-<none>}"
+          START=$(date -u +%Y-%m-%dT%H:%M:%S)
+          CODE=$(curl -sS --max-time 300 -o "$T/infra.json" -w '%{http_code}' \
             -X POST -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY/api/jobs/infrastructure-sync" || echo 000)
-          echo "HTTP $CODE"
-          head -c 2000 /tmp/infra.json || true
+            "$RAILWAY/api/jobs/$JOB" || echo 000)
+          echo "HTTP $CODE (sent $START)"
+          head -c 2000 "$T/infra.json" || true
           echo ""
-          case "$CODE" in
-            200|202) ;;
-            *) echo "::error::infrastructure-sync returned $CODE"
-               echo "beat_status=error" >> "$GITHUB_OUTPUT"
-               exit 1;;
-          esac
-          # A 202 means the worker took the job and is still running it — there
-          # is no result body to judge, and calling that "0 loaders succeeded"
-          # would be a false alarm. Only a 200 carries a verdict.
-          # stdout → $GITHUB_OUTPUT (key=value only); anything human goes to
-          # stderr, or it lands in the outputs file as a malformed key.
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, sys
-          try:
-              d = json.load(open("/tmp/infra.json"))
-          except Exception:
-              d = {}
-          res = d.get("results") or {}
-          ok = [k for k, v in res.items()
-                if isinstance(v, dict) and "error" not in v
-                and v.get("status") != "not_available"]
-          bad = [k for k, v in res.items() if isinstance(v, dict) and "error" in v]
-          print("loaders_ok=%d" % len(ok))
-          print("loaders_total=%d" % len(res))
-          print("beat_status=%s" % ("success" if ok else "error"))
-          sys.stderr.write("::notice::loaders ok=%s failed=%s\n"
-                           % (ok or "none", bad or "none"))
-          PY
 
-      - name: Judge the result
-        if: steps.sync.outputs.loaders_total != ''
-        run: |
-          OK="${{ steps.sync.outputs.loaders_ok }}"
-          TOTAL="${{ steps.sync.outputs.loaders_total }}"
-          echo "loaders: $OK/$TOTAL succeeded"
-          if [ "${OK:-0}" -lt 1 ]; then
-            echo "::error::infrastructure-sync ran but NO loader succeeded ($OK/$TOTAL) — green here would be the treadmill this workflow was restored to stop"
+          if [ "$CODE" = "202" ]; then
+            echo "::notice::$JOB delegated to dchub-worker (202, no verdict in the body) — polling /api/jobs/last-run for the completion watermark"
+            DONE=""
+            for i in $(seq 1 16); do
+              sleep 30
+              AFTER=$(read_watermark)
+              AFTER_AT="${AFTER%%|*}"
+              echo "poll $i/16 last_completed_at=${AFTER_AT:-<none>}"
+              # A MOVED watermark is the signal. With no BEFORE (the pre-run
+              # read failed) "moved" is unknowable, so fall back to "stamped
+              # after we sent the POST" — otherwise the previous run's
+              # timestamp would pass as this one's completion.
+              if [ -n "$AFTER_AT" ]; then
+                if [ -n "$BEFORE_AT" ]; then
+                  [ "$AFTER_AT" != "$BEFORE_AT" ] && DONE="$AFTER"
+                elif [ "$AFTER_AT" \> "$START" ]; then
+                  DONE="$AFTER"
+                fi
+              fi
+              [ -n "$DONE" ] && break
+            done
+            if [ -z "$DONE" ]; then
+              echo "::error::$JOB was delegated (202) but cron_last_run.last_completed_at never advanced in 8 min — the run did NOT complete (or the watermark is unreadable)"
+              exit 1
+            fi
+            STATUS="${DONE#*|}"
+            echo "completed on the worker at ${DONE%%|*} with last_status=${STATUS:-<none>}"
+            if [ "$STATUS" = "ok" ]; then
+              echo "::notice::$JOB completed OK on dchub-worker (the handler returned 2xx, which it does only when its errors list is empty)"
+              exit 0
+            fi
+            echo "::error::$JOB completed on dchub-worker with last_status=${STATUS:-<none>} — that is the handler's own verdict. A 500 here is the fiber leg's honest no_source (see the 'JOB infrastructure-sync' line in the dchub-worker log for the reason)."
             exit 1
           fi
 
-      # Beat the dead-man board so this feed is WATCHED. Unbeaten feeds are
-      # invisible to /api/v1/ops/deadman, which is half of why the 16-day
-      # outage went unnoticed. Fail-open: a beat error never fails the job.
-      - name: Dead-man beat
-        if: always()
-        env:
-          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-        run: |
-          STATUS="${{ steps.sync.outputs.beat_status }}"
-          [ -z "$STATUS" ] && STATUS="error"
-          # Fail-OPEN — a beat error must never fail this job — but NOT silent.
-          # `curl ... || true` is the exact shape tests/test_workflow_curl_guard.py
-          # exists to stop: a beat that 401s leaves this feed unwatched on the
-          # dead-man board, which is half of why the 16-day outage above went
-          # unnoticed. Capture the code, print it, and keep going.
-          CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
-            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
-            -H "X-Admin-Key: $ADMIN_KEY" \
-            -H "Content-Type: application/json" \
-            -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"daily-infra-sync\",\"status\":\"$STATUS\",\"rows_inserted\":${{ steps.sync.outputs.loaders_ok || 0 }},\"cadence_hours\":30,\"note\":\"loaders ${{ steps.sync.outputs.loaders_ok || 0 }}/${{ steps.sync.outputs.loaders_total || 0 }}\"}" || echo 000)
-          echo "beat HTTP $CODE"
-          case "$CODE" in
-            200|201|202|204) ;;
-            *) echo "::warning::dead-man beat returned $CODE — this feed will read STALE on /api/v1/ops/deadman even when the sync itself is healthy";;
-          esac
+          # Anything but a 202 was answered in-band (the worker finished
+          # inside the relay budget, or web ran it locally): the body IS the
+          # verdict. `success` is computed by the handler from its errors.
+          V=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));f=((d.get('results') or {}).get('fiber') or {});print('%s|%s|%s' % (d.get('success'), f.get('status'), str(f.get('error') or '')[:200]))" "$T/infra.json" 2>/dev/null || echo "unparseable||")
+          echo "success=${V%%|*} fiber=$(printf '%s' "$V" | cut -d'|' -f2)"
+          if [ "$CODE" = "200" ] && [ "${V%%|*}" = "True" ]; then
+            echo "::notice::$JOB ran in-band and reported success"
+            exit 0
+          fi
+          echo "::error::$JOB returned HTTP $CODE, success=${V%%|*}, fiber status=$(printf '%s' "$V" | cut -d'|' -f2): $(printf '%s' "$V" | cut -d'|' -f3-)"
+          exit 1

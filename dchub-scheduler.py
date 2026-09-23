@@ -337,16 +337,14 @@ JOBS = {
         'minute': 10,
         'timeout': 30,
     },
-    'infra_sync_safe': {
-        'name': 'Infrastructure Sync (pool-gated)',
-        'endpoint': '/api/jobs/infrastructure-sync',
-        'method': 'POST',
-        'hours': [2],
-        'minute': 30,
-        'timeout': 300,
-        'pool_gate': True,       # Pre-flight pool check — aborts if pool >60%
-        'pool_max_pct': 60,
-    },
+    # 'infra_sync_safe' (/api/jobs/infrastructure-sync, 02:30) REMOVED
+    # 2026-09-22: the job's schedule is retired (owner decision — its only
+    # live leg, fiber discovery, has no source). Its real callers were
+    # dchub-jobs.yml and daily-infra-sync.yml, both retired in the same
+    # change; this file is never launched, so the entry was only a roster
+    # claim — one brain_consistency_radar.check_cron_endpoint_unscheduled
+    # reads as "scheduled". The endpoint is listed in that detector's
+    # _CRON_INTENTIONAL_MANUAL instead.
     'pool_watchdog': {
         'name': 'Pool Health Watchdog',
         'endpoint': '/api/admin/pool-status',

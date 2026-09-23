@@ -205,8 +205,9 @@ def test_flatline_is_withheld_when_the_table_was_recently_reingested():
     # drift apart again — fixing one and not the other is how this survived.
     ("crawler_scheduler.py", "_run_infrastructure_sync", 2),
     # ★ The THIRD call site, added 2026-09-02. This is the one the two daily
-    # crons actually POST — dchub-jobs.yml 01:00 and daily-infra-sync.yml
-    # 04:08 — and it was on none of these fences. It imported
+    # crons POSTed — dchub-jobs.yml 01:00 and daily-infra-sync.yml 04:08,
+    # both retired 2026-09-22 (manual-only now) — and it was on none of
+    # these fences. It imported
     # `run_permit_scan` from construction_permit_tracker, a name that has
     # never existed there, and reported the resulting ImportError as
     # {'status': 'not_available'} every day.

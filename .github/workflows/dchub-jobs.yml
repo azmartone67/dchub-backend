@@ -11,7 +11,12 @@
 #   - auto-approve (merge discovered facilities)
 #   - evolution (evolution engine suggestions)
 #   - market-report (daily market report generation)
-#   - infrastructure-sync (infrastructure data sync)
+#   - infrastructure-sync: RETIRED 2026-09-22 (owner decision). Its only live
+#     leg is sourceless fiber discovery, so every fire was an honest 500. The
+#     01:00 cron, its arm AND its dropdown entry are gone — this workflow
+#     judges a relayed 202 as success, so a manual fire here would be a
+#     false green. Run it by hand via daily-infra-sync.yml, which polls
+#     /api/jobs/last-run for the handler's real verdict.
 #   - capacity-headroom (capacity headroom calculation)
 #   - ambassador (agentic ambassador cycle)
 #   - backup (Neon → R2 nightly backup)
@@ -67,8 +72,7 @@ on:
     - cron: '5 13 * * *'
     # Market report: 14:30 UTC
     - cron: '52 14 * * *'
-    # Infrastructure sync: 01:00 UTC
-    - cron: '0 1 * * *'
+    # (Infrastructure sync's 01:00 UTC slot retired 2026-09-22 — see header.)
 
     # Land+Power infrastructure sync (EIA plants, HIFLD substations +
     # transmission, EIA gas pipelines): 04:30 UTC.
@@ -114,7 +118,6 @@ on:
           - auto-approve
           - evolution
           - market-report
-          - infrastructure-sync
           - capacity-headroom
           - ambassador
           - backup
@@ -196,7 +199,6 @@ jobs:
           # could never fire at all -- not even on a perfectly punctual run.
           JOBS=""
           case "${TRIGGER_CRON}" in
-            "0 1 * * *")          JOBS="infrastructure-sync" ;;
             "0 2 * * *")          JOBS="backup" ;;
             "0 3,9,15,21 * * *")  JOBS="discovery,auto-approve,db-health-snapshot" ;;
             "30 4 * * *")         JOBS="land-power-sync" ;;
