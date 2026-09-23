@@ -885,7 +885,7 @@
    ]
   },
   "GET /api/autopilot/capacity-pipeline": {
-   "source": "routes/autopilot_routes.py:553",
+   "source": "routes/autopilot_routes.py:570",
    "handler": "autopilot_capacity_pipeline",
    "resolution": "resolved",
    "open_at": [
@@ -917,7 +917,7 @@
    ]
   },
   "GET /api/autopilot/config": {
-   "source": "routes/autopilot_routes.py:358",
+   "source": "routes/autopilot_routes.py:375",
    "handler": "autopilot_config",
    "resolution": "resolved",
    "open_at": [
@@ -944,7 +944,7 @@
    ]
   },
   "GET /api/autopilot/deep-learning/status": {
-   "source": "routes/autopilot_routes.py:404",
+   "source": "routes/autopilot_routes.py:421",
    "handler": "deep_learning_status",
    "resolution": "resolved",
    "open_at": [
@@ -965,7 +965,7 @@
    ]
   },
   "GET /api/autopilot/pending": {
-   "source": "routes/autopilot_routes.py:336",
+   "source": "routes/autopilot_routes.py:353",
    "handler": "autopilot_pending",
    "resolution": "resolved",
    "open_at": [
@@ -984,7 +984,7 @@
    ]
   },
   "GET /api/autopilot/self-learning/status": {
-   "source": "routes/autopilot_routes.py:379",
+   "source": "routes/autopilot_routes.py:396",
    "handler": "self_learning_status",
    "resolution": "resolved",
    "open_at": [
@@ -1005,7 +1005,7 @@
    ]
   },
   "GET /api/autopilot/seo/sitemap": {
-   "source": "routes/autopilot_routes.py:705",
+   "source": "routes/autopilot_routes.py:722",
    "handler": "seo_sitemap",
    "resolution": "resolved",
    "open_at": [],
@@ -1022,7 +1022,7 @@
    ]
   },
   "GET /api/autopilot/seo/status": {
-   "source": "routes/autopilot_routes.py:672",
+   "source": "routes/autopilot_routes.py:689",
    "handler": "seo_status",
    "resolution": "resolved",
    "open_at": [
@@ -1041,7 +1041,7 @@
    ]
   },
   "GET /api/autopilot/social/test": {
-   "source": "routes/autopilot_routes.py:740",
+   "source": "routes/autopilot_routes.py:757",
    "handler": "social_test",
    "resolution": "resolved",
    "open_at": [
@@ -1065,7 +1065,7 @@
    ]
   },
   "GET /api/autopilot/stats": {
-   "source": "routes/autopilot_routes.py:326",
+   "source": "routes/autopilot_routes.py:343",
    "handler": "autopilot_stats",
    "resolution": "opaque",
    "open_at": [],
@@ -1078,7 +1078,7 @@
    ]
   },
   "GET /api/autopilot/status": {
-   "source": "routes/autopilot_routes.py:304",
+   "source": "routes/autopilot_routes.py:321",
    "handler": "autopilot_status",
    "resolution": "resolved",
    "open_at": [
@@ -1112,7 +1112,7 @@
    ]
   },
   "GET /api/autopilot/transactions": {
-   "source": "routes/autopilot_routes.py:429",
+   "source": "routes/autopilot_routes.py:446",
    "handler": "autopilot_detected_transactions",
    "resolution": "resolved",
    "open_at": [
@@ -14048,7 +14048,9 @@
    "handler": "get_grid_region",
    "resolution": "resolved",
    "open_at": [
+    "_upgrade.checkout",
     "_upgrade.corridors_hidden",
+    "_upgrade.url",
     "corridors",
     "facility_counts_by_state",
     "region.description",
@@ -25087,7 +25089,7 @@
    ]
   },
   "POST /api/autopilot/approve/<item_type>/<item_id>": {
-   "source": "routes/autopilot_routes.py:349",
+   "source": "routes/autopilot_routes.py:366",
    "handler": "autopilot_approve",
    "resolution": "resolved",
    "open_at": [
@@ -25107,7 +25109,7 @@
    ]
   },
   "POST /api/autopilot/config": {
-   "source": "routes/autopilot_routes.py:358",
+   "source": "routes/autopilot_routes.py:375",
    "handler": "autopilot_config",
    "resolution": "resolved",
    "open_at": [
@@ -25134,7 +25136,7 @@
    ]
   },
   "POST /api/autopilot/deep-learning/run": {
-   "source": "routes/autopilot_routes.py:418",
+   "source": "routes/autopilot_routes.py:435",
    "handler": "deep_learning_run",
    "resolution": "resolved",
    "open_at": [
@@ -25152,7 +25154,7 @@
    ]
   },
   "POST /api/autopilot/self-learning/run": {
-   "source": "routes/autopilot_routes.py:393",
+   "source": "routes/autopilot_routes.py:410",
    "handler": "self_learning_run",
    "resolution": "resolved",
    "open_at": [
@@ -25170,7 +25172,7 @@
    ]
   },
   "POST /api/autopilot/seo/press-release": {
-   "source": "routes/autopilot_routes.py:727",
+   "source": "routes/autopilot_routes.py:744",
    "handler": "seo_press_release",
    "resolution": "resolved",
    "open_at": [
@@ -25188,7 +25190,7 @@
    ]
   },
   "POST /api/autopilot/seo/run": {
-   "source": "routes/autopilot_routes.py:683",
+   "source": "routes/autopilot_routes.py:700",
    "handler": "seo_run",
    "resolution": "resolved",
    "open_at": [
@@ -25206,7 +25208,7 @@
    ]
   },
   "POST /api/autopilot/social/test": {
-   "source": "routes/autopilot_routes.py:740",
+   "source": "routes/autopilot_routes.py:757",
    "handler": "social_test",
    "resolution": "resolved",
    "open_at": [
