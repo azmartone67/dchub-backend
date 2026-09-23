@@ -314,6 +314,7 @@
     "test_tier_grants_are_classified.py": {
       "pglob": 2110
     },
+    "test_water_risk_read_honesty.py": {"walk": 80},
     "test_worker_kv_write_is_credential_free.py": {
       "walk": 70
     },

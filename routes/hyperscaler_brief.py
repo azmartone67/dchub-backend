@@ -54,6 +54,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from utils.cache import BoundedCache
 from util.facility_count_basis import mw_coverage_note
+from util.water_risk import read_states_stress, water_band_1_5, BAND_LABELS
 # Derived per call, never frozen at import (see #4334).
 from tier_registry import price_display
 from routes._paid_seat_heal import paid_seat_heal_html
@@ -823,16 +824,31 @@ def _section_water(cur, meta: dict) -> dict:
     per-facility water draw — instead we report:
       total_us_mw         — operational US MW (for context)
       states_covered      — # of US states in the fleet
-      avg_water_stress    — weighted avg WRI baseline_water_stress (0-5)
-      stressed_state_pct  — % of fleet MW in states with stress >= 4
+      avg_water_stress    — MW-weighted WRI water_stress_score, 0-100
+                            (100 = most stressed), NOT a 0-5 or 1-5 index
+      avg_water_band      — that average expressed as the 1-5 WRI category
+      stressed_state_pct  — % of fleet MW in states at WRI band >= 4, i.e.
+                            High or Extremely High (>=40% withdrawal/supply)
       estimated_gpy       — gallons/year @ 100 gal/MW-day industry avg
+
+    ★ Until #5260 this classified with `if float(stress) >= 4.0`, a threshold
+    written for a 1-5 index, against the 0-100 column. Every state but the
+    very least-stressed cleared it, so `stressed_state_pct` published ~100%.
+    It also did `_as_float(r[0]) or _as_float(r[1])`, falling back to
+    `baseline_water_stress` — NULL on all 51 rows — and, because `or` tests
+    truthiness, threw away a genuine 0.0 (the LEAST-stressed states) as if it
+    were missing. See util/water_risk.
     """
     aliases = meta["aliases"]
     out = {
         "total_us_mw":        None,
         "states_covered":     None,
         "avg_water_stress":   None,
+        "avg_water_band":     None,
+        "avg_water_band_label": None,
         "stressed_state_pct": None,
+        "states_matched":     None,
+        "water_stress_error": None,
         "estimated_gpy":      None,
         "note":               None,
     }
@@ -871,30 +887,45 @@ def _section_water(cur, meta: dict) -> dict:
     stress_sum = 0.0
     stressed_mw = 0.0
     matched_mw = 0.0
+    # ONE query for every state, not one per state. The per-state loop this
+    # replaces caught with `except: continue`, so a broken read was
+    # indistinguishable from a state that simply has no row — up to 51 silent
+    # nulls averaged into a confident number.
+    by_state, werr = read_states_stress(cur, [s for s, _ in state_mw])
+    if werr:
+        # Name the failure and leave every water-stress field null. The MW and
+        # gallons numbers above came from a DIFFERENT query that succeeded, so
+        # they still stand — but averaging whatever survived a failed read is
+        # exactly how this section lied in the first place, so the average,
+        # the band and the stressed percentage stay unknown.
+        # Its OWN field, not `note`: the estimated-gallons note below is
+        # written unconditionally, so parking the failure there would have the
+        # error overwritten a few lines later and the null go quiet again —
+        # which is the exact failure mode this whole change exists to end.
+        out["water_stress_error"] = werr
+        by_state = {}
     for state, mw in state_mw:
-        try:
-            cur.execute(
-                """
-                SELECT water_stress_score, baseline_water_stress
-                  FROM water_risk
-                 WHERE UPPER(state) = UPPER(%s)
-                 ORDER BY computed_at DESC NULLS LAST LIMIT 1
-                """,
-                (state,),
-            )
-            r = cur.fetchone()
-            if r:
-                stress = _as_float(r[0]) or _as_float(r[1])
-                if stress is not None:
-                    stress_sum += float(stress) * mw
-                    matched_mw  += mw
-                    if float(stress) >= 4.0:
-                        stressed_mw += mw
-        except Exception:
+        w = by_state.get(state)
+        # `is not None`, never truthiness: 0.0 is the LEAST-stressed score a
+        # state can have, and it is a real measurement, not a missing one.
+        if w is None or w["score"] is None:
             continue
-    if matched_mw > 0:
-        out["avg_water_stress"]   = round(stress_sum / matched_mw, 2)
-        out["stressed_state_pct"] = round(100 * stressed_mw / total_mw, 1)
+        stress_sum += w["score"] * mw
+        matched_mw += mw
+        if w["stressed"]:
+            stressed_mw += mw
+    out["states_matched"] = sum(
+        1 for s, _ in state_mw
+        if (by_state.get(s) or {}).get("score") is not None)
+    if matched_mw > 0 and not werr:
+        avg = round(stress_sum / matched_mw, 2)
+        out["avg_water_stress"]     = avg
+        out["avg_water_band"]       = water_band_1_5(avg)
+        out["avg_water_band_label"] = BAND_LABELS.get(water_band_1_5(avg))
+        # Denominator is matched_mw, not total_mw: a percentage of fleet MW
+        # whose numerator can only come from MATCHED states, divided by ALL
+        # fleet MW, silently understates every unmatched state as unstressed.
+        out["stressed_state_pct"] = round(100 * stressed_mw / matched_mw, 1)
     # Industry-avg evap: ~100 gal / MW-day (per Uptime + LBNL 2024).
     # Annual = mw * 100 * 365 * 24/24 = mw * 36,500 gal/yr (rough).
     out["estimated_gpy"] = int(total_mw * 100 * 365)
@@ -1460,11 +1491,21 @@ def _render_html(brief: dict) -> str:
         water = brief.get("water") or {}
         water_html = ""
         if water.get("total_us_mw"):
+            # The label used to read "WRI 0-5" over a 0-100 column, and
+            # `or 0` rendered an ABSENT average as a confident 0.00 — the
+            # least-stressed reading there is. An unknown prints as an em dash.
+            _avg = water.get("avg_water_stress")
+            _avg_stress_v = "—" if _avg is None else f"{_avg:.1f}"
+            _band = water.get("avg_water_band_label")
+            _avg_stress_l = ("Avg Stress (WRI 0-100)" if not _band
+                             else f"Avg Stress (WRI 0-100 · {_band})")
+            if water.get("water_stress_error"):
+                _avg_stress_l = "Avg Stress (read failed)"
             water_html = f"""
                 <div class="grid3">
                   <div class="kpi"><div class="kpi-v">{water['total_us_mw']:,.0f}</div><div class="kpi-l">US MW</div></div>
                   <div class="kpi"><div class="kpi-v">{water.get('states_covered') or '—'}</div><div class="kpi-l">US States</div></div>
-                  <div class="kpi"><div class="kpi-v">{(water.get('avg_water_stress') or 0):.2f}</div><div class="kpi-l">Avg Stress (WRI 0-5)</div></div>
+                  <div class="kpi"><div class="kpi-v">{_avg_stress_v}</div><div class="kpi-l">{_avg_stress_l}</div></div>
                 </div>
                 <p>Estimated annual water draw: <strong>~{(water.get('estimated_gpy') or 0)/1e6:,.1f} M gallons/year</strong>.</p>
                 <p class="note">{_esc(water.get('note') or '')}</p>"""
