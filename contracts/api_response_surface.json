@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1501,
+  "python_files_scanned": 1500,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
@@ -11388,7 +11388,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/ask": {
-   "source": "routes/dcpi.py:5720",
+   "source": "routes/dcpi.py:5733",
    "handler": "dcpi_ask",
    "resolution": "resolved",
    "open_at": [
@@ -11470,7 +11470,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/embed/<slug>": {
-   "source": "routes/dcpi.py:9942",
+   "source": "routes/dcpi.py:9955",
    "handler": "embed_widget_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11634,21 +11634,21 @@
    ]
   },
   "GET /api/v1/dcpi/iso-comparison": {
-   "source": "routes/dcpi.py:6581",
+   "source": "routes/dcpi.py:6594",
    "handler": "api_iso_comparison",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/iso/<iso_code>": {
-   "source": "routes/dcpi.py:6512",
+   "source": "routes/dcpi.py:6525",
    "handler": "api_iso_deep_dive",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/leaderboard": {
-   "source": "routes/dcpi.py:5899",
+   "source": "routes/dcpi.py:5912",
    "handler": "api_leaderboard",
    "resolution": "resolved",
    "open_at": [
@@ -11718,7 +11718,7 @@
    ]
   },
   "GET /api/v1/dcpi/movers": {
-   "source": "routes/dcpi.py:5818",
+   "source": "routes/dcpi.py:5831",
    "handler": "api_movers",
    "resolution": "resolved",
    "open_at": [
@@ -11730,7 +11730,7 @@
    ]
   },
   "GET /api/v1/dcpi/oembed": {
-   "source": "routes/dcpi.py:6716",
+   "source": "routes/dcpi.py:6729",
    "handler": "api_oembed",
    "resolution": "resolved",
    "open_at": [
@@ -11749,35 +11749,35 @@
    ]
   },
   "GET /api/v1/dcpi/og/<slug>": {
-   "source": "routes/dcpi.py:9938",
+   "source": "routes/dcpi.py:9951",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/og/<slug>.svg": {
-   "source": "routes/dcpi.py:9938",
+   "source": "routes/dcpi.py:9951",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page": {
-   "source": "routes/dcpi.py:9929",
+   "source": "routes/dcpi.py:9942",
    "handler": "public_dashboard_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page/<slug>": {
-   "source": "routes/dcpi.py:9933",
+   "source": "routes/dcpi.py:9946",
    "handler": "public_market_page_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/press": {
-   "source": "routes/dcpi.py:9946",
+   "source": "routes/dcpi.py:9959",
    "handler": "press_kit_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11820,7 +11820,7 @@
    ]
   },
   "GET /api/v1/dcpi/recommend": {
-   "source": "routes/dcpi.py:5379",
+   "source": "routes/dcpi.py:5384",
    "handler": "api_dcpi_recommend",
    "resolution": "resolved",
    "open_at": [
@@ -11880,21 +11880,21 @@
    ]
   },
   "GET /api/v1/dcpi/scores": {
-   "source": "routes/dcpi.py:4570",
+   "source": "routes/dcpi.py:4571",
    "handler": "api_scores",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/scores/<slug>": {
-   "source": "routes/dcpi.py:4869",
+   "source": "routes/dcpi.py:4870",
    "handler": "api_score_market",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/scores/<slug>/v2": {
-   "source": "routes/dcpi.py:5202",
+   "source": "routes/dcpi.py:5203",
    "handler": "api_score_market_v2",
    "resolution": "resolved",
    "open_at": [
@@ -11943,14 +11943,14 @@
    ]
   },
   "GET /api/v1/dcpi/ticker.html": {
-   "source": "routes/dcpi.py:9376",
+   "source": "routes/dcpi.py:9389",
    "handler": "ticker_widget",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/total": {
-   "source": "routes/dcpi.py:4824",
+   "source": "routes/dcpi.py:4825",
    "handler": "api_dcpi_total",
    "resolution": "resolved",
    "open_at": [
@@ -11965,7 +11965,7 @@
    ]
   },
   "GET /api/v1/dcpi/trending": {
-   "source": "routes/dcpi.py:9347",
+   "source": "routes/dcpi.py:9360",
    "handler": "api_trending",
    "resolution": "resolved",
    "open_at": [
@@ -15625,7 +15625,7 @@
    ]
   },
   "GET /api/v1/land-power/quick-score": {
-   "source": "routes/land_power_mcp.py:578",
+   "source": "routes/land_power_mcp.py:582",
    "handler": "quick_score",
    "resolution": "resolved",
    "open_at": [
@@ -15644,7 +15644,7 @@
    ]
   },
   "GET /api/v1/land-power/site-analysis": {
-   "source": "routes/land_power_mcp.py:540",
+   "source": "routes/land_power_mcp.py:544",
    "handler": "site_analysis",
    "resolution": "opaque",
    "open_at": [],
@@ -28889,7 +28889,7 @@
    ]
   },
   "POST /api/v1/dcpi/ask": {
-   "source": "routes/dcpi.py:5720",
+   "source": "routes/dcpi.py:5733",
    "handler": "dcpi_ask",
    "resolution": "resolved",
    "open_at": [
@@ -28964,7 +28964,7 @@
    ]
   },
   "POST /api/v1/dcpi/lite-recompute": {
-   "source": "routes/dcpi.py:9954",
+   "source": "routes/dcpi.py:9967",
    "handler": "lite_recompute",
    "resolution": "resolved",
    "open_at": [
@@ -28980,7 +28980,7 @@
    ]
   },
   "POST /api/v1/dcpi/recommend": {
-   "source": "routes/dcpi.py:5379",
+   "source": "routes/dcpi.py:5384",
    "handler": "api_dcpi_recommend",
    "resolution": "resolved",
    "open_at": [
@@ -29025,7 +29025,7 @@
    ]
   },
   "POST /api/v1/dcpi/recompute": {
-   "source": "routes/dcpi.py:6785",
+   "source": "routes/dcpi.py:6798",
    "handler": "api_recompute",
    "resolution": "opaque",
    "open_at": [],
@@ -29120,7 +29120,7 @@
    ]
   },
   "POST /api/v1/dcpi/snapshot": {
-   "source": "routes/dcpi.py:6817",
+   "source": "routes/dcpi.py:6830",
    "handler": "api_snapshot",
    "resolution": "resolved",
    "open_at": [
@@ -29920,7 +29920,7 @@
    ]
   },
   "POST /api/v1/land-power/track": {
-   "source": "routes/land_power_mcp.py:649",
+   "source": "routes/land_power_mcp.py:653",
    "handler": "land_power_track",
    "resolution": "opaque",
    "open_at": [],
