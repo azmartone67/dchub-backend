@@ -25,8 +25,10 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # four loaders run one after another, each capped at ~55 min by the driver
-    timeout-minutes: 240
+    # four loaders run one after another; a deploy kills the loader thread and
+    # the driver resumes it (tools/osm_refresh_drive.py MAX_ATTEMPTS), so a
+    # busy merge day stretches the run — 330 min leaves room under GitHub's 360.
+    timeout-minutes: 330
     env:
       RAILWAY: https://dchub-backend-production.up.railway.app
       INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}

@@ -213,3 +213,42 @@ def test_published_rule_matches_the_loader_constants():
     assert f"{osm.TRANSMISSION_MIN_KV} kV" in tx
     assert f"{osm.GAS_NEAR_FEDERAL_KM:g} km" in gas
     assert "half" in tx and "half" in gas and osm.NEW_NODE_SHARE == 0.5
+
+
+# ── resume across deploys (2026-09-23) ──────────────────────────────────────
+def test_sweep_skips_carried_states_and_counts_them_done(monkeypatch):
+    fetched, beats = [], []
+
+    def fake_fetch(q, on_attempt=None, **k):
+        on_attempt and on_attempt()
+        fetched.append(q)
+        return {"elements": []}, "ok"
+    monkeypatch.setattr(osm, "_overpass_fetch", fake_fetch)
+    monkeypatch.setattr(osm, "_connect", lambda: type("C", (), {
+        "commit": lambda s: None, "close": lambda s: None})())
+    monkeypatch.setattr(osm, "_dsn", lambda: "postgres://x")
+    monkeypatch.setattr(osm.time, "sleep", lambda s: None)
+    res = osm._sweep("t", ["AL", "AK", "AZ"], lambda st: st,
+                     lambda c, st, els: (0, {}), progress=lambda r: beats.append(1),
+                     carried=["AK", "ZZ"])
+    assert fetched == ["AL", "AZ"], "a carried state was swept again"
+    assert res["states_done"] == 3 and res["states_total"] == 3
+    assert sorted(res["done_states"]) == ["AK", "AL", "AZ"]
+    assert osm.classify(res)[0] == "no_new_data"
+    # heartbeat before every fetch attempt, not only after a finished state
+    assert len(beats) >= 4
+
+
+def test_driver_resumes_a_stalled_loader_until_it_finishes():
+    states = iter(["stalled", "stalled", "stalled", "success"])
+    row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (1, "started"),
+                                 wait_fn=lambda rid: {"state": next(states)})
+    assert row["state"] == "success" and n == 4
+
+
+def test_driver_gives_up_after_max_attempts():
+    calls = []
+    row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (calls.append(1) or 1, "started"),
+                                 wait_fn=lambda rid: {"state": "stalled"})
+    assert row["state"] == "stalled" and n == drive.MAX_ATTEMPTS == len(calls)
+    assert drive.verdict([("x", row, "")])[0] == 1
