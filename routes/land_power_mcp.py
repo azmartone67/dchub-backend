@@ -41,7 +41,7 @@ import psycopg2.extras
 
 from util.db_honesty import try_fetchone
 from util.us_states import state_match_pair
-from util.water_stress import water_band
+from util.water_risk import read_state_stress
 
 
 land_power_mcp_bp = Blueprint("land_power_mcp", __name__)
@@ -298,20 +298,24 @@ def _build_analysis(lat: float, lon: float, state: str,
                 # one withdrawn 2026-07-07 for reading INVERTED. So
                 # `AVG(stress_index)` raised UndefinedColumn on every call
                 # and stress_index was served null for every site. water_risk
-                # carries the verified WRI Aqueduct roll-up (0-100), banded
-                # here to the 1-5 index _quick_score compares on.
-                r, err = try_fetchone(cur, """
-                    SELECT water_stress_score
-                      FROM water_risk
-                     WHERE UPPER(state) = %s
-                     ORDER BY computed_at DESC NULLS LAST
-                     LIMIT 1
-                """, (abbr,))
+                # carries the verified WRI Aqueduct roll-up (0-100), banded to
+                # the 1-5 index _quick_score compares on.
+                # util.water_risk is the ONE read path for that table: the
+                # live schema, the 0-100 scale and the banding live there
+                # instead of in a per-surface hand-copy, and it returns
+                # (value, error) so a failure stays NAMED in result["water"]
+                # rather than served as an indistinguishable null.
+                # ★ THIS CURSOR IS A RealDictCursor (see _build_analysis
+                # above). util.water_risk._cell reads a dict row BY NAME for
+                # exactly that reason: a positional row[0] raises KeyError: 0,
+                # which escapes try_fetchone's error capture and unwinds into
+                # the caller's own `except` — taking the tax and land reads
+                # that follow water down with it.
+                water, err = read_state_stress(cur, abbr)
                 if err:
                     result["water"]["_error"] = err
-                elif r and r.get("water_stress_score") is not None:
-                    result["water"]["stress_index"] = water_band(
-                        float(r["water_stress_score"]))
+                elif water is not None and water["band"] is not None:
+                    result["water"]["stress_index"] = water["band"]
 
                 # ── Tax incentives ──
                 # util.tax_incentives, not tax_incentives_neon: the table

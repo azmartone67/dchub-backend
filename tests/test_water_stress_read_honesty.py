@@ -48,7 +48,9 @@ WHAT IS PINNED HERE
   * Both retail reads match the full state name, and the bulk one keys its
     dict by USPS code so the lookup can actually hit.
   * The 1-5 band comes from the ONE shared implementation and is
-    direction-correct: arid out-ranks wet.
+    direction-correct: arid out-ranks wet. #5285 made "one" literal: the cut
+    points exist in exactly one non-test module, and none of the three
+    surfaces carries its own `FROM water_risk` query any more.
   * Anti-vacuous floors, per the #2062 lesson: a fence that goes green
     because the thing it inspects became empty is worse than no fence.
 
@@ -65,13 +67,26 @@ import pytest
 
 import routes.dcpi as dcpi
 import routes.land_power_mcp as lpm
-from util.water_stress import water_band
+# ★ #5285: this was `from util.water_stress import water_band`. That module
+# was a second, independent implementation of the same 0-100 -> 1-5 band —
+# see test_exactly_one_band_implementation_survives_in_the_tree — and it is
+# gone. util.water_risk owns the arithmetic and the SQL.
+from util.water_risk import water_band_1_5
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DCPI = "routes/dcpi.py"
 LPM = "routes/land_power_mcp.py"
 SIM = "routes/site_simulator.py"
 ALL_ROUTES = (DCPI, LPM, SIM)
+
+#: The band owner, and the four category midpoints in either spelling a band
+#: implementation writes them: the flat `(12.5, 37.5, 62.5, 87.5)` of
+#: util.water_risk._BAND_CUTS, or the paired `((12.5, 1), (37.5, 2), ...)` the
+#: retired util.water_stress.WATER_BANDS used.
+BAND_OWNER = "util/water_risk.py"
+BAND_CUT_LITERALS = re.compile(
+    r"12\.5.{0,60}?37\.5.{0,60}?62\.5.{0,60}?87\.5", re.S)
+_SCAN_SKIP = {".git", "__pycache__", "node_modules", ".claude", "venv", ".venv"}
 
 
 # ---------------------------------------------------------------- fake driver
@@ -193,7 +208,9 @@ def _v2_rows():
             "excess_power_score": 47.2, "time_to_power_months": 19.0,
             "verdict": "AVOID", "curtailment_pct": 3.1, "computed_at": None,
             "signal_tier": "measured"}],
-        "FROM water_risk": [{"water_stress_score": 71.8}],
+        # util.water_risk._SQL_ONE selects (water_stress_score, bws_category)
+        # and _shape reads BOTH by name — this route passes a RealDictCursor.
+        "FROM water_risk": [{"water_stress_score": 71.8, "bws_category": "High"}],
         "FROM eia_retail_rates": [{"rate_cents_kwh": 10.09}],
     }
 
@@ -293,7 +310,14 @@ def _rec_rows():
             {"state_code": "VIRGINIA", "rate_cents_kwh": 10.09, "period": "2026"},
             {"state_code": "EAST NORTH CENTRAL", "rate_cents_kwh": 8.4, "period": "2026"},
         ],
-        "FROM water_risk": [{"state_code": "VA", "water_stress_score": 71.8}],
+        # ★ Keyed `state`, not `state_code`: util.water_risk._SQL_MANY aliases
+        # `UPPER(state) AS state`, and read_states_stress keys its dict off
+        # that column. The retired STATE_WATER_STRESS_SQL called it
+        # `state_code`; a fixture still answering the old alias would hand
+        # back rows the read path drops, and this fence would go green on an
+        # enrichment that publishes nothing.
+        "FROM water_risk": [
+            {"state": "VA", "water_stress_score": 71.8, "bws_category": "High"}],
     }
 
 
@@ -389,7 +413,8 @@ def _lpm_rows():
             "constraint_score": 41.0, "time_to_power_months": 19.0,
             "queue_capacity_mw": 900.0, "market_name": "Northern Virginia"}],
         "FROM eia_retail_rates": [{"rate_cents_kwh": 10.09, "period": "2026"}],
-        "FROM water_risk": [{"water_stress_score": 71.8}],
+        # RealDictCursor here too — see the note in _v2_rows().
+        "FROM water_risk": [{"water_stress_score": 71.8, "bws_category": "High"}],
         "FROM discovered_facilities": [{"n": 3, "total_mw": 120.0, "max_mw": 60.0}],
     }
 
@@ -536,29 +561,39 @@ def test_the_dead_water_column_stays_gone_on_every_surface():
 def test_no_surface_falls_back_to_the_all_null_baseline_column():
     """water_risk.baseline_water_stress is NULL on all 51 rows. A COALESCE
     onto it buys nothing and hides that the real column went unread."""
-    for rel in ALL_ROUTES + ("util/water_stress.py",):
-        for sql in _sql_literals(rel) if rel != "util/water_stress.py" else \
-                [s for s in _sql_literals(rel)]:
+    # ★ #5285: the fourth entry was "util/water_stress.py", whose SQL moved
+    # into util/water_risk.py when the duplicate was deleted. The SQL still
+    # has to be inspected — it is now the ONLY place the query exists, so
+    # dropping it from this list rather than repointing it would have left
+    # the live query unfenced.
+    for rel in ALL_ROUTES + (BAND_OWNER,):
+        for sql in _sql_literals(rel):
             assert "baseline_water_stress" not in sql, (
                 f"{rel} reads baseline_water_stress, which is NULL on every row")
 
 
 def test_the_water_reads_target_the_store_that_has_the_signal():
+    """★ TIGHTENED IN #5285. This used to accept ANY of three spellings — an
+    inline `FROM water_risk` literal, the STATE_WATER_STRESS_SQL constant, or
+    a read-path call — because all three existed at once. Accepting the union
+    is what let two readers of one table both pass: the fence asked "does this
+    route reach the right table?" when the question was "does it reach it
+    through the one module that knows the schema?".
+
+    All three surfaces now go through util.water_risk, so the literal is no
+    longer an acceptable answer — it is the regression.
+    """
     for rel in ALL_ROUTES:
-        sqls = " || ".join(_sql_literals(rel))
         src = _src(rel)
-        # dcpi's bulk read uses the shared STATE_WATER_STRESS_SQL constant, so
-        # accept either the literal or the import of the one that carries it.
-        has_literal = "water_stress_score" in sqls and "FROM water_risk" in sqls
-        # Two shared spellings reach the same table: dcpi's bulk read uses the
-        # STATE_WATER_STRESS_SQL constant, and site_simulator goes through
-        # util.water_risk.read_state_stress, which owns the query outright.
-        has_shared = ("STATE_WATER_STRESS_SQL" in src
-                      or "read_state_stress" in src
-                      or "read_states_stress" in src)
-        assert has_literal or has_shared, (
+        assert ("read_state_stress(cur," in src
+                or "read_states_stress(cur," in src), (
             f"{rel}: water stress must come from water_risk.water_stress_score "
-            f"— the verified WRI Aqueduct roll-up")
+            f"— the verified WRI Aqueduct roll-up — through util.water_risk, "
+            f"which owns the query and the schema facts")
+        for sql in _sql_literals(rel):
+            assert "FROM water_risk" not in " ".join(sql.split()), (
+                f"{rel} grew its own water_risk query again, so the schema "
+                f"facts now have two homes: {sql!r}")
 
 
 def test_both_retail_reads_match_the_full_state_name():
@@ -612,19 +647,30 @@ def test_reads_go_through_the_importable_honesty_helper():
 def test_the_band_has_exactly_one_implementation():
     """Three surfaces need the 0-100 -> 1-5 band. util/us_states.py records
     where hand-copies end: seven copies of one predicate, and a census that
-    could not check any of them."""
+    could not check any of them.
+
+    ★ TIGHTENED IN #5285. This used to pass on EITHER shared spelling,
+    `from util.water_stress import` or `from util.water_risk import`, which
+    is exactly how the duplicate sat here green: the fence asked "is the band
+    shared?" when the question was "is it the SAME shared band?".
+
+    The second clause was worse than loose, it was vacuous: `"12.5" not in
+    src or shared` can never fail, because `shared` was just asserted true
+    one line above. 12.5 also occurs innocently in all three modules (a peak
+    Tbps, a reserve margin, a longitude), so the check has to key on the
+    four cut points IN ORDER, not on one number.
+    """
     for rel in ALL_ROUTES:
         src = _src(rel)
-        # Two shared spellings are legitimate. util.water_stress hands back a
-        # band to score on; util.water_risk hands back a whole read — score,
-        # band and label — so a route that goes through the read path has its
-        # band from the same shared arithmetic without importing it directly.
-        # routes/site_simulator.py took that second route in #5263's wake.
-        shared = ("from util.water_stress import" in src
-                  or "from util.water_risk import" in src)
-        assert shared, f"{rel} must get the shared band, not re-derive it"
-        assert "12.5" not in src or shared, (
-            f"{rel} appears to re-implement the band edges inline")
+        # All three go through the read path, which hands back an already
+        # banded row (score, band, label) — so none of them needs to import
+        # the band function, and none may re-derive it.
+        assert "from util.water_risk import" in src, (
+            f"{rel} must get its band from util.water_risk, the one module "
+            f"that owns the 0-100 -> 1-5 arithmetic")
+        assert not BAND_CUT_LITERALS.search(src), (
+            f"{rel} re-implements the band cut points inline instead of "
+            f"calling util.water_risk.water_band_1_5")
 
 
 # ------------------------------------------------------------- band fences
@@ -632,37 +678,98 @@ def test_the_band_has_exactly_one_implementation():
 def test_water_band_is_direction_correct():
     """The 2026-07-07 pause was caused by an INVERTED proxy — arid states read
     LESS stressed than wet ones. Assert the opposite, as the ingest does."""
-    assert water_band(71.8) > water_band(12.5), "the 1-5 band is inverted"
-    assert water_band(0.0) == 1 and water_band(100.0) == 5
+    assert water_band_1_5(71.8) > water_band_1_5(12.5), "the 1-5 band is inverted"
+    assert water_band_1_5(0.0) == 1 and water_band_1_5(100.0) == 5
 
 
 def test_water_band_covers_the_five_wri_categories():
     """WRI publishes bws_cat -1..4, which the ingest normalises to
     0/25/50/75/100. Each must land on its own band."""
-    assert [water_band(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] == [1, 2, 3, 4, 5]
+    assert [water_band_1_5(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] \
+        == [1, 2, 3, 4, 5]
 
 
 def test_an_unread_water_score_never_becomes_a_number():
-    assert water_band(None) is None
+    assert water_band_1_5(None) is None
 
 
 def test_the_shared_band_matches_the_one_site_simulator_shipped():
     """#5259 pinned these exact values. Centralising the implementation must
     not have moved any state a band.
 
-    ★ routes/site_simulator.py no longer exposes a band of its own — it moved
-    onto util.water_risk.read_state_stress, which returns an already-banded
-    read. So the values are pinned against BOTH shared spellings, and the two
-    are pinned against each other: there are two band functions in the tree
-    (util.water_stress.water_band and util.water_risk.water_band_1_5) and a
-    surface scores the same either way only while they agree.
+    ★ These values are the part that was load-bearing. Until #5285 this test
+    asserted them against TWO band functions and cross-checked the pair:
+    util.water_stress.water_band (#5262) and util.water_risk.water_band_1_5
+    (#5263), written a day apart from separate cut tuples. #5281 pinned them
+    to each other precisely because they agreed across the whole range — and
+    a duplicate that agrees is a duplicate you cannot see. #5285 deleted one,
+    so there is no pair left to cross-check; the values stay pinned against
+    the survivor, and the every-cut-point sweep that used to prove agreement
+    now proves the boundaries themselves.
+
+    test_exactly_one_band_implementation_survives_in_the_tree is what keeps
+    the pair from coming back.
     """
-    from util.water_risk import water_band_1_5
-    for band_of in (water_band, water_band_1_5):
-        assert [band_of(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] == [1, 2, 3, 4, 5]
-        assert band_of(71.8) == 4 and band_of(12.5) == 2
-    for score in (0.0, 12.5, 25.0, 37.5, 50.0, 62.5, 71.8, 75.0, 87.5, 100.0):
-        assert water_band(score) == water_band_1_5(score), (
-            f"the two shared bands disagree at {score}: "
-            f"water_stress={water_band(score)} water_risk={water_band_1_5(score)}")
-    assert water_band(None) is water_band_1_5(None) is None
+    assert [water_band_1_5(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] \
+        == [1, 2, 3, 4, 5]
+    assert water_band_1_5(71.8) == 4 and water_band_1_5(12.5) == 2
+    # Every cut point, and a value either side of each: the boundary is
+    # inclusive-below, so a score ON a cut belongs to the HIGHER band.
+    assert [water_band_1_5(v) for v in (12.49, 12.5, 37.49, 37.5,
+                                        62.49, 62.5, 87.49, 87.5)] \
+        == [1, 2, 2, 3, 3, 4, 4, 5]
+    assert water_band_1_5(None) is None
+
+
+def test_exactly_one_band_implementation_survives_in_the_tree():
+    """★ THE FENCE THIS CHANGE EXISTS TO ADD.
+
+    The #5262/#5263 duplicate was not a wrong answer, it was two right
+    answers. Both modules landed within a day, each declaring itself the
+    owner of the 0-100 -> 1-5 banding, from cut tuples written independently.
+    Nothing failed, because they agreed — so nothing COULD have told us until
+    one drifted, at which point the same state would score differently on
+    /api/v1/dcpi/recommend and on /market-brief with no error anywhere.
+
+    Discovered, not allowlisted: an allowlist that is only ever subtracted
+    from goes stale green in the fix direction. Tests are excluded because a
+    fence has to be free to quote the values it pins.
+    """
+    carriers = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _SCAN_SKIP]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
+            if rel.split(os.sep)[0] == "tests":
+                continue
+            try:
+                src = _src(rel)
+            except (OSError, UnicodeDecodeError):
+                continue
+            if BAND_CUT_LITERALS.search(src):
+                carriers.append(rel)
+
+    assert carriers == [BAND_OWNER], (
+        f"the 0-100 -> 1-5 band cut points must exist in exactly one "
+        f"non-test module. Found them in {sorted(carriers)}; expected "
+        f"[{BAND_OWNER!r}]. More than one means the #5262/#5263 duplicate is "
+        f"back: two implementations that agree today and silently disagree "
+        f"later. Call util.water_risk.water_band_1_5 instead of re-declaring "
+        f"the midpoints.")
+
+
+def test_the_retired_duplicate_module_does_not_come_back():
+    """util/water_stress.py carried a second band AND a second
+    `FROM water_risk` query. Both folded into util/water_risk.py in #5285,
+    along with the schema facts only it recorded — that usgs_water_stress has
+    no stress column, and why DISTINCT ON beats AVG on this table.
+    """
+    assert not os.path.exists(os.path.join(ROOT, "util/water_stress.py")), (
+        "util/water_stress.py is back. It was deleted because it duplicated "
+        "util/water_risk.py's band and its SQL under a near-identical name; "
+        "a caller that wants a bare band imports water_band_1_5.")
+    for rel in ALL_ROUTES:
+        assert "util.water_stress" not in _src(rel), (
+            f"{rel} imports the retired util.water_stress")
