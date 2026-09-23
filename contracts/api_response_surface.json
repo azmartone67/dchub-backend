@@ -3782,7 +3782,7 @@
    ]
   },
   "GET /api/jobs/db-backup/list": {
-   "source": "routes/jobs_routes.py:1612",
+   "source": "routes/jobs_routes.py:1622",
    "handler": "job_db_backup_list",
    "resolution": "resolved",
    "open_at": [
@@ -3796,7 +3796,7 @@
    ]
   },
   "GET /api/jobs/db-backup/verify": {
-   "source": "routes/jobs_routes.py:1626",
+   "source": "routes/jobs_routes.py:1636",
    "handler": "job_db_backup_verify",
    "resolution": "resolved",
    "open_at": [
@@ -3819,7 +3819,7 @@
    ]
   },
   "GET /api/jobs/health-probe": {
-   "source": "routes/jobs_routes.py:1656",
+   "source": "routes/jobs_routes.py:1666",
    "handler": "job_health_probe",
    "resolution": "resolved",
    "open_at": [
@@ -3841,7 +3841,7 @@
    ]
   },
   "GET /api/jobs/infra-refresh-status": {
-   "source": "routes/jobs_routes.py:1386",
+   "source": "routes/jobs_routes.py:1396",
    "handler": "job_infra_refresh_status",
    "resolution": "resolved",
    "open_at": [
@@ -3853,7 +3853,7 @@
    ]
   },
   "GET /api/jobs/keep-alive": {
-   "source": "routes/jobs_routes.py:740",
+   "source": "routes/jobs_routes.py:743",
    "handler": "job_keep_alive",
    "resolution": "resolved",
    "open_at": [
@@ -3869,7 +3869,7 @@
    ]
   },
   "GET /api/jobs/last-run": {
-   "source": "routes/jobs_routes.py:790",
+   "source": "routes/jobs_routes.py:793",
    "handler": "job_last_run",
    "resolution": "resolved",
    "open_at": [
@@ -3929,7 +3929,7 @@
    ]
   },
   "GET /api/jobs/status": {
-   "source": "routes/jobs_routes.py:759",
+   "source": "routes/jobs_routes.py:762",
    "handler": "job_status",
    "resolution": "resolved",
    "open_at": [
@@ -5757,7 +5757,7 @@
    ]
   },
   "GET /api/scheduler/status": {
-   "source": "routes/jobs_routes.py:1646",
+   "source": "routes/jobs_routes.py:1656",
    "handler": "scheduler_status",
    "resolution": "opaque",
    "open_at": [],
@@ -25728,7 +25728,7 @@
    ]
   },
   "POST /api/jobs/ai-ecosystem": {
-   "source": "routes/jobs_routes.py:658",
+   "source": "routes/jobs_routes.py:661",
    "handler": "job_ai_ecosystem",
    "resolution": "resolved",
    "open_at": [
@@ -25744,7 +25744,7 @@
    ]
   },
   "POST /api/jobs/ai-outreach": {
-   "source": "routes/jobs_routes.py:677",
+   "source": "routes/jobs_routes.py:680",
    "handler": "job_ai_outreach",
    "resolution": "resolved",
    "open_at": [
@@ -25760,7 +25760,7 @@
    ]
   },
   "POST /api/jobs/ai-wars": {
-   "source": "routes/jobs_routes.py:575",
+   "source": "routes/jobs_routes.py:578",
    "handler": "job_ai_wars",
    "resolution": "resolved",
    "open_at": [
@@ -25775,7 +25775,7 @@
    ]
   },
   "POST /api/jobs/alert-emails": {
-   "source": "routes/jobs_routes.py:1038",
+   "source": "routes/jobs_routes.py:1041",
    "handler": "job_alert_emails",
    "resolution": "resolved",
    "open_at": [
@@ -25790,7 +25790,7 @@
    ]
   },
   "POST /api/jobs/ambassador": {
-   "source": "routes/jobs_routes.py:1451",
+   "source": "routes/jobs_routes.py:1461",
    "handler": "job_ambassador",
    "resolution": "resolved",
    "open_at": [
@@ -25806,7 +25806,7 @@
    ]
   },
   "POST /api/jobs/auto-approve": {
-   "source": "routes/jobs_routes.py:539",
+   "source": "routes/jobs_routes.py:542",
    "handler": "job_auto_approve",
    "resolution": "resolved",
    "open_at": [
@@ -25821,7 +25821,7 @@
    ]
   },
   "POST /api/jobs/autonomous-brain": {
-   "source": "routes/jobs_routes.py:1019",
+   "source": "routes/jobs_routes.py:1022",
    "handler": "job_autonomous_brain",
    "resolution": "resolved",
    "open_at": [
@@ -25837,7 +25837,7 @@
    ]
   },
   "POST /api/jobs/autopilot": {
-   "source": "routes/jobs_routes.py:871",
+   "source": "routes/jobs_routes.py:874",
    "handler": "job_autopilot",
    "resolution": "resolved",
    "open_at": [
@@ -25851,7 +25851,7 @@
    ]
   },
   "POST /api/jobs/backup": {
-   "source": "routes/jobs_routes.py:1470",
+   "source": "routes/jobs_routes.py:1480",
    "handler": "job_backup",
    "resolution": "resolved",
    "open_at": [
@@ -25879,7 +25879,7 @@
    "keys": []
   },
   "POST /api/jobs/capacity-headroom": {
-   "source": "routes/jobs_routes.py:1432",
+   "source": "routes/jobs_routes.py:1442",
    "handler": "job_capacity_headroom",
    "resolution": "resolved",
    "open_at": [
@@ -25902,7 +25902,7 @@
    "keys": []
   },
   "POST /api/jobs/content-publish": {
-   "source": "routes/jobs_routes.py:716",
+   "source": "routes/jobs_routes.py:719",
    "handler": "job_content_publish",
    "resolution": "resolved",
    "open_at": [
@@ -25937,7 +25937,7 @@
    ]
   },
   "POST /api/jobs/db-backup": {
-   "source": "routes/jobs_routes.py:1593",
+   "source": "routes/jobs_routes.py:1603",
    "handler": "job_db_backup",
    "resolution": "resolved",
    "open_at": [
@@ -25952,7 +25952,7 @@
    ]
   },
   "POST /api/jobs/db-health-snapshot": {
-   "source": "routes/jobs_routes.py:361",
+   "source": "routes/jobs_routes.py:364",
    "handler": "job_db_health_snapshot",
    "resolution": "resolved",
    "open_at": [
@@ -25978,7 +25978,7 @@
    ]
   },
   "POST /api/jobs/discovery": {
-   "source": "routes/jobs_routes.py:480",
+   "source": "routes/jobs_routes.py:483",
    "handler": "job_discovery",
    "resolution": "resolved",
    "open_at": [
@@ -25993,7 +25993,7 @@
    ]
   },
   "POST /api/jobs/eia-retirements": {
-   "source": "routes/jobs_routes.py:631",
+   "source": "routes/jobs_routes.py:634",
    "handler": "job_eia_retirements",
    "resolution": "resolved",
    "open_at": [
@@ -26008,7 +26008,7 @@
    ]
   },
   "POST /api/jobs/energy-discovery": {
-   "source": "routes/jobs_routes.py:1394",
+   "source": "routes/jobs_routes.py:1404",
    "handler": "job_energy_discovery",
    "resolution": "resolved",
    "open_at": [
@@ -26024,7 +26024,7 @@
    ]
   },
   "POST /api/jobs/evolution": {
-   "source": "routes/jobs_routes.py:556",
+   "source": "routes/jobs_routes.py:559",
    "handler": "job_evolution",
    "resolution": "resolved",
    "open_at": [
@@ -26080,7 +26080,7 @@
    ]
   },
   "POST /api/jobs/gas-refresh": {
-   "source": "routes/jobs_routes.py:1341",
+   "source": "routes/jobs_routes.py:1351",
    "handler": "job_gas_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -26093,7 +26093,7 @@
    ]
   },
   "POST /api/jobs/global-intelligence": {
-   "source": "routes/jobs_routes.py:696",
+   "source": "routes/jobs_routes.py:699",
    "handler": "job_global_intelligence",
    "resolution": "resolved",
    "open_at": [
@@ -26109,7 +26109,7 @@
    ]
   },
   "POST /api/jobs/health-probe": {
-   "source": "routes/jobs_routes.py:1656",
+   "source": "routes/jobs_routes.py:1666",
    "handler": "job_health_probe",
    "resolution": "resolved",
    "open_at": [
@@ -26131,7 +26131,7 @@
    ]
   },
   "POST /api/jobs/infrastructure-sync": {
-   "source": "routes/jobs_routes.py:1147",
+   "source": "routes/jobs_routes.py:1150",
    "handler": "job_infrastructure_sync",
    "resolution": "resolved",
    "open_at": [
@@ -26189,7 +26189,7 @@
    "keys": []
   },
   "POST /api/jobs/keep-alive": {
-   "source": "routes/jobs_routes.py:740",
+   "source": "routes/jobs_routes.py:743",
    "handler": "job_keep_alive",
    "resolution": "resolved",
    "open_at": [
@@ -26232,7 +26232,7 @@
    ]
   },
   "POST /api/jobs/market-report": {
-   "source": "routes/jobs_routes.py:1077",
+   "source": "routes/jobs_routes.py:1080",
    "handler": "job_market_report",
    "resolution": "resolved",
    "open_at": [
@@ -26248,7 +26248,7 @@
    ]
   },
   "POST /api/jobs/mcp-rate-cleanup": {
-   "source": "routes/jobs_routes.py:1538",
+   "source": "routes/jobs_routes.py:1548",
    "handler": "job_mcp_rate_cleanup",
    "resolution": "resolved",
    "open_at": [
@@ -26286,7 +26286,7 @@
    "keys": []
   },
   "POST /api/jobs/news-refresh": {
-   "source": "routes/jobs_routes.py:428",
+   "source": "routes/jobs_routes.py:431",
    "handler": "job_news_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -26348,7 +26348,7 @@
    ]
   },
   "POST /api/jobs/simple-alerts": {
-   "source": "routes/jobs_routes.py:1058",
+   "source": "routes/jobs_routes.py:1061",
    "handler": "job_simple_alerts",
    "resolution": "resolved",
    "open_at": [
@@ -26364,7 +26364,7 @@
    ]
   },
   "POST /api/jobs/site-baseline": {
-   "source": "routes/jobs_routes.py:602",
+   "source": "routes/jobs_routes.py:605",
    "handler": "job_site_baseline",
    "resolution": "resolved",
    "open_at": [
@@ -26386,7 +26386,7 @@
    "keys": []
   },
   "POST /api/jobs/substations-refresh": {
-   "source": "routes/jobs_routes.py:1370",
+   "source": "routes/jobs_routes.py:1380",
    "handler": "job_substations_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -26418,7 +26418,7 @@
    ]
   },
   "POST /api/jobs/transmission-refresh": {
-   "source": "routes/jobs_routes.py:1322",
+   "source": "routes/jobs_routes.py:1332",
    "handler": "job_transmission_refresh",
    "resolution": "resolved",
    "open_at": [
