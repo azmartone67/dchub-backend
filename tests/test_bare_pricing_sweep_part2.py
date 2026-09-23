@@ -81,13 +81,24 @@ def test_the_two_check_tier_call_sites_still_pass_their_own_required_tier():
 # ── grid_intelligence_routes.py: free→developer, developer→pro ─────────────
 def test_grid_intelligence_upgrade_ctas_are_signed_not_bare():
     body = _fn_source("routes/grid_intelligence_routes.py", "get_grid_region")
-    assert "buy.stripe.com" not in body
+    assert "https://buy.stripe.com" not in body   # the literal URL, not prose mentioning the domain
     assert "checkout_url('developer', _sub_ref) if checkout_url" in body
     assert "checkout_url('pro', _sub_ref) if checkout_url" in body
     # the bare literals survive ONLY as the ternary's fail-open fallback
     # (checkout_click_tracker import failed) — never the primary CTA.
     assert body.count("https://dchub.cloud/pricing#developer") == 1
     assert body.count("https://dchub.cloud/pricing#pro") == 1
+
+
+def test_grid_intelligence_checkout_key_kept_as_a_compat_alias():
+    """api-response-contract caught this: '_upgrade.checkout' used to carry
+    the raw buy.stripe.com link and some consumer outside this repo may
+    still read it. Dropping the key silently broke the contract gate;
+    restoring the OLD raw link would reintroduce the bug this PR fixes. The
+    fix is a compat alias — same signed URL under both keys."""
+    body = _fn_source("routes/grid_intelligence_routes.py", "get_grid_region")
+    assert "'checkout': _dev_url" in body
+    assert "_dev_url = checkout_url('developer', _sub_ref)" in body
 
 
 def test_grid_intelligence_ctas_only_evaluate_for_the_tiers_that_have_one():

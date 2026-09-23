@@ -1095,9 +1095,17 @@ def get_grid_region(region_id):
             checkout_url = None
             _sub_ref = ''
         if tier == 'free':
+            _dev_url = checkout_url('developer', _sub_ref) if checkout_url else 'https://dchub.cloud/pricing#developer'
             response['_upgrade'] = {
                 'message': f'Showing {min(max_corridors, total_corridors)} of {total_corridors} corridors with limited data. Developer plan ($49/mo) unlocks all corridors, scores, energy rates, and infrastructure counts.',
-                'url': checkout_url('developer', _sub_ref) if checkout_url else 'https://dchub.cloud/pricing#developer',
+                'url': _dev_url,
+                # api-response-contract (2026-09-23): 'checkout' used to be a
+                # raw, unattributed buy.stripe.com link — the API contract
+                # guard caught its removal (some consumer outside this repo
+                # may read it). Kept as a compat alias, but now the SAME
+                # signed /go/c link as 'url', not the raw Stripe URL — a
+                # reader of either key gets the session-bound checkout.
+                'checkout': _dev_url,
                 'corridors_hidden': max(0, total_corridors - max_corridors),
             }
         elif tier == 'developer':
