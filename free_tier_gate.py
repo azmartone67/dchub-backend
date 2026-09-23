@@ -622,6 +622,24 @@ def _metered_402():
             payload.update(lp_ladder())
         except Exception:
             pass
+    else:
+        # r-metered-wall-sku (2026-09-23): every OTHER METERED_MAP_PREFIXES
+        # route — this wall checks free_tier_gate._resolve_caller's `plan`,
+        # never mcp_topups credits, so the $10 pack cannot resolve it (see
+        # util/plan_tease.metered_wall_ladder). Session-bound /go/c, signed,
+        # never the bare utm-tagged pricing link, once a rung can be minted.
+        try:
+            from util.plan_tease import presented_key, metered_wall_ladder
+            rungs = metered_wall_ladder(presented_key())
+            # _plan_rung() still returns a rung when checkout_url() itself
+            # fell back to the bare pricing page (no DCHUB_INTERNAL_KEY) — it
+            # only checks that a price exists, not that a token was signed.
+            # Only override the utm-tagged default with a GENUINELY signed
+            # /go/c link; never with a second, worse bare-pricing flavor.
+            if (rungs.get('upgrade_url') or '').startswith('https://dchub.cloud/go/c/'):
+                payload.update(rungs)
+        except Exception:
+            pass
     resp = jsonify(payload)
     resp.headers['Cache-Control'] = 'private, no-store'
     return resp, 402

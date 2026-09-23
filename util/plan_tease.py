@@ -323,6 +323,32 @@ def lp_free_key() -> dict:
                      "no scores or figures"}
 
 
+# ── r-metered-wall-sku (2026-09-23): the map-session-cap wall, NOT Land & Power ──
+# free_tier_gate._resolve_caller bypasses this specific 402 only for a caller
+# whose mcp_dev_keys/users `plan` is in tier_registry.paid_plan_names() — it
+# never reads mcp_topups credits. The $10 pack (checkout_url("metered", …))
+# writes credits and NEVER changes `plan` (routes/mcp_conversion_plays
+# grant_credit_pack), so it cannot resolve THIS wall — selling it here would
+# be the exact false promise rest_wall_ladder's own docstring already refuses
+# ("a rung that cannot open the thing it is shown on"). Developer is the
+# CHEAPEST plan that is actually in paid_plan_names(), so it leads; Pro
+# follows for a caller who wants Land & Power too. No pack rung, on purpose.
+def metered_wall_ladder(api_key: str = "", ref: str = "") -> dict:
+    """upgrade_url + upgrade_options for every METERED_MAP_PREFIXES route
+    OTHER than Land & Power/site-score/site-planner (those use lp_ladder).
+    `ref` is used only when there is no key to bind the checkout to."""
+    _, sub_ref = key_refs(api_key)
+    bind = sub_ref or ref
+    rungs = [_plan_rung("developer", bind, "removes the map session cap"),
+             _plan_rung("pro", bind, "removes the map session cap and everything else")]
+    rungs = [r for r in rungs if r]
+    out = {"key_bound": bool(sub_ref)}
+    if rungs:
+        out["upgrade_url"] = rungs[0]["url"]
+        out["upgrade_options"] = rungs
+    return out
+
+
 def lp_wall():
     """What a keyless caller gets from a Land & Power route: no data."""
     body = {

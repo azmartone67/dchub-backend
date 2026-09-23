@@ -736,7 +736,10 @@ def test_main_serves_land_power_data_through_the_land_power_gate():
 
 def test_the_map_session_wall_on_land_power_sells_pro_only(ledger, monkeypatch):
     """free_tier_gate's map-session cap answers before the route does. On a
-    Land & Power route its wall offers Pro alone; elsewhere it is unchanged."""
+    Land & Power route its wall offers Pro alone; elsewhere (r-metered-wall-sku,
+    2026-09-23) it offers Developer then Pro, both signed — never bare
+    /pricing, and never the pack, which cannot resolve this specific gate
+    (free_tier_gate._resolve_caller checks `plan`, not mcp_topups credits)."""
     import free_tier_gate as ftg
     monkeypatch.setattr("routes.email_capture.build_agent_coaching", lambda *a, **k: {}, raising=False)
     app = flask.Flask("cap")
@@ -751,7 +754,11 @@ def test_the_map_session_wall_on_land_power_sells_pro_only(ledger, monkeypatch):
             assert _token(body["upgrade_url"])[0] == "pro" and "Pro" in body["message"], path
             _assert_no_lower_rung(json.dumps(body))
         else:
-            assert "upgrade_options" not in body, path
+            plans = [o["plan"] for o in body["upgrade_options"]]
+            assert plans == ["developer", "pro"], path
+            assert "pack" not in plans, path
+            assert body["upgrade_url"].startswith("https://dchub.cloud/go/c/"), path
+            assert '"https://dchub.cloud/pricing"' not in json.dumps(body), path
 
 
 def test_main_serves_site_score_through_the_land_power_gate():
