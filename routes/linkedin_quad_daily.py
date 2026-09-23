@@ -60,15 +60,17 @@ def _canon_media_phrases() -> tuple[str, str]:
 
     2026-09-23: neither phrase fails when canon is unmeasured, each floors
     canon's static seed (facilities 400 -> "400+"), so the fail-open above
-    never fired. Each is gated on stat_is_live for the key it reads, asked
-    AFTER the phrase call runs the query, like _canon_markets.
+    never fired. Each is now gated on its metric being live, asked AFTER the
+    phrase call runs the query, like _canon_markets. Alias-aware, as canon's
+    own resolve_public_floors is: a measurement stored under the deprecated
+    facilities_verified name is still a measurement.
     """
     try:
-        from canonical_stats import (deals_phrase, facilities_verified_phrase,
-                                     stat_is_live)
+        from canonical_stats import (_metric_is_live, deals_phrase,
+                                     facilities_verified_phrase)
         fac, deals = facilities_verified_phrase() or "", deals_phrase() or ""
-        return (fac if stat_is_live("facilities_with_keeper_distinct") else "",
-                deals if stat_is_live("deals") else "")
+        return (fac if _metric_is_live("facilities_with_keeper_distinct") else "",
+                deals if _metric_is_live("deals") else "")
     except Exception:
         return "", ""
 
