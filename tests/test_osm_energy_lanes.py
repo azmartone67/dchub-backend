@@ -296,3 +296,11 @@ def test_driver_keeps_resuming_past_ten_attempts_while_progressing():
     row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (1, "started"),
                                  wait_fn=lambda rid: next(it))
     assert row["state"] == "success" and n == 15
+
+
+def test_driver_loader_subset_selection():
+    assert drive.selected("all") == drive.LOADERS == drive.selected("")
+    sub = drive.selected("osm_transmission_lines, osm_pipelines")
+    assert [l for _e, l in sub] == ["osm_transmission_lines", "osm_pipelines"]
+    with pytest.raises(SystemExit):
+        drive.selected("osm_transmision_lines")      # a typo must not run nothing
