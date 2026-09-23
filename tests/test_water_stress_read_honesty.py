@@ -316,6 +316,12 @@ def _rec_rows():
         # `state_code`; a fixture still answering the old alias would hand
         # back rows the read path drops, and this fence would go green on an
         # enrichment that publishes nothing.
+        # ★ But this key is FIXED, and a FakeCursor answers on a substring
+        # match without parsing the SELECT list — so renaming the alias in
+        # util.water_risk._SQL_MANY would not fail here. The alias itself is
+        # pinned in tests/test_water_risk_read_honesty.py::
+        # test_the_many_state_alias_and_the_dict_lookup_cannot_drift_apart,
+        # which reads it out of the real SQL instead of restating it.
         "FROM water_risk": [
             {"state": "VA", "water_stress_score": 71.8, "bws_category": "High"}],
     }

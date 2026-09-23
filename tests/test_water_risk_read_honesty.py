@@ -43,6 +43,7 @@ WHAT IS CHECKED
 import ast
 import functools
 import os
+import re
 
 import psycopg2.extras
 import pytest
@@ -530,6 +531,45 @@ def test_the_many_state_read_survives_a_dict_row_too():
 
 
 def test_the_many_state_sql_still_aliases_the_key_column():
-    """If the alias goes, the dict path above silently keys on `upper`."""
+    """If the alias goes, the dict path above silently keys on `upper`.
+
+    ★ THIS FENCE COULD NOT FAIL UNTIL #5285. It asserted the SUBSTRING
+    "upper(state) as state", which is also present in "upper(state) AS
+    state_code" — so renaming the alias to anything STARTING with `state`
+    passed. Caught by mutating the alias to `state_code` and watching all 75
+    tests stay green: read_states_stress would then have keyed every row off
+    a column the row does not carry, dropped all 51 states at `if not key:
+    continue`, and published an empty enrichment with no error. Match the
+    alias as a whole token.
+    """
     flat = " ".join(wr._SQL_MANY.split()).lower()
-    assert "upper(state) as state" in flat, wr._SQL_MANY
+    assert re.search(r"upper\(state\)\s+as\s+state\b", flat), wr._SQL_MANY
+
+
+def test_the_many_state_alias_and_the_dict_lookup_cannot_drift_apart():
+    """The alias in the SQL and the name the dict path looks up are ONE fact
+    stored in two places. Pin them to each other rather than to a literal.
+
+    The fixtures above hand back a dict keyed `state` no matter what the SQL
+    selects — a FakeCursor answers on a substring match and does not parse the
+    SELECT list — so they cannot catch a one-sided rename. This reads the
+    alias out of the real SQL, keys a row by THAT, and requires the read path
+    to find it: now either side moving alone fails, and both moving together
+    passes, which is the actual invariant.
+    """
+    flat = " ".join(wr._SQL_MANY.split())
+    m = re.search(r"(?i)UPPER\(state\)\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)", flat)
+    assert m, wr._SQL_MANY
+    alias = m.group(1)
+
+    cur = _FakeCursor(rows={"FROM water_risk": [
+        _dict_row([(alias, "AZ"), ("water_stress_score", _AZ_SCORE),
+                   ("bws_category", "High")])]})
+    out, err = wr.read_states_stress(cur, ["AZ"])
+    assert err is None
+    assert list(out) == ["AZ"], (
+        f"_SQL_MANY aliases the key column as {alias!r} but read_states_stress "
+        f"looks it up under a different name, so every row is dropped at "
+        f"`if not key: continue` and the enrichment publishes {out!r} with no "
+        f"error to show for it")
+    assert out["AZ"]["band"] == 4
