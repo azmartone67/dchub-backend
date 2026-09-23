@@ -1280,6 +1280,8 @@ jobs:
           cat ip.txt
           if grep -qi "skipped" ip.txt; then
             echo "::error::the infra projects SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # energy_first_seen decides what /whats-new may call "new" for
       # interconnection requests and EIA generating units. Its record() never
       # raises, so SQL that Postgres refuses would read as "nothing new" in
