@@ -35,6 +35,12 @@ UA = "dchub-osm-refresh/1.0 (+https://dchub.cloud)"
 POLL_S = int(os.environ.get("OSM_DRIVE_POLL_S", "30"))
 # Loader budget is 2700s (osm_overpass_loader.LOADER_BUDGET_S) + margin.
 DEADLINE_S = int(os.environ.get("OSM_DRIVE_DEADLINE_S", "3300"))
+# ★ 2026-09-23: was 2 (one re-fire). Bots merge to main every 10-15 min and
+# each merge redeploys Railway, killing the loader thread; a re-fire now
+# RESUMES (the dead run's finished states are carried over), so each attempt
+# makes progress and a sweep finishes across several of them. Still bounded:
+# a loader that stalls this many times in a row fails the job.
+MAX_ATTEMPTS = int(os.environ.get("OSM_DRIVE_MAX_ATTEMPTS", "10"))
 
 
 def _call(method, path):
@@ -94,22 +100,30 @@ def verdict(results):
     return (1 if bad else 0), lines
 
 
+def drive_one(endpoint, fire_fn=None, wait_fn=None):
+    """Fire one loader and follow it to a final row, re-firing (= resuming) a
+    stalled run up to MAX_ATTEMPTS times. Returns (row, reason, attempts)."""
+    fire_fn, wait_fn = fire_fn or fire, wait_fn or wait
+    row, reason, attempt = None, "", 0
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        rid, reason = fire_fn(endpoint)
+        print(f"→ {endpoint} (attempt {attempt}): run_id={rid} {reason}", flush=True)
+        if rid is None:
+            break
+        row = wait_fn(rid)
+        print(f"  run {rid}: {row.get('state')} — {(row.get('note') or '')[:200]}", flush=True)
+        if row.get("state") != "stalled":
+            break
+    return row, reason, attempt
+
+
 def main():
     if not os.environ.get("INTERNAL_KEY"):
         print("::error::DCHUB_INTERNAL_KEY secret not set")
         return 1
     results = []
     for endpoint, loader in LOADERS:
-        row, reason = None, ""
-        for attempt in (1, 2):
-            rid, reason = fire(endpoint)
-            print(f"→ {endpoint} (attempt {attempt}): run_id={rid} {reason}", flush=True)
-            if rid is None:
-                break
-            row = wait(rid)
-            print(f"  run {rid}: {row.get('state')} — {(row.get('note') or '')[:200]}", flush=True)
-            if row.get("state") != "stalled":
-                break
+        row, reason, _n = drive_one(endpoint)
         results.append((loader, row, reason))
     code, lines = verdict(results)
     print("\n".join(lines))

@@ -110,7 +110,17 @@ STATE_SLEEP_S = float(os.environ.get("OSM_LOADER_STATE_SLEEP_S", "2"))
 LOADER_BUDGET_S = float(os.environ.get("OSM_LOADER_BUDGET_S", "2700"))
 # A loader whose run row has not heartbeated for this long is dead (a deploy
 # killed its thread): it is reported as stalled, never as still running.
-STALL_AFTER_S = 900
+#
+# ★ 2026-09-23: was 900, with the row heartbeated once per finished STATE. The
+# first live run showed why that cannot work here: bots merge to main every
+# 10-15 min and every merge redeploys Railway, killing this thread; run 1 died
+# at 20/51 states and its refire at 12/51. The row is now heartbeated before
+# every Overpass attempt (the longest silent stretch is one attempt: the 200 s
+# socket timeout plus a 40 s backoff), so a dead thread is visible in minutes.
+STALL_AFTER_S = 420
+# A stalled run younger than this is RESUMED by the next start of the same
+# loader: the states it finished are carried over rather than swept again.
+RESUME_WITHIN_H = 12
 # Share of states that may fail (Overpass 429/504) before the run is an error.
 MAX_FAILED_STATE_SHARE = 0.2
 CADENCE_HOURS = 168
@@ -130,7 +140,7 @@ def _connect():
 
 
 # ── Overpass client ─────────────────────────────────────────────────────────
-def _overpass_fetch(query, timeout=200, retries=3, backoff=20):
+def _overpass_fetch(query, timeout=200, retries=3, backoff=20, on_attempt=None):
     """(data, status). status: ok | throttle | timeout | rejected | error.
 
     ★ Overpass reports a server-side timeout or memory abort as HTTP 200 with a
@@ -140,6 +150,11 @@ def _overpass_fetch(query, timeout=200, retries=3, backoff=20):
     body = urllib.parse.urlencode({'data': query}).encode('utf-8')
     status = "error"
     for attempt in range(retries):
+        if on_attempt:
+            try:
+                on_attempt()
+            except Exception:  # noqa: BLE001 — a heartbeat must not kill the fetch
+                pass
         try:
             req = urllib.request.Request(
                 OVERPASS_URL, data=body, method="POST",
@@ -322,16 +337,31 @@ def ensure_tables(conn):
 
 
 # ── The state sweep every loader shares ─────────────────────────────────────
-def _sweep(loader, states, query_for, write_state, progress=None):
+def _sweep(loader, states, query_for, write_state, progress=None, carried=None):
     """Fetch each state, write it in ONE transaction, and account for all of it.
 
     write_state(conn, state, elements) -> (inserted, extra_counts). It raises on
     a DB failure — the state is then reported failed, never silently short.
+
+    `carried` = states a dead run of this loader already finished (see
+    start_run): they are not swept again and count as done, so a sweep that
+    is killed by a deploy every few minutes still completes across refires.
     """
-    states = list(states or US_STATES)
-    res = {"loader": loader, "states_total": len(states), "states_done": 0,
+    carried = sorted(set(carried or ()))
+    all_states = list(states or US_STATES)
+    states = [s for s in all_states if s not in set(carried)]
+    res = {"loader": loader, "states_total": len(all_states),
+           "states_done": len([s for s in carried if s in set(all_states)]),
            "fetched": 0, "inserted": 0, "failed_states": {}, "rejected": False,
-           "per_state": {}}
+           "per_state": {}, "carried_states": carried,
+           "done_states": [s for s in carried if s in set(all_states)]}
+
+    def _beat():
+        if progress:
+            try:
+                progress(res)
+            except Exception:  # noqa: BLE001 — a heartbeat must not kill the sweep
+                pass
     if not _dsn():
         res["error"] = "no DATABASE_URL"
         return res
@@ -341,7 +371,7 @@ def _sweep(loader, states, query_for, write_state, progress=None):
             for s in states[i:]:
                 res["failed_states"][s] = "budget"
             break
-        data, status = _overpass_fetch(query_for(state))
+        data, status = _overpass_fetch(query_for(state), on_attempt=_beat)
         if status != "ok":
             res["failed_states"][state] = status
             if status == "rejected":
@@ -365,14 +395,11 @@ def _sweep(loader, states, query_for, write_state, progress=None):
             continue
         res["inserted"] += ins
         res["states_done"] += 1
+        res["done_states"].append(state)
         res["per_state"][state] = {"count": len(els), "inserted": ins}
         for k, v in (extra or {}).items():
             res[k] = res.get(k, 0) + v
-        if progress:
-            try:
-                progress(res)
-            except Exception:  # noqa: BLE001 — a heartbeat must not kill the sweep
-                pass
+        _beat()
         time.sleep(STATE_SLEEP_S)
     return res
 
@@ -472,14 +499,14 @@ def write_substations(conn, state, els):
     return ins, {"near_held_skipped": skipped}
 
 
-def load_substations(states=None, progress=None):
+def load_substations(states=None, progress=None, carried=None):
     """OSM `power=substation` nodes/ways -> substations (source='osm')."""
     def q(state):
         return f'''[out:json][timeout:120];
         area["ISO3166-2"="US-{state}"]->.s;
         (node["power"="substation"](area.s); way["power"="substation"](area.s););
         out center;'''
-    return _sweep("osm_substations", states, q, write_substations, progress)
+    return _sweep("osm_substations", states, q, write_substations, progress, carried)
 
 
 def write_power_plants(conn, state, els):
@@ -529,7 +556,7 @@ def write_power_plants(conn, state, els):
     return ins, {}
 
 
-def load_power_plants(states=None, progress=None):
+def load_power_plants(states=None, progress=None, carried=None):
     """OSM `power=plant` -> discovered_power_plants (source='osm_overpass')."""
     def q(state):
         return f'''[out:json][timeout:120];
@@ -537,7 +564,7 @@ def load_power_plants(states=None, progress=None):
         (node["power"="plant"](area.s); way["power"="plant"](area.s);
          relation["power"="plant"](area.s););
         out center;'''
-    return _sweep("osm_power_plants", states, q, write_power_plants, progress)
+    return _sweep("osm_power_plants", states, q, write_power_plants, progress, carried)
 
 
 def _lane_writer(lane, row_for, extra_cols, reject=None):
@@ -628,7 +655,8 @@ def gas_writer():
                         reject=_near_federal_gas)
 
 
-def load_transmission_lines(states=None, progress=None, min_kv=TRANSMISSION_MIN_KV):
+def load_transmission_lines(states=None, progress=None, min_kv=TRANSMISSION_MIN_KV,
+                            carried=None):
     """OSM `power=line` ways NEW SINCE the EIA snapshot -> osm_transmission_lines.
 
     Never touches transmission_lines (see the module docstring).
@@ -642,10 +670,10 @@ def load_transmission_lines(states=None, progress=None, min_kv=TRANSMISSION_MIN_
         out center meta;'''
 
     return _sweep("osm_transmission_lines", states, q, transmission_writer(min_kv),
-                  progress)
+                  progress, carried)
 
 
-def load_pipelines(states=None, progress=None):
+def load_pipelines(states=None, progress=None, carried=None):
     """OSM natural-gas pipelines NEW SINCE the EIA snapshot -> osm_gas_pipelines.
 
     Gas only (substance=gas|natural_gas|cng|lng, or legacy type=gas): water,
@@ -662,7 +690,7 @@ def load_pipelines(states=None, progress=None):
          way["man_made"="pipeline"]["type"="gas"](area.s)(if: id() >= {floor}););
         out center meta;'''
 
-    return _sweep("osm_pipelines", states, q, gas_writer(), progress)
+    return _sweep("osm_pipelines", states, q, gas_writer(), progress, carried)
 
 
 def load_communications_towers(states=None):
@@ -747,6 +775,9 @@ def classify(res):
     ins = int(res.get("inserted") or 0)
     note = (f"swept {res.get('states_done', 0)}/{total} states, "
             f"fetched {res.get('fetched', 0)}, inserted {ins}")
+    if res.get("carried_states"):
+        note += (f" ({len(res['carried_states'])} state(s) carried from an "
+                 f"interrupted run)")
     if failed:
         note += f"; failed: {', '.join(sorted(failed)[:8])}"
     return ("success" if ins > 0 else "no_new_data"), note
@@ -773,18 +804,56 @@ def active_run(loader):
 
 
 def start_run(loader):
-    """Insert the durable 'running' row; returns its id (raises on DB failure)."""
+    """Insert the durable 'running' row; returns its id (raises on DB failure).
+
+    If the newest run of this loader is a STALLED one (status running, no
+    heartbeat for STALL_AFTER_S, started within RESUME_WITHIN_H), it is closed
+    as 'abandoned' and the states it had finished are carried into the new
+    row's detail.carried_states, which run_tracked hands to the sweep. The
+    abandoned row never beats the dead-man ledger; only a finished run does.
+    """
     conn = _connect()
     try:
         ensure_tables(conn)
         with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, COALESCE(detail->'done_states', '[]'::jsonb)
+                     FROM osm_load_runs
+                    WHERE loader = %s AND status = 'running'
+                      AND heartbeat_at < NOW() - make_interval(secs => %s)
+                      AND started_at > NOW() - make_interval(hours => %s)
+                    ORDER BY id DESC LIMIT 1 FOR UPDATE""",
+                (loader, STALL_AFTER_S, RESUME_WITHIN_H))
+            dead = cur.fetchone()
+            carried = sorted(set(dead[1] or [])) if dead else []
             # Append-only log on a serial id: the ON CONFLICT can never fire.
-            cur.execute("""INSERT INTO osm_load_runs (loader, status, states_total)
-                           VALUES (%s, %s, %s) ON CONFLICT DO NOTHING RETURNING id""",
-                        (loader, "running", len(US_STATES)))
+            cur.execute("""INSERT INTO osm_load_runs (loader, status, states_total, detail)
+                           VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id""",
+                        (loader, "running", len(US_STATES),
+                         json.dumps({"carried_states": carried,
+                                     "resumed_from": dead[0] if dead else None})))
             rid = cur.fetchone()[0]
+            if dead:
+                cur.execute("""UPDATE osm_load_runs
+                                  SET status = 'abandoned', finished_at = NOW(),
+                                      note = %s
+                                WHERE id = %s""",
+                            (f"thread died mid-sweep (no heartbeat); resumed by run {rid} "
+                             f"with {len(carried)} state(s) carried", dead[0]))
         conn.commit()
         return rid
+    finally:
+        conn.close()
+
+
+def _carried_for(run_id):
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT COALESCE(detail->'carried_states', '[]'::jsonb)
+                             FROM osm_load_runs WHERE id = %s""", (run_id,))
+            r = cur.fetchone()
+        return list(r[0] or []) if r else []
     finally:
         conn.close()
 
@@ -825,7 +894,8 @@ def run_tracked(loader, run_id=None):
     try:
         if run_id is None:
             run_id = start_run(loader)
-        res = fn(progress=lambda r: _update_run(run_id, r))
+        res = fn(progress=lambda r: _update_run(run_id, r),
+                 carried=_carried_for(run_id))
         status, note = classify(res)
     except Exception as e:  # noqa: BLE001 — recorded below, never swallowed
         status, note = "error", f"{type(e).__name__}: {str(e)[:200]}"

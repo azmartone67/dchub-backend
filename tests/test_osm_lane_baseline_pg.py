@@ -245,3 +245,32 @@ def test_substation_near_one_we_hold_is_not_new(conn):
     ])
     assert ins == 1 and counts["near_held_skipped"] == 2
     assert _rows(conn, "SELECT name FROM substations WHERE source='osm'") == [("Far Substation",)]
+
+
+def test_a_stalled_run_is_resumed_not_restarted(conn, monkeypatch):
+    """Bots merge to main every 10-15 min and each merge redeploys Railway,
+    killing the loader thread. The next start must carry the dead run's
+    finished states and close the dead row, so the sweep completes."""
+    import psycopg2
+    monkeypatch.setattr(osm, "_connect", lambda: psycopg2.connect(DSN))
+    osm.ensure_tables(conn)
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO osm_load_runs (loader, status, states_total, heartbeat_at, detail)
+                       VALUES ('osm_substations', 'running', 51, NOW() - INTERVAL '20 minutes',
+                               '{"done_states": ["AK", "AL"]}') RETURNING id""")
+        dead = cur.fetchone()[0]
+        # a stalled run of ANOTHER loader, and a stale one, must not be picked
+        cur.execute("""INSERT INTO osm_load_runs (loader, status, heartbeat_at, detail)
+                       VALUES ('osm_power_plants', 'running', NOW() - INTERVAL '20 minutes',
+                               '{"done_states": ["TX"]}')""")
+    conn.commit()
+    rid = osm.start_run("osm_substations")
+    assert osm._carried_for(rid) == ["AK", "AL"]
+    assert _rows(conn, "SELECT status FROM osm_load_runs WHERE id=%s", (dead,)) == [("abandoned",)]
+    # a live (heartbeating) run is never resumed-over or closed
+    osm._update_run(rid, {"states_done": 3, "states_total": 51,
+                          "done_states": ["AK", "AL", "AZ"]})
+    assert osm.active_run("osm_substations") == rid
+    rid2 = osm.start_run("osm_substations")
+    assert osm._carried_for(rid2) == [], "a live run must not be treated as dead"
+    assert _rows(conn, "SELECT status FROM osm_load_runs WHERE id=%s", (rid,)) == [("running",)]
