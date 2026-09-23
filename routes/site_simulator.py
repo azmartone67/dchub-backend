@@ -32,7 +32,7 @@ import psycopg2.extras
 
 from util.db_honesty import close_quietly, open_conn, try_fetchone, unpoison
 from util.us_states import state_match_pair
-from util.water_stress import water_band
+from util.water_risk import STRESSED_BAND, read_state_stress
 
 
 site_simulator_bp = Blueprint("site_simulator", __name__)
@@ -62,14 +62,6 @@ def _safe_float(v, default):
 def _fmt_err(e) -> str:
     """util.db_honesty's error shape, for failures raised outside try_fetch*."""
     return f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
-
-
-# WRI Aqueduct 4.0 baseline water stress reaches us as
-# `water_risk.water_stress_score` (0-100, 100 = most stressed), and the 1-5
-# banding lives in util.water_stress so the three other routes that carried
-# the same dead `usgs_water_stress.stress_index` read share ONE answer rather
-# than each growing a copy. util/us_states.py records where hand-copies end.
-_water_band = water_band
 
 
 def _pull_signals(state: str) -> dict:
@@ -149,19 +141,18 @@ def _pull_signals(state: str) -> dict:
             # score off it. water_risk carries the verified WRI Aqueduct
             # roll-up, whose ingest asserts arid states out-score wet ones
             # before it will write a row.
-            row, err = try_fetchone(cur, """
-                SELECT water_stress_score
-                  FROM water_risk
-                 WHERE UPPER(state) = %s
-                 ORDER BY computed_at DESC NULLS LAST
-                 LIMIT 1
-            """, (abbr,))
+            # util.water_risk is the ONE read path for this table: the live
+            # schema, the 0-100 scale and the 1-5 banding are stated once
+            # there instead of being re-learned per surface. It returns
+            # (value, error) and never a bare fallback, so a failure is named
+            # here rather than published as an indistinguishable null — and
+            # it hands back the band, so this route needs no band import.
+            water, err = read_state_stress(cur, abbr)
             if err:
                 errs["water_stress"] = err
-            elif row and row.get("water_stress_score") is not None:
-                score = float(row["water_stress_score"])
-                sig["water_stress_score"] = score
-                sig["water_stress_index"] = _water_band(score)
+            elif water is not None:
+                sig["water_stress_score"] = water["score"]
+                sig["water_stress_index"] = water["band"]
 
             # ── DCPI (best-match market for the state — highest excess) ───
             row, err = try_fetchone(cur, """
@@ -282,7 +273,7 @@ def _sensitivity(capacity_mw: float, redundancy_mult: float,
 
 def _risk_flags(sig: dict, capacity_mw: float) -> list[str]:
     flags = []
-    if sig.get("water_stress_index") and sig["water_stress_index"] >= 4:
+    if sig.get("water_stress_index") and sig["water_stress_index"] >= STRESSED_BAND:
         flags.append("high_water_stress")
     if sig.get("retail_rate_cents_kwh") and sig["retail_rate_cents_kwh"] > 9:
         flags.append("high_power_cost")

@@ -71,6 +71,11 @@ __all__ = ["water_band_1_5", "BAND_LABELS", "STRESSED_BAND",
 # The cut points below are the MIDPOINTS between adjacent category scores, so a
 # ratio-derived score (which does not land on the 25s) falls into the band whose
 # category score it is nearest. 12.5 / 37.5 / 62.5 / 87.5.
+#
+# ★ Band on those CATEGORY midpoints, NOT on WRI's published withdrawal-
+# percentage cut-offs (<10%, 10-20%, 20-40%, 40-80%, >80%). The stored score is
+# a normalised category, not a withdrawal ratio — reading 25.0 as "25%
+# withdrawal, therefore Medium-High" would shift every state a band.
 _BAND_CUTS = (12.5, 37.5, 62.5, 87.5)
 
 BAND_LABELS = {1: "Low", 2: "Low-Medium", 3: "Medium-High",
@@ -102,12 +107,39 @@ def water_band_1_5(score):
     return band
 
 
+def _cell(row, idx, name):
+    """One column out of a row, under EITHER cursor factory.
+
+    ★ psycopg2 hands rows back in two shapes and only one of them indexes
+    positionally. A plain `conn.cursor()` yields a tuple, so `row[0]` is the
+    first column; a RealDictCursor — which is what routes/site_simulator.py
+    uses — yields a dict subclass, where `row[0]` is a KEY lookup and raises
+    `KeyError: 0` (verified on psycopg2 2.9.12).
+
+    That distinction is load-bearing, not cosmetic. A KeyError raised here
+    escapes `try_fetchone`, which has already returned by this point, so it
+    would NOT arrive as the named `(None, err)` this module promises. It would
+    unwind into the caller's own `except`, and in site_simulator that except
+    wraps the whole cursor block — so the DCPI and tax reads that follow water
+    would never run. That is precisely the cascade #5259 fixed, re-entering
+    through the shared read path meant to prevent it.
+
+    Read by NAME when the row carries names, by position when it does not.
+    """
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(name)
+    return row[idx]
+
+
 def _shape(row):
-    """(score, bws_category) tuple -> the published dict."""
+    """(score, bws_category) row -> the published dict. Any cursor factory."""
+    raw = _cell(row, 0, "water_stress_score")
     score = None
-    if row is not None and row[0] is not None:
+    if raw is not None:
         try:
-            score = float(row[0])
+            score = float(raw)
         except (TypeError, ValueError):
             score = None
     band = water_band_1_5(score)
@@ -115,7 +147,7 @@ def _shape(row):
         "score":     score,                       # 0-100, 100 = most stressed
         "band":      band,                        # 1-5, WRI category
         "band_label": BAND_LABELS.get(band),
-        "category":  (row[1] if row is not None else None),
+        "category":  _cell(row, 1, "bws_category"),
         "stressed":  (None if band is None else band >= STRESSED_BAND),
     }
 
@@ -130,7 +162,7 @@ _SQL_ONE = """
 
 _SQL_MANY = """
     SELECT DISTINCT ON (UPPER(state))
-           UPPER(state), water_stress_score, bws_category
+           UPPER(state) AS state, water_stress_score, bws_category
       FROM water_risk
      WHERE UPPER(state) = ANY(%s)
      ORDER BY UPPER(state), computed_at DESC NULLS LAST
@@ -166,4 +198,12 @@ def read_states_stress(cur, states):
     rows, err = try_fetchall(cur, _SQL_MANY, (keys,))
     if err:
         return {}, err
-    return {r[0]: _shape((r[1], r[2])) for r in rows if r and r[0]}, None
+    out = {}
+    for r in rows:
+        # Same two row shapes as _cell(): a dict row is passed straight to
+        # _shape, which reads it by name; a tuple row is sliced past the key.
+        key = _cell(r, 0, "state")
+        if not key:
+            continue
+        out[key] = _shape(r if isinstance(r, dict) else (r[1], r[2]))
+    return out, None
