@@ -8692,7 +8692,7 @@
    "keys": []
   },
   "GET /api/v1/brain/mcp-health": {
-   "source": "routes/brain_mcp_health.py:272",
+   "source": "routes/brain_mcp_health.py:278",
    "handler": "mcp_health_endpoint",
    "resolution": "resolved",
    "open_at": [
@@ -21531,7 +21531,7 @@
    ]
   },
   "GET /api/v1/sentinel/findings": {
-   "source": "routes/site_sentinel.py:2399",
+   "source": "routes/site_sentinel.py:2401",
    "handler": "sentinel_findings",
    "resolution": "opaque",
    "open_at": [],
@@ -21572,7 +21572,7 @@
    ]
   },
   "GET /api/v1/sentinel/resolutions": {
-   "source": "routes/site_sentinel.py:1449",
+   "source": "routes/site_sentinel.py:1451",
    "handler": "sentinel_resolutions",
    "resolution": "resolved",
    "open_at": [],
@@ -21583,7 +21583,7 @@
    ]
   },
   "GET /api/v1/sentinel/scan": {
-   "source": "routes/site_sentinel.py:2381",
+   "source": "routes/site_sentinel.py:2383",
    "handler": "sentinel_scan",
    "resolution": "opaque",
    "open_at": [],
@@ -31545,7 +31545,7 @@
    ]
   },
   "POST /api/v1/sentinel/scan-now": {
-   "source": "routes/site_sentinel.py:2413",
+   "source": "routes/site_sentinel.py:2415",
    "handler": "sentinel_scan_now",
    "resolution": "resolved",
    "open_at": [
@@ -31565,14 +31565,14 @@
    ]
   },
   "POST /api/v1/sentinel/track-failures": {
-   "source": "routes/site_sentinel.py:1811",
+   "source": "routes/site_sentinel.py:1813",
    "handler": "sentinel_track_failures",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/sentinel/verify-outcomes": {
-   "source": "routes/site_sentinel.py:1435",
+   "source": "routes/site_sentinel.py:1437",
    "handler": "sentinel_verify_outcomes",
    "resolution": "opaque",
    "open_at": [],
