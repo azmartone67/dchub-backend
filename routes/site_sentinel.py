@@ -1299,6 +1299,7 @@ def unhealthy_findings() -> list[dict]:
                 "issue":  f"page_stale:{r['path']}",
                 "url":    f"{_SITE_BASE}{r['path']}",
                 "count":  int(r.get("stale_days") or 0),
+                "count_kind": "days",
                 "detail": (f"Page '{r.get('label') or r['path']}' has data "
                            f"older than its freshness SLA. "
                            f"Detected age: {r.get('stale_days')} days "
@@ -1314,6 +1315,7 @@ def unhealthy_findings() -> list[dict]:
             "issue":  f"site_sentinel_unhealthy:{r['path']}",
             "url":    f"{_SITE_BASE}{r['path']}",
             "count":  r.get("status_code") or 0,
+            "count_kind": "http_status",
             "detail": (f"Page '{r.get('label') or r['path']}' is unhealthy. "
                        f"Status: {r.get('status_code')}, "
                        f"bytes: {r.get('bytes')}, "

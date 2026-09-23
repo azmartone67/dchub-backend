@@ -300,6 +300,7 @@ def check_security_header_drift() -> list[dict]:
                 "issue": "security_header_missing",
                 "url":   path,
                 "count": len(missing),
+                "count_kind": "item_count",
                 "detail": (f"GET {path} response missing headers: "
                             f"{', '.join(missing)}. Set them in the "
                             f"Cloudflare worker (_worker.js) or the "
@@ -593,6 +594,7 @@ def check_hosting_traffic_share() -> list[dict]:
         "issue": "hosting_traffic_share_high",
         "url":   "mcp_tool_calls",
         "count": int(share_pct),
+        "count_kind": "percent",
         "detail": (f"{share_pct}% of recent MCP traffic (24h, top-20 IPs) "
                     f"comes from datacenter / cloud-hosting IPs — likely "
                     f"automated scrapers, not enterprise prospects. "
@@ -761,6 +763,7 @@ def check_land_power_map_health() -> list[dict]:
                 "issue": "land_power_auth_regression",
                 "url":   path,
                 "count": status,
+                "count_kind": "http_status",
                 "detail": (f"/land-power dependency '{label}' "
                             f"({path}) returned HTTP {status} with "
                             f"dchub.cloud Referer/Origin. The round 22 "
@@ -773,6 +776,7 @@ def check_land_power_map_health() -> list[dict]:
                 "issue": "land_power_endpoint_5xx",
                 "url":   path,
                 "count": status,
+                "count_kind": "http_status",
                 "detail": (f"/land-power dependency '{label}' "
                             f"({path}) returned HTTP {status}. Map "
                             f"layers will render empty. Body sample: "

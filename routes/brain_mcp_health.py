@@ -150,6 +150,7 @@ def check_mcp_health() -> list[dict]:
             "issue":  "mcp_health_weak_tool_descriptions",
             "url":    f"{base}/api/v1/mcp/tools.json",
             "count":  len(weak),
+            "count_kind": "item_count",
             "detail": (f"{len(weak)} tool descriptions <{_WEAK_DESC_THRESHOLD_CHARS} "
                        f"chars (Glama scores these C/D, agents skip): "
                        f"{names}{more}. Edit dchub-mcp-server/server.mjs to expand."),
@@ -166,6 +167,7 @@ def check_mcp_health() -> list[dict]:
                 "issue":  "mcp_health_pricing_tier_missing",
                 "url":    f"{base}/api/v1/tiers",
                 "count":  len(missing),
+                "count_kind": "item_count",
                 "detail": (f"Pricing tiers missing from /api/v1/tiers: "
                            f"{sorted(missing)}. MCP discovery surfaces + the "
                            f"agent-quotable upgrade hints may miss them, "
@@ -182,6 +184,7 @@ def check_mcp_health() -> list[dict]:
                 "issue":  "mcp_health_server_card_incomplete",
                 "url":    f"{base}/.well-known/mcp-server.json",
                 "count":  len(missing_keys),
+                "count_kind": "item_count",
                 "detail": (f"MCP server card missing required keys: {missing_keys}. "
                            f"Some discovery surfaces reject incomplete cards."),
             })
@@ -212,6 +215,7 @@ def check_mcp_health() -> list[dict]:
                             "issue":  "testimonials_auto_ingest_stale",
                             "url":    f"{base}/api/v1/testimonials/live",
                             "count":  age_days,
+                            "count_kind": "days",
                             "detail": (f"Newest AI testimonial is {age_days} days "
                                        f"old (2026-03-06 area). The auto-ingest "
                                        f"cron (HackerNews/Reddit/MCP-derived → "
@@ -244,6 +248,7 @@ def check_mcp_health() -> list[dict]:
                     "issue":  "dcpi_snapshot_history_missing",
                     "url":    f"{base}/api/v1/dcpi/movers",
                     "count":  len(movers),
+                    "count_kind": "item_count",
                     "detail": (f"DCPI movers feed returns {len(movers)} markets but "
                                f"every prev_excess is null — market_power_scores "
                                f"has no rows older than 7 days. The recompute job "
@@ -258,6 +263,7 @@ def check_mcp_health() -> list[dict]:
                     "issue":  "dcpi_movers_flat_week",
                     "url":    f"{base}/api/v1/dcpi/movers",
                     "count":  len(movers),
+                    "count_kind": "item_count",
                     "detail": (f"DCPI movers all zero this week ({len(movers)} markets "
                                f"checked). Either DCPI is genuinely flat (no action) "
                                f"OR the recompute job didn't run. Verify "

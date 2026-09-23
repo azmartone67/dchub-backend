@@ -163,6 +163,9 @@
     "test_feed_fetch_bounded.py": {
       "walk": 80
     },
+    "test_finding_count_kind_declared.py": {
+      "glob": 2410
+    },
     "test_freshness_sources_are_real.py": {
       "pglob": 660
     },
