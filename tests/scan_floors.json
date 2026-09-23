@@ -320,6 +320,9 @@
     "test_tier_grants_are_classified.py": {
       "pglob": 2110
     },
+    "test_transmission_lines_single_writer.py": {
+      "pglob": 2410
+    },
     "test_water_risk_read_honesty.py": {
       "walk": 80
     },

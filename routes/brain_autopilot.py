@@ -413,7 +413,11 @@ def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | Non
         # endpoint returns 202 immediately so the autopilot doesn't
         # block on a 60-240s refresh. Status pollable via
         # /api/jobs/infra-refresh-status.
-        "transmission_lines":    "/api/jobs/transmission-refresh",
+        # transmission_lines: NO autonomous refresh (2026-09-23). Its entry
+        # here pointed at /api/jobs/transmission-refresh, which TRUNCATEd the
+        # table and reloaded a superseded 52,244-row 2021 HIFLD layer keyed
+        # by OBJECTID. The table's one writer is routes/transmission_ingest.py
+        # (weekly, transmission-ingest.yml); a breach escalates to a human.
         "gas_pipelines":         "/api/jobs/gas-refresh",
         "gas_compressors":       "/api/jobs/gas-refresh",
         "gas_processings":       "/api/jobs/gas-refresh",

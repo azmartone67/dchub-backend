@@ -154,6 +154,8 @@ def test_beat_sends_the_sum_of_the_committed_insert_tallies(
          deals=_shape(m, "deals", deals_found=3, scanned=900),
          gas_infrastructure=_shape(m, "gas_infrastructure", added=5,
                                    pipelines=100, midstream=200, lng=300),
+         # transmission's 'added' is no committed-insert tally since GUARD #3
+         # (2026-09-23): a 7 there must not reach the sum.
          transmission_infrastructure=_shape(
              m, "transmission_infrastructure", added=7,
              transmission_lines=400, hvdc=500),
@@ -161,7 +163,7 @@ def test_beat_sends_the_sum_of_the_committed_insert_tallies(
                                      lit_fiber=13, carriers=17),
          infrastructure=_shape(m, "infrastructure", fiber_mentions=19),
          quality=_shape(m, "quality", fixed=29))
-    assert _verdicts(beats) == [(SOURCE_ID, "success", 17, None)]
+    assert _verdicts(beats) == [(SOURCE_ID, "success", 10, None)]
     assert isinstance(beats[0]["duration_ms"], int)
 
 
@@ -186,9 +188,9 @@ def test_a_writer_that_raised_leaves_rows_unmeasured(
     m = brain_mod
     _run(m, brain, monkeypatch,
          capacity=_shape(m, "capacity", new_pipeline=2),
-         transmission_infrastructure=RuntimeError(SENTINEL))
+         gas_infrastructure=RuntimeError(SENTINEL))
     assert _verdicts(beats) == [
-        (SOURCE_ID, "partial", None, "steps failed: transmission_infrastructure")]
+        (SOURCE_ID, "partial", None, "steps failed: gas_infrastructure")]
 
 
 def test_a_failed_step_that_writes_no_rows_keeps_the_count(
@@ -268,9 +270,6 @@ class _Conn:
 _WRITERS = {
     "gas_infrastructure": ("INSERT INTO gas_pipelines",
                            "Acme to build 120 mile gas pipeline", "pipelines"),
-    "transmission_infrastructure": ("INSERT INTO transmission_lines",
-                                    "Grid Co plans 345 kV transmission line",
-                                    "transmission_lines"),
 }
 
 
@@ -289,6 +288,22 @@ def test_a_rejected_insert_is_not_a_cycle_that_found_nothing(
     else:
         assert (result["added"], result.get("insert_errors"), conn.rollbacks) == (0, 1, 1)
         assert _verdicts(beats) == [(SOURCE_ID, "partial", None, f"steps failed: {step}")]
+
+
+def test_a_transmission_headline_is_counted_not_written(
+        brain_mod, brain, beats, monkeypatch):
+    # GUARD #3 (2026-09-23): the step wrote matching headlines into
+    # transmission_lines. The fake cursor raises on any SQL but the announcements
+    # read, and the step records that as 'error' — so an INSERT of any shape,
+    # into any table, fails this test.
+    conn = _Conn("<no write is expected>", "Grid Co plans 345 kV transmission line", True)
+    monkeypatch.setattr(brain_mod, "get_db", lambda: conn)
+    result = _run(brain_mod, brain, monkeypatch,
+                  transmission_infrastructure=REAL)["transmission_infrastructure"]
+    assert result["transmission_lines"] == 1, result  # control: the article matched
+    assert "error" not in result, result
+    assert (result["added"], result.get("news_mentions"), conn.rollbacks) == (0, 1, 0)
+    assert _verdicts(beats) == [(SOURCE_ID, "success", 0, None)]
 
 
 def test_a_cycle_that_ran_infrastructure_sync_leaves_rows_unmeasured(

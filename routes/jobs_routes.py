@@ -1331,21 +1331,24 @@ _INFRA_REFRESH_STATE: dict[str, dict] = {}
 
 @jobs_bp.route('/api/jobs/transmission-refresh', methods=['POST'])
 def job_transmission_refresh():
-    """Refresh transmission_lines from HIFLD. Daemon-threaded —
-    returns immediately. Poll /api/jobs/infra-refresh-status."""
+    """RETIRED 2026-09-23 — answers 410 and writes nothing.
+
+    It ran load_hifld_transmission.py, which TRUNCATEd transmission_lines and
+    reloaded the superseded services1 HIFLD layer (52,244 rows, 2021, keyed by
+    OBJECTID — a different id space from the table's). brain_autopilot mapped
+    a transmission_lines SLA breach to it, so one fixed freshness column away
+    it would have replaced 94,619 EIA lines with 52k stale ones. The table's
+    one writer is POST /api/v1/admin/ingest/transmission-lines
+    (routes/transmission_ingest.py, weekly via transmission-ingest.yml).
+    Kept registered so a stale caller gets this pointer, not a 404.
+    """
     auth_err = _require_admin_key()
     if auth_err: return auth_err
-    def _run():
-        # load_hifld_transmission.py is script-style (executes at
-        # import). Run via runpy so we don't pollute sys.modules.
-        import runpy
-        runpy.run_path('/app/load_hifld_transmission.py',
-                       run_name='__main__')
-        return "transmission_lines refresh started"
-    state = _spawn_loader('transmission_lines', _run)
-    _reg_update('transmission_refresh')
-    return jsonify({'success': True, 'job': 'transmission-refresh',
-                    'state': state}), 202
+    state = {'status': 'retired',
+             'writer': '/api/v1/admin/ingest/transmission-lines',
+             'workflow': 'transmission-ingest.yml'}
+    return jsonify({'success': False, 'job': 'transmission-refresh',
+                    'state': state}), 410
 
 
 @jobs_bp.route('/api/jobs/gas-refresh', methods=['POST'])

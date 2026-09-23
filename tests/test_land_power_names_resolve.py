@@ -70,8 +70,9 @@ MOD = os.path.join(ROOT, "land_power_crawler.py")
 
 # The six long-running functions that must own a direct connection, and the
 # handlers that must keep the pool.
+# (crawl_transmission_lines was retired 2026-09-23.)
 INGEST_FUNCS = ("crawl_power_plants", "crawl_substations",
-                "crawl_transmission_lines", "crawl_gas_pipelines")
+                "crawl_gas_pipelines")
 POOLED_FUNCS = ("land_power_status", "market_profiles", "market_profile_detail")
 
 

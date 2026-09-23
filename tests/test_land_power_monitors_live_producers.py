@@ -65,7 +65,8 @@ def _expected(src):
 
 # ── 1 · retired producers are not monitored as if they were live ─────────────
 
-@pytest.mark.parametrize("retired", ["hifld-substations", "eia-ng-pipelines"])
+@pytest.mark.parametrize("retired", ["hifld-substations", "eia-ng-pipelines",
+                                     "hifld-transmission"])
 def test_retired_producers_are_not_in_expected(crawler, retired):
     """★ Each of these produced a permanent false `degraded`."""
     assert retired not in _expected(crawler), (
@@ -74,8 +75,9 @@ def test_retired_producers_are_not_in_expected(crawler, retired):
 
 
 def test_expected_names_the_live_producers(crawler):
-    assert _expected(crawler) == {
-        "eia-860-plants", "hifld-transmission", "eia-geodot-pipelines"}
+    # hifld-transmission retired 2026-09-23: transmission_lines has one
+    # writer (routes/transmission_ingest.py), which does not log here.
+    assert _expected(crawler) == {"eia-860-plants", "eia-geodot-pipelines"}
 
 
 def test_the_live_gas_producer_reports_under_the_monitored_name(gas, crawler):

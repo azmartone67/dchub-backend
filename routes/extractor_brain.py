@@ -430,6 +430,9 @@ def _compute_source_quality():
             # fiber step's fiber_routes write was removed (GUARD #2, 2026-06-11).
             "autonomous-brain-infra-news",
             "autonomous-brain-fiber",
+            # transmission: its transmission_lines write was removed (GUARD #3,
+            # 2026-09-23) — it put news headlines into the asset table.
+            "autonomous-brain-transmission",
         }
         for src_id, last_obs, stale_hours in cur.fetchall():
             if src_id in out:

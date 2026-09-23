@@ -304,8 +304,7 @@ def test_a_source_that_never_ran_is_reported_not_omitted():
         "never ran is then absent, which is indistinguishable from healthy")
     assert "never_run" in body and "never_succeeded" in body, \
         "no verdict distinguishes never-ran from never-succeeded"
-    for s in ("eia-860-plants", "hifld-substations", "hifld-transmission",
-              "eia-ng-pipelines"):
+    for s in ("eia-860-plants", "hifld-substations", "eia-ng-pipelines"):
         assert s in body, f"{s} is not in the expected-source list"
 
 

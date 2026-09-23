@@ -160,7 +160,8 @@ def test_no_crawler_reads_a_hardcoded_dead_download_url():
     That is the third time in this session a guard matched its own prose — the
     rule is to assert on what the interpreter sees, not on what the file says.
     """
-    for fname in ("crawl_substations", "crawl_transmission_lines"):
+    # crawl_transmission_lines was retired 2026-09-23 (one writer per table).
+    for fname in ("crawl_substations",):
         fn = _func(fname)
         literals = [n.value for n in ast.walk(fn)
                     if isinstance(n, ast.Constant) and isinstance(n.value, str)]
@@ -257,7 +258,7 @@ def test_a_good_candidate_resolves_and_reports_what_it_picked():
 # ── H6 ────────────────────────────────────────────────────────────────────────
 def test_chosen_endpoint_is_logged_and_bound_at_function_scope():
     t, src = _tree()
-    for fname in ("crawl_substations", "crawl_transmission_lines"):
+    for fname in ("crawl_substations",):  # transmission crawl retired 2026-09-23
         fn = _func(fname)
         tries = [n for n in fn.body if isinstance(n, ast.Try)]
         assert tries, f"{fname} has no try block"

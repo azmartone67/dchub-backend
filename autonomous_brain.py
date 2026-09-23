@@ -661,10 +661,6 @@ class AutonomousBrain:
                 """)
                 articles = cur.fetchall()
 
-                # Separate cursor for writes so a failed INSERT (which aborts
-                # the txn) can be rolled back without poisoning the read above.
-                wcur = conn.cursor()
-
                 for article in articles:
                     text = f"{article['title']} {article['content'] or ''}"
 
@@ -678,35 +674,22 @@ class AutonomousBrain:
                             else:
                                 results['transmission_lines'] += 1
 
-                            # Persist the match. transmission_lines' only unique
-                            # key is transmission_lines_hifld_id_uniq on
-                            # (hifld_id), so we MUST supply a deterministic,
-                            # non-null hifld_id (NULLs never conflict → a new
-                            # dupe every cycle). Synthesize it from source_url
-                            # so the same article dedups across runs.
-                            name = (article['title'] or '').strip()[:500]
-                            if name:
-                                hifld_id = f"news_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
-                                try:
-                                    # RETURNING: see the gas_pipelines writer above.
-                                    wcur.execute("""
-                                        INSERT INTO transmission_lines
-                                        (hifld_id, name, operator, status, line_type, source)
-                                        VALUES (%s, %s, %s, %s, %s, %s)
-                                        ON CONFLICT (hifld_id) DO NOTHING RETURNING 1
-                                    """, (hifld_id[:50], name, 'news-extracted',
-                                          'operational', 'discovered', 'news_extraction'))
-                                    if wcur.fetchone() is not None:
-                                        results['added'] += 1
-                                    conn.commit()
-                                except Exception as ins_err:
-                                    conn.rollback()
-                                    # Counted: see the gas_pipelines writer above.
-                                    results['insert_errors'] = results.get('insert_errors', 0) + 1
-                                    logger.debug(f"Transmission line insert skipped: {ins_err}")
+                            # GUARD (#3, 2026-09-23): a news article is NOT a
+                            # transmission line. This step used to INSERT every
+                            # matching headline into transmission_lines as an
+                            # 'operational' line with no route, no kV and no
+                            # substations — 16 rows by 2026-09-23, among them
+                            # "Tower foreman killed by cable strike" and
+                            # "Powering AI is an architecture problem". They sat
+                            # in the asset layer's counts beside 94,619 EIA
+                            # lines. transmission_lines has ONE writer now,
+                            # routes/transmission_ingest.py
+                            # (tests/test_transmission_lines_single_writer.py).
+                            # Same fix as fiber (GUARD #2): count the mention only.
+                            if (article['title'] or '').strip():
+                                results['news_mentions'] = results.get('news_mentions', 0) + 1
                             break
 
-                wcur.close()
                 cur.close()
             finally:
                 conn.close()
@@ -1238,13 +1221,13 @@ class AutonomousBrain:
     # Steps that write rows, with the tally each increments once per INSERT.
     # Every other counter in a step's result is a per-cycle pattern bucket
     # (pipelines, dark_fiber, fiber_mentions, ...) or, for quality, an UPDATE
-    # count. fiber_infrastructure still initialises 'added' but has had no
-    # INSERT since GUARD #2 (2026-06-11), so it can never add a row.
+    # count. fiber_infrastructure and transmission_infrastructure still
+    # initialise 'added' but have had no INSERT since GUARD #2 (2026-06-11) and
+    # GUARD #3 (2026-09-23), so neither can ever add a row.
     _HEARTBEAT_ROW_TALLIES = (
         ('capacity', 'new_pipeline'),
         ('deals', 'deals_found'),
         ('gas_infrastructure', 'added'),
-        ('transmission_infrastructure', 'added'),
     )
 
     @classmethod
@@ -1300,8 +1283,8 @@ class AutonomousBrain:
         # rows_inserted MUST be a committed-insert count, NOT a per-cycle regex
         # sub-bucket counter (those re-zero every cycle and increment on every
         # pattern match regardless of whether a row was actually written).
-        # capacity('new_pipeline'), deals('deals_found') and gas/transmission
-        # ('added') count the rows their INSERT ... RETURNING handed back.
+        # capacity('new_pipeline'), deals('deals_found') and gas('added')
+        # count the rows their INSERT ... RETURNING handed back.
         #
         # Each of those counts is taken BEFORE the commit that makes it true,
         # and a failed statement rolls the connection back. So when a step
@@ -1317,14 +1300,15 @@ class AutonomousBrain:
         # that data comes from HIFLD/EIA elsewhere), infrastructure
         # ('fiber_mentions' is a regex match counter) and fiber_infrastructure
         # (its fiber_routes write was removed by GUARD #2, 2026-06-11, so
-        # 'added' never moves). routes/extractor_brain.py _RETIRED_SOURCES
+        # 'added' never moves) and transmission_infrastructure (its
+        # transmission_lines write was removed by GUARD #3, 2026-09-23).
+        # routes/extractor_brain.py _RETIRED_SOURCES
         # lists their source ids so the stale check does not call them failing.
         domains = [
             ('capacity',                   'autonomous-brain-capacity',     'new_pipeline'),
             ('deals',                      'autonomous-brain-deals',        'deals_found'),
             ('quality',                    'autonomous-brain-quality',      'fixed'),
             ('gas_infrastructure',         'autonomous-brain-gas',          'added'),
-            ('transmission_infrastructure','autonomous-brain-transmission', 'added'),
         ]
         updates_not_inserts = {'quality'}
         try:
