@@ -617,6 +617,21 @@ jobs:
             echo "::error::the compliance SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── OSM energy lanes: the backfill is never "+N new" ─────────────────
+      # Baseline-per-state, insert-vs-refresh counting and the board's +N read
+      # are SQL behaviour (ON CONFLICT ... RETURNING (xmax = 0), a partial
+      # predicate on in_baseline) that no fake cursor can prove.
+      - name: OSM lane baseline semantics against a real Postgres
+        env:
+          OSM_LANE_PG_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_osm_lane_baseline_pg.py \
+            -q -rs --tb=short > osm.txt 2>&1 || { cat osm.txt; exit 1; }
+          cat osm.txt
+          if grep -qi "skipped" osm.txt; then
+            echo "::error::the OSM lane test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── The three PAID-TIER grants, against the same Postgres ───────────
       # mcp_dev_keys has no user_id FK, so `email` is the only link between a
       # key and a paying account — and three statements granted paid MCP tier

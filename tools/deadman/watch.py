@@ -413,7 +413,12 @@ NOT_WATCHED = {
     "agent-pay-signal-watch.yml": "files a GitHub issue on failure — visible without the board",
     "anomaly-digest.yml": "files a GitHub issue on failure — visible without the board",
     "data-sync.yml": "files a GitHub issue on failure — visible without the board",
-    "dchub-osm-refresh.yml": "files a GitHub issue on failure — visible without the board",
+    # 2026-09-22: the issue used to be unreachable — the job could not fail.
+    # It now goes red on any loader that does not end success/no_new_data,
+    # and each loader thread beats its own feed with its observed status.
+    "dchub-osm-refresh.yml": ("files a GitHub issue on failure — visible without the board; "
+                              "each loader also self-beats feeds osm-substations / "
+                              "osm-power-plants / osm-transmission / osm-gas-pipelines"),
     # ★2026-08-30 — self-beats feed `main-ci`. Deliberately NOT in
     # WORKFLOWS: this watcher has no branch filter, so it would count PR
     # runs and redden the board for a failing feature branch while main

@@ -18,10 +18,15 @@ permissions:
   actions: read
   issues: write
 
+concurrency:
+  group: dchub-osm-refresh
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # four loaders run one after another, each capped at ~55 min by the driver
+    timeout-minutes: 240
     env:
       RAILWAY: https://dchub-backend-production.up.railway.app
       INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
@@ -38,22 +43,55 @@ jobs:
           curl -sf "https://dchub.cloud/api/v1/data-freshness?_t=$(date +%s)" \
             | python3 -m json.tool | grep -E '"latest"|"source"|"rows"' | head -25
 
-      - name: Fire OSM loaders sequentially
+      # ★ 2026-09-22: this step used to fire each loader with
+      # `curl ... || echo "(non-200)"`, sleep 480s, and print loader-status — a
+      # process-local dict another replica answered with {"loaders": {}}. It
+      # could not fail: load_pipelines wrote into a table that does not exist on
+      # every run and the job stayed green. Each POST now returns the id of a
+      # durable osm_load_runs row that the loader thread writes itself; the
+      # driver polls it and exits 1 unless every loader ends success /
+      # no_new_data. The loaders also beat the dead-man ledger themselves
+      # (feeds osm-substations / osm-power-plants / osm-transmission /
+      # osm-gas-pipelines), so a failure is visible on /api/v1/ops/deadman too.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run the OSM loaders and require a good outcome from each
         run: |
-          for ep in load-osm-substations-live load-osm-power-plants-live load-osm-transmission-live load-osm-pipelines-live; do
-            echo ""
-            echo "→ Firing $ep"
-            curl -sfS --max-time 15 -X POST "$RAILWAY/api/admin/$ep" \
-              -H "X-Internal-Key: $INTERNAL_KEY" -H "Content-Type: application/json" \
-              | python3 -m json.tool || echo "(non-200)"
-            sleep 480
-          done
+          python -m pip install --quiet requests
+          python tools/osm_refresh_drive.py
 
-      - name: Final loader-status
+      # Re-baseline the growth snapshot so /whats-new totals include this run
+      # (the daily snapshot may already have fired). Railway ORIGIN, not the
+      # edge: the snapshot COUNT(*)s outlast the edge's admin timeout.
+      - name: Re-baseline infra-growth snapshot
+        if: always()
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
-          curl -sf "$RAILWAY/api/admin/loader-status" \
-            -H "X-Internal-Key: $INTERNAL_KEY" \
-            | python3 -m json.tool | head -100
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — /whats-new keeps the pre-run totals"; exit 1
+          fi
+          CODE=$(curl -sS --max-time 180 -o /tmp/snap.json -w '%{http_code}' \
+            -X POST "$RAILWAY/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: ${ADMIN_KEY}" || echo 000)
+          echo "HTTP ${CODE}"
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::infra-growth snapshot returned ${CODE}"
+            head -c 400 /tmp/snap.json || true
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/snap.json'))
+          for l in d.get('layers', []):
+              if l['layer'] in ('substations', 'power_plants_discovered',
+                                'osm_transmission_new', 'osm_gas_pipelines_new'):
+                  print(f"{l['layer']:<24}{l['count']:>10,}  {(l.get('status') or '?'):<12}"
+                        f" added={l.get('delta_window')} ({l.get('added_basis')})")
+          PY
 
       - name: AFTER freshness
         run: |
@@ -67,5 +105,5 @@ jobs:
         run: |
           gh issue create -R azmartone67/dchub-backend \
             --title "[OSM refresh failed] $(date -u +%Y-%m-%d)" \
-            --body "OSM refresh workflow failed. Investigate Railway loader-status." \
+            --body "OSM refresh workflow failed. Per-loader outcome: GET /api/admin/osm-load-runs (X-Internal-Key) or the osm-* feeds on /api/v1/ops/deadman." \
             --label watchdog || true
