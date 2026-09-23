@@ -77,10 +77,17 @@ def _canon_markets() -> str:
     Fail-open to "" like _canon_media_phrases: callers must render a
     count-free sentence rather than a frozen literal. These posts go out
     unattended, so a wrong number here is published with nobody reading it.
+
+    2026-09-23: markets_phrase() never fails when canon is unmeasured, it
+    floors canon's static seed (300 -> "300+"), so the fail-open above never
+    fired and the seed went out as if measured. stat_is_live() is asked AFTER
+    markets_phrase(), which is what runs the query; a seed reads as absent.
+    Same gate as routes/agent_winback_digest._markets_tracked.
     """
     try:
-        from canonical_stats import markets_phrase
-        return markets_phrase() or ""
+        from canonical_stats import markets_phrase, stat_is_live
+        phrase = markets_phrase() or ""
+        return phrase if stat_is_live("markets") else ""
     except Exception:
         return ""
 
@@ -448,8 +455,10 @@ def _format_post_base(slot, payload):
             f"{_head}\n\n"
             f"The DC Power Index ranks {_mk_clause} daily. {_why} "
             f"where AI capex is actually flowing — not where the headlines say it is.\n\n"
-            f"Top BUILD markets right now span 3 ISOs (WECC, SPP, ERCOT). Grid fundamentals "
-            f"now outweigh proximity to legacy colocation hubs.\n\n"
+            # 2026-09-23: removed "Top BUILD markets right now span 3 ISOs
+            # (WECC, SPP, ERCOT). Grid fundamentals now outweigh proximity to
+            # legacy colocation hubs." No data backed it (WECC is not an ISO),
+            # and the second sentence was the inference drawn from it.
             f"Track them all: {landing}\n\n"
             f"#DCHub #DCPI #DataCenter #AIInfrastructure"
         )
