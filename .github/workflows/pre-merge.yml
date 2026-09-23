@@ -1375,6 +1375,7 @@ jobs:
             mkp.txt
             ip.txt
             efs.txt
+            osm.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
