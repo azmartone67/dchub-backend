@@ -14516,7 +14516,7 @@
    "keys": []
   },
   "GET /api/v1/heartbeat": {
-   "source": "routes/heartbeat.py:342",
+   "source": "routes/heartbeat.py:346",
    "handler": "api_heartbeat",
    "resolution": "resolved",
    "open_at": [
@@ -14527,7 +14527,7 @@
    ]
   },
   "GET /api/v1/heartbeat/auto": {
-   "source": "routes/heartbeat.py:360",
+   "source": "routes/heartbeat.py:364",
    "handler": "api_auto_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -14589,7 +14589,7 @@
    ]
   },
   "GET /api/v1/heartbeat/page": {
-   "source": "routes/heartbeat.py:536",
+   "source": "routes/heartbeat.py:540",
    "handler": "heartbeat_page_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -29682,7 +29682,7 @@
    ]
   },
   "POST /api/v1/heartbeat/auto": {
-   "source": "routes/heartbeat.py:360",
+   "source": "routes/heartbeat.py:364",
    "handler": "api_auto_refresh",
    "resolution": "resolved",
    "open_at": [
@@ -29725,7 +29725,7 @@
    ]
   },
   "POST /api/v1/heartbeat/refresh": {
-   "source": "routes/heartbeat.py:484",
+   "source": "routes/heartbeat.py:488",
    "handler": "api_force_refresh",
    "resolution": "resolved",
    "open_at": [
