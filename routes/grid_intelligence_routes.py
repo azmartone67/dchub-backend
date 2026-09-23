@@ -1076,19 +1076,43 @@ def get_grid_region(region_id):
         except Exception:
             pass
 
-        # Upgrade CTA for free/developer
+        # Upgrade CTA for free/developer — signed /go/c, session/key-bound,
+        # never bare pricing (r-bare-pricing-sweep, 2026-09-23). Developer
+        # genuinely unlocks the free-tier CTA (GRID_INTEL_TIER_CONFIG
+        # ['developer'] sets max_corridors=99/show_scores/show_energy_rates/
+        # show_tax_incentives); Pro is the only tier config adding
+        # show_facility_names/show_coordinates, so it's the only honest
+        # rung on the developer-tier CTA. The $10 pack never changes `plan`
+        # (only grants mcp_topups credits), so it can't resolve this gate
+        # either way and is deliberately not offered.
+        try:
+            from routes.checkout_click_tracker import checkout_url
+            from util.plan_tease import key_refs
+            # api_key is unset only on the internal-key path, where tier is
+            # always 'pro' and neither branch below ever runs.
+            _, _sub_ref = key_refs(api_key if tier in ('free', 'developer') else '')
+        except Exception:
+            checkout_url = None
+            _sub_ref = ''
         if tier == 'free':
+            _dev_url = checkout_url('developer', _sub_ref) if checkout_url else 'https://dchub.cloud/pricing#developer'
             response['_upgrade'] = {
                 'message': f'Showing {min(max_corridors, total_corridors)} of {total_corridors} corridors with limited data. Developer plan ($49/mo) unlocks all corridors, scores, energy rates, and infrastructure counts.',
-                'url': 'https://dchub.cloud/pricing#developer',
-                'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                'url': _dev_url,
+                # api-response-contract (2026-09-23): 'checkout' used to be a
+                # raw, unattributed buy.stripe.com link — the API contract
+                # guard caught its removal (some consumer outside this repo
+                # may read it). Kept as a compat alias, but now the SAME
+                # signed /go/c link as 'url', not the raw Stripe URL — a
+                # reader of either key gets the session-bound checkout.
+                'checkout': _dev_url,
                 'corridors_hidden': max(0, total_corridors - max_corridors),
             }
         elif tier == 'developer':
             response['_upgrade'] = {
                 'message': f"Developer plan active. Upgrade to Pro ({_canon_price_display('pro')}) for "
                            f"facility names, exact coordinates, and CSV export.",
-                'url': 'https://dchub.cloud/pricing#pro',
+                'url': checkout_url('pro', _sub_ref) if checkout_url else 'https://dchub.cloud/pricing#pro',
             }
 
         return jsonify(response)
