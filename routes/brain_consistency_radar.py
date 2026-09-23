@@ -355,6 +355,7 @@ def check_inline_script_truncated() -> list[dict]:
             findings.append({
                 "issue": "inline_script_truncated",
                 "count": len(orphans),
+                "count_kind": "item_count",
                 "detail": (
                     f"{mod_name}.{attr} serves a page whose inline script block "
                     f"(opened at line {opened}) is ended at line {cut_at} by a "
@@ -3594,6 +3595,7 @@ def check_llm_error_body_discarded() -> list[dict]:
             "issue": "llm_error_body_discarded",
             "url": sites[0].split(":")[0],
             "count": len(sites),
+            "count_kind": "item_count",
             "detail": (
                 f"{len(sites)} Anthropic call site(s) build an error string "
                 f"from the HTTP status and never read the response body, so "
@@ -4577,6 +4579,7 @@ def check_mcp_growth_declining() -> list[dict]:
                     "issue":  "mcp_growth_declining",
                     "url":    "mcp_growth_snapshots: latest 2",
                     "count":  abs(int(pct)),
+                    "count_kind": "percent",
                     "detail": (f"MCP call volume dropped {pct}% week-over-week "
                                f"({prev_calls} → {today_calls}). Investigate: "
                                f"(1) /api/v1/mcp/funnel for platform changes, "
@@ -5084,6 +5087,7 @@ def check_schema_org_coverage_low() -> list[dict]:
             "issue":  "schema_org_coverage_low",
             "url":    "/api/v1/schema-org/missing",
             "count":  int(pct),
+            "count_kind": "percent",
             "detail": (f"Schema.org coverage is {pct}% — below 80% target. "
                        f"{a.get('missing',0)} pages have no JSON-LD; "
                        f"{a.get('wrong_type',0)} have wrong @type. AI agents "
@@ -5129,6 +5133,7 @@ def check_external_mentions_dropoff() -> list[dict]:
             "issue":  "external_mentions_dropoff",
             "url":    "/api/v1/mentions/stats",
             "count":  int(drop_pct),
+            "count_kind": "percent",
             "detail": (f"External (HN/Reddit) DC Hub mentions dropped "
                        f"{drop_pct:.0f}% week-over-week ({int(baseline_weekly)} → {recent}). "
                        f"Combined with the 10/100 SOT score this suggests "
@@ -5179,6 +5184,7 @@ def check_mcp_volume_regression() -> list[dict]:
             "issue":  "mcp_volume_regression",
             "url":    "/api/v1/mcp/funnel",
             "count":  int(drop_pct),
+            "count_kind": "percent",
             "detail": (f"MCP volume regressed: last 7 days = {recent:,} calls, "
                        f"baseline 28-day weekly avg = {int(baseline_weekly):,} calls "
                        f"({drop_pct:.1f}% drop). EEEEE anon grace mode should "
@@ -5536,6 +5542,7 @@ def check_event_submission_pending() -> list[dict]:
                 "issue":  f"event_submission_pending:{nm[:50]}",
                 "url":    "/events",
                 "count":  days_left or 0,
+                "count_kind": "days",
                 "detail": (f"Event '{nm}' has a submission deadline in "
                            f"{days_left} days ({deadline}) and DC Hub hasn't "
                            f"submitted. Event runs {starts}. Decision needed."),
@@ -5590,6 +5597,7 @@ def check_tenant_coverage_thin() -> list[dict]:
             "issue":  "tenant_coverage_thin",
             "url":    "/api/v1/tenants/coverage",
             "count":  int(pct),
+            "count_kind": "percent",
             "detail": (f"Tenant coverage on top-50 facilities is only "
                        f"{pct:.0f}% ({with_t}/{total}). Per-building tenant "
                        f"data is DCHawk's main remaining moat. Invest in "
@@ -5758,6 +5766,7 @@ def check_citation_score_dropped() -> list[dict]:
             "issue":  "citation_score_below_30pct",
             "url":    "/api/v1/citations/score",
             "count":  int(latest_pct),
+            "count_kind": "percent",
             "detail": (f"DC Hub appears in only {latest_pct}% of Claude "
                        f"responses to data-center research queries. "
                        f"Auto-triggering DC Hub Media press cycle won't "
@@ -5842,6 +5851,7 @@ def check_page_content_drift() -> list[dict]:
                         "issue":  f"page_content_drift:{r['path']}",
                         "url":    r["path"],
                         "count":  int(delta_pct),
+                        "count_kind": "percent",
                         "detail": (f"Page '{r.get('label') or r['path']}' "
                                    f"content hash changed AND size moved by "
                                    f"{delta_pct:.0f}% "
@@ -5876,6 +5886,7 @@ def check_competitor_announcement() -> list[dict]:
             "issue":  f"competitor_announcement:{d.get('competitor')}",
             "url":    d.get("url"),
             "count":  int(d.get("byte_delta_pct") or 0),
+            "count_kind": "percent",
             "detail": (f"{d.get('competitor')} updated {d.get('url')}: "
                        f"{d.get('byte_delta_pct')}% byte delta"
                        f"{' + TITLE CHANGED' if d.get('title_changed') else ''}. "
@@ -6539,6 +6550,7 @@ def check_neon_replication_lag() -> list[dict]:
             "issue":  "neon_replication_lag",
             "url":    "neon:read_replica",
             "count":  int(lag_s),
+            "count_kind": "seconds",
             "detail": (
                 f"Read replica is {float(lag_s):.0f}s behind the primary "
                 f"(threshold: 60s). Reads routed to the replica serve "
@@ -6603,6 +6615,7 @@ def check_signup_drop_off_step() -> list[dict]:
                 "issue":  "signup_drop_off_step",
                 "url":    f"funnel:{step}",
                 "count":  int(drop_pct),
+                "count_kind": "percent",
                 "detail": (
                     f"Signup step `{step}` dropped {drop_pct}% "
                     f"day-over-day ({yday} vs {prev} the day before). "
@@ -6634,6 +6647,7 @@ def check_detector_runtime_distribution() -> list[dict]:
                 "issue":  "detector_runtime_slow",
                 "url":    f"detector:{name}",
                 "count":  int(ms / 1000),
+                "count_kind": "seconds",
                 "detail": (
                     f"Detector `{name}` took {ms/1000:.1f}s on the last "
                     f"scan (threshold: 15s). Slow detectors push the "
@@ -6831,6 +6845,7 @@ def check_canonical_redirect_loops() -> list[dict]:
                                 "issue":  "canonical_redirect_loop",
                                 "url":    src,
                                 "count":  tresp.getcode(),
+                                "count_kind": "http_status",
                                 "detail": (
                                     f"`{src}` 30x→ `{loc_path}` but "
                                     f"target returns HTTP {tresp.getcode()}. "
@@ -6843,6 +6858,7 @@ def check_canonical_redirect_loops() -> list[dict]:
                         "issue":  "canonical_redirect_loop",
                         "url":    src,
                         "count":  he.code,
+                        "count_kind": "http_status",
                         "detail": (
                             f"`{src}` 30x→ `{loc_path}` but target "
                             f"returns HTTP {he.code}. Dead redirect."
@@ -7000,6 +7016,7 @@ def check_paid_user_zero_value_tools() -> list[dict]:
                 "issue":  "paid_user_zero_value",
                 "url":    f"user:{email}",
                 "count":  int(silence_d),
+                "count_kind": "days",
                 "detail": (
                     f"`{email}` ({tier}) has not called any paid MCP "
                     f"tool in {silence_d:.0f} days. Pre-churn signal. "
@@ -8019,6 +8036,7 @@ def check_monthly_trend_unsent_3d() -> list[dict]:
         "issue":  "monthly_trend_unsent_3d",
         "url":    f"/reports/monthly/{py}-{pm:02d}",
         "count":  today.day,
+        "count_kind": "day_of_month",
         "detail": (f"Day {today.day} of the new month and the {prior_label} "
                    f"monthly trend snapshot has not been emailed to the "
                    f"journalist outreach list (DCD, DCK, DCF, WSJ, "
@@ -8105,6 +8123,7 @@ def check_press_public_surface_stale() -> list[dict]:
             "issue": "press_public_surface_stale",
             "url":   page.get("url") or "https://dchub.cloud/press",
             "count": int(lag) if lag is not None else 999,
+            "count_kind": "days",
             "detail": (f"Public page {page.get('url')} shows newest press "
                        f"date {page.get('newest_visible') or 'NONE'} while "
                        f"the DB's newest press_releases row is "
@@ -8998,6 +9017,7 @@ def check_frontend_critical_endpoints() -> list[dict]:
                 "issue":  "frontend_endpoint_5xx",
                 "url":    page_path,
                 "count":  status,
+                "count_kind": "http_status",
                 "detail": (f"Public page `{page_path}` depends on API `{api_path}` "
                            f"({label}) which returned HTTP {status}. "
                            f"The page renders empty/broken to visitors."),
@@ -9938,6 +9958,7 @@ def check_mcp_presence_stale() -> list[dict]:
                     "issue": "mcp_presence_flywheel_stalled",
                     "url":   "mcp_presence_listings",
                     "count": int(max(crawl_h, fix_h)),
+                    "count_kind": "hours",
                     "detail": (
                         f"MCP-registry presence sweeps are stale — last discovery "
                         f"crawl {crawl_h:.0f}h ago, last auto-fix {fix_h:.0f}h ago "
@@ -10462,6 +10483,7 @@ def check_backend_pool_health() -> list[dict]:
             "issue":  "backend_pool_degraded",
             "url":    "/api/health/db",
             "count":  r.status_code,
+            "count_kind": "http_status",
             "detail": (f"Railway /api/health/db returned HTTP {r.status_code}. "
                        f"Pool is critical OR memory over threshold OR "
                        f"circuit breaker open. Body: {r.text[:200]}"),
@@ -10938,6 +10960,7 @@ def check_dead_internal_links() -> list[dict]:
                 "issue":  "internal_link_5xx",
                 "url":    path,
                 "count":  status,
+                "count_kind": "http_status",
                 "detail": (f"`{path}` returns HTTP {status} "
                            f"(server error). Body: {body_snip}"),
             })
@@ -12890,6 +12913,7 @@ def check_brain_public_pages_are_fast_qa_watched() -> list[dict]:
             "issue": "brain_public_page_unwatched",
             "url": "dchub://brain/fast-qa/url-list",
             "count": len(missing),
+            "count_kind": "item_count",
             "detail": (
                 f"{len(missing)} public brain page(s) are not on fast-QA's probe "
                 f"list, so an outage on them goes unnoticed: {', '.join(missing)}. "
@@ -12973,6 +12997,7 @@ def check_closed_brain_prs_leave_branches() -> list[dict]:
                 "severity": "warn",
                 "url": f"https://github.com/{repo}/branches/all?query=brain-spec",
                 "count": len(dead),
+                "count_kind": "item_count",
                 "detail": (
                     f"{len(dead)} of {len(live)} brain-spec/* branches are "
                     f"pointed at by no OPEN PR — finished work the janitor "

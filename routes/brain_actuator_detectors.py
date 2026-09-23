@@ -148,6 +148,7 @@ def check_actuator_lane_silent() -> list[dict]:
                     "issue": "actuator_lane_silent",
                     "url": f"table:{table}",
                     "count": int(quiet_days),
+                    "count_kind": "days",
                     "detail": (
                         f"{label}: `{table}` has written NOTHING for "
                         f"{quiet_days:.1f} days (last {ts_col} "
