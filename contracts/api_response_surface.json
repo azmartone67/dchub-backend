@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1500,
+  "python_files_scanned": 1501,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
@@ -14692,7 +14692,7 @@
    ]
   },
   "GET /api/v1/hyperscaler-brief/<slug>": {
-   "source": "routes/hyperscaler_brief.py:1704",
+   "source": "routes/hyperscaler_brief.py:1745",
    "handler": "api_hyperscaler_brief",
    "resolution": "opaque",
    "open_at": [],
@@ -16155,28 +16155,28 @@
    ]
   },
   "GET /api/v1/market-brief/<slug>": {
-   "source": "routes/market_brief.py:2583",
+   "source": "routes/market_brief.py:2598",
    "handler": "api_market_brief",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/market-brief/all": {
-   "source": "routes/market_brief.py:3768",
+   "source": "routes/market_brief.py:3775",
    "handler": "api_market_brief_bulk",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/market-brief/all.csv": {
-   "source": "routes/market_brief.py:3984",
+   "source": "routes/market_brief.py:3991",
    "handler": "api_market_brief_bulk_csv",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/market-brief/diff": {
-   "source": "routes/market_brief.py:3879",
+   "source": "routes/market_brief.py:3886",
    "handler": "api_market_brief_diff",
    "resolution": "resolved",
    "open_at": [
@@ -23976,7 +23976,7 @@
    ]
   },
   "GET /api/v1/widget-embeds/recent": {
-   "source": "routes/market_brief.py:3224",
+   "source": "routes/market_brief.py:3231",
    "handler": "widget_embeds_recent",
    "resolution": "resolved",
    "open_at": [
