@@ -666,6 +666,47 @@ def relayed_checkout_session_filters() -> str:
             + " and " + RELAYED_CHECKOUT_SESSION_ID + " is not null")
 
 
+# ★ r-paid-attributed-keyed-refs (2026-09-23). paid_attributed's question is
+# "which identity paid", NOT "which session did a human click from" — those
+# are different questions and RELAYED_CHECKOUT_SESSION_ID answers the second
+# one on purpose (see the v6 lesson above it). A durable key ref (pk-/k-) is
+# already an unambiguous, durable identity for a PAYMENT regardless of
+# whether a session happened to be on the click that sold it — but it is NOT
+# a valid stand-in for a session in human_acted_v7's DISTINCT-session count:
+# measured live 2026-09-23, one pk- ref was clicked 10 times over 9 days from
+# only 3 distinct sessions, so folding the bare ref into that count would
+# under-count real distinct humans. So this identity widens ONLY the
+# payment-attribution join (_relayed_click_session_for, below) — human_acted_v7
+# keeps reading RELAYED_CHECKOUT_SESSION_ID / relayed_checkout_session_filters()
+# unchanged, exactly as before this change.
+#
+# ★ THE SAME VACUOUS-EXCLUSION RISK THE v6 LESSON NAMES STILL APPLIES HERE,
+# UNRESOLVED. _external_session_predicate matches SESSION-ID prefixes; a
+# pack_key/sub_key ref with no session_id will never match one, so an
+# operator's own key-bound test purchase (this is what proved the bug: a
+# real $10.88 charge on the owner's own key, no session on the click) cannot
+# be excluded as self-traffic through this lane the way an operator SESSION
+# already can. Known, accepted gap — not fixed here; flagged instead of
+# silently claimed. include_self_traffic=True vs the default keeps this
+# honest: neither number pretends to exclude a session-less keyed purchase.
+PAID_ATTRIBUTED_REF_KINDS = (RELAYED_CHECKOUT_DELOOPABLE_REF_KIND, "pack_key", "sub_key")
+
+PAID_ATTRIBUTED_CLICK_IDENTITY = (
+    "coalesce(nullif(cc.session_id,''), case when cc.ref_kind in ("
+    + ",".join("'%s'" % k for k in PAID_ATTRIBUTED_REF_KINDS)
+    + ") then nullif(cc.ref,'') end)")
+
+
+def paid_attributed_click_filters() -> str:
+    """Same click-quality bar relayed_checkout_session_filters() applies
+    (signed, real UA — reused, never restated), but the identity accepted is
+    PAID_ATTRIBUTED_CLICK_IDENTITY, wider than RELAYED_CHECKOUT_SESSION_ID.
+    Only _relayed_click_session_for reads this; human_acted_v7 does not."""
+    return (relayed_checkout_signed()
+            + " and " + relayed_checkout_real_ua()
+            + " and " + PAID_ATTRIBUTED_CLICK_IDENTITY + " is not null")
+
+
 def _relayed_checkout_lane_body(interval_sql: str,
                                 include_self_traffic: bool) -> str:
     body = (_relayed_checkout_window(interval_sql)
@@ -930,7 +971,7 @@ def identified_definition() -> dict:
     }
 
 
-PAID_ATTRIBUTED_DEFINITION_VERSION = 2
+PAID_ATTRIBUTED_DEFINITION_VERSION = 3
 PAID_RELAYED_CHECKOUT_LOOKBACK = "7 days"
 PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
     1: ("COUNT(DISTINCT mcp_session_id) FROM mcp_session_upgrades plus "
@@ -946,6 +987,28 @@ PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
         "click's session. A session in two lanes counts once. The operator "
         "self-traffic exclusion applies to the whole union; "
         "paid_attributed_v1_session_rows publishes the previous figure."),
+    3: ("2026-09-23 (r-paid-attributed-keyed-refs). Measured live: a real "
+        "$10.88 ChatGPT-MCP purchase recorded correctly in "
+        "mcp_checkout_payments and mcp_topups, sold by a signed, real-UA "
+        "/go/c/ click 12s earlier (referrer dchub.cloud, so NOT a bypass), "
+        "yet paid_attributed stayed 0 — the click's ref_kind was 'pack_key' "
+        "(a durable key ref) with no session_id, which v2's identity could "
+        "not use. The relayed-checkout lane's identity now also accepts a "
+        "click whose ref_kind is 'pack_key' or 'sub_key', falling back to "
+        "the ref itself (PAID_ATTRIBUTED_CLICK_IDENTITY) when no session_id "
+        "is set — the ref is already a durable, unambiguous identity for a "
+        "payment, session or not. human_acted_v7's own DISTINCT-session "
+        "count is UNCHANGED (still RELAYED_CHECKOUT_SESSION_ID alone): the "
+        "same key clicked 10 times over 9 days from only 3 distinct "
+        "sessions, so folding a bare key ref into a per-session count would "
+        "undercount real humans there — this is a payment-identity widening, "
+        "not a session-identity one. KNOWN GAP, not fixed here: "
+        "_external_session_predicate matches session-id prefixes, so it is "
+        "vacuous against a pack_key/sub_key ref with no session — an "
+        "operator's own key-bound test purchase (this is what surfaced the "
+        "bug) cannot yet be excluded as self-traffic the way an operator "
+        "session already can. paid_attributed_including_self_traffic makes "
+        "no stronger claim than the headline for this subset."),
 }
 
 def _paid_payments_sql(interval_sql: str) -> str:
@@ -964,25 +1027,34 @@ def _paid_payments_sql(interval_sql: str) -> str:
 
 
 def _relayed_click_session_for(ref_expr: str, at_expr: str) -> str:
-    """THE click→session lookup, once. Both readers of it build from here.
+    """THE click→identity lookup, once. Every reader of it builds from here.
 
     The latest click on the link that sold a purchase (same ref) that
-    human_acted's /go/c/ lane would count — signed, real UA, a session
-    identity — made at or before `at_expr` and inside the lookback.
+    qualifies by PAID_ATTRIBUTED_CLICK_IDENTITY — signed, real UA, an
+    identity we can attribute the payment to (a session, or since
+    2026-09-23 a durable pack_key/sub_key ref) — made at or before
+    `at_expr` and inside the lookback.
 
     ★ WHY THIS IS A FUNCTION AND NOT TWO QUERIES. The funnel reads it as a
     correlated subquery over the payments table; routes/relay_identify reads
     it live in the payment webhook, for one ref, to learn which session to
-    stamp an email onto. A second copy would let `identified` and
-    `paid_attributed` attribute the SAME payment to two different sessions —
-    the two stages would disagree about who paid while both looked measured.
-    tests/test_identify_rung_shares_the_paid_join.py holds them byte-identical
-    under the same substitutions.
+    stamp an email onto; the paid→signal bridge reads it a third time. A
+    second copy would let any two of `identified`, `paid_attributed` and the
+    signal bridge attribute the SAME payment to two different identities —
+    they would disagree about who paid while all looked measured.
+    tests/test_identify_rung.py::test_the_checkout_lookup_is_the_paid_attributed_join_itself
+    holds them byte-identical under the same substitutions.
+
+    ★ NOT RELAYED_CHECKOUT_SESSION_ID / relayed_checkout_session_filters() —
+    see the r-paid-attributed-keyed-refs comment above
+    PAID_ATTRIBUTED_CLICK_IDENTITY. human_acted_v7 still reads those, alone,
+    unchanged; only this function (and everything built on it) reads the
+    wider identity.
     """
-    return ("(select " + RELAYED_CHECKOUT_SESSION_ID + " "
+    return ("(select " + PAID_ATTRIBUTED_CLICK_IDENTITY + " "
             + _RELAYED_CHECKOUT_FROM
             + " where cc.ref = " + ref_expr
-            + " and " + relayed_checkout_session_filters()
+            + " and " + paid_attributed_click_filters()
             + " and cc.clicked_at <= " + at_expr
             + " and cc.clicked_at > " + at_expr + " - interval '"
             + PAID_RELAYED_CHECKOUT_LOOKBACK + "'"
@@ -1150,19 +1222,24 @@ PAID_ATTRIBUTED_BASIS = (
     "session), and the RELAYED CHECKOUT lane: a paid Checkout Session "
     "(mcp_checkout_payments, recorded at checkout.session.completed when "
     "payment_status is 'paid'; livemode false excluded) whose "
-    "client_reference_id equals the ref of a signed, real-UA /go/c/ click with a "
-    "session identity, made at or before the payment and inside the lookback, "
-    "counted as the latest such click's session. WHY: a caller holding an API "
+    "client_reference_id equals the ref of a signed, real-UA /go/c/ click "
+    "carrying an identity we can attribute the payment to — a session, or "
+    "since 2026-09-23 a durable pack_key/sub_key ref when no session was on "
+    "the click — made at or before the payment and inside the lookback, "
+    "counted as the latest such click's identity. WHY: a caller holding an API "
     "key is sold through a durable-key ref (pk- for the pack, k- for a "
     "subscription) and the webhook binds no session to either, so through v1 a "
     "keyed caller's purchase from an agent unlock could not reach this stage. "
-    "The click that sold it carries the session (the /go/c/ token's third field "
-    "since 2026-09-13), so the payment joins that click by ref. The operator "
-    "self-traffic exclusion applies to the union; "
-    "paid_attributed_including_self_traffic drops it, and "
-    "excluded.paid_attributed_removed is the difference. A payment recorded "
-    "before 2026-09-14 has no stored client_reference_id and can reach only the "
-    "v1 lanes.")
+    "The click that sold it usually carries the session too (the /go/c/ "
+    "token's third field since 2026-09-13); when it does not, the durable key "
+    "ref itself stands in, since it is already an unambiguous payer identity. "
+    "The operator self-traffic exclusion applies to the union, but is VACUOUS "
+    "on a key-ref-only identity (it matches session-id prefixes, not key "
+    "hashes) — paid_attributed_including_self_traffic makes no stronger claim "
+    "than the headline for that subset, and "
+    "excluded.paid_attributed_removed is the difference for the rest. A "
+    "payment recorded before 2026-09-14 has no stored client_reference_id "
+    "and can reach only the v1 lanes.")
 
 RELAYED_CHECKOUT_PAYMENTS_BASIS = (
     "Paid Checkout Sessions in the window (mcp_checkout_payments, livemode not "
