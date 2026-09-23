@@ -97,6 +97,10 @@ def test_the_previously_dead_jobs_are_dispatchable():
                 "alert-emails"):
         assert job in body, f"{job} lost its dispatch arm"
     assert "energy-discovery" not in body, "energy-discovery arm came back (retired 2026-08-21)"
+    # infrastructure-sync retired 2026-09-22 (owner decision: its only live
+    # leg, fiber discovery, has no source). Manual door is daily-infra-sync.yml;
+    # tests/test_infra_sync_schedule_retired.py pins the rest.
+    assert "infrastructure-sync" not in body, "infrastructure-sync arm came back (retired 2026-09-22)"
 
 
 def _manual_choices(src: str) -> set:

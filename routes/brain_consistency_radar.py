@@ -9726,6 +9726,16 @@ _INTENTIONAL_STALE_CRONS: set[str] = {
     # _record_cron_run), so this allowlist entry is what stops the radar
     # filing cron_silently_dead forever.
     "energy-discovery",
+    # Retired 2026-09-22 (owner decision). Its only live leg is fiber
+    # discovery, which has NO source: PeeringDB /api/ix carries no
+    # coordinates, and on 2026-09-07 the owner ruled out pairing PeeringDB
+    # facilities into synthetic routes. Every fire was an honest 500 and a
+    # red workflow. Both schedulers (dchub-jobs.yml 01:00 and
+    # daily-infra-sync.yml 04:08) were removed; daily-infra-sync.yml stays as
+    # a manual-only door. The cron_last_run row has no declared interval, so
+    # without this entry the 30h default files cron_silently_dead ~30h after
+    # the last fire, about a job nothing is supposed to fire.
+    "infrastructure-sync",
 }
 
 
@@ -11002,9 +11012,11 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     # was false-flagging endpoints that ARE triggered, just not by that scheduler:
     #  - the infra refreshers fire EVENT-DRIVEN via brain_autopilot's REFRESH_MAP
     #    (_action_data_freshness_breach) when transmission_lines/gas_pipelines/
-    #    substations breach their SLA, AND daily-infra-sync.yml runs a full
-    #    /api/jobs/infrastructure-sync daily. A fixed cron on each would just
-    #    duplicate that.
+    #    substations breach their SLA. (This comment used to add "AND
+    #    daily-infra-sync.yml runs a full /api/jobs/infrastructure-sync
+    #    daily" — that handler does not run these three loaders (its only live
+    #    leg is fiber discovery), and its schedule was retired 2026-09-22. The
+    #    REFRESH_MAP trigger is the whole reason.)
     "/api/jobs/transmission-refresh",    # autopilot REFRESH_MAP (table SLA breach)
     "/api/jobs/gas-refresh",             # autopilot REFRESH_MAP (table SLA breach)
     "/api/jobs/substations-refresh",     # autopilot REFRESH_MAP (table SLA breach)
@@ -11013,6 +11025,11 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     # self-refreshes lazily on GET when its _ARC_TTL_SECONDS cache expires, so it
     # never goes stale without a cron. The POST is an admin/cron convenience.
     "/api/v1/narrative/refresh",
+    # Retired from every schedule 2026-09-22 (owner decision: its only live
+    # leg, fiber discovery, has no source). Manual-only via the
+    # workflow_dispatch in daily-infra-sync.yml; also in
+    # _INTENTIONAL_STALE_CRONS so its cron_last_run row does not page.
+    "/api/jobs/infrastructure-sync",
 }
 
 
