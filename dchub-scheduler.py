@@ -339,7 +339,8 @@ JOBS = {
     },
     # 'infra_sync_safe' (/api/jobs/infrastructure-sync, 02:30) REMOVED
     # 2026-09-22: the job's schedule is retired (owner decision — its only
-    # live leg, fiber discovery, has no source). Its real callers were
+    # live leg, fiber discovery, cannot be green on a schedule: saturated,
+    # 0 new rows per run). Its real callers were
     # dchub-jobs.yml and daily-infra-sync.yml, both retired in the same
     # change; this file is never launched, so the entry was only a roster
     # claim — one brain_consistency_radar.check_cron_endpoint_unscheduled

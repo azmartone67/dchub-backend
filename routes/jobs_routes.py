@@ -166,8 +166,8 @@ _JOB_INTERVALS = {
     # energy-discovery: scheduled runs RETIRED 2026-08-21 (dead HIFLD sources);
     # no declared interval — it is manual-only and allowlisted in
     # brain_consistency_radar._INTENTIONAL_STALE_CRONS.
-    # infrastructure-sync: schedule RETIRED 2026-09-22 (sourceless fiber
-    # discovery, owner decision) — same treatment: no declared interval,
+    # infrastructure-sync: schedule RETIRED 2026-09-22 (owner decision; its
+    # fiber leg cannot be green on a schedule) — same treatment: no interval,
     # allowlisted there; manual-only via daily-infra-sync.yml.
     # ★2026-09-02 (D11): the two WEEKLY Railway arms — dchub-jobs.yml
     # `30 6 * * 0` (Sunday 06:30 UTC). Nothing ever stamped their
@@ -1150,11 +1150,12 @@ def _fiber_row_count():
 def job_infrastructure_sync():
     """Infrastructure sync -- fiber routes. MANUAL ONLY since 2026-09-22.
 
-    ★ SCHEDULE RETIRED 2026-09-22 (owner decision). The fiber leg below has no
-    source (PeeringDB /api/ix carries no coordinates; synthetic pairing was
-    ruled out 2026-09-07), so every scheduled fire was the honest 500 this
-    handler is built to return. Both crons named below were removed rather
-    than the verdict softened; daily-infra-sync.yml is the manual door and
+    ★ SCHEDULE RETIRED 2026-09-22 (owner decision). Every scheduled fire was a
+    500. Measured 2026-09-23 the fiber leg is not sourceless (#4325 places 184
+    PeeringDB exchanges) but SATURATED: 2,672 re-upserts, rows_persisted 0,
+    which the zero-delta rule below scores as a failure. The same loader still
+    runs twice daily from crawler_scheduler. Both crons named below were
+    removed rather than the verdict softened; daily-infra-sync.yml is the manual door and
     polls /api/jobs/last-run for this handler's verdict when web relays a 202.
 
     ★ THIS HANDLER USED TO HARDCODE `'success': True` (2026-09-02).

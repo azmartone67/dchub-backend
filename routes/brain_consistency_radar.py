@@ -9727,10 +9727,11 @@ _INTENTIONAL_STALE_CRONS: set[str] = {
     # filing cron_silently_dead forever.
     "energy-discovery",
     # Retired 2026-09-22 (owner decision). Its only live leg is fiber
-    # discovery, which has NO source: PeeringDB /api/ix carries no
-    # coordinates, and on 2026-09-07 the owner ruled out pairing PeeringDB
-    # facilities into synthetic routes. Every fire was an honest 500 and a
-    # red workflow. Both schedulers (dchub-jobs.yml 01:00 and
+    # discovery, and every fire was a 500 and a red workflow — decided on a
+    # "no source" premise that was stale: measured 2026-09-23 the lane places
+    # 184 PeeringDB exchanges (#4325) but is saturated (2,672 re-upserts, 0
+    # new rows), which the handler scores as a failure. The same loader still
+    # runs twice daily from crawler_scheduler's in-process slot. Both schedulers (dchub-jobs.yml 01:00 and
     # daily-infra-sync.yml 04:08) were removed; daily-infra-sync.yml stays as
     # a manual-only door. The cron_last_run row has no declared interval, so
     # without this entry the 30h default files cron_silently_dead ~30h after
@@ -11026,7 +11027,8 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     # never goes stale without a cron. The POST is an admin/cron convenience.
     "/api/v1/narrative/refresh",
     # Retired from every schedule 2026-09-22 (owner decision: its only live
-    # leg, fiber discovery, has no source). Manual-only via the
+    # leg, fiber discovery, cannot be green on a schedule — saturated, 0 new
+    # rows per run). Manual-only via the
     # workflow_dispatch in daily-infra-sync.yml; also in
     # _INTENTIONAL_STALE_CRONS so its cron_last_run row does not page.
     "/api/jobs/infrastructure-sync",
