@@ -149,5 +149,123 @@ def test_first_seen_survives_releases_and_the_board_never_counts_the_initial_loa
     assert rec["freshness_column"] == "last_seen_at" and rec["ingest_age_days"] == 0
 
 
+
+# ── the PUBLIC read, GET /api/v1/infra-projects (2026-09-23) ─────────────
+# Runs the real Flask handler (argument parsing, SQL, JSON) against rows the
+# shipped upsert wrote — nothing about the read is copied into this test.
+def _tx(num, status, kv, isd=None, actual=None, lst="planned"):
+    return {"project_number": num, "title": f"Line {num}", "source_status": status,
+            "source_list": lst, "kv": kv, "miles_new": 10, "miles_rebuilt": 2,
+            "projected_isd": isd, "actual_isd": actual, "source_release": "2026-07-13"}
+
+
+def _tx_release(ipi, conn, raws):
+    rows, _ = ipi.normalize_tx_rows(raws)
+    return ipi._write_in(conn, ipi.TX_TABLE, ipi._TX_DDL, ipi._TX_FIELDS,
+                         ipi.TX_SOURCE, rows, False)
+
+
+@pytest.fixture
+def client(conn, monkeypatch):
+    from flask import Flask
+    from routes import infra_projects_ingest as ipi
+    monkeypatch.setattr(ipi, "_dsn", lambda: DSN)
+    monkeypatch.setattr(ipi, "_connect_read", lambda: psycopg2.connect(
+        DSN, options=f"-c search_path={SCHEMA}"))
+    ipi._read_cache.clear()
+    app = Flask(__name__)
+    app.register_blueprint(ipi.infra_projects_ingest_bp)
+    yield app.test_client(), ipi
+    ipi._read_cache.clear()
+
+
+def _get(cl, ipi, qs=""):
+    ipi._read_cache.clear()
+    r = cl.get("/api/v1/infra-projects" + qs)
+    return r.status_code, r.get_json()
+
+
+def test_public_read_filters_summary_and_new_since(conn, client):
+    cl, ipi = client
+    gas = [dict(_gas("Big", "Construction"), capacity_mmcfd=2000, miles=100,
+                states="TX,LA", in_service_year=2027),
+           dict(_gas("Mid", "Applied"), capacity_mmcfd=500, miles=40,
+                states="PA", in_service_year=2029),
+           dict(_gas("Small", "Approved"), capacity_mmcfd=50, miles=5,
+                states="TX", in_service_year=2026)]
+    assert _release(ipi, conn, gas)[0] == 200
+    assert _tx_release(ipi, conn, [
+        _tx("26TPIT0001", "Planned", 345, isd="2028-06-01"),
+        _tx("26TPIT0002", "Planned", 138, isd="2027-01-01"),
+        # projected says 2030, actual says mid-2027: actual wins
+        _tx("26TPIT0003", "Planned", 345, isd="2030-01-01", actual="2027-06-01",
+            lst="completed")])[0] == 200
+
+    st, b = _get(cl, ipi)
+    assert st == 200 and b["ok"] is True
+    assert b["types_queried"] == ["gas_pipeline", "transmission"]
+    s = b["summary"]
+    assert (s["matching"], s["returned"], s["truncated"]) == (6, 6, False)
+    g, t = s["by_type"]["gas_pipeline"], s["by_type"]["transmission"]
+    assert (g["matching"], g["total_capacity_mmcfd"], g["total_miles"]) == (3, 2550, 145)
+    # a project crossing TX and LA counts once under each state
+    assert g["by_state"] == {"TX": 2, "LA": 1, "PA": 1}
+    assert (t["matching"], t["total_miles_new"], t["by_status"]) == (
+        3, 30, {"Planned": 2, "Completed": 1})
+    assert s["as_of"] == {"gas_pipeline": "2026-08-04", "transmission": "2026-07-13"}
+    assert "ERCOT (Texas) only" in b["sources"]["transmission"]["coverage"]
+    for row in b["gas_pipeline_projects"] + b["transmission_projects"]:
+        assert row["source_url"].startswith("https://") and row["license"]
+        assert row["first_seen_at"] and row["in_initial_load"] is True
+    assert [r["project_name"] for r in b["gas_pipeline_projects"]] == ["Big", "Mid", "Small"]
+
+    # state: a comma-list member matches; transmission is all TX
+    _, b = _get(cl, ipi, "?state=la")
+    assert [r["project_name"] for r in b["gas_pipeline_projects"]] == ["Big"]
+    assert b["transmission_projects"] == []
+    # status: case-insensitive, comma list
+    _, b = _get(cl, ipi, "?type=gas_pipeline&status=construction,APPLIED")
+    assert sorted(r["project_name"] for r in b["gas_pipeline_projects"]) == ["Big", "Mid"]
+    assert b["transmission_projects"] is None
+    # min_capacity narrows type=all to gas; min_kv to transmission
+    _, b = _get(cl, ipi, "?min_capacity=500")
+    assert b["types_queried"] == ["gas_pipeline"] and b["summary"]["matching"] == 2
+    _, b = _get(cl, ipi, "?min_kv=345")
+    assert b["types_queried"] == ["transmission"]
+    assert sorted(r["project_number"] for r in b["transmission_projects"]) == [
+        "26TPIT0001", "26TPIT0003"]
+    # sent against the other explicit type: reported, not silently dropped
+    _, b = _get(cl, ipi, "?type=transmission&min_capacity=500")
+    assert b["summary"]["matching"] == 3 and b["ignored"]
+    # in-service window: gas by year, transmission by actual else projected ISD
+    _, b = _get(cl, ipi, "?in_service_after=2027&in_service_before=2028-12-31")
+    assert [r["project_name"] for r in b["gas_pipeline_projects"]] == ["Big"]
+    assert sorted(r["project_number"] for r in b["transmission_projects"]) == [
+        "26TPIT0001", "26TPIT0002", "26TPIT0003"]
+    # limit is per type and the summary still covers every match
+    _, b = _get(cl, ipi, "?type=gas_pipeline&limit=1")
+    assert b["summary"]["matching"] == 3 and b["summary"]["returned"] == 1
+    assert b["summary"]["truncated"] is True
+    # bad input is the caller's error
+    assert _get(cl, ipi, "?type=oil")[0] == 400
+    assert _get(cl, ipi, "?new_since=last-week")[0] == 400
+
+    # new_since: the initial load is a backfill, never news
+    _, b = _get(cl, ipi, "?new_since=2000-01-01")
+    assert b["summary"]["matching"] == 0, "the initial load was served as new"
+    # release 2 adds one project and drops Small
+    gas2 = gas[:2] + [dict(_gas("Fresh", "Announced"), capacity_mmcfd=300, states="OH")]
+    assert _release(ipi, conn, gas2)[0] == 200
+    _, b = _get(cl, ipi, "?new_since=2000-01-01")
+    assert [r["project_name"] for r in b["gas_pipeline_projects"]] == ["Fresh"]
+    assert b["summary"]["matching"] == 1
+    # the de-listed project is hidden by default and returned on request
+    _, b = _get(cl, ipi, "?type=gas_pipeline")
+    assert "Small" not in [r["project_name"] for r in b["gas_pipeline_projects"]]
+    _, b = _get(cl, ipi, "?type=gas_pipeline&include_delisted=1")
+    small = [r for r in b["gas_pipeline_projects"] if r["project_name"] == "Small"]
+    assert len(small) == 1 and small[0]["in_latest_release"] is False
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
