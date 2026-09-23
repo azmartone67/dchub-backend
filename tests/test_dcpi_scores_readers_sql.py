@@ -75,9 +75,10 @@ _PHANTOM = ("dcpi_scores", "dcpi_v2_scores", "dcpi_v2_runs",
 
 # Both UNIQUE constraints carry production's NAMES (pg_constraint, 2026-09-23).
 # Importing routes.dcpi runs _phase215_ensure_unique(), which ALTERs this table
-# unless `market_power_scores_slug_key` exists; canon imports it mid-read, so an
-# auto-named constraint turns that ALTER into a lock wait on canon's own open
-# transaction and the test hangs. Production has the name, so it is a no-op.
+# unless `market_power_scores_slug_key` exists; canon imports it mid-read, and
+# until canon's reads went autocommit (2026-09-23) an auto-named constraint
+# turned that ALTER into a lock wait on canon's own open transaction and the
+# test hung. Production has the name, so it is a no-op.
 _MPS_DDL = """CREATE TABLE market_power_scores (
        id SERIAL PRIMARY KEY, market_slug TEXT NOT NULL,
        CONSTRAINT market_power_scores_slug_key UNIQUE (market_slug),

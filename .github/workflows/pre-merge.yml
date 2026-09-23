@@ -1369,6 +1369,28 @@ jobs:
             echo "::error::the dcpi_scores readers SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Canon's live reads are independent, same Postgres ───────────────
+      # canonical_stats._query_live() ran its early metric reads in ONE
+      # psycopg2 transaction with no rollback between them, so one failing
+      # read aborted it and every read after it kept the seed, never marked
+      # live. Only a real Postgres has the aborted transaction. Owns and
+      # recreates discovered_facilities and market_power_scores.
+      - name: Canon live reads SQL against a real Postgres
+        env:
+          CANON_LIVE_READS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_canon_live_reads_independent_sql.py -v --tb=short
+
+      - name: Prove the canon live reads SQL test actually RAN
+        env:
+          CANON_LIVE_READS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_canon_live_reads_independent_sql.py \
+            -q -rs --tb=no > clr.txt 2>&1 || { cat clr.txt; exit 1; }
+          cat clr.txt
+          if grep -qi "skipped" clr.txt; then
+            echo "::error::the canon live reads SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1428,6 +1450,7 @@ jobs:
             osm.txt
             rsla.txt
             dsr.txt
+            clr.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
