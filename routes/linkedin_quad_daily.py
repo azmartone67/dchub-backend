@@ -1170,31 +1170,42 @@ def run():
             "data_used":  composed.get("data_used"),
         }
     except Exception as _e_eng:
-        # Engine itself errored — fall back to the legacy generators
+        # Engine itself errored — fall back to the legacy generators.
+        #
+        # Each builder returns None when it has no real data (no DB, a
+        # swallowed query error, or no matching row). Owner decision
+        # 2026-09-23 (#5358, for dcpi_mover) is no post, never a typed
+        # fallback and never a generic filler post. The other three used to
+        # hand None on to `payload["engine_error"] = ...` below, which raised
+        # TypeError: a Flask 500 that left the claim at 'claimed_in_flight',
+        # so the media pulse counted a data drought as an abandoned claim.
+        _eng_err = f"{type(_e_eng).__name__}: {str(_e_eng)[:120]}"
+        _no_data = None
         if target_slot["topic"] == "dcpi_mover":
-            payload = _build_dcpi_mover()
-            if not payload:
-                # No real DCPI row: owner decision 2026-09-23 is no post, never
-                # a typed fallback and never a mover post with no mover in it.
-                # Reachable with bypass=True, so only stamp a claim we hold.
-                _eng_err = f"{type(_e_eng).__name__}: {str(_e_eng)[:120]}"
-                if _slot_claimed:
-                    _stamp_claim_outcome(
-                        slot_date, target_slot["hour"],
-                        "suppressed: no_dcpi_data — engine " + _eng_err)
-                return jsonify({"skipped": True, "reason": "no_dcpi_data",
-                                "engine_error": _eng_err,
-                                "slot": target_slot}), 200
+            payload, _no_data = _build_dcpi_mover(), "no_dcpi_data"
         elif target_slot["topic"] == "hyperscaler_deal":
-            payload = _build_hyperscaler_deal()
+            payload, _no_data = _build_hyperscaler_deal(), "no_hyperscaler_news"
         elif target_slot["topic"] == "ai_capex_index":
-            payload = _build_ai_capex_top5()
+            # Unreachable today: no SLOTS entry carries this topic since the
+            # 16:00 slot became "capability" (2026-07-18), and a forced
+            # ?topic=ai_capex_index resolves to SLOTS[0]. Kept on the same
+            # rule so re-adding the slot cannot bring the TypeError back.
+            payload, _no_data = _build_ai_capex_top5(), "no_ai_capacity_index"
         elif target_slot["topic"] == "industry_pulse":
-            payload = _build_industry_pulse()
+            payload, _no_data = _build_industry_pulse(), "no_industry_pulse_data"
         else:
             payload = {}
+        if _no_data and not payload:
+            # Reachable with bypass=True, so only stamp a claim we hold.
+            if _slot_claimed:
+                _stamp_claim_outcome(
+                    slot_date, target_slot["hour"],
+                    f"suppressed: {_no_data} — engine " + _eng_err)
+            return jsonify({"skipped": True, "reason": _no_data,
+                            "engine_error": _eng_err,
+                            "slot": target_slot}), 200
         text = _format_post(target_slot, payload)
-        payload["engine_error"] = f"{type(_e_eng).__name__}: {str(_e_eng)[:120]}"
+        payload["engine_error"] = _eng_err
 
     if not text:
         # Absolute last resort
