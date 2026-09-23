@@ -57,10 +57,18 @@ def _canon_media_phrases() -> tuple[str, str]:
 
     Fail-open to ("", "") so an unreadable canon yields a count-free sentence,
     never a frozen literal.
+
+    2026-09-23: neither phrase fails when canon is unmeasured, each floors
+    canon's static seed (facilities 400 -> "400+"), so the fail-open above
+    never fired. Each is gated on stat_is_live for the key it reads, asked
+    AFTER the phrase call runs the query, like _canon_markets.
     """
     try:
-        from canonical_stats import deals_phrase, facilities_verified_phrase
-        return (facilities_verified_phrase() or "", deals_phrase() or "")
+        from canonical_stats import (deals_phrase, facilities_verified_phrase,
+                                     stat_is_live)
+        fac, deals = facilities_verified_phrase() or "", deals_phrase() or ""
+        return (fac if stat_is_live("facilities_with_keeper_distinct") else "",
+                deals if stat_is_live("deals") else "")
     except Exception:
         return "", ""
 
@@ -1203,7 +1211,11 @@ def run():
         elif target_slot["topic"] == "industry_pulse":
             payload, _no_data = _build_industry_pulse(), "no_industry_pulse_data"
         else:
-            payload = {}
+            # capability (16:00) and a forced agent_demand have no legacy
+            # builder, so they fell through to _format_post_base's generic
+            # template ("DC Hub Media · What We Shipped" + canon counts). The
+            # owner ruled that out too (2026-09-23): skip like the others.
+            payload, _no_data = None, "no_legacy_builder"
         if _no_data and not payload:
             # Reachable with bypass=True, so only stamp a claim we hold.
             if _slot_claimed:
