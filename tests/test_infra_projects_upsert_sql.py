@@ -144,7 +144,7 @@ def test_first_seen_survives_releases_and_the_board_never_counts_the_initial_loa
     assert rec["count"] == 4
     assert (rec["delta_window"], rec["window_days"], rec["delta_1d"], rec["delta_7d"]) == (
         1, 7, 1, 1), f"board published {rec['delta_window']} new, want 1: {rec}"
-    assert rec["added_basis"] == "first_seen_excluding_initial_load"
+    assert rec["growth_basis"] == "first_seen_column"
     assert rec["status"] == "growing" and "initial load is never counted" in rec["status_reason"]
     assert rec["freshness_column"] == "last_seen_at" and rec["ingest_age_days"] == 0
 

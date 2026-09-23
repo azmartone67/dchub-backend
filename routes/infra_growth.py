@@ -86,7 +86,7 @@ _LAYERS = [
     # information only arrives as PROJECTS (routes/infra_projects_ingest.py).
     # Both loaders run weekly and restamp last_seen_at on every run, so 21d
     # quiet means three missed runs — the loader, not the source, is broken.
-    # "+N new" on these two is read off first_seen_at (see _FIRST_SEEN), never
+    # "+N new" on these two is read off first_seen_at (see _FIRST_SEEN_COLUMN), never
     # off a COUNT(*) delta, so the initial load cannot publish as news.
     ("gas_pipeline_projects",   "gas_pipeline_projects",    "periodic", 21),
     ("transmission_projects",   "transmission_projects",    "periodic", 21),
@@ -173,7 +173,7 @@ _EXPECTED_CADENCE = {
 # stamps its first run in_initial_load=TRUE and never rewrites first_seen_at on
 # a later run (routes/infra_projects_ingest.upsert_sql), so both halves of the
 # predicate below are properties of the rows, not of when a snapshot ran.
-_FIRST_SEEN = {
+_FIRST_SEEN_COLUMN = {
     "gas_pipeline_projects":   ("first_seen_at", "in_initial_load"),
     "transmission_projects":   ("first_seen_at", "in_initial_load"),
 }
@@ -183,7 +183,7 @@ def _first_seen_added(cur, tbl, label):
     """(added_1d, added_7d) counted off first_seen_at with the initial load
     excluded, or None when the read fails — None is UNMEASURED, and the caller
     publishes it as such rather than falling back to a count delta."""
-    col, initial = _FIRST_SEEN[label]
+    col, initial = _FIRST_SEEN_COLUMN[label]
     try:
         cur.execute(
             f"SELECT COUNT(*) FILTER (WHERE {col} >= NOW() - INTERVAL '1 day'), "
@@ -325,7 +325,7 @@ def _layer_status(delta_window, window_days, ingest_age, stale, expected,
     """(status, reason) for one layer, derived ONLY from measured signals.
 
     first_seen=True means delta_window counts rows FIRST SEEN in the window
-    with the initial load excluded (_FIRST_SEEN), not a COUNT(*) delta — so the
+    with the initial load excluded (_FIRST_SEEN_COLUMN), not a COUNT(*) delta — so the
     wording says that, and "the row count did not move" is never claimed of a
     table whose count may well have moved by exactly its initial load.
 
@@ -651,14 +651,14 @@ def _summary(cur):
         # First-seen layers REPLACE every count-derived delta, including the
         # 1d/7d ones, so no field on the record can republish the initial load
         # as growth. A failed read leaves all of them None (unmeasured).
-        first_seen = label in _FIRST_SEEN
-        if first_seen:
+        fs_column = label in _FIRST_SEEN_COLUMN
+        if fs_column:
             fs = _first_seen_added(cur, tbl, label)
             d1, d7 = fs if fs is not None else (None, None)
             dwin, wdays = (d7, 7) if fs is not None else (None, None)
         status, status_reason = _layer_status(
             dwin, wdays, ingest_age, stale, _EXPECTED_CADENCE.get(label),
-            first_seen=first_seen)
+            first_seen=fs_column)
         # ★ APPENDED TO EVERY STATUS, including "growing" — which is the one
         # substations actually reads. A layer gaining 1-8 rows a day from a
         # 0.56% lane while its canonical loader is dead is BOTH growing and
@@ -677,9 +677,9 @@ def _summary(cur):
                "days_since_change": dsc, "flatline": flat, "as_of": str(cur_date),
                # How `delta_*` was counted: a COUNT(*) difference between
                # snapshots, or rows first seen in the window with the table's
-               # initial load excluded (_FIRST_SEEN).
-               "added_basis": ("first_seen_excluding_initial_load" if first_seen
-                               else "count_delta"),
+               # initial load excluded (_FIRST_SEEN_COLUMN).
+               "growth_basis": ("first_seen_column" if fs_column
+                                else "count_snapshot"),
                # Derived health, so a cadence chip ("periodic"/"static") never
                # ships alone — it is a schedule, not a verdict.
                "status": status, "status_reason": status_reason,
@@ -969,7 +969,7 @@ def whats_new():
                 "added_1d": l["delta_1d"], "cadence": l["category"], "as_of": l["as_of"],
                 # How `added` was counted — a snapshot COUNT(*) difference, or
                 # rows first seen in the window excluding the initial load.
-                "added_basis": l.get("added_basis"),
+                "growth_basis": l.get("growth_basis"),
                 # ★ Freshness travels with the total. Without it a layer that
                 # refreshes in place is unreadable: 55,064 fiber routes looks
                 # the same whether it reloaded today or was abandoned in March.
@@ -1097,10 +1097,10 @@ def whats_new():
                         "snapshot, re-baselined at the end of each ingest — 'count_captured_at' says "
                         "exactly when, so a lagging total can never pass for a live one; the freshness "
                         "fields beside it are read live at request time. "
-                        "'added_basis' says how 'added' was counted: 'count_delta' is a "
-                        "difference between daily count snapshots; "
-                        "'first_seen_excluding_initial_load' counts rows first seen in the "
-                        "window and never counts a layer's initial load as new. "
+                        "'growth_basis' says what 'added' counts: 'count_snapshot' is the difference "
+                        "of two daily totals; 'first_seen_column' (gas pipeline and "
+                        "transmission projects) counts rows whose first_seen_at falls in the "
+                        "window, and a layer's initial load is never counted as new. "
                         "'Data centers' total is the raw tracked count; 'verified' is the deduped subset. "
                         "Layers marked provenance='public' unify third-party open data (HIFLD/FCC/EIA); "
                         "'curated' layers are crawled/curated by DC Hub. "

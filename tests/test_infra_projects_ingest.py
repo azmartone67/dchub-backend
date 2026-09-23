@@ -312,7 +312,7 @@ def test_project_layers_are_on_the_board_with_first_seen_counting():
     tree = ast.parse(_growth_src())
     layers = {row[0]: row for row in _dict_literal(tree, "_LAYERS")}
     fresh = _dict_literal(tree, "_FRESH_COL")
-    first = _dict_literal(tree, "_FIRST_SEEN")
+    first = _dict_literal(tree, "_FIRST_SEEN_COLUMN")
     for label in ("gas_pipeline_projects", "transmission_projects"):
         assert layers[label][1] == label
         assert fresh[label] == "last_seen_at", (
