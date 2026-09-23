@@ -373,10 +373,10 @@ def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | Non
 
     Refresh endpoints supported:
       ai_citations          → /api/v1/ai-citations/run-cron     (Phase II)
-      dcpi_scores           → /api/v1/dcpi/recompute            (Phase II/J)
-      discovered_facilities → escalate (no manual endpoint; depends on
-                              discovery cron which runs externally)
-      news_items            → escalate (RSS poll cron, no endpoint)
+      market_power_scores   → /api/v1/dcpi/recompute            (Phase II/J)
+      discovered_facilities → escalate (see REFRESH_MAP)
+      facilities            → escalate (see REFRESH_MAP)
+      news_articles         → escalate (RSS poll cron, no endpoint)
     """
     url = finding.get("url", "") or ""
     if not url.startswith("table:"):
@@ -392,10 +392,16 @@ def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | Non
     # recovers them autonomously.
     REFRESH_MAP = {
         "ai_citations":          "/api/v1/ai-citations/run-cron",
-        "dcpi_scores":           "/api/v1/dcpi/recompute",
         "market_power_scores":   "/api/v1/dcpi/recompute",
-        "discovered_facilities": "/api/v1/admin/osm-crawl/run",
-        "facilities":            "/api/v1/admin/osm-crawl/run",
+        # discovered_facilities / facilities: NO autonomous refresh
+        # (2026-09-23, owner decision), so a breach escalates. Both pointed at
+        # /api/v1/admin/osm-crawl/run, which does not produce them: in
+        # production OSM wrote 177 of 4,197 new discovered_facilities rows in
+        # 30 days (competitor_gap:cloudscene wrote 3,977) and 138 of 892 new
+        # facilities rows in 60 days (dchub_pipeline wrote 749), and 8 of its
+        # last 10 runs found 0 new POIs. The call here is synchronous with a
+        # 60s timeout against a 180s crawl budget. Both SLA rows were
+        # unmeasurable until then, so this autopilot had never fired it.
         # DCM crawler also seeds facilities — usable when OSM hits
         # rate limit or stalls. Picked as fallback by detector via
         # multiple-finding emission.
@@ -857,8 +863,9 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   True,    # refresh endpoints (dcpi/recompute, ai-citations/run-cron) need ADMIN_KEY
         "description": ("Autonomous: when a tracked table exceeds its SLA, fires "
                          "the appropriate refresh endpoint (ai_citations → run-cron, "
-                         "dcpi_scores → recompute). Escalates for tables whose refresh "
-                         "is external-cron only (discovered_facilities, news_items)."),
+                         "market_power_scores → recompute). Escalates for tables with "
+                         "no autonomous refresh (facilities, discovered_facilities, "
+                         "transmission_lines, news_articles)."),
     },
     # 2026-09-23: the radar could not read a table-age SLA column (missing,
     # not a timestamp, or the query raised). No refresh — nothing says the

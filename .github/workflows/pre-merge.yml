@@ -1324,8 +1324,10 @@ jobs:
       # column the table does not have; the UndefinedColumn was swallowed, so
       # the row could never breach. A missing or TEXT column is a schema fact
       # no fake cursor holds, so the shipped EIA ingest writes the rows and the
-      # shipped radar reads them here. Owns and recreates only
-      # transmission_lines, gas_pipelines and substations.
+      # shipped radar reads them here. The ISO-TEXT facilities.first_seen cast
+      # is run under a UTC+14 session TimeZone. Owns and recreates only
+      # transmission_lines, gas_pipelines, substations, facilities and
+      # discovered_facilities.
       - name: Radar SLA columns SQL against a real Postgres
         env:
           RADAR_SLA_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
