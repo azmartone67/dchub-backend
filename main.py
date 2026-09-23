@@ -38167,28 +38167,54 @@ def phase12l_probe_hifld_deep():
 
 # --- phase 13: OSM Overpass loaders -----------------------------------------
 def _phase13_osm_async(loader_name, status_key):
-    """Run an OSM loader function in a background thread, store status."""
+    """Run an OSM loader function in a background thread, store status.
+
+    ★ 2026-09-22: the four weekly loaders are TRACKED. The durable run row in
+    osm_load_runs is created HERE, inside the request, and its id is returned,
+    so the caller polls a row any replica can read. The process-local dict
+    below is kept only for /api/admin/loader-status, which answered
+    `{"loaders": {}}` to the weekly workflow whenever another replica took the
+    read — and the workflow stayed green on a loader that had failed every row.
+    """
     import threading, traceback
     state = phase12g_loader_state
     if state.get(status_key, {}).get('running'):
         return {'started': False, 'reason': 'already running'}
 
+    run_id = None
+    try:
+        import osm_overpass_loader as _osm
+        tracked = loader_name in _osm.TRACKED
+    except Exception as e:
+        return {'started': False, 'error': 'loader import failed: '
+                + type(e).__name__ + ': ' + str(e)[:200]}
+    if tracked:
+        try:
+            live = _osm.active_run(loader_name)
+            if live:
+                return {'started': False, 'reason': 'already running',
+                        'run_id': live}
+            run_id = _osm.start_run(loader_name)
+        except Exception as e:
+            # No durable row means no way to report the outcome: refuse rather
+            # than run a loader nobody can see finish.
+            return {'started': False, 'error': 'osm_load_runs unavailable: '
+                    + type(e).__name__ + ': ' + str(e)[:200]}
+
     def _run():
-        rec = {'running': True, 'started_at': utc_iso_z()}
+        rec = {'running': True, 'started_at': utc_iso_z(), 'run_id': run_id}
         state[status_key] = rec
         try:
-            from osm_overpass_loader import (
-                load_substations, load_power_plants,
-                load_transmission_lines, load_pipelines,
-                load_communications_towers, run_all_osm,
-            )
+            if tracked:
+                out = _osm.run_tracked(loader_name, run_id=run_id)
+                rec['ok'] = out.get('status') in ('success', 'no_new_data')
+                rec['result'] = str(out)[:3000]
+                if not rec['ok']:
+                    rec['error'] = out.get('note') or out.get('status')
+                return
             fn_map = {
-                'osm_substations': load_substations,
-                'osm_power_plants': load_power_plants,
-                'osm_transmission_lines': load_transmission_lines,
-                'osm_pipelines': load_pipelines,
-                'osm_comm_towers': load_communications_towers,
-                'osm_all': run_all_osm,
+                'osm_comm_towers': _osm.load_communications_towers,
+                'osm_all': _osm.run_all_osm,
             }
             fn = fn_map.get(loader_name)
             if not fn:
@@ -38205,8 +38231,9 @@ def _phase13_osm_async(loader_name, status_key):
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    return {'started': True, 'status_key': status_key,
-            'check_at': '/api/admin/loader-status'}
+    return {'started': True, 'status_key': status_key, 'run_id': run_id,
+            'check_at': f'/api/admin/osm-load-runs?id={run_id}' if run_id
+                        else '/api/admin/loader-status'}
 
 
 def _phase13_check_auth():
@@ -38251,6 +38278,27 @@ def phase13_osm_all():
     if not _phase13_check_auth():
         return jsonify({'error': 'forbidden'}), 403
     return jsonify(_phase13_osm_async('osm_all', 'osm_all'))
+
+
+@app.route('/api/admin/osm-load-runs', methods=['GET'])
+def phase13_osm_load_runs():
+    """Durable outcome of the weekly OSM loaders (osm_load_runs), newest first.
+
+    ?id=<run_id> | ?loader=<osm_substations|...> | ?limit=N. Each row carries
+    `state`: the stored status, or 'stalled' when a running row stopped
+    heartbeating (its thread died — usually a deploy mid-run).
+    """
+    if not _phase13_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    try:
+        import osm_overpass_loader as _osm
+        rid = request.args.get('id')
+        runs = _osm.recent_runs(loader=(request.args.get('loader') or None),
+                                run_id=(int(rid) if rid else None),
+                                limit=int(request.args.get('limit') or 20))
+    except Exception as e:
+        return jsonify({'ok': False, 'error': type(e).__name__ + ': ' + str(e)[:200]}), 500
+    return jsonify({'ok': True, 'runs': runs})
 # --- end phase 13 -----------------------------------------------------------
 
 

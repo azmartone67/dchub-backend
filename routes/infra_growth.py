@@ -98,6 +98,16 @@ _LAYERS = [
     ("interconnection_requests", "interconnect_queue",      "daily",    4),
     ("planned_generators",      "planned_generators",       "periodic", 45),
     ("generator_inventory",     "generator_inventory",      "periodic", 14),
+    # ★ OSM ENERGY LANES (2026-09-22). Their OWN tables, never merged into
+    # transmission_lines / gas_pipelines (those hold the same physical lines
+    # from EIA; a merge would count each twice). A row qualifies only if it is
+    # new to OpenStreetMap since the federal snapshot — the rule is published
+    # per item as `inclusion_rule` (_INCLUSION_RULE) and enforced by
+    # osm_overpass_loader.is_new_since. "+N" is first-seen based with each
+    # state's first sweep excluded (_FIRST_SEEN_COLUMN). Weekly sweep, so 21d
+    # quiet = three missed runs.
+    ("osm_transmission_new",    "osm_transmission_lines",   "periodic", 21),
+    ("osm_gas_pipelines_new",   "osm_gas_pipelines",        "periodic", 21),
 ]
 _CAT = {l[0]: l[2] for l in _LAYERS}
 _STALE = {l[0]: l[3] for l in _LAYERS}
@@ -138,6 +148,10 @@ _FRESH_COL = {
     "interconnection_requests": "loaded_at",
     "planned_generators":      "ingested_at",
     "generator_inventory":     "ingested_at",
+    # Every weekly sweep refreshes last_seen_at on each row it sees (ON
+    # CONFLICT DO UPDATE); first_seen_at is identity and never rewritten.
+    "osm_transmission_new":    "last_seen_at",
+    "osm_gas_pipelines_new":   "last_seen_at",
 }
 # Columns stored as TEXT rather than a timestamp type; need ::timestamptz.
 _FRESH_TEXT = {"power_plants_discovered"}
@@ -179,6 +193,8 @@ _EXPECTED_CADENCE = {
     "interconnection_requests": "daily",        # iso-queue-ingest.yml, 7 ISO feeds
     "planned_generators":      "monthly",       # EIA-860M Planned sheet
     "generator_inventory":     "weekly",        # EIA-860M operable, pulled Mondays
+    "osm_transmission_new":    "weekly",        # OSM is edited continuously; swept Sundays
+    "osm_gas_pipelines_new":   "weekly",
 }
 
 # label -> (registry layer in util/first_seen.py, noun for the reason line,
@@ -209,6 +225,35 @@ _FIRST_SEEN = {
 _FIRST_SEEN_COLUMN = {
     "gas_pipeline_projects":   ("first_seen_at", "in_initial_load"),
     "transmission_projects":   ("first_seen_at", "in_initial_load"),
+    # OSM lanes: the initial load is PER STATE — a (lane, state)'s first
+    # successful sweep stamps in_baseline=TRUE, so a state that failed on the
+    # first run cannot leak its backfill into a later week's +N
+    # (osm_overpass_loader._lane_writer).
+    "osm_transmission_new":    ("first_seen_at", "in_baseline"),
+    "osm_gas_pipelines_new":   ("first_seen_at", "in_baseline"),
+}
+
+# label -> the rule a row must meet to be in the layer at all, published with
+# the layer (`inclusion_rule`, and appended to status_reason so the page shows
+# it). The dates and thresholds are osm_overpass_loader's constants — fenced by
+# tests/test_osm_energy_lanes.py so the two cannot drift.
+_INCLUSION_RULE = {
+    "osm_transmission_new": (
+        "OpenStreetMap power lines of 69 kV and up created in OSM after "
+        "2025-08-26 (the EIA transmission snapshot date): the way and at least "
+        "half of its nodes were created after that date, so a split of an older "
+        "line does not qualify. New to OSM is not newly built, and EIA's "
+        "transmission layer carries no geometry to test against, so a line OSM "
+        "mapped late may be one EIA already lists. Kept apart from the EIA "
+        "layer and never added to it. '+N' counts only features first seen "
+        "after this lane's first sweep of their state."),
+    "osm_gas_pipelines_new": (
+        "OpenStreetMap natural-gas pipelines created in OSM after 2025-07-01 "
+        "(the EIA pipeline snapshot date): the way and at least half of its "
+        "nodes were created after that date, and its centre is not within "
+        "1 km of a pipeline point already held from EIA. Kept apart from the "
+        "EIA layer and never added to it. '+N' counts only features first seen "
+        "after this lane's first sweep of their state."),
 }
 
 
@@ -752,6 +797,8 @@ def _summary(cur):
             status, status_reason = _layer_status(
                 dwin, wdays, ingest_age, stale, _EXPECTED_CADENCE.get(label),
                 first_seen=fs_column)
+        if _INCLUSION_RULE.get(label):
+            status_reason = (status_reason or "") + " · In this layer: " + _INCLUSION_RULE[label]
         # ★ APPENDED TO EVERY STATUS, including "growing" — which is the one
         # substations actually reads. A layer gaining 1-8 rows a day from a
         # 0.56% lane while its canonical loader is dead is BOTH growing and
@@ -802,6 +849,9 @@ def _summary(cur):
                "growth_basis": ("first_seen_registry" if fs_spec
                                 else "first_seen_column" if fs_column
                                 else "count_snapshot"),
+               # For a lane that admits only some rows: the rule a row must
+               # meet to be in the layer at all. None = no such filter.
+               "inclusion_rule": _INCLUSION_RULE.get(label),
                "first_seen": first_seen}
         out.append(rec)
         if flat:
@@ -903,6 +953,8 @@ _FRIENDLY = {
     "gem_lng_terminals": "LNG terminals (GEM)",
     "gem_pipelines": "Global gas pipelines (GEM)",
     "gem_coal_mines": "Coal mines (GEM)",
+    "osm_transmission_new": "Transmission lines new in OpenStreetMap (OSM lane)",
+    "osm_gas_pipelines_new": "Gas pipelines new in OpenStreetMap (OSM lane)",
 }
 
 # Provenance so the public feed — and anything downstream that messages these
@@ -934,6 +986,8 @@ _PROVENANCE = {
     "interconnection_requests": ("public", "ISO interconnection queues"),
     "planned_generators":      ("public",  "EIA-860M"),
     "generator_inventory":     ("public",  "EIA-860M"),
+    "osm_transmission_new":    ("public",  "OpenStreetMap"),
+    "osm_gas_pipelines_new":   ("public",  "OpenStreetMap"),
 }
 
 
@@ -1083,6 +1137,7 @@ def whats_new():
                 # How `added` was counted — a snapshot COUNT(*) difference, or
                 # rows first seen in the window excluding the initial load.
                 "growth_basis": l.get("growth_basis"),
+                "inclusion_rule": l.get("inclusion_rule"),
                 # ★ Freshness travels with the total. Without it a layer that
                 # refreshes in place is unreadable: 55,064 fiber routes looks
                 # the same whether it reloaded today or was abandoned in March.
@@ -1210,6 +1265,9 @@ def whats_new():
                         "snapshot, re-baselined at the end of each ingest — 'count_captured_at' says "
                         "exactly when, so a lagging total can never pass for a live one; the freshness "
                         "fields beside it are read live at request time. "
+                        "The OpenStreetMap lanes count 'first_seen_column' too, with each state's "
+                        "first sweep as the initial load; 'inclusion_rule', where present, states "
+                        "what a row must meet to be in the layer at all. "
                         "'growth_basis' says what 'added' counts: 'count_snapshot' is the difference "
                         "of two daily totals; 'first_seen_column' (gas pipeline and "
                         "transmission projects) counts rows whose first_seen_at falls in the "
