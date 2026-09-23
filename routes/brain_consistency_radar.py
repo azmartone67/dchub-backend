@@ -8695,11 +8695,10 @@ def check_brand_surface_dormant() -> list[dict]:
 def check_data_freshness_sla_breach() -> list[dict]:
     """Fires when a tracked dataset hasn't refreshed within its SLA.
     Operationalizes the "is the data fresh" question that ops keeps
-    asking manually. Per-dataset SLA (in hours):
-      • dcpi_scores       — 12h  (recompute cron)
-      • discovered_facilities — 24h (discovery cron)
-      • news_items        — 6h   (news pipeline)
-      • ai_citations      — 168h (weekly cron — see Phase II)
+    asking manually. The per-dataset SLAs (in hours) are the SLAS list
+    below. A row the radar cannot measure — missing table, missing or
+    non-timestamp column, a query that raises — is reported as
+    sla_column_unmeasurable, never passed as fresh.
     """
     findings: list[dict] = []
     # r33-stale-recovery (2026-05-21): expanded SLA list to match what
@@ -8709,9 +8708,17 @@ def check_data_freshness_sla_breach() -> list[dict]:
     # now monitored.
     SLAS = [
         # (table, age_column, max_hours, friendly_label)
-        ("dcpi_scores",            "computed_at",  12,   "DCPI scores"),
+        # DCPI: market_power_scores is the table the recompute writes. The
+        # 12h row for "dcpi_scores" named a table that has never existed in
+        # production, so it was skipped on every scan (removed 2026-09-23).
         ("market_power_scores",    "computed_at",  48,   "market power scores"),
-        ("discovered_facilities",  "discovered_at",24,   "facility discovery queue"),
+        # discovered_facilities.first_seen is timestamptz DEFAULT now(), set
+        # on every insert (production, 2026-09-23: 30,785 of 30,785 rows, and
+        # the same 7d/24h counts as discovered_at, which is TEXT).
+        ("discovered_facilities",  "first_seen",   24,   "facility discovery queue"),
+        # facilities.first_seen is ISO TEXT — read through
+        # _SLA_ISO_TEXT_COLUMNS. Neither discovery table has an autonomous
+        # refresh: a breach escalates (brain_autopilot REFRESH_MAP).
         ("facilities",             "first_seen",   336,  "canonical facilities"),
         ("news_articles",          "published_at", 6,    "news ingest"),
         # r36 (2026-05-31): 36→168. press_releases is EVENT-DRIVEN, not a fixed
@@ -8774,25 +8781,29 @@ def check_data_freshness_sla_breach() -> list[dict]:
         with c.cursor() as cur:
             for tbl, col, sla_hrs, label in SLAS:
                 try:
+                    # An SLA row naming a table or column that is missing,
+                    # or a column that is not a timestamp, can never breach.
+                    # Report it: silence from this row would otherwise read
+                    # as "fresh". (A missing table used to be skipped as
+                    # "doesn't exist on this deploy" — that is how the
+                    # dcpi_scores row stayed blind.)
                     cur.execute(f"SELECT to_regclass('public.{tbl}')")
                     if not (cur.fetchone() or [None])[0]:
-                        continue  # table doesn't exist on this deploy
-                    # An SLA row naming a column that is missing or not a
-                    # timestamp can never breach. Report it: silence from
-                    # this row would otherwise read as "fresh".
+                        findings.append(_sla_unmeasurable(
+                            tbl, col, sla_hrs, label, f'table "{tbl}" does not exist'))
+                        continue
                     cur.execute(
                         "SELECT data_type FROM information_schema.columns "
                         "WHERE table_schema = 'public' AND table_name = %s "
                         "AND column_name = %s", (tbl, col))
                     dtype = (cur.fetchone() or [None])[0]
-                    if dtype not in _SLA_TIMESTAMP_TYPES:
+                    age_sql = _sla_age_sql(tbl, col, dtype)
+                    if age_sql is None:
                         why = (f'column "{col}" does not exist' if dtype is None
                                else f'column "{col}" is {dtype}, not a timestamp')
                         findings.append(_sla_unmeasurable(tbl, col, sla_hrs, label, why))
                         continue
-                    cur.execute(
-                        f"SELECT MAX({col}) FROM {tbl}"
-                    )
+                    cur.execute(age_sql)
                     last = (cur.fetchone() or [None])[0]
                     if last is None:
                         findings.append({
@@ -8835,6 +8846,35 @@ def check_data_freshness_sla_breach() -> list[dict]:
 
 _SLA_TIMESTAMP_TYPES = ("timestamp with time zone", "timestamp without time zone")
 
+# TEXT SLA columns known to hold ISO-8601 strings, read by casting. Any other
+# TEXT column stays unmeasurable. facilities.first_seen in production
+# (2026-09-23): 15,685 of 25,930 rows set, every one ISO — date-only (the
+# dchub_pipeline writer), naive datetimes, and 100 ending in Z or +00.
+_SLA_ISO_TEXT_COLUMNS = frozenset({("facilities", "first_seen")})
+
+
+def _sla_age_sql(tbl: str, col: str, dtype: str | None) -> str | None:
+    """The newest-value query for one SLA row, or None if the column cannot
+    be measured.
+
+    An ISO TEXT value with an offset (Z, +00, -07:00, +0530) is read at that
+    offset; one without — date-only or a naive datetime — is read as UTC, as
+    the caller reads a naive timestamp column. Never in the session TimeZone:
+    DATABASE_URL is the pooler, which resets session settings between
+    transactions. A value that does not parse raises, and the caller reports
+    the row unmeasurable."""
+    if dtype in _SLA_TIMESTAMP_TYPES:
+        return f"SELECT MAX({col}) FROM {tbl}"
+    if dtype == "text" and (tbl, col) in _SLA_ISO_TEXT_COLUMNS:
+        return (
+            "SELECT MAX(CASE"
+            " WHEN v ~ '[0-9]{2}:[0-9]{2}'"
+            "  AND v ~ '(Z|[+-][0-9]{2}|[+-][0-9]{2}:[0-9]{2}|[+-][0-9]{4})$'"
+            " THEN v::timestamptz"
+            " ELSE v::timestamp AT TIME ZONE 'UTC' END)"
+            f" FROM (SELECT NULLIF(btrim({col}), '') AS v FROM {tbl}) AS s")
+    return None
+
 
 def _sla_unmeasurable(tbl: str, col: str, sla_hrs: int, label: str, why: str) -> dict:
     """A table-age SLA row the radar could not evaluate.
@@ -8854,7 +8894,7 @@ def _sla_unmeasurable(tbl: str, col: str, sla_hrs: int, label: str, why: str) ->
                    f"This {sla_hrs}h SLA row can never breach, so its silence "
                    f"is not evidence the table is current. Point its tuple in "
                    f"the SLAS list (routes/brain_consistency_radar.py) at a "
-                   f"timestamp column the table's writer sets."),
+                   f"table and timestamp column a writer sets, or remove the row."),
     }
 
 
