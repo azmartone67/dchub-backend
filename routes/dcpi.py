@@ -35,7 +35,7 @@ import psycopg2.extras
 from functools import wraps
 from util.db_honesty import close_quietly, try_fetchall, try_fetchone
 from util.us_states import NAME_TO_ABBR, state_match_pair
-from util.water_stress import STATE_WATER_STRESS_SQL, water_band
+from util.water_risk import read_state_stress, read_states_stress
 from tier_registry import price_display as _canon_price_display
 def _safe_dcpi_page(fn):
     @wraps(fn)
@@ -2684,9 +2684,10 @@ def compute_water_risk_score(metrics: dict) -> float:
 
     Inputs (any may be missing — degrades to neutral 50):
         water_stress_index    1..5 band off water_risk.water_stress_score
-                              (5 = extremely high). util.water_stress.water_band
-                              maps the stored 0-100 WRI score onto it; this is
-                              NOT a USGS scale and never was.
+                              (5 = extremely high). util.water_risk, the one
+                              read path for that table, maps the stored 0-100
+                              WRI score onto it; this is NOT a USGS scale and
+                              never was.
         drought_pct           0..100, % of state area in drought
         cooling_water_avail   m³/day available for industrial use (optional)
     """
@@ -5213,7 +5214,7 @@ def api_score_market_v2(slug, _paid=None):
     # InFailedSqlTransaction. Both `water_stress_index` and
     # `ppa_rate_cents_kwh` were served null behind HTTP 200, and
     # compute_water_risk_score then returned its neutral 50 as if it were a
-    # measurement. See util.db_honesty and util.water_stress.
+    # measurement. See util.db_honesty and util.water_risk.
     read_errors = {}
     row = None
     water_metrics = {}
@@ -5258,18 +5259,22 @@ def api_score_market_v2(slug, _paid=None):
                 # reading INVERTED. water_risk holds the verified WRI
                 # Aqueduct roll-up, 0-100, banded to the 1-5 index
                 # compute_water_risk_score documents.
-                r, err = try_fetchone(cur, """
-                    SELECT water_stress_score
-                      FROM water_risk
-                     WHERE UPPER(state) = %s
-                     ORDER BY computed_at DESC NULLS LAST
-                     LIMIT 1
-                """, (abbr,))
+                # util.water_risk is the ONE read path for that table: the
+                # live schema, the 0-100 scale and the banding are stated once
+                # there rather than re-learned per surface, and it returns
+                # (value, error) so a failure stays NAMED below instead of
+                # becoming a null indistinguishable from "no row for VA".
+                # ★ THIS CURSOR IS A RealDictCursor. util.water_risk._cell
+                # reads a dict row BY NAME for exactly that reason: a
+                # positional row[0] raises KeyError: 0, which escapes
+                # try_fetchone's error capture and unwinds into the `except`
+                # around this whole block — blanking every read that follows
+                # water. That is the cascade this endpoint was fixed for.
+                water, err = read_state_stress(cur, abbr)
                 if err:
                     read_errors["water_stress"] = err
-                elif r and r.get("water_stress_score") is not None:
-                    water_metrics["water_stress_index"] = water_band(
-                        float(r["water_stress_score"]))
+                elif water is not None and water["band"] is not None:
+                    water_metrics["water_stress_index"] = water["band"]
 
                 # ★ eia_retail_rates.state holds FULL names ("Virginia") and
                 # also census-region rows ("East North Central"), so match
@@ -5494,14 +5499,22 @@ def api_dcpi_recommend():
             # `state_water` was ALWAYS empty: water_ok was vacuously true and
             # water_stress_max filtered nothing. water_risk.water_stress_score
             # is 0-100; band it to the 1-5 index this filter compares on.
-            water_rows, err = try_fetchall(cur, STATE_WATER_STRESS_SQL)
+            # util.water_risk.read_states_stress is the ONE read path: one
+            # query for every state on the board, keyed by USPS code, picking
+            # the newest row per state with DISTINCT ON rather than averaging
+            # the ingest runs together. It names the failure instead of
+            # leaving an empty dict that reads as "no state has a reading".
+            # A row whose score is null still bands to None and is skipped —
+            # the guard the retired constant's `IS NOT NULL` used to do.
+            # ★ RealDictCursor again: the read path indexes by name, not by
+            # position. See util.water_risk._cell.
+            market_states = [r.get("state") for r in rows]
+            water_by_state, err = read_states_stress(cur, market_states)
             if err:
                 read_errors["water_stress"] = err
-            for r in water_rows:
-                v = r["water_stress_score"]
-                band = water_band(float(v)) if v is not None else None
-                if band is not None:
-                    state_water[r["state_code"]] = band
+            for code, water in water_by_state.items():
+                if water["band"] is not None:
+                    state_water[code] = water["band"]
     finally:
         close_quietly(c)
 

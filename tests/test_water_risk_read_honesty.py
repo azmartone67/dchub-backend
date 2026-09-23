@@ -43,6 +43,7 @@ WHAT IS CHECKED
 import ast
 import functools
 import os
+import re
 
 import psycopg2.extras
 import pytest
@@ -326,9 +327,30 @@ def test_hyperscaler_reads_every_state_in_one_query():
 
 DEAD_COLUMNS = ("drought_d2_months", "stress_score", "baseline_water_stress")
 
-# The single read path. Both route modules now go through it; a hand-copy
+# The single read path. All FIVE route surfaces now go through it; a hand-copy
 # coming back is caught by test_water_risk_has_one_read_path below.
 READ_PATH = "util/water_risk.py"
+
+#: Every module that used to carry its own `FROM water_risk` query and now
+#: must not. The first three came through #5263; routes/dcpi.py and
+#: routes/land_power_mcp.py joined in #5285, which also deleted
+#: util/water_stress.py — the second reader that owned
+#: STATE_WATER_STRESS_SQL and a second copy of the band.
+CONVERTED_SURFACES = ("routes/market_brief.py", "routes/hyperscaler_brief.py",
+                      "routes/site_simulator.py", "routes/dcpi.py",
+                      "routes/land_power_mcp.py")
+
+#: (module, the accessor it must call). A module can stop carrying its own SQL
+#: by having its read DELETED as easily as by having it consolidated, and the
+#: SQL scan cannot tell those apart — so pin the call too.
+READ_PATH_CALLERS = (
+    ("routes/market_brief.py",     "read_state_stress"),
+    ("routes/hyperscaler_brief.py", "read_states_stress"),
+    ("routes/site_simulator.py",   "read_state_stress"),
+    ("routes/dcpi.py",             "read_state_stress"),
+    ("routes/dcpi.py",             "read_states_stress"),
+    ("routes/land_power_mcp.py",   "read_state_stress"),
+)
 
 _SKIP_DIRS = {".git", "__pycache__", "node_modules", ".claude", "venv", ".venv"}
 
@@ -384,11 +406,22 @@ def test_water_risk_has_one_read_path():
     """
     owners = {p for p, _ in _modules_touching_water_risk()}
     assert READ_PATH in owners, f"{READ_PATH} stopped reading water_risk"
-    for hand_copy in ("routes/market_brief.py", "routes/hyperscaler_brief.py",
-                      "routes/site_simulator.py"):
+    for hand_copy in CONVERTED_SURFACES:
         assert hand_copy not in owners, (
             f"{hand_copy} reads water_risk directly again — go through "
             f"{READ_PATH} so the schema facts live in one place")
+    # ★ #5285: util/water_stress.py was a SECOND reader of this table that
+    # this fence never named, because it was a util/ module rather than one of
+    # the three routes on the list — so "one read path" was already false when
+    # the assertion above was written, and it passed anyway. Name any util
+    # module that reads the table, not just the routes.
+    stray_utils = {o for o in owners
+                   if o.startswith("util" + os.sep) and o != READ_PATH}
+    assert not stray_utils, (
+        f"a second util module reads water_risk: {sorted(stray_utils)}. That "
+        f"is the shape of the #5262/#5263 duplicate — util/water_stress.py "
+        f"owned STATE_WATER_STRESS_SQL and its own band for a day without "
+        f"this fence noticing. Fold it into {READ_PATH}.")
 
 
 def test_baseline_water_stress_is_never_read_back():
@@ -407,14 +440,16 @@ def test_fence_is_not_vacuous():
     assert scanned, "nothing reads water_risk — this fence would inspect nothing"
     joined = " ".join(s for _, sqls in scanned for s in sqls)
     assert "water_stress_score" in joined, "no reader selects the live column"
-    # Both route modules must still CALL the read path, or the behavioural
-    # tests above are exercising code nothing reaches.
-    assert "read_state_stress" in open(
-        os.path.join(_repo_root(), "routes/market_brief.py"), encoding="utf-8").read()
-    assert "read_states_stress" in open(
-        os.path.join(_repo_root(), "routes/hyperscaler_brief.py"), encoding="utf-8").read()
-    assert "read_state_stress" in open(
-        os.path.join(_repo_root(), "routes/site_simulator.py"), encoding="utf-8").read()
+    # Every converted module must still CALL the read path, or the
+    # behavioural tests above are exercising code nothing reaches — and
+    # test_water_risk_has_one_read_path would pass on a route whose water
+    # read was deleted rather than consolidated.
+    for rel, accessor in READ_PATH_CALLERS:
+        src = open(os.path.join(_repo_root(), rel), encoding="utf-8").read()
+        assert accessor + "(cur," in src, (
+            f"{rel} no longer calls {accessor}() — either the read was "
+            f"dropped, or it went back to its own SQL under a spelling the "
+            f"scan above does not catch")
     assert hasattr(mb, "_section_risk")
     assert hasattr(hb, "_section_water")
     assert wr.STRESSED_BAND == 4
@@ -496,6 +531,45 @@ def test_the_many_state_read_survives_a_dict_row_too():
 
 
 def test_the_many_state_sql_still_aliases_the_key_column():
-    """If the alias goes, the dict path above silently keys on `upper`."""
+    """If the alias goes, the dict path above silently keys on `upper`.
+
+    ★ THIS FENCE COULD NOT FAIL UNTIL #5285. It asserted the SUBSTRING
+    "upper(state) as state", which is also present in "upper(state) AS
+    state_code" — so renaming the alias to anything STARTING with `state`
+    passed. Caught by mutating the alias to `state_code` and watching all 75
+    tests stay green: read_states_stress would then have keyed every row off
+    a column the row does not carry, dropped all 51 states at `if not key:
+    continue`, and published an empty enrichment with no error. Match the
+    alias as a whole token.
+    """
     flat = " ".join(wr._SQL_MANY.split()).lower()
-    assert "upper(state) as state" in flat, wr._SQL_MANY
+    assert re.search(r"upper\(state\)\s+as\s+state\b", flat), wr._SQL_MANY
+
+
+def test_the_many_state_alias_and_the_dict_lookup_cannot_drift_apart():
+    """The alias in the SQL and the name the dict path looks up are ONE fact
+    stored in two places. Pin them to each other rather than to a literal.
+
+    The fixtures above hand back a dict keyed `state` no matter what the SQL
+    selects — a FakeCursor answers on a substring match and does not parse the
+    SELECT list — so they cannot catch a one-sided rename. This reads the
+    alias out of the real SQL, keys a row by THAT, and requires the read path
+    to find it: now either side moving alone fails, and both moving together
+    passes, which is the actual invariant.
+    """
+    flat = " ".join(wr._SQL_MANY.split())
+    m = re.search(r"(?i)UPPER\(state\)\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)", flat)
+    assert m, wr._SQL_MANY
+    alias = m.group(1)
+
+    cur = _FakeCursor(rows={"FROM water_risk": [
+        _dict_row([(alias, "AZ"), ("water_stress_score", _AZ_SCORE),
+                   ("bws_category", "High")])]})
+    out, err = wr.read_states_stress(cur, ["AZ"])
+    assert err is None
+    assert list(out) == ["AZ"], (
+        f"_SQL_MANY aliases the key column as {alias!r} but read_states_stress "
+        f"looks it up under a different name, so every row is dropped at "
+        f"`if not key: continue` and the enrichment publishes {out!r} with no "
+        f"error to show for it")
+    assert out["AZ"]["band"] == 4

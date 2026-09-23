@@ -1,5 +1,5 @@
 {
-  "_comment": "PINNED COVERAGE FLOORS — a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
+  "_comment": "PINNED COVERAGE FLOORS \u2014 a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
   "floors": {
     "test_admin_credential_strength.py": {
       "pglob": 660
@@ -205,14 +205,18 @@
     "test_llm_spend_coverage.py": {
       "pglob": 680
     },
-    "test_llms_cite_without_mcp.py": {"walk": 76},
+    "test_llms_cite_without_mcp.py": {
+      "walk": 76
+    },
     "test_locked_gate_manifest_post_only.py": {
       "glob": 670
     },
     "test_loop_scoring_honesty_0918.py": {
       "pglob": 670
     },
-    "test_main_red_is_watched.py": {"glob": 140},
+    "test_main_red_is_watched.py": {
+      "glob": 140
+    },
     "test_no_import_time_heartbeat.py": {
       "pglob": 2160
     },
@@ -288,7 +292,9 @@
     "test_shell_scheduler_coverage.py": {
       "glob": 670
     },
-    "test_source_map_finding_shapes.py": {"walk": 80},
+    "test_source_map_finding_shapes.py": {
+      "walk": 80
+    },
     "test_sql_literal_percent.py": {
       "pglob": 2120,
       "prglob": 2120
@@ -314,7 +320,12 @@
     "test_tier_grants_are_classified.py": {
       "pglob": 2110
     },
-    "test_water_risk_read_honesty.py": {"walk": 80},
+    "test_water_risk_read_honesty.py": {
+      "walk": 80
+    },
+    "test_water_stress_read_honesty.py": {
+      "walk": 80
+    },
     "test_worker_kv_write_is_credential_free.py": {
       "walk": 70
     },

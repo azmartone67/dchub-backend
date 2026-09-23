@@ -50,6 +50,29 @@ the stored values land on 0 / 25 / 50 / 75 / 100 for category-derived rows and
 anywhere in 0-100 for the ratio-derived fallback. A threshold written for a
 1-5 index is off by a factor of ~20 against it. Use `water_band_1_5()` if a
 1-5 threshold is genuinely what a caller wants.
+
+★ WHERE THE SIGNAL IS NOT: `usgs_water_stress`. That table has no stress
+column of any kind. Its live columns are id, site_id, site_name, latitude,
+longitude, state, county, aquifer_name, well_depth_ft, water_level_ft,
+water_level_date, site_type, updated_at — 560 rows across 16 states. FOUR
+route modules asked it for `AVG(stress_index)`, which raises UndefinedColumn
+on every call: #5259 fixed routes/site_simulator.py, #5262 the other three.
+And its `water_level_ft` groundwater proxy is NOT a substitute — it was
+withdrawn on 2026-07-07 for reading INVERTED, and `_UNSUPPORTED_OBJECTIVES`
+in routes/interconnection_queues.py still refuses to score off it.
+
+★ THERE USED TO BE A SECOND MODULE, AND THAT IS THE LESSON. #5262 landed
+`util/water_stress.py` (WATER_BANDS, water_band, STATE_WATER_STRESS_SQL) and
+#5263 landed this one, a day apart, neither aware of the other: the 0-100 ->
+1-5 banding was implemented twice from two separate cut tuples, and
+`FROM water_risk` SQL lived in two places. They happened to agree across the
+whole range — #5281 pinned them to each other rather than merging them — so
+the duplicate was invisible in behaviour and would have stayed invisible
+until one of the two drifted. util/deals.py (#2079) is the same class at
+seven copies. This module is now the only band and the only reader; the SQL
+and the schema facts above are stated once, here, and a fence in
+tests/test_water_risk_read_honesty.py fails the build if a second band
+implementation or a second `FROM water_risk` reader reappears.
 """
 from util.db_honesty import try_fetchall, try_fetchone
 
@@ -93,6 +116,11 @@ def water_band_1_5(score):
     Boundaries are inclusive-below: a score exactly on a cut point belongs to
     the HIGHER band, matching WRI's own bucket edges (10-20% is Low-Medium, so
     a 12.5 lands in band 2, not band 1).
+
+    ★ None passes straight through. A stress score we could not read stays
+    null and never becomes a number — a failed read that degrades to a band
+    is indistinguishable from a measured one, which is the entire failure
+    mode this module exists to prevent.
     """
     if score is None:
         return None
@@ -112,9 +140,16 @@ def _cell(row, idx, name):
 
     ★ psycopg2 hands rows back in two shapes and only one of them indexes
     positionally. A plain `conn.cursor()` yields a tuple, so `row[0]` is the
-    first column; a RealDictCursor — which is what routes/site_simulator.py
-    uses — yields a dict subclass, where `row[0]` is a KEY lookup and raises
-    `KeyError: 0` (verified on psycopg2 2.9.12).
+    first column; a RealDictCursor — which is what routes/site_simulator.py,
+    routes/dcpi.py and routes/land_power_mcp.py all use — yields a dict
+    subclass, where `row[0]` is a KEY lookup and raises `KeyError: 0`
+    (verified on psycopg2 2.9.12).
+
+    ★ CHECK THE CURSOR FACTORY BEFORE MOVING A ROUTE ONTO THIS MODULE. Of the
+    five surfaces reading through it, three pass a RealDictCursor and two
+    (routes/market_brief.py, routes/hyperscaler_brief.py) pass a plain
+    cursor — so both branches below are live, and a change that drops either
+    one breaks a real caller rather than a hypothetical one.
 
     That distinction is load-bearing, not cosmetic. A KeyError raised here
     escapes `try_fetchone`, which has already returned by this point, so it
@@ -160,6 +195,10 @@ _SQL_ONE = """
      LIMIT 1
 """
 
+# ★ `DISTINCT ON`, never `AVG(...) GROUP BY UPPER(state)`. water_risk carries
+# one row per state per ingest run, so an average would silently blend the
+# 2026-07-10 run with any earlier or later one and publish a number that
+# belongs to no run at all. Newest row per state, keyed by the 2-letter code.
 _SQL_MANY = """
     SELECT DISTINCT ON (UPPER(state))
            UPPER(state) AS state, water_stress_score, bws_category
@@ -191,6 +230,15 @@ def read_states_stress(cur, states):
     each failure with `except: continue`, so a broken read looked exactly like
     a state that simply has no row — 51 silent nulls averaged into a confident
     number.
+
+    ★ ONE DIFFERENCE FROM THE RETIRED `STATE_WATER_STRESS_SQL` (#5262), which
+    carried `WHERE water_stress_score IS NOT NULL`: that picked the newest row
+    WITH a score, this picks the newest row and reports its score, null or
+    not. Identical today — all 51 rows come from the single 2026-07-10 run and
+    every one has a score — and deliberately so: a row that exists with a null
+    score is a coverage fact the caller may want, not something to hide behind
+    a missing key. Callers that need a number must still gate on `band is not
+    None`, exactly as they had to before.
     """
     keys = sorted({(s or "").strip().upper() for s in (states or []) if s})
     if not keys:
