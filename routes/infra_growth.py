@@ -222,6 +222,63 @@ _FIRST_SEEN = {
 # stamps its first run in_initial_load=TRUE and never rewrites first_seen_at on
 # a later run (routes/infra_projects_ingest.upsert_sql), so both halves of the
 # predicate below are properties of the rows, not of when a snapshot ran.
+# label -> SQL counting rows an OpenStreetMap lane BACKFILLED into this
+# count-snapshot layer's table between %(t0)s and %(t1)s (timestamptz).
+# ★ The snapshot difference cannot tell a backfill from growth. When #5306
+# made the weekly OSM loaders actually write, their first sweeps stored every
+# OSM substation / plant the broken loader never had — years of OSM, not this
+# week's. Measured 2026-09-23: one resumed run inserted 2,729 substations more
+# than 150 m from anything held, and that morning's snapshot read substations
+# +1,022 in a day. A lane row is backfill unless its state has been baselined
+# (osm_lane_baseline: first successful sweep, osm_overpass_loader.
+# _mark_baseline) AND the row was written after that mark; rows written since
+# the lane started writing and before its state's mark are subtracted from
+# every published delta. If this read fails, the delta is UNMEASURED (None),
+# never the raw difference that still contains the backfill.
+_OSM_SUBSTATION_LANE_START = "2026-09-23 04:59:46"   # #5306 merged; first write after
+_BACKFILL_SUBTRACT = {
+    "substations": """
+        SELECT COUNT(*) FROM substations s
+         WHERE s.source = 'osm'
+           AND s.created_at >= %(lane_start)s::timestamp
+           AND (s.created_at AT TIME ZONE 'UTC') > %(t0)s
+           AND (s.created_at AT TIME ZONE 'UTC') <= %(t1)s
+           AND NOT EXISTS (
+               SELECT 1 FROM osm_lane_baseline b
+                WHERE b.lane = 'osm_substations' AND b.state = s.state
+                  AND (s.created_at AT TIME ZONE 'UTC') > b.baselined_at)""",
+    # discovered_at is TEXT and only the fixed OSM loader stamps it on
+    # source='osm_overpass' rows (the 8,629 held rows are NULL), so no lane
+    # start is needed here.
+    "power_plants_discovered": """
+        SELECT COUNT(*) FROM discovered_power_plants p
+         WHERE p.source = 'osm_overpass' AND p.discovered_at IS NOT NULL
+           AND (p.discovered_at::timestamp AT TIME ZONE 'UTC') > %(t0)s
+           AND (p.discovered_at::timestamp AT TIME ZONE 'UTC') <= %(t1)s
+           AND NOT EXISTS (
+               SELECT 1 FROM osm_lane_baseline b
+                WHERE b.lane = 'osm_power_plants' AND b.state = p.state
+                  AND (p.discovered_at::timestamp AT TIME ZONE 'UTC') > b.baselined_at)""",
+}
+
+
+def _backfill_between(cur, label, t0, t1):
+    """Rows a lane backfilled into `label`'s table in (t0, t1], or None when
+    unreadable. No baseline table yet means nothing is baselined: every lane
+    row so far is backfill."""
+    try:
+        sql = _BACKFILL_SUBTRACT[label]
+        cur.execute("SELECT to_regclass('osm_lane_baseline')")
+        if not cur.fetchone()[0]:
+            sql = sql.split("AND NOT EXISTS")[0]
+        cur.execute(sql, {"t0": t0, "t1": t1,
+                          "lane_start": _OSM_SUBSTATION_LANE_START})
+        return int(cur.fetchone()[0])
+    except Exception:
+        cur.connection.rollback()
+        return None
+
+
 _FIRST_SEEN_COLUMN = {
     "gas_pipeline_projects":   ("first_seen_at", "in_initial_load"),
     "transmission_projects":   ("first_seen_at", "in_initial_load"),
@@ -765,11 +822,32 @@ def _summary(cur):
         # within 7d. Lets the public feed show a real delta even while the
         # tracker is younger than 7 days (then window_days < 7, labelled so).
         dwin = wdays = None
+        dwin_date = None
         for d, cc in reversed(hist):            # reversed(newest-first) = oldest-first
             age = (cur_date - d).days
             if 1 <= age <= 7:
                 dwin, wdays = int(cur_count) - int(cc), age
+                dwin_date = d
                 break
+        # ★ Net of an OSM lane's backfill (_BACKFILL_SUBTRACT): each delta
+        # loses the lane rows written after ITS comparison snapshot was taken.
+        backfill_excluded = None
+        if label in _BACKFILL_SUBTRACT and captured_at is not None:
+            import datetime as _dt
+            cap = {r[0]: r[2] for r in rows}
+
+            def _net(delta, cmp_date):
+                if delta is None or cmp_date is None or cap.get(cmp_date) is None:
+                    return delta, None
+                n = _backfill_between(cur, label, cap[cmp_date], captured_at)
+                return (None, None) if n is None else (delta - n, n)
+            _, d1_date = _at_or_before(hist[1:], cur_date - _dt.timedelta(days=1))
+            _, d7_date = _at_or_before(hist, cur_date - _dt.timedelta(days=7))
+            dwin, backfill_excluded = _net(dwin, dwin_date)
+            if dwin is None:
+                wdays = None
+            d1, _ = _net(d1, d1_date)
+            d7, _ = _net(d7, d7_date)
         # ★ Two first-seen mechanisms REPLACE the count-derived deltas, and
         # neither falls back to the snapshot difference when its read fails
         # (None stays None = unmeasured):
@@ -799,6 +877,11 @@ def _summary(cur):
                 first_seen=fs_column)
         if _INCLUSION_RULE.get(label):
             status_reason = (status_reason or "") + " · In this layer: " + _INCLUSION_RULE[label]
+        if backfill_excluded:
+            status_reason = (status_reason or "") + (
+                f" · Net of {backfill_excluded:,} rows an OpenStreetMap lane "
+                f"backfilled in this window — OSM history stored for the first "
+                f"time, never counted as new")
         # ★ APPENDED TO EVERY STATUS, including "growing" — which is the one
         # substations actually reads. A layer gaining 1-8 rows a day from a
         # 0.56% lane while its canonical loader is dead is BOTH growing and
@@ -852,6 +935,9 @@ def _summary(cur):
                # For a lane that admits only some rows: the rule a row must
                # meet to be in the layer at all. None = no such filter.
                "inclusion_rule": _INCLUSION_RULE.get(label),
+               # Lane backfill rows taken OUT of delta_window (None = the
+               # layer has no backfilling lane, or none landed in the window).
+               "backfill_excluded": backfill_excluded,
                "first_seen": first_seen}
         out.append(rec)
         if flat:
@@ -1138,6 +1224,7 @@ def whats_new():
                 # rows first seen in the window excluding the initial load.
                 "growth_basis": l.get("growth_basis"),
                 "inclusion_rule": l.get("inclusion_rule"),
+                "backfill_excluded": l.get("backfill_excluded"),
                 # ★ Freshness travels with the total. Without it a layer that
                 # refreshes in place is unreadable: 55,064 fiber routes looks
                 # the same whether it reloaded today or was abandoned in March.
