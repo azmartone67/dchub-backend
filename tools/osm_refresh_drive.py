@@ -123,7 +123,9 @@ def drive_one(endpoint, fire_fn=None, wait_fn=None):
             break
         row = wait_fn(rid)
         print(f"  run {rid}: {row.get('state')} — {(row.get('note') or '')[:200]}", flush=True)
-        if row.get("state") != "stalled":
+        # stalled = the thread died; incomplete = it hit its wall-clock
+        # budget. Both are resumable and neither is an outcome.
+        if row.get("state") not in ("stalled", "incomplete"):
             break
         done = int(row.get("states_done") or 0)
         idle = 0 if done > best_done else idle + 1
