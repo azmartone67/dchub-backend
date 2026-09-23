@@ -932,8 +932,8 @@ def get_cable_landing_points():
 #      transmission_lines_eia — this file's GET /api/v1/transmission-lines,
 #      dchub_mcp_server.py, routes/grid_intelligence_routes.py,
 #      routes/energy_discovery_routes.py. They filter on lat/lng, and
-#      transmission_lines is ingested with returnGeometry=false ("the
-#      target table stores no geometry"), so repointing them would
+#      transmission_lines stores no coordinates (the ingest derives
+#      length_miles + state from geometry and keeps neither lat nor lng), so repointing them would
 #      return rows with null coordinates and break the map layer.
 #      Whether the live table has since gained coordinates is UNVERIFIED
 #      from source alone. This commit fixes the COUNT surfaces only;

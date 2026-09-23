@@ -8,8 +8,9 @@ endpoint you asked, and the smaller one was the one wired into the product:
 
   transmission_lines       94,626 rows. THE MAINTAINED TABLE. Refreshed by
       routes/transmission_ingest.py (EIA US_Electric_Power_Transmission_Lines,
-      full-replace in one transaction). ATTRIBUTES ONLY — the upstream service
-      is queried with returnGeometry=false, so the table stores NO geometry.
+      full-replace in one transaction). NO GEOMETRY STORED — since 2026-09-23
+      the ingest fetches it (EPSG:4326) only to derive length_miles + state,
+      and keeps no coordinates.
       Live schema verified 2026-07-29 via /api/v1/admin/schema (14 columns:
       id, hifld_id, name, operator, voltage_kv, from_sub, to_sub, length_miles,
       state, status, line_type, source, last_updated, created_at). No lat, no
@@ -44,8 +45,8 @@ SO THE HONEST FIX, which this module implements the vocabulary for:
       a silent 41% shortfall.
 
 The real repair — backfilling coordinates for all 94,626 maintained lines —
-is a DATA capability that does not exist yet (the ingest deliberately requests
-returnGeometry=false). `geocoding_gap()` is the standing, self-measuring record
+is a DATA capability that does not exist yet (the ingest fetches geometry but
+stores only length_miles + state derived from it; there are no lat/lng columns). `geocoding_gap()` is the standing, self-measuring record
 of that gap. See GEOCODING_GAP_TRACKING.
 
 HOUSE RULES HONORED HERE

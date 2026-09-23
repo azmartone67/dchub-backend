@@ -35,10 +35,14 @@ GAS_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
            "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query")
 
 # EIA Electric Power Transmission Lines (national, ~94,619 polylines). Same
-# reliable EIA org (FiaPA4ga0iQKduv3). Attributes only — the transmission_lines
-# table stores no geometry — so returnGeometry=false (94k full geometries would
-# be huge & needless). Fields: ID, TYPE, STATUS, OWNER, VOLTAGE, SUB_1, SUB_2.
-# This 94k set supersedes the stale HIFLD 52k snapshot (clean single source).
+# reliable EIA org (FiaPA4ga0iQKduv3). Fields: ID, TYPE, STATUS, OWNER, VOLTAGE,
+# SUB_1, SUB_2. This 94k set supersedes the stale HIFLD 52k snapshot.
+# ★ Geometry IS fetched (EPSG:4326, ~1.5 MB/page, ~1 s/page measured
+# 2026-09-23) but NOT stored — the table has no geometry column. It is measured
+# on the runner into length_miles + state (util/polyline_geometry.py). Until
+# 2026-09-23 this was returnGeometry=false and every row landed with state NULL
+# and length_miles 0, so the per-state market profile read 0 lines / 0 miles.
+# Shape__Length is Web Mercator metres (x sec(latitude)) — never use it raw.
 TRANSMISSION_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/"
                     "services/US_Electric_Power_Transmission_Lines/FeatureServer/0/query")
 
@@ -157,16 +161,23 @@ def _us_state_code(v):
 def fetch_transmission_lines(cap):
     """Paginate the EIA transmission service → row tuples for the ingest endpoint.
 
-    Attributes only (returnGeometry=false). Row shape (matches
-    routes/transmission_ingest._ROW_FIELDS):
-      [hifld_id, name, operator, voltage_kv, from_sub, to_sub, status, line_type]
+    Row shape (matches routes/transmission_ingest._ROW_FIELDS):
+      [hifld_id, name, operator, voltage_kv, from_sub, to_sub, status, line_type,
+       length_miles, state]
+    length_miles + state are measured from the EPSG:4326 geometry here, on the
+    runner; the geometry itself is not posted.
     """
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from util.polyline_geometry import measure_line
+
     rows, offset, page = [], 0, 2000   # service maxRecordCount = 2000
     while len(rows) < cap:
         params = urllib.parse.urlencode({
             "where": "1=1",
             "outFields": "ID,TYPE,STATUS,OWNER,VOLTAGE,SUB_1,SUB_2",
-            "returnGeometry": "false",
+            "returnGeometry": "true",
+            "outSR": "4326",
+            "geometryPrecision": "6",
             "resultOffset": offset,
             "resultRecordCount": page,
             "f": "json",
@@ -180,6 +191,7 @@ def fetch_transmission_lines(cap):
             hid = _v_clean(a.get("ID"), 64)
             owner = _v_clean(a.get("OWNER"), 200)
             name = owner or hid
+            miles, state = measure_line((f.get("geometry") or {}).get("paths"))
             rows.append([
                 hid,
                 name[:200] if name else None,
@@ -189,11 +201,19 @@ def fetch_transmission_lines(cap):
                 _v_clean(a.get("SUB_2"), 200),
                 _v_clean(a.get("STATUS"), 80),
                 _v_clean(a.get("TYPE"), 80),
+                miles,
+                state or None,
             ])
         offset += page
         if len(feats) < page:
             break
-    return rows[:cap]
+    rows = rows[:cap]
+    # Coverage is ENFORCED by the ingest (routes/transmission_ingest.py
+    # MEASURED_FLOOR refuses the replace); this line is so the run log shows it.
+    print(f"  measured: length {sum(1 for r in rows if r[8] is not None):,}/{len(rows):,}, "
+          f"state {sum(1 for r in rows if r[9]):,}/{len(rows):,}, "
+          f"{sum(r[8] or 0 for r in rows):,.0f} miles", flush=True)
+    return rows
 
 
 def fetch_power_plants(cap):

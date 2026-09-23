@@ -371,7 +371,7 @@ def energy_discovery_transmission_lines():
     ★ 2026-07-29 shell(#41): transmission_lines_eia is a frozen GEOCODED
     SNAPSHOT with no writer and no timestamp column. It is NOT the maintained
     set — transmission_lines holds 94,626 maintained rows but stores no
-    geometry (returnGeometry=false in routes/transmission_ingest.py), so this
+    coordinates (routes/transmission_ingest.py keeps only length/state), so this
     coordinate-bearing query cannot be repointed at it. `count` is a FLOOR:
     38,518 maintained lines (40.7%) have no coordinates and cannot appear here.
     See util/transmission_tables.py.
