@@ -78,11 +78,30 @@ def node_lmp():
     api_key = (request.headers.get("X-API-Key")
                or request.args.get("api_key") or "").strip()
     if not api_key:
-        return jsonify(error="identified_required",
-                       message=("PJM nodal LMP is identified+ (any key — "
-                                "free keys work). Claim one via the MCP "
-                                "claim_free_key tool or /pricing."),
-                       upgrade_url="https://dchub.cloud/pricing"), 402
+        # r-bare-pricing-sweep (2026-09-23): this gate is identified+, not
+        # paid — ANY key, including a free claimed one, resolves it. There
+        # is no checkout being hidden behind a bare /pricing here, so
+        # (unlike the other bare-pricing walls in this sweep) the fix is
+        # NOT a signed /go/c link — it's giving an agent the same
+        # machine-readable claim_free_key path every other identified+ wall
+        # already gives (build_agent_coaching, shared with free_tier_gate's
+        # anonymous-map 402). Without it an agent had a human pricing link
+        # and no programmatic next step at all.
+        payload = {
+            "error": "identified_required",
+            "message": ("PJM nodal LMP is identified+ (any key — "
+                        "free keys work). Claim one via the MCP "
+                        "claim_free_key tool or /pricing."),
+            "upgrade_url": "https://dchub.cloud/pricing",
+        }
+        try:
+            from routes.email_capture import build_agent_coaching
+            payload.update(build_agent_coaching(
+                "pjm_node_lmp", "Retry this request with header X-API-Key: <api_key>",
+                tier_required="identified"))
+        except Exception:
+            pass
+        return jsonify(payload), 402
     node = (request.args.get("node") or "").strip().upper()
     market = (request.args.get("market") or "da").strip().lower()
     if not _NODE_RE.match(node):

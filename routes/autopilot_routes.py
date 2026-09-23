@@ -32,18 +32,35 @@ _discovery_engine = None
 _autopilot_scheduler = None
 _AUTOPILOT_AVAILABLE = False
 
+def _tier_upgrade_url(required_tier, api_key=''):
+    """Signed /go/c for `required_tier`, key-bound when a key is presented,
+    else caller-independent (still measured). Never the bare pricing page —
+    r-bare-pricing-sweep (2026-09-23). required_tier is threaded straight
+    through: _check_tier's callers already pass the exact plan that opens
+    the route, no bespoke SKU logic needed here."""
+    try:
+        from routes.checkout_click_tracker import checkout_url
+        from util.plan_tease import key_refs
+        _, sub_ref = key_refs(api_key)
+        return checkout_url(required_tier, sub_ref)
+    except Exception:
+        return 'https://dchub.cloud/pricing'
+
+
 def _check_tier(required_tier):
     """Guard helper."""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
     if not api_key:
-        return jsonify({'error':'unauthorized','message':'API key required','upgrade':'https://dchub.cloud/pricing'}), 401
+        return jsonify({'error':'unauthorized','message':'API key required',
+                        'upgrade': _tier_upgrade_url(required_tier)}), 401
     if _require_plan is not None:
         try:
             result = _require_plan(required_tier)(lambda: 'ok')()
             if result != 'ok': return result, None
         except Exception as e:
             if any(x in str(e).lower() for x in ('401','403','unauthorized','forbidden','plan')):
-                return jsonify({'error':'forbidden','message':f'{required_tier.title()} plan required','upgrade':'https://dchub.cloud/pricing'}), 403
+                return jsonify({'error':'forbidden','message':f'{required_tier.title()} plan required',
+                                'upgrade': _tier_upgrade_url(required_tier, api_key)}), 403
     return None, None
 
 _PIPELINE_DATA = []
