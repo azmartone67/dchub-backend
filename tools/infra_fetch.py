@@ -434,6 +434,209 @@ def fetch_planned_generators(cap):
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────
+# PROJECT lanes (2026-09-22). The as-built federal layers above are frozen
+# upstream (EIA transmission service last edited 2025-08-26, EIA gas pipelines
+# 2025-07-01), so NEW gas/transmission information only appears in project
+# lists. Both workbooks are parsed here and POSTed as named-field dicts; the
+# ingest (routes/infra_projects_ingest.py) owns the keys, coercion and the
+# first_seen_at bookkeeping. Header cells are matched by NAME, never position,
+# so a column EIA/ERCOT inserts shifts nothing.
+# ─────────────────────────────────────────────────────────────────────
+GAS_PROJECTS_XLSX = "https://www.eia.gov/naturalgas/pipelines/EIA-NaturalGasPipelineProjects.xlsx"
+GAS_PROJECTS_PAGE = "https://www.eia.gov/naturalgas/data.php"
+GAS_PROJECTS_SHEET = "Natural Gas Pipeline Projects"
+ERCOT_PLANNING_PAGE = "https://www.ercot.com/gridinfo/planning"
+TPIT_LINK_TITLE = "Transmission Project and Information Tracking"
+
+
+def _iso(v):
+    """Excel dates → ISO strings (JSON-safe); everything else unchanged."""
+    import datetime as _dt
+    if isinstance(v, (_dt.datetime, _dt.date)):
+        return v.isoformat()
+    return v
+
+
+def _header_index(hdr, wanted):
+    """{field: column} by case-insensitive header PREFIX. A field whose header
+    is missing maps to None and reads as null — it never borrows a neighbour."""
+    norm = [" ".join(str(h or "").split()).lower() for h in hdr]
+    out = {}
+    for field, prefix in wanted.items():
+        p = prefix.lower()
+        out[field] = next((i for i, h in enumerate(norm) if h.startswith(p)), None)
+    return out
+
+
+def _cell(row, idx):
+    return row[idx] if idx is not None and idx < len(row) else None
+
+
+_GAS_PROJECT_COLS = {
+    "source_row_updated": "last updated date", "project_name": "project name",
+    "operator": "pipeline operator name", "project_type": "project type",
+    "status": "status", "completed_date": "completed date",
+    "in_service_year": "year in service date", "states": "state(s)",
+    "beg_state": "beg_state", "end_state": "end_state", "regions": "region(s)",
+    "cost_musd": "cost (millions)", "miles": "miles",
+    "capacity_mmcfd": "additional capacity", "diameter_in": "pipeline diameter",
+    "pipeline_type": "pipeline type", "authority": "authority",
+    "docket": "docket", "crosses_state_border": "crosses state border",
+    "notes": "notes", "demand_served": "demand served", "project_url": "website",
+}
+
+
+def parse_gas_projects_workbook(wb):
+    """EIA pipeline-projects workbook → dict rows (active sheet only).
+
+    The Historical sheet is deliberately NOT read: it is the annual archive of
+    completed/cancelled projects (1996-2024). A project that leaves the active
+    sheet is marked in_latest_release=FALSE by the ingest, not re-read from the
+    archive under a possibly different name."""
+    import datetime as _dt
+    release = None
+    if "Contents" in wb.sheetnames:
+        # The label sits in column B, not A (measured 2026-09-22), so the
+        # label is found by content and the value is the next non-empty cell.
+        for r in wb["Contents"].iter_rows(values_only=True):
+            at = next((i for i, x in enumerate(r or ())
+                       if str(x or "").strip().lower().startswith("release date")), None)
+            if at is None:
+                continue
+            v = next((x for x in r[at + 1:] if x not in (None, "")), None)
+            release = (v.date().isoformat() if isinstance(v, _dt.datetime)
+                       else (str(v) if v else None))
+            break
+    if GAS_PROJECTS_SHEET not in wb.sheetnames:
+        raise RuntimeError(f"sheet {GAS_PROJECTS_SHEET!r} missing; have {wb.sheetnames}")
+    rows = list(wb[GAS_PROJECTS_SHEET].iter_rows())
+    hi = next((i for i, r in enumerate(rows[:10])
+               if any(str(c.value or "").strip() == "Project Name" for c in r)), None)
+    if hi is None:
+        raise RuntimeError("no 'Project Name' header in the first 10 rows")
+    col = _header_index([c.value for c in rows[hi]], _GAS_PROJECT_COLS)
+    out = []
+    for r in rows[hi + 1:]:
+        name = _cell(r, col["project_name"])
+        if name is None or not str(name.value or "").strip():
+            continue
+        rec = {f: (_iso(_cell(r, i).value) if _cell(r, i) is not None else None)
+               for f, i in col.items()}
+        # The Website column is display text ("Project website") over a
+        # hyperlink; the link is the value worth keeping.
+        wc = _cell(r, col["project_url"])
+        rec["project_url"] = wc.hyperlink.target if wc is not None and wc.hyperlink else None
+        rec["source_release"] = release
+        out.append(rec)
+    return out
+
+
+def fetch_gas_pipeline_projects(cap):
+    """EIA natural gas pipeline projects (quarterly workbook) → dict rows."""
+    import io
+    try:
+        import openpyxl
+    except ImportError:
+        print("::error::openpyxl not installed (pip install openpyxl)", flush=True)
+        return []
+    raw = _eia_get(GAS_PROJECTS_XLSX, referer=GAS_PROJECTS_PAGE, timeout=120)
+    print(f"    EIA pipeline-projects workbook: {len(raw)//1024}KB", flush=True)
+    # NOT read_only: hyperlinks (the project website) are only exposed on a
+    # fully loaded workbook. The file is ~1MB, so this costs nothing.
+    wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+    rows = parse_gas_projects_workbook(wb)
+    print(f"    release {rows[0]['source_release'] if rows else '?'}: {len(rows)} projects",
+          flush=True)
+    return rows[:cap]
+
+
+_TPIT_COLS = {
+    "project_number": "ercot project number", "title": "project title",
+    "description": "project description", "comments": "comments/reasons",
+    "from_location": 'terminal "from" location', "to_location": 'terminal "to" location',
+    "source_status": "transmission status", "owner": "transmission owner (text",
+    "projected_isd": "projected in-service date", "actual_isd": "actual in-service date",
+    "kv": "service level kv", "miles_new": "trans circuit miles new",
+    "miles_rebuilt": "trans circuit miles rebuilt", "mva": "autotransformer capacity",
+    "county_from": "county location for substation", "county_to": "county location for ending",
+    "tier": "planning charter tier", "rpg_number": "rpg number",
+}
+# Sheet-name prefix → the list a project sits on. The TSP contact column is
+# never read: it holds personal names and e-mail addresses.
+_TPIT_LISTS = ("future", "planned", "completed", "cancelled")
+
+
+def find_tpit_url(html):
+    """The current public TPIT workbook, found by its link TITLE on ERCOT's
+    planning page. The URL itself changes with every release (it embeds the
+    as-of date), so it can never be hardcoded. The 'Archived …' zip shares the
+    words, so the match is on the exact title and an .xlsx href."""
+    import html as _html
+    import re
+    for m in re.finditer(r"<a\s[^>]*>", html, re.I):
+        tag = m.group(0)
+        href = re.search(r'href="([^"]+)"', tag)
+        title = re.search(r'title="([^"]*)"', tag)
+        if not href or not title:
+            continue
+        if (_html.unescape(title.group(1)).strip() == TPIT_LINK_TITLE
+                and href.group(1).lower().endswith(".xlsx")):
+            u = _html.unescape(href.group(1))
+            return u if u.startswith("http") else "https://www.ercot.com" + u
+    return None
+
+
+def parse_tpit_workbook(wb, source_url):
+    """ERCOT TPIT workbook → dict rows, one per project per list sheet."""
+    import re
+    out = []
+    for ws in wb.worksheets:
+        title = ws.title.lower()
+        lst = next((k for k in _TPIT_LISTS if title.startswith(k)), None)
+        if lst is None or "tpit" not in title:
+            continue
+        rows = list(ws.iter_rows(values_only=True))
+        hi = next((i for i, r in enumerate(rows[:10])
+                   if r and str(r[0] or "").strip().lower().startswith("ercot project number")),
+                  None)
+        if hi is None:
+            raise RuntimeError(f"{ws.title}: no 'ERCOT Project Number' header")
+        banner = " ".join(str(x) for x in (rows[0] if rows else ()) if x)
+        m = re.search(r"AS OF (\d{1,2})/(\d{1,2})/(\d{4})", banner, re.I)
+        release = (f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+                   if m else None)
+        col = _header_index(rows[hi], _TPIT_COLS)
+        for r in rows[hi + 1:]:
+            if not r or _cell(r, col["project_number"]) in (None, ""):
+                continue
+            rec = {f: _iso(_cell(r, i)) for f, i in col.items()}
+            rec.update(source_list=lst, source_url=source_url, source_release=release)
+            out.append(rec)
+    return out
+
+
+def fetch_transmission_projects(cap):
+    """ERCOT TPIT (public No-Cost workbook) → dict rows."""
+    import io
+    try:
+        import openpyxl
+    except ImportError:
+        print("::error::openpyxl not installed (pip install openpyxl)", flush=True)
+        return []
+    page = _eia_get(ERCOT_PLANNING_PAGE, timeout=40).decode("utf-8", "ignore")
+    url = find_tpit_url(page)
+    if not url:
+        print(f"::error::no '{TPIT_LINK_TITLE}' .xlsx link on {ERCOT_PLANNING_PAGE}", flush=True)
+        return []
+    raw = _eia_get(url, referer=ERCOT_PLANNING_PAGE, timeout=120)
+    print(f"    TPIT workbook: {url.rsplit('/', 1)[-1]} ({len(raw)//1024}KB)", flush=True)
+    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    rows = parse_tpit_workbook(wb, url)
+    print(f"    {len(rows)} TPIT rows", flush=True)
+    return rows[:cap]
+
+
 LAYERS = {
     "planned-generators": {
         "fetch": fetch_planned_generators,
@@ -470,6 +673,21 @@ LAYERS = {
         "ingest": "/api/v1/admin/ingest/power-plants",
         "default_cap": 20000,    # EIA service has ~13,446 plants
     },
+    # Upsert lanes: "inserted" is NEW projects only, so a quiet week is 0 by
+    # design and beats no_new_data (which resets the dead-man zero counter)
+    # instead of success-with-0 (which climbs it toward a false red).
+    "gas-pipeline-projects": {
+        "fetch": fetch_gas_pipeline_projects,
+        "ingest": "/api/v1/admin/ingest/gas-pipeline-projects",
+        "default_cap": 2000,     # EIA active sheet had 137 projects 2026-09-22
+        "zero_is_quiet": True,
+    },
+    "transmission-projects": {
+        "fetch": fetch_transmission_projects,
+        "ingest": "/api/v1/admin/ingest/transmission-projects",
+        "default_cap": 20000,    # ERCOT TPIT had 2,122 projects 2026-09-22
+        "zero_is_quiet": True,
+    },
 }
 
 
@@ -498,6 +716,8 @@ _BOARD_FEED = {
     "transmission-lines": "transmission-ingest",       # transmission-ingest.yml
     "power-plants":       "power-plants-ingest",        # power-plants-ingest.yml
     "planned-generators": "planned-generators-ingest",  # planned-generators-ingest.yml
+    "gas-pipeline-projects": "gas-pipeline-projects-ingest",  # gas-pipeline-projects-ingest.yml
+    "transmission-projects": "transmission-projects-ingest",  # transmission-projects-ingest.yml
 }
 
 
@@ -548,7 +768,8 @@ def main():
         print(f"::error::ingest failed (HTTP {st})"); return 1
     print(f"== {layer} done: {j.get('inserted')} rows inserted ==")
     # Additive, fail-open: publish the REAL inserted count to the dead-man board.
-    beat_board(layer, j.get("inserted"))
+    quiet = cfg.get("zero_is_quiet") and not j.get("inserted")
+    beat_board(layer, j.get("inserted"), status="no_new_data" if quiet else "success")
     return 0
 
 

@@ -1259,6 +1259,29 @@ jobs:
             echo "::error::the CRM flush-record SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Gas/transmission PROJECT upsert + the board's "+N new" ───────────
+      # The What's New "+N new" for these layers is read off first_seen_at with
+      # the initial load excluded. Only a real Postgres shows first_seen_at
+      # surviving a second release (ON CONFLICT … DO UPDATE never names it),
+      # delisting, status history, the shrink-floor refusal, and
+      # routes/infra_growth._summary publishing +1 where a count delta says +4.
+      # Owns and drops only its private schema infra_projects_t.
+      - name: Infra projects upsert SQL against a real Postgres
+        env:
+          INFRA_PROJECTS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_infra_projects_upsert_sql.py -v --tb=short
+
+      - name: Prove the infra projects SQL test actually RAN
+        env:
+          INFRA_PROJECTS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_infra_projects_upsert_sql.py \
+            -q -rs --tb=no > ip.txt 2>&1 || { cat ip.txt; exit 1; }
+          cat ip.txt
+          if grep -qi "skipped" ip.txt; then
+            echo "::error::the infra projects SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1313,6 +1336,7 @@ jobs:
             fl.txt
             lm.txt
             mkp.txt
+            ip.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

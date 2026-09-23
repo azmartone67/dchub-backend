@@ -74,6 +74,9 @@ WORKFLOWS = {
     "power-plants-ingest.yml": 190,
     "generator-inventory-ingest.yml": 190,
     "fcc-fiber-refresh.yml": 200,
+    # weekly PROJECT lanes (2026-09-22) — same 190h as the weekly infra above
+    "gas-pipeline-projects-ingest.yml": 190,
+    "transmission-projects-ingest.yml": 190,
     # monthly
     "planned-generators-ingest.yml": 780,
     "gem-refresh.yml": 780,

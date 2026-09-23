@@ -1,0 +1,76 @@
+name: Transmission Projects Ingest (ERCOT TPIT → transmission_projects)
+
+# NEW transmission build-out, not the as-built network. The EIA transmission
+# asset service is frozen upstream (last edited 2025-08-26), so new
+# transmission information arrives as PROJECTS: ERCOT's Transmission Project
+# and Information Tracking (TPIT) workbook — every planned, conceptual,
+# under-construction, completed and cancelled ERCOT transmission project with
+# kV, circuit miles, MVA, counties, owner and projected in-service date.
+# ERCOT republishes it several times a year plus ad-hoc updates; checking
+# weekly lands a release within 7 days. The workbook URL changes per release,
+# so the runner finds it by its link title on ercot.com/gridinfo/planning.
+# ERCOT terms §5 allow public raw data in compilations.
+#
+# The ingest UPSERTS on the ERCOT project number and keeps first_seen_at, so
+# "+N new" on /whats-new counts projects first seen after the initial load.
+# Logic: tools/infra_fetch.py (layer 'transmission-projects'),
+#        routes/infra_projects_ingest.py.
+
+on:
+  schedule:
+    - cron: '47 7 * * 3'     # Wednesdays 07:47 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transmission-projects-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+      DCHUB_ORIGIN: https://dchub-backend-production.up.railway.app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install openpyxl
+        run: pip install --quiet openpyxl
+      - name: Fetch ERCOT TPIT + ingest
+        run: |
+          set -uo pipefail
+          if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
+            # A missing secret must not read as a completed refresh (SH52-120).
+            echo "::error::DCHUB_ADMIN_KEY not set — transmission-projects ingest cannot run; failing loudly instead of a silent green no-op"
+            exit 1
+          fi
+          python tools/infra_fetch.py transmission-projects
+
+      - name: Re-baseline infra-growth snapshot
+        run: |
+          set -uo pipefail
+          CODE=$(curl -sS --max-time 180 -o /tmp/snap.json -w '%{http_code}' \
+            -X POST "${DCHUB_ORIGIN}/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: ${DCHUB_ADMIN_KEY}" || echo 000)
+          echo "HTTP ${CODE}"
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::infra-growth snapshot returned ${CODE} — /whats-new keeps publishing the pre-ingest count"
+            head -c 400 /tmp/snap.json || true
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/snap.json'))
+          for l in d.get('layers', []):
+              if l['layer'] in ('gas_pipeline_projects', 'transmission_projects'):
+                  print(f"{l['layer']:<24}{l['count']:>8,}  {(l.get('status') or '?'):<12}"
+                        f"{(l.get('status_reason') or '')[:100]}")
+          PY
