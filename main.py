@@ -18981,6 +18981,44 @@ def handle_checkout_completed(session):
                     (plan_name, api_tier, stripe_cust, customer_email))
             rows_updated = rc
 
+        # ★ r-onetime-carryover (2026-09-22, owner decision): a SUBSCRIPTION
+        # takes over from any earlier one-time purchase, so the one-time expiry
+        # tracking must stop governing this account.
+        #
+        # Nothing else in this repo ever clears these two columns — the only
+        # writers are the set_tier_expiry branches directly above and the
+        # new-user stamp below, and none of them writes NULL. So without this,
+        # a former one-time buyer's STALE PAST tier_expires_at and
+        # source_plan='%_onetime' survive the upgrade, and the nightly
+        # expired_onetime_demote cron (crawler_scheduler slot 03/03 UTC) demotes
+        # the new subscriber the following night: its SELECT is
+        # `tier_expires_at IS NOT NULL AND tier_expires_at < NOW() AND
+        # source_plan ILIKE '%_onetime' AND plan != 'free'` with NO
+        # subscription_status and no demoted_at filter, and the write above just
+        # put plan back to a paid value. routes/funnel_health.py already counts
+        # that cohort ("tier_expires_at in the past, plan still != 'free'").
+        #
+        # Gated on mode='subscription', NOT on `not set_tier_expiry`: the else
+        # branches above also carry a one-time payment whose plan the r-no-
+        # downgrade guard HELD, and a $10 pack bought by someone holding a
+        # genuine, still-VALID annual expiry must not erase it.
+        #
+        # demoted_at/demoted_reason are deliberately NOT cleared here. A
+        # purchase must never lift an operator hold ('manual'/'abuse'); the
+        # stale 'tier_expired_onetime' stamp is retired by the dunning stamp's
+        # own allowlist in handle_payment_failed instead.
+        if session_mode == 'subscription':
+            if user_id:
+                _pg_execute(
+                    "UPDATE users SET tier_expires_at = NULL, source_plan = NULL"
+                    " WHERE id = %s AND (tier_expires_at IS NOT NULL OR source_plan IS NOT NULL)",
+                    (user_id,))
+            elif customer_email:
+                _pg_execute(
+                    "UPDATE users SET tier_expires_at = NULL, source_plan = NULL"
+                    " WHERE email = %s AND (tier_expires_at IS NOT NULL OR source_plan IS NOT NULL)",
+                    (customer_email,))
+
         # Legacy SQLite get_db() removed — _pg_execute above handles Neon
         sqlite_rows = 0
 
@@ -19793,7 +19831,16 @@ def handle_invoice_paid(invoice):
     # Excluded by owner decision: 'tier_expired_onetime' (routes/expired_demote
     # also set users.plan='free', so restoring from api_keys.plan would invert
     # the paths the other way) and 'manual'/'abuse' (decisions, not payment
-    # failures; no code writes them).
+    # failures; no code writes them — set by hand, and never cleared here).
+    #
+    # r-stale-stamp (2026-09-22): excluding 'tier_expired_onetime' no longer
+    # strands a dunning-demoted payer under it. It used to: the stamp is
+    # first-write-wins, so a row already carrying that reason kept it while the
+    # demote still pulled every tier to 'free', and nothing below matched the
+    # row. handle_payment_failed now OVERWRITES that one reason with its own,
+    # so a dunning demote always leaves a reason this block selects on. The
+    # exclusion here keeps its original meaning: a genuinely EXPIRED one-time
+    # buyer (plan='free', no dunning involved) is not restored by an invoice.
     #
     # BOTH statements carry the same reason list and demoted_at IS NOT NULL.
     # They are two halves of one operation and must select the same rows: the
@@ -19998,11 +20045,38 @@ def handle_payment_failed(invoice):
                 # already failing. 0 here means "already demoted" (or the write
                 # failed — _pg_execute returns (0, []) on error), and both are
                 # correctly silent.
+                #
+                # ★ r-stale-stamp (2026-09-22, owner decision): a stamp left by
+                # routes/expired_demote ('tier_expired_onetime') is NOT a
+                # demote this handler may leave in place. It outranks nothing —
+                # it merely got there first — and while it sits on the row the
+                # two writes below still pull every tier to 'free', so an
+                # account is demoted under a reason no payment resolves:
+                # handle_invoice_paid's r46-restore selects on the two reasons
+                # THIS handler writes, so a paying customer stays on free
+                # forever on both MCP gates (which read api_keys
+                # .rate_limit_tier, #5193/#5205) while the web path serves paid
+                # again on subscription_status='active'. The rowcount is 0 too,
+                # so the one signal that would have surfaced it — the demote
+                # email — never goes out.
+                #
+                # An ALLOWLIST, not a denylist: a reason absent here keeps
+                # today's behaviour (stamp stands, silent) rather than being
+                # silently overwritten, so a new blocking reason is safe by
+                # default. 'manual' and 'abuse' are deliberately absent —
+                # operator holds, never overwritten here and never cleared by
+                # r46-restore (owner decision 2026-09-22). No code writes
+                # either; they are set by hand. tests/test_dunning_stamp_
+                # overwrites_a_stale_reason.py pins the classification of every
+                # demoted_reason literal this repo writes, so adding a writer
+                # without deciding which set it belongs to fails there.
                 _demote_rc, _ = _pg_execute(
                     """UPDATE users
                           SET demoted_at = NOW(),
                               demoted_reason = %s
-                        WHERE id = %s AND demoted_at IS NULL""",
+                        WHERE id = %s
+                          AND (demoted_at IS NULL
+                               OR demoted_reason = 'tier_expired_onetime')""",
                     (demote_reason, user_id),
                 )
                 # Pull rate limit to 'free' — KEY STAYS ACTIVE so the

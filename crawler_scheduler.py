@@ -653,10 +653,17 @@ SCHEDULE = [
     # can't keep hitting paid endpoints). 03:00 UTC slot chosen because
     # it's empty: between 02:00 tool_calibration and 04:00 gas_pricing_
     # refresh — no overlap with any existing crawler. Same-hour same-day
-    # cap → one run/UTC day. Subscription-mode buyers leave tier_expires_at
-    # NULL so the SELECT can never match them — they're handled by
-    # handle_subscription_deleted on Stripe's webhook, not here. Kill
-    # switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run on every caller.
+    # cap → one run/UTC day. A buyer who has only ever subscribed leaves
+    # tier_expires_at NULL, so the SELECT cannot match them — they're handled
+    # by handle_subscription_deleted on Stripe's webhook, not here. A buyer who
+    # bought ONE-TIME and LATER SUBSCRIBED is a different row and was matched:
+    # their stale past tier_expires_at + source_plan survived the upgrade while
+    # checkout put plan back to a paid value, so this cron demoted a paying
+    # subscriber the next night. Closed 2026-09-22 in handle_checkout_completed
+    # (r-onetime-carryover), which NULLs both columns on a subscription
+    # checkout — this SELECT is unchanged and still has no subscription_status
+    # filter, so that clear is the only thing keeping them out.
+    # Kill switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run on every caller.
     ( 3,  3, "expired_onetime_demote", "_run_expired_onetime_demote"),
     # Founding-customer welcome sweep (2026-06-07, task #165): hourly
     # backstop for the brain autopilot's founding_customer_not_welcomed
@@ -3495,9 +3502,12 @@ def _run_expired_onetime_demote():
     tier to 'free' for each affected user. Audit row goes into
     brain_findings (detector='expired_demote_cron') so the demote count is
     visible on the brain dashboard. Defensive everywhere — module-level
-    try/except so this can never crash the scheduler thread. Subscription-
-    mode buyers leave tier_expires_at NULL → the SELECT can never match
-    them. Kill switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run. Slot 03/03
+    try/except so this can never crash the scheduler thread. A never-anything-
+    but-subscriber leaves tier_expires_at NULL → the SELECT cannot match them;
+    a one-time buyer who later SUBSCRIBED keeps a stale past expiry and WAS
+    matched until handle_checkout_completed began clearing it on a subscription
+    checkout (r-onetime-carryover, 2026-09-22).
+    Kill switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run. Slot 03/03
     UTC, same-hour same-day cap → one run/UTC day."""
     try:
         from routes.expired_demote import run_expired_demote
