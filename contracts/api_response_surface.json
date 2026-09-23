@@ -11,13 +11,13 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1499,
+  "python_files_scanned": 1500,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 452,
-  "keys_total": 10742,
-  "keys_strictly_protected": 9730,
+  "keys_total": 10757,
+  "keys_strictly_protected": 9745,
   "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -11388,7 +11388,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/ask": {
-   "source": "routes/dcpi.py:5616",
+   "source": "routes/dcpi.py:5720",
    "handler": "dcpi_ask",
    "resolution": "resolved",
    "open_at": [
@@ -11470,7 +11470,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/embed/<slug>": {
-   "source": "routes/dcpi.py:9838",
+   "source": "routes/dcpi.py:9942",
    "handler": "embed_widget_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11634,21 +11634,21 @@
    ]
   },
   "GET /api/v1/dcpi/iso-comparison": {
-   "source": "routes/dcpi.py:6477",
+   "source": "routes/dcpi.py:6581",
    "handler": "api_iso_comparison",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/iso/<iso_code>": {
-   "source": "routes/dcpi.py:6408",
+   "source": "routes/dcpi.py:6512",
    "handler": "api_iso_deep_dive",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/leaderboard": {
-   "source": "routes/dcpi.py:5795",
+   "source": "routes/dcpi.py:5899",
    "handler": "api_leaderboard",
    "resolution": "resolved",
    "open_at": [
@@ -11718,7 +11718,7 @@
    ]
   },
   "GET /api/v1/dcpi/movers": {
-   "source": "routes/dcpi.py:5714",
+   "source": "routes/dcpi.py:5818",
    "handler": "api_movers",
    "resolution": "resolved",
    "open_at": [
@@ -11730,7 +11730,7 @@
    ]
   },
   "GET /api/v1/dcpi/oembed": {
-   "source": "routes/dcpi.py:6612",
+   "source": "routes/dcpi.py:6716",
    "handler": "api_oembed",
    "resolution": "resolved",
    "open_at": [
@@ -11749,35 +11749,35 @@
    ]
   },
   "GET /api/v1/dcpi/og/<slug>": {
-   "source": "routes/dcpi.py:9834",
+   "source": "routes/dcpi.py:9938",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/og/<slug>.svg": {
-   "source": "routes/dcpi.py:9834",
+   "source": "routes/dcpi.py:9938",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page": {
-   "source": "routes/dcpi.py:9825",
+   "source": "routes/dcpi.py:9929",
    "handler": "public_dashboard_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page/<slug>": {
-   "source": "routes/dcpi.py:9829",
+   "source": "routes/dcpi.py:9933",
    "handler": "public_market_page_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/press": {
-   "source": "routes/dcpi.py:9842",
+   "source": "routes/dcpi.py:9946",
    "handler": "press_kit_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11820,7 +11820,7 @@
    ]
   },
   "GET /api/v1/dcpi/recommend": {
-   "source": "routes/dcpi.py:5318",
+   "source": "routes/dcpi.py:5379",
    "handler": "api_dcpi_recommend",
    "resolution": "resolved",
    "open_at": [
@@ -11832,8 +11832,12 @@
     "criteria_echo.states",
     "criteria_echo.top_n",
     "criteria_echo.water_stress_max",
+    "enrichment_coverage.states_with_retail_rate",
+    "enrichment_coverage.states_with_water_stress",
     "passed_filters",
     "ranked_markets",
+    "read_errors.retail_rates",
+    "read_errors.water_stress",
     "total_evaluated"
    ],
    "keys": [
@@ -11846,10 +11850,16 @@
     "criteria_echo.states",
     "criteria_echo.top_n",
     "criteria_echo.water_stress_max",
+    "enrichment_coverage",
+    "enrichment_coverage.states_with_retail_rate",
+    "enrichment_coverage.states_with_water_stress",
     "generated_at",
     "methodology",
     "passed_filters",
     "ranked_markets",
+    "read_errors",
+    "read_errors.retail_rates",
+    "read_errors.water_stress",
     "signal_tier_note",
     "total_evaluated"
    ]
@@ -11870,21 +11880,21 @@
    ]
   },
   "GET /api/v1/dcpi/scores": {
-   "source": "routes/dcpi.py:4559",
+   "source": "routes/dcpi.py:4570",
    "handler": "api_scores",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/scores/<slug>": {
-   "source": "routes/dcpi.py:4858",
+   "source": "routes/dcpi.py:4869",
    "handler": "api_score_market",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/scores/<slug>/v2": {
-   "source": "routes/dcpi.py:5191",
+   "source": "routes/dcpi.py:5202",
    "handler": "api_score_market_v2",
    "resolution": "resolved",
    "open_at": [
@@ -11901,6 +11911,8 @@
     "v2.inputs.curtailment_pct",
     "v2.inputs.ppa_rate_cents_kwh",
     "v2.inputs.water_stress_index",
+    "v2.read_errors.retail_rate",
+    "v2.read_errors.water_stress",
     "v2.renewable_arbitrage_score",
     "v2.verdict_v2",
     "v2.water_risk_score"
@@ -11922,20 +11934,23 @@
     "v2.inputs.ppa_rate_cents_kwh",
     "v2.inputs.water_stress_index",
     "v2.notes",
+    "v2.read_errors",
+    "v2.read_errors.retail_rate",
+    "v2.read_errors.water_stress",
     "v2.renewable_arbitrage_score",
     "v2.verdict_v2",
     "v2.water_risk_score"
    ]
   },
   "GET /api/v1/dcpi/ticker.html": {
-   "source": "routes/dcpi.py:9272",
+   "source": "routes/dcpi.py:9376",
    "handler": "ticker_widget",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/total": {
-   "source": "routes/dcpi.py:4813",
+   "source": "routes/dcpi.py:4824",
    "handler": "api_dcpi_total",
    "resolution": "resolved",
    "open_at": [
@@ -11950,7 +11965,7 @@
    ]
   },
   "GET /api/v1/dcpi/trending": {
-   "source": "routes/dcpi.py:9243",
+   "source": "routes/dcpi.py:9347",
    "handler": "api_trending",
    "resolution": "resolved",
    "open_at": [
@@ -15610,7 +15625,7 @@
    ]
   },
   "GET /api/v1/land-power/quick-score": {
-   "source": "routes/land_power_mcp.py:553",
+   "source": "routes/land_power_mcp.py:578",
    "handler": "quick_score",
    "resolution": "resolved",
    "open_at": [
@@ -15629,7 +15644,7 @@
    ]
   },
   "GET /api/v1/land-power/site-analysis": {
-   "source": "routes/land_power_mcp.py:515",
+   "source": "routes/land_power_mcp.py:540",
    "handler": "site_analysis",
    "resolution": "opaque",
    "open_at": [],
@@ -22117,7 +22132,7 @@
    "keys": []
   },
   "GET /api/v1/site/simulate-buildout": {
-   "source": "routes/site_simulator.py:352",
+   "source": "routes/site_simulator.py:333",
    "handler": "simulate_buildout",
    "resolution": "resolved",
    "open_at": [
@@ -28874,7 +28889,7 @@
    ]
   },
   "POST /api/v1/dcpi/ask": {
-   "source": "routes/dcpi.py:5616",
+   "source": "routes/dcpi.py:5720",
    "handler": "dcpi_ask",
    "resolution": "resolved",
    "open_at": [
@@ -28949,7 +28964,7 @@
    ]
   },
   "POST /api/v1/dcpi/lite-recompute": {
-   "source": "routes/dcpi.py:9850",
+   "source": "routes/dcpi.py:9954",
    "handler": "lite_recompute",
    "resolution": "resolved",
    "open_at": [
@@ -28965,7 +28980,7 @@
    ]
   },
   "POST /api/v1/dcpi/recommend": {
-   "source": "routes/dcpi.py:5318",
+   "source": "routes/dcpi.py:5379",
    "handler": "api_dcpi_recommend",
    "resolution": "resolved",
    "open_at": [
@@ -28977,8 +28992,12 @@
     "criteria_echo.states",
     "criteria_echo.top_n",
     "criteria_echo.water_stress_max",
+    "enrichment_coverage.states_with_retail_rate",
+    "enrichment_coverage.states_with_water_stress",
     "passed_filters",
     "ranked_markets",
+    "read_errors.retail_rates",
+    "read_errors.water_stress",
     "total_evaluated"
    ],
    "keys": [
@@ -28991,16 +29010,22 @@
     "criteria_echo.states",
     "criteria_echo.top_n",
     "criteria_echo.water_stress_max",
+    "enrichment_coverage",
+    "enrichment_coverage.states_with_retail_rate",
+    "enrichment_coverage.states_with_water_stress",
     "generated_at",
     "methodology",
     "passed_filters",
     "ranked_markets",
+    "read_errors",
+    "read_errors.retail_rates",
+    "read_errors.water_stress",
     "signal_tier_note",
     "total_evaluated"
    ]
   },
   "POST /api/v1/dcpi/recompute": {
-   "source": "routes/dcpi.py:6681",
+   "source": "routes/dcpi.py:6785",
    "handler": "api_recompute",
    "resolution": "opaque",
    "open_at": [],
@@ -29095,7 +29120,7 @@
    ]
   },
   "POST /api/v1/dcpi/snapshot": {
-   "source": "routes/dcpi.py:6713",
+   "source": "routes/dcpi.py:6817",
    "handler": "api_snapshot",
    "resolution": "resolved",
    "open_at": [
@@ -29895,7 +29920,7 @@
    ]
   },
   "POST /api/v1/land-power/track": {
-   "source": "routes/land_power_mcp.py:624",
+   "source": "routes/land_power_mcp.py:649",
    "handler": "land_power_track",
    "resolution": "opaque",
    "open_at": [],
