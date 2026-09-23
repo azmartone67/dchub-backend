@@ -135,12 +135,26 @@ def drive_one(endpoint, fire_fn=None, wait_fn=None):
     return row, reason, attempt
 
 
+def selected(spec):
+    """LOADERS filtered by a comma list of loader keys ('all' or empty = all).
+    An unknown key raises: a typo must not silently run nothing and go green."""
+    spec = (spec or "all").strip()
+    if spec == "all":
+        return list(LOADERS)
+    want = [w.strip() for w in spec.split(",") if w.strip()]
+    known = {loader for _e, loader in LOADERS}
+    bad = [w for w in want if w not in known]
+    if bad or not want:
+        raise SystemExit(f"unknown loader(s) {bad or spec!r}; choose from {sorted(known)}")
+    return [(e, l) for e, l in LOADERS if l in want]
+
+
 def main():
     if not os.environ.get("INTERNAL_KEY"):
         print("::error::DCHUB_INTERNAL_KEY secret not set")
         return 1
     results = []
-    for endpoint, loader in LOADERS:
+    for endpoint, loader in selected(os.environ.get("OSM_DRIVE_LOADERS")):
         row, reason, _n = drive_one(endpoint)
         results.append((loader, row, reason))
     code, lines = verdict(results)

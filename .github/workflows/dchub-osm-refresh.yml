@@ -5,6 +5,13 @@ on:
   schedule:
     - cron: '14 2 * * 0'   # staggered off dchub-jobs 0 2 (Sunday herd)
   workflow_dispatch:
+    inputs:
+      loaders:
+        # A manual run can re-drive a subset (e.g. after one loader failed)
+        # without re-sweeping the others. The Sunday schedule always runs all.
+        description: 'Comma list of osm_substations,osm_power_plants,osm_transmission_lines,osm_pipelines — or all'
+        required: false
+        default: 'all'
 
 # 2026-08-10: this workflow files a GitHub issue when it fails, but the repo's
 # default_workflow_permissions is "read", so every attempt died with
@@ -63,6 +70,8 @@ jobs:
         run: |
           python -m pip install --quiet requests
           python tools/osm_refresh_drive.py
+        env:
+          OSM_DRIVE_LOADERS: ${{ github.event.inputs.loaders || 'all' }}
 
       # Re-baseline the growth snapshot so /whats-new totals include this run
       # (the daily snapshot may already have fired). Railway ORIGIN, not the
