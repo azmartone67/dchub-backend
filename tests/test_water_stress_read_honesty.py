@@ -209,7 +209,7 @@ def v2(monkeypatch):
     def run(fail=(), poison=True, rows=None):
         cur = FakeCursor(fail_substrings=fail, poison=poison,
                          rows=_v2_rows() if rows is None else rows)
-        monkeypatch.setattr(dcpi, "open_conn", lambda *a, **k: cur.connection)
+        monkeypatch.setattr(dcpi, "_conn", lambda *a, **k: cur.connection)
         with app.app_context():
             resp = dcpi.api_score_market_v2("northern-virginia", _paid=True)
         body = resp[0].get_json() if isinstance(resp, tuple) else resp.get_json()
@@ -265,7 +265,7 @@ def test_v2_a_failed_water_read_is_not_published_as_the_neutral_fifty(v2):
 def test_v2_a_dead_connection_is_a_503_not_a_confident_envelope(v2, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("could not connect to server")
-    monkeypatch.setattr(dcpi, "open_conn", boom)
+    monkeypatch.setattr(dcpi, "_conn", boom)
     monkeypatch.setattr(dcpi, "_ensure_tables", lambda *a, **k: None)
     from flask import Flask
     with Flask(__name__).app_context():
@@ -306,7 +306,7 @@ def recommend(monkeypatch):
     def run(fail=(), poison=True, rows=None, query=""):
         cur = FakeCursor(fail_substrings=fail, poison=poison,
                          rows=_rec_rows() if rows is None else rows)
-        monkeypatch.setattr(dcpi, "open_conn", lambda *a, **k: cur.connection)
+        monkeypatch.setattr(dcpi, "_conn", lambda *a, **k: cur.connection)
         with app.test_request_context("/api/v1/dcpi/recommend?" + query):
             resp = dcpi.api_dcpi_recommend()
         body = resp[0].get_json() if isinstance(resp, tuple) else resp.get_json()
@@ -486,6 +486,35 @@ def test_the_with_conn_transaction_trap_does_not_come_back():
                             f"— use open_conn() + try/finally + close_quietly()")
             checked += 1
     assert checked == 4, "expected to inspect 4 owned functions, saw %d" % checked
+
+
+def test_dcpi_acquires_through_the_one_seam_its_callers_stub():
+    """★ routes/dcpi.py has ONE connection seam: its module-level `_conn()`.
+
+    tests/test_paid_numerics_tease.py monkeypatches `dcpi._conn` to a FakeConn
+    and drives /api/v1/dcpi/scores/<slug>/v2 through it. When this change first
+    acquired via util.db_honesty.open_conn instead, that stub no longer
+    covered the route: the endpoint opened a REAL socket in CI and returned
+    503 to nine tease assertions that expect 200. The honesty properties come
+    from try_fetch* + unpoison + try/finally — not from who opens the socket —
+    so the seam stays `_conn()`.
+
+    This fence is the one that would have caught it locally.
+    """
+    tree = ast.parse(_src(DCPI))
+    for name, start, end in _owned_spans(DCPI):
+        acquisitions = [
+            ast.unparse(n.func) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and start <= getattr(n, "lineno", -1) <= end
+            and ast.unparse(n.func) in ("_conn", "open_conn", "psycopg2.connect")]
+        assert acquisitions, f"{DCPI}:{name} acquires no connection at all"
+        assert set(acquisitions) == {"_conn"}, (
+            f"{DCPI}:{name} acquires via {sorted(set(acquisitions))} — a second "
+            f"connection seam bypasses the `dcpi._conn` stub that "
+            f"tests/test_paid_numerics_tease.py relies on")
+    assert "open_conn" not in _src(DCPI).split('"""', 2)[-1].replace(
+        "util.db_honesty.open_conn", ""), (
+        "routes/dcpi.py references open_conn outside prose")
 
 
 def test_the_dead_water_column_stays_gone_on_every_surface():

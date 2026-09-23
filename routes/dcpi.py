@@ -33,7 +33,7 @@ import psycopg2.extras
 
 # Phase 225: decorator that returns the fallback page on ANY exception
 from functools import wraps
-from util.db_honesty import close_quietly, open_conn, try_fetchall, try_fetchone
+from util.db_honesty import close_quietly, try_fetchall, try_fetchone
 from util.us_states import NAME_TO_ABBR, state_match_pair
 from util.water_stress import STATE_WATER_STRESS_SQL, water_band
 from tier_registry import price_display as _canon_price_display
@@ -5220,7 +5220,18 @@ def api_score_market_v2(slug, _paid=None):
     renew_metrics = {}
     c = None
     try:
-        c = open_conn()
+        # ★ The module's own _conn(), NOT util.db_honesty.open_conn. The
+        # honesty properties come from try_fetch* + unpoison + try/finally,
+        # not from who opens the socket — and routes/dcpi.py already has ONE
+        # connection seam that its callers stub (tests/test_paid_numerics_tease.py
+        # monkeypatches dcpi._conn). Introducing a second seam here bypassed
+        # that stub and turned nine tease assertions into live 503s.
+        # ★ NO `with`: psycopg2's connection CM is a transaction manager.
+        c = _conn()
+        try:
+            c.autocommit = True
+        except Exception:
+            pass
     except Exception as e:
         return jsonify(error="database unavailable",
                        read_errors={"connection": _honest_err(e)}), 503
@@ -5419,7 +5430,18 @@ def api_dcpi_recommend():
     state_water = {}
     c = None
     try:
-        c = open_conn()
+        # ★ The module's own _conn(), NOT util.db_honesty.open_conn. The
+        # honesty properties come from try_fetch* + unpoison + try/finally,
+        # not from who opens the socket — and routes/dcpi.py already has ONE
+        # connection seam that its callers stub (tests/test_paid_numerics_tease.py
+        # monkeypatches dcpi._conn). Introducing a second seam here bypassed
+        # that stub and turned nine tease assertions into live 503s.
+        # ★ NO `with`: psycopg2's connection CM is a transaction manager.
+        c = _conn()
+        try:
+            c.autocommit = True
+        except Exception:
+            pass
     except Exception as e:
         return jsonify(error="database unavailable",
                        read_errors={"connection": _honest_err(e)}), 503
