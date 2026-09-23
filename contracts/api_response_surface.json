@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1501,
+  "python_files_scanned": 1502,
   "endpoints_total": 1808,
   "endpoints_resolved": 1290,
   "endpoints_partial": 66,
@@ -13742,7 +13742,7 @@
    "keys": []
   },
   "GET /api/v1/generator-inventory": {
-   "source": "routes/generation_pipeline_ingest.py:216",
+   "source": "routes/generation_pipeline_ingest.py:246",
    "handler": "get_generator_inventory_public",
    "resolution": "opaque",
    "open_at": [],
@@ -19627,7 +19627,7 @@
    "keys": []
   },
   "GET /api/v1/planned-generators": {
-   "source": "routes/planned_generators_ingest.py:161",
+   "source": "routes/planned_generators_ingest.py:191",
    "handler": "get_planned_generators",
    "resolution": "resolved",
    "open_at": [
@@ -23963,7 +23963,7 @@
    ]
   },
   "GET /api/v1/whats-new": {
-   "source": "routes/infra_growth.py:828",
+   "source": "routes/infra_growth.py:941",
    "handler": "whats_new",
    "resolution": "resolved",
    "open_at": [
