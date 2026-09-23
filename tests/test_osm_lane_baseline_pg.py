@@ -46,6 +46,8 @@ def conn():
     import psycopg2
     c = psycopg2.connect(DSN)
     with c.cursor() as cur:
+        # Production sessions run in GMT; created_at columns are naive UTC.
+        cur.execute("SET TIME ZONE 'UTC'")
         cur.execute("""DROP TABLE IF EXISTS osm_transmission_lines, osm_gas_pipelines,
                        osm_lane_baseline, osm_load_runs, gas_pipelines, substations,
                        discovered_power_plants""")
@@ -274,3 +276,105 @@ def test_a_stalled_run_is_resumed_not_restarted(conn, monkeypatch):
     rid2 = osm.start_run("osm_substations")
     assert osm._carried_for(rid2) == [], "a live run must not be treated as dead"
     assert _rows(conn, "SELECT status FROM osm_load_runs WHERE id=%s", (rid,)) == [("running",)]
+
+
+
+def _snap(conn, layer, rows):
+    import routes.infra_growth as ig
+    with conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS infra_growth_snapshot")
+        ig._ensure(cur)
+        for d, n, cap in rows:
+            cur.execute("""INSERT INTO infra_growth_snapshot (snapshot_date, layer, count, captured_at)
+                           VALUES (CURRENT_DATE - %s, %s, %s, %s)""", (d, layer, n, cap))
+    conn.commit()
+
+
+def test_substation_backfill_is_never_published_as_new(conn):
+    """The first sweep of a state after #5306 stored OSM history the broken
+    loader never had; the board must net it out of the substations delta and
+    count only what a LATER sweep of a baselined state adds."""
+    import routes.infra_growth as ig
+    with conn.cursor() as cur:
+        cur.execute("SELECT NOW() - INTERVAL '1 second'")
+        t0 = cur.fetchone()[0]
+        cur.execute("""INSERT INTO substations (name, lat, lng, source)
+                       VALUES ('Held', 30.0, -97.0, 'HIFLD')""")
+    conn.commit()
+
+    def sub(i, lat):
+        return {"type": "node", "id": i, "lat": lat, "lon": -100.0, "tags": {}}
+    # first (baseline) sweep of TX: 3 rows of OSM history
+    ins, _ = _sweep(conn, osm.write_substations, "TX", [sub(1, 31.0), sub(2, 32.0), sub(3, 33.0)])
+    assert ins == 3
+    assert _rows(conn, "SELECT lane, state FROM osm_lane_baseline") == [("osm_substations", "TX")]
+    # an OSM row in a state never swept successfully is backfill too
+    _sweep(conn, osm.write_substations, "OK", [sub(9, 35.0)])
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM osm_lane_baseline WHERE state = 'OK'")
+    conn.commit()
+    # a LATER sweep of TX finds one genuinely new substation
+    ins, _ = _sweep(conn, osm.write_substations, "TX",
+                    [sub(1, 31.0), sub(2, 32.0), sub(3, 33.0), sub(4, 34.0)])
+    assert ins == 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT NOW()")
+        t1 = cur.fetchone()[0]
+        assert ig._backfill_between(cur, "substations", t0, t1) == 4
+
+    # end to end: the snapshot jumped by 5 (4 backfill + 1 new) + the HIFLD row
+    _snap(conn, "substations", [(3, 0, t0), (0, 6, t1)])
+    with conn.cursor() as cur:
+        layers, _ = ig._summary(cur)
+    rec = next(l for l in layers if l["layer"] == "substations")
+    assert rec["delta_window"] == 2, rec          # HIFLD row + the one new OSM row
+    assert rec["backfill_excluded"] == 4
+    assert "backfilled" in rec["status_reason"]
+
+
+def test_power_plant_backfill_is_stamped_at_its_own_baseline(conn):
+    """A baseline row's stamp must not land AFTER its baseline mark (a Python
+    clock read would), or the whole backfill would count as new."""
+    import routes.infra_growth as ig
+    with conn.cursor() as cur:
+        cur.execute("SELECT NOW() - INTERVAL '1 second'")
+        t0 = cur.fetchone()[0]
+    conn.commit()
+
+    def plant(i):
+        return {"type": "node", "id": i, "lat": 30.0 + i, "lon": -97.0, "tags": {}}
+    _sweep(conn, osm.write_power_plants, "TX", [plant(1), plant(2)])
+    _sweep(conn, osm.write_power_plants, "TX", [plant(1), plant(2), plant(3)])
+    with conn.cursor() as cur:
+        cur.execute("SELECT NOW()")
+        t1 = cur.fetchone()[0]
+        assert ig._backfill_between(cur, "power_plants_discovered", t0, t1) == 2
+
+
+def test_an_incomplete_run_is_resumed_and_never_beats(conn, monkeypatch):
+    import psycopg2
+    monkeypatch.setattr(osm, "_connect", lambda: psycopg2.connect(DSN))
+    osm.ensure_tables(conn)
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO osm_load_runs (loader, status, detail)
+                       VALUES ('osm_transmission_lines', 'incomplete',
+                               '{"done_states": ["AL", "AK"]}') RETURNING id""")
+        inc = cur.fetchone()[0]
+        # a FINISHED run (error / success) is an outcome, never resumed
+        cur.execute("""INSERT INTO osm_load_runs (loader, status, detail)
+                       VALUES ('osm_pipelines', 'error', '{"done_states": ["TX"]}')""")
+    conn.commit()
+    rid = osm.start_run("osm_transmission_lines")
+    assert osm._carried_for(rid) == ["AK", "AL"]
+    assert _rows(conn, "SELECT status FROM osm_load_runs WHERE id=%s", (inc,)) == [("abandoned",)]
+    assert osm._carried_for(osm.start_run("osm_pipelines")) == []
+
+    beats = []
+    import routes.ingest_runs as ir
+    monkeypatch.setattr(ir, "record_beat", lambda *a, **k: beats.append((a, k)))
+    monkeypatch.setitem(osm.TRACKED, "osm_substations",
+                        ("osm-substations", lambda progress=None, carried=None:
+                         {"states_total": 51, "states_done": 10, "budget_exhausted": True,
+                          "not_reached": ["TX"], "failed_states": {}, "inserted": 3}))
+    out = osm.run_tracked("osm_substations")
+    assert out["status"] == "incomplete" and beats == [], "an incomplete sweep must not beat"

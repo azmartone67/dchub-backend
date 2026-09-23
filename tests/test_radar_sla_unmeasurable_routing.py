@@ -13,6 +13,11 @@ human instead — and triage must not hand it the refresh recipe.
   R3  a text-column report is not triaged as a dataset refresh either
   R4  transmission_lines has no autonomous refresh, so the armed SLA row
       escalates on breach (its refresher TRUNCATEd the table; retired in #5314)
+  R5  facilities and discovered_facilities have no autonomous refresh either
+      (owner decision, 2026-09-23, when both SLA rows became measurable): their
+      breach escalates instead of POSTing /api/v1/admin/osm-crawl/run, a
+      crawler that writes a small share of either table
+  R6  a missing-table report is not triaged as a dataset refresh
 """
 import os
 import sys
@@ -66,3 +71,21 @@ def test_r4_transmission_breach_has_no_autonomous_refresh():
     # Control: a table that does have a refresher still gets one.
     gas = {"issue": "data_freshness_sla_breach", "url": "table:gas_pipelines"}
     assert brain_autopilot._action_data_freshness_breach(gas)[0] == "/api/jobs/gas-refresh"
+
+
+def test_r5_discovery_table_breaches_have_no_autonomous_refresh():
+    for table in ("facilities", "discovered_facilities"):
+        breach = {"issue": "data_freshness_sla_breach", "url": f"table:{table}"}
+        assert brain_autopilot._action_data_freshness_breach(breach) == (None, None), table
+    # Control: the DCPI table still recomputes.
+    mps = {"issue": "data_freshness_sla_breach", "url": "table:market_power_scores"}
+    assert brain_autopilot._action_data_freshness_breach(mps)[0] == "/api/v1/dcpi/recompute"
+
+
+def test_r6_missing_table_is_not_triaged_as_a_refresh():
+    f = radar._sla_unmeasurable("dcpi_scores", "computed_at", 12, "DCPI scores",
+                                'table "dcpi_scores" does not exist')
+    [(bucket, entry)] = _triaged(f)
+    assert bucket != "data", (bucket, entry)
+    assert entry.get("error_class") != "data_freshness_sla_breach", entry
+    assert entry.get("fix_template") != "kick_dataset_refresh_cron", entry

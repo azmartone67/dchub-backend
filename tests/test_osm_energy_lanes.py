@@ -278,9 +278,49 @@ def test_driver_resumes_a_stalled_loader_until_it_finishes():
     assert row["state"] == "success" and n == 4
 
 
-def test_driver_gives_up_after_max_attempts():
+def test_driver_gives_up_when_stalled_runs_stop_making_progress():
     calls = []
     row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (calls.append(1) or 1, "started"),
-                                 wait_fn=lambda rid: {"state": "stalled"})
-    assert row["state"] == "stalled" and n == drive.MAX_ATTEMPTS == len(calls)
+                                 wait_fn=lambda rid: {"state": "stalled", "states_done": 7})
+    # first stall is progress (7 > nothing); then NO_PROGRESS_LIMIT idle ones
+    assert row["state"] == "stalled" and n == 1 + drive.NO_PROGRESS_LIMIT == len(calls)
     assert drive.verdict([("x", row, "")])[0] == 1
+
+
+def test_driver_keeps_resuming_past_ten_attempts_while_progressing():
+    """Measured: the second live run needed 6 attempts for 39 states — a busy
+    merge day can exhaust any fixed small count while every attempt moves."""
+    seq = [{"state": "stalled", "states_done": 3 * i} for i in range(1, 15)]
+    seq.append({"state": "success", "states_done": 51})
+    it = iter(seq)
+    row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (1, "started"),
+                                 wait_fn=lambda rid: next(it))
+    assert row["state"] == "success" and n == 15
+
+
+def test_driver_loader_subset_selection():
+    assert drive.selected("all") == drive.LOADERS == drive.selected("")
+    sub = drive.selected("osm_transmission_lines, osm_pipelines")
+    assert [l for _e, l in sub] == ["osm_transmission_lines", "osm_pipelines"]
+    with pytest.raises(SystemExit):
+        drive.selected("osm_transmision_lines")      # a typo must not run nothing
+
+
+# ── a budget stop is resumable, not a failure (2026-09-23) ──────────────────
+def test_budget_stop_is_incomplete_not_failed(monkeypatch):
+    monkeypatch.setattr(osm, "_overpass_fetch", lambda q, on_attempt=None, **k: ({"elements": []}, "ok"))
+    monkeypatch.setattr(osm, "_dsn", lambda: "postgres://x")
+    monkeypatch.setattr(osm, "LOADER_BUDGET_S", -1)          # budget already spent
+    res = osm._sweep("t", ["AL", "AK"], lambda st: st, lambda c, st, els: (0, {}))
+    assert res["failed_states"] == {}, "an unreached state is not a failed one"
+    assert res["not_reached"] == ["AL", "AK"]
+    st, note = osm.classify(res)
+    assert st == "incomplete" and "resumes" in note
+
+
+def test_driver_resumes_an_incomplete_run():
+    seq = iter([{"state": "incomplete", "states_done": 24},
+                {"state": "success", "states_done": 51}])
+    row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (1, "started"),
+                                 wait_fn=lambda rid: next(seq))
+    assert row["state"] == "success" and n == 2

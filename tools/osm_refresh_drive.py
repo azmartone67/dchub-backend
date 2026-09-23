@@ -40,7 +40,16 @@ DEADLINE_S = int(os.environ.get("OSM_DRIVE_DEADLINE_S", "3300"))
 # RESUMES (the dead run's finished states are carried over), so each attempt
 # makes progress and a sweep finishes across several of them. Still bounded:
 # a loader that stalls this many times in a row fails the job.
-MAX_ATTEMPTS = int(os.environ.get("OSM_DRIVE_MAX_ATTEMPTS", "10"))
+#
+# ★ 2026-09-23 (second live run): a flat cap of 10 was the wrong shape. That
+# run's substations loader needed 6 attempts for its first 39 states — each
+# deploy-killed thread finished 1-8 states before dying — so a busy merge day
+# can exhaust ANY fixed count while every attempt is still moving. The rule
+# is now PROGRESS: re-fire while the run that just stalled finished more
+# states than the one before it; stop after NO_PROGRESS_LIMIT consecutive
+# attempts that finished nothing new. MAX_ATTEMPTS is only a backstop.
+MAX_ATTEMPTS = int(os.environ.get("OSM_DRIVE_MAX_ATTEMPTS", "40"))
+NO_PROGRESS_LIMIT = int(os.environ.get("OSM_DRIVE_NO_PROGRESS_LIMIT", "3"))
 
 
 def _call(method, path):
@@ -102,9 +111,11 @@ def verdict(results):
 
 def drive_one(endpoint, fire_fn=None, wait_fn=None):
     """Fire one loader and follow it to a final row, re-firing (= resuming) a
-    stalled run up to MAX_ATTEMPTS times. Returns (row, reason, attempts)."""
+    stalled run while it keeps making progress (see NO_PROGRESS_LIMIT).
+    Returns (row, reason, attempts)."""
     fire_fn, wait_fn = fire_fn or fire, wait_fn or wait
     row, reason, attempt = None, "", 0
+    best_done, idle = -1, 0
     for attempt in range(1, MAX_ATTEMPTS + 1):
         rid, reason = fire_fn(endpoint)
         print(f"→ {endpoint} (attempt {attempt}): run_id={rid} {reason}", flush=True)
@@ -112,9 +123,32 @@ def drive_one(endpoint, fire_fn=None, wait_fn=None):
             break
         row = wait_fn(rid)
         print(f"  run {rid}: {row.get('state')} — {(row.get('note') or '')[:200]}", flush=True)
-        if row.get("state") != "stalled":
+        # stalled = the thread died; incomplete = it hit its wall-clock
+        # budget. Both are resumable and neither is an outcome.
+        if row.get("state") not in ("stalled", "incomplete"):
+            break
+        done = int(row.get("states_done") or 0)
+        idle = 0 if done > best_done else idle + 1
+        best_done = max(best_done, done)
+        if idle >= NO_PROGRESS_LIMIT:
+            print(f"  no new state finished in {idle} consecutive attempts — giving up",
+                  flush=True)
             break
     return row, reason, attempt
+
+
+def selected(spec):
+    """LOADERS filtered by a comma list of loader keys ('all' or empty = all).
+    An unknown key raises: a typo must not silently run nothing and go green."""
+    spec = (spec or "all").strip()
+    if spec == "all":
+        return list(LOADERS)
+    want = [w.strip() for w in spec.split(",") if w.strip()]
+    known = {loader for _e, loader in LOADERS}
+    bad = [w for w in want if w not in known]
+    if bad or not want:
+        raise SystemExit(f"unknown loader(s) {bad or spec!r}; choose from {sorted(known)}")
+    return [(e, l) for e, l in LOADERS if l in want]
 
 
 def main():
@@ -122,7 +156,7 @@ def main():
         print("::error::DCHUB_INTERNAL_KEY secret not set")
         return 1
     results = []
-    for endpoint, loader in LOADERS:
+    for endpoint, loader in selected(os.environ.get("OSM_DRIVE_LOADERS")):
         row, reason, _n = drive_one(endpoint)
         results.append((loader, row, reason))
     code, lines = verdict(results)

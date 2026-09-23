@@ -252,12 +252,6 @@ def _center(el):
     return lat, lng
 
 
-def _now_text():
-    # discovered_power_plants stores its timestamps as TEXT in this shape
-    # ('2026-02-26T00:45:38.847648', UTC, no zone) — match it exactly.
-    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
-
-
 # ── The "new since the federal snapshot" rule ───────────────────────────────
 def new_node_share(el, cutoff):
     nodes = el.get('nodes') or []
@@ -396,8 +390,13 @@ def _sweep(loader, states, query_for, write_state, progress=None, carried=None):
     t0 = time.monotonic()
     for i, state in enumerate(states):
         if time.monotonic() - t0 > LOADER_BUDGET_S:
-            for s in states[i:]:
-                res["failed_states"][s] = "budget"
+            # ★ 2026-09-23: these used to be recorded as FAILED states, which
+            # on a slow Overpass day made a healthy sweep an error (measured:
+            # transmission ended 27/51 "failed" after exactly 45 min, most of
+            # them simply not reached). They are not failures, they are not
+            # done yet: the run ends 'incomplete' and the next start resumes.
+            res["budget_exhausted"] = True
+            res["not_reached"] = list(states[i:])
             break
         data, status = _overpass_fetch(query_for(state), on_attempt=_beat)
         if status != "ok":
@@ -485,6 +484,30 @@ def _held_substations(cur, pts, margin=0.02):
     return grid
 
 
+# ★ 2026-09-23 — THE BACKFILL IS NOT NEWS, for the two lanes that write into
+# SHARED tables too. Once #5306 made these loaders actually write, their first
+# sweeps inserted every OSM substation / plant the broken loader had never
+# managed to store — years of OSM, not this week's (measured: one resumed run
+# inserted 2,729 substations >150 m from anything held; the 09-23 snapshot
+# read substations +1,022 in a day). Those tables are counted by snapshot
+# difference on the board, so each lane marks its first successful sweep of a
+# state in osm_lane_baseline, and routes/infra_growth._BACKFILL_SUBTRACT takes
+# every row the lane wrote before that mark out of the published delta.
+SHARED_TABLE_LANES = {"osm_substations": "substations",
+                      "osm_power_plants": "discovered_power_plants"}
+
+
+def _mark_baseline(conn, lane, state):
+    """Record `state` as baselined for `lane` if it is not already. Same
+    transaction as the rows (the caller ran ensure_tables BEFORE its inserts),
+    so rows and mark commit or roll back together, and baselined_at = NOW() is
+    that transaction's start: equal to the rows' own stamps, never after them.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO osm_lane_baseline (lane, state) VALUES (%s, %s)
+                       ON CONFLICT DO NOTHING""", (lane, state))
+
+
 def write_substations(conn, state, els):
     """One state's substations in one statement; returns (inserted, counts).
 
@@ -500,6 +523,7 @@ def write_substations(conn, state, els):
     already held are left exactly as they are (ON CONFLICT DO NOTHING) — the
     46,376 NULL-source rows are neither restamped nor relabelled.
     """
+    ensure_tables(conn)          # commits; everything below is ONE transaction
     cands = []
     for el in els:
         lat, lng = _center(el)
@@ -524,6 +548,7 @@ def write_substations(conn, state, els):
               (name, operator, voltage_kv, lat, lng, city, state, country,
                source, source_id)
             VALUES %s ON CONFLICT DO NOTHING RETURNING 1""", rows)
+    _mark_baseline(conn, "osm_substations", state)
     return ins, {"near_held_skipped": skipped}
 
 
@@ -546,13 +571,19 @@ def write_power_plants(conn, state, els):
     deterministic id, so the 8,629 held rows keep their NULL stamps and are
     never presented as new.
     """
+    ensure_tables(conn)          # commits; everything below is ONE transaction
     with conn.cursor() as cur:
         # r70g: the repo CREATE TABLE is stale (no `country`; `id` is TEXT NOT
         # NULL with no default) — write only columns the LIVE table has.
         cur.execute("""SELECT column_name FROM information_schema.columns
                         WHERE table_name='discovered_power_plants'""")
         cols = {r[0] for r in cur.fetchall()}
-        stamp = _now_text()
+        # The stamp is this TRANSACTION's time, in the TEXT shape the table
+        # uses — the same instant _mark_baseline records, so a baseline row is
+        # never "after" its own baseline (a Python clock read here would be).
+        cur.execute("""SELECT to_char(NOW() AT TIME ZONE 'UTC',
+                                      'YYYY-MM-DD"T"HH24:MI:SS.US')""")
+        stamp = cur.fetchone()[0]
         recs = []
         for el in els:
             tags = el.get('tags') or {}
@@ -581,6 +612,7 @@ def write_power_plants(conn, state, els):
             cur,
             f"INSERT INTO discovered_power_plants ({col_sql}) VALUES %s ON CONFLICT DO NOTHING RETURNING 1",
             [tuple(r[k] for k in keys) for r in recs])
+    _mark_baseline(conn, "osm_power_plants", state)
     return ins, {}
 
 
@@ -797,6 +829,14 @@ def classify(res):
     db_failed = sorted(s for s, why in failed.items() if str(why).startswith("db:"))
     if db_failed:
         return "error", f"DB write failed for {len(db_failed)} state(s): {', '.join(db_failed[:8])}"
+    if res.get("budget_exhausted"):
+        # Not final and not a failure: resumable, like a stalled run. It never
+        # beats the dead-man ledger (run_tracked), so a sweep that is never
+        # finished still goes overdue there.
+        return "incomplete", (f"wall-clock budget reached after "
+                              f"{res.get('states_done', 0)}/{total} states; "
+                              f"{len(res.get('not_reached') or [])} not reached yet — "
+                              f"the next start resumes")
     if total == 0 or len(failed) > MAX_FAILED_STATE_SHARE * total:
         return "error", (f"{len(failed)}/{total} states failed "
                          f"({', '.join(sorted(failed)[:8])})")
@@ -847,8 +887,10 @@ def start_run(loader):
             cur.execute(
                 """SELECT id, COALESCE(detail->'done_states', '[]'::jsonb)
                      FROM osm_load_runs
-                    WHERE loader = %s AND status = 'running'
-                      AND heartbeat_at < NOW() - make_interval(secs => %s)
+                    WHERE loader = %s
+                      AND ((status = 'running'
+                            AND heartbeat_at < NOW() - make_interval(secs => %s))
+                           OR status = 'incomplete')
                       AND started_at > NOW() - make_interval(hours => %s)
                     ORDER BY id DESC LIMIT 1 FOR UPDATE""",
                 (loader, STALL_AFTER_S, RESUME_WITHIN_H))
@@ -866,8 +908,9 @@ def start_run(loader):
                                   SET status = 'abandoned', finished_at = NOW(),
                                       note = %s
                                 WHERE id = %s""",
-                            (f"thread died mid-sweep (no heartbeat); resumed by run {rid} "
-                             f"with {len(carried)} state(s) carried", dead[0]))
+                            (f"stopped mid-sweep (thread died or budget reached); "
+                             f"resumed by run {rid} with {len(carried)} state(s) "
+                             f"carried", dead[0]))
         conn.commit()
         return rid
     finally:
@@ -932,6 +975,10 @@ def run_tracked(loader, run_id=None):
             _update_run(run_id, res if isinstance(res, dict) else {}, status, note)
         except Exception as e:  # noqa: BLE001
             logger.error("osm_load_runs finish write failed for %s: %s", loader, e)
+    if status == "incomplete":
+        # Resumable, not an outcome: only a finished sweep beats the ledger.
+        return {"run_id": run_id, "status": status, "note": note,
+                "inserted": (res or {}).get("inserted") if isinstance(res, dict) else None}
     try:
         from routes.ingest_runs import record_beat
         record_beat(feed, status=status,

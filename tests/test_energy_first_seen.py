@@ -139,6 +139,11 @@ class _Cur:
             self._one = ["energy_first_seen" if self.registry_exists else None]
         elif "FROM energy_first_seen" in s:
             self._one = self.registry_row
+        elif s.startswith("SELECT COUNT(*)") and "osm_lane_baseline" in s:
+            # routes.infra_growth._BACKFILL_SUBTRACT: no OSM lane backfill in
+            # this window. (Unanswered, it reads as unmeasured and the delta
+            # is published as None — correctly, for a real failed read.)
+            self._one = [0]
         elif s.startswith("SELECT MAX("):
             self._one = [datetime.datetime(2026, 9, 22, 5, 57,
                                            tzinfo=datetime.timezone.utc), 0]
