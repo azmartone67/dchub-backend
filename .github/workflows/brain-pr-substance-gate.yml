@@ -17,13 +17,20 @@
 # an issue while being scaffold-only, it escalates the comment to a warning,
 # because that is the exact false-resolution pattern.
 #
+# 2026-09-22 — a scaffold-only PR on a `brain-spec/*` branch now FAILS too.
+# The advisory premise (a human reads the comment before merging) was measured
+# false: 106 of 111 brain-spec merges in September changed only docs/, with a
+# 0.0% human rejection rate, and every one counted as "shipped" while the
+# finding re-fired. Specs still land on purpose: the owner adds the label
+# `spec-land-approved`, which turns the verdict back to neutral.
+#
 # Kill switch: set repo variable BRAIN_SUBSTANCE_GATE_DISABLE=1.
 
 name: brain-pr-substance-gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -47,6 +54,8 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           GATE_DISABLE: ${{ vars.BRAIN_SUBSTANCE_GATE_DISABLE }}
         run: |
           set -euo pipefail
@@ -142,6 +151,24 @@ jobs:
                 ctitle="Empty PR — changes no files"
               fi
               note="Against its merge-base with the base branch this PR changes **no files at all** — its commits are already on the base branch, or they cancel out. Merging it changes nothing, so it cannot resolve a finding."
+            fi
+
+            # A brain-spec/* branch that changes no running code BLOCKS unless
+            # the owner approved landing it. Only the neutral case is promoted:
+            # a claimed fix already fails with its own, more specific message.
+            if [ "$concl" = "neutral" ]; then
+              case "${HEAD_REF:-}" in
+                brain-spec/*)
+                  if printf ',%s,' "${PR_LABELS:-}" | grep -qF ',spec-land-approved,'; then
+                    note="$note"$'\n\n'"Landing approved by the \`spec-land-approved\` label."
+                  else
+                    hdr="🛑 **Substance gate: brain-spec PR changes no running code**"
+                    note="This \`brain-spec/*\` PR adds a spec and changes nothing that runs. Brain specs no longer merge on their own: a merged spec counts as shipped while the finding stays broken. **Implement it** (a PR that changes running code), **close it** (recorded as the reviewer's decision), or add the label \`spec-land-approved\` to land the spec deliberately."
+                    concl="failure"
+                    ctitle="brain-spec PR changes no running code — implement, close, or label spec-land-approved"
+                  fi
+                  ;;
+              esac
             fi
 
             foot="<sub>${real_count} runtime file(s) changed · ${scaffolds} routes/_proposed_* scaffold(s) touched · brain-pr-substance-gate</sub>"
