@@ -384,3 +384,81 @@ def test_endpoint_forwards_the_platforms_query_arg(mod, monkeypatch):
 
     client.post("/api/v1/admin/multiplatform/auto-sweep")
     assert seen["platforms"] is None, seen
+
+
+# ── Headline ─────────────────────────────────────────────────────────
+# Post 100478 (2026-09-23) opened with a paragraph, not a headline. The old
+# compose cut it to 119 chars + "…" as the title and DROPPED it from the body.
+
+LEDE_100478 = ("23,027 facilities, 1,979 deals and 331 markets now return errors under "
+               "one versioned contract. DC Hub shipped error_version 2 so agents can "
+               "recover instead of abandoning the task.")
+LEDE_KC = ("Kansas City scores 74/100 on DC Hub's excess-power index, putting it in "
+           "the top 5 of every market we track, and its constraint reading sits at "
+           "just 40. Few markets pair that much available power with that little "
+           "congestion pressure.")
+
+
+@pytest.mark.parametrize("lede, headline", [
+    (LEDE_100478, "23,027 facilities, 1,979 deals and 331 markets now return errors "
+                  "under one versioned contract"),
+    (LEDE_KC, "Kansas City scores 74/100 on DC Hub's excess-power index"),
+])
+def test_a_paragraph_opener_keeps_its_lede_and_gets_a_whole_headline(mod, lede, headline):
+    title, subtitle, paras = mod._substack_compose(
+        mod.frame_substack(lede + "\nSecond paragraph.\nThird.", LINK))
+    assert title == headline
+    assert "…" not in title and len(title) <= mod.SUBSTACK_HEADLINE_MAX
+    assert paras[0] == lede, "the opening paragraph must stay in the body, whole"
+    assert subtitle == ""
+
+
+def test_a_long_first_sentence_with_no_clause_break_ends_on_a_whole_word(mod):
+    lede = ("The interconnection queue in the region behind the largest data center "
+            "cluster on earth now runs longer than the build cycle of the buildings "
+            "waiting on it. More follows.")
+    title, _, paras = mod._substack_compose(lede)
+    assert len(title) <= mod.SUBSTACK_HEADLINE_MAX
+    assert lede.startswith(title)
+    assert lede[len(title)] == " ", "cut mid-word"
+    assert title.split()[-1].lower() not in mod._HEADLINE_TAIL_WORDS
+    assert paras[0] == lede
+
+
+def test_a_headline_line_is_still_the_title_and_leaves_the_body(mod):
+    title, subtitle, paras = mod._substack_compose(SAMPLE)
+    assert title == "DCPI Mover · 24h"
+    assert subtitle == "SPP queue depth fell 11% week over week."
+    assert not any(p == "DCPI Mover · 24h" for p in paras)
+
+
+def test_a_short_first_line_does_not_borrow_a_paragraph(mod):
+    title, _, paras = mod._substack_compose("Deal alert\n" + LEDE_KC + "\nMore.")
+    assert title == "Deal alert"
+    assert paras[0] == LEDE_KC
+
+
+def test_decimals_and_domains_do_not_end_the_first_sentence(mod):
+    lede = ("PJM added 3.5 GW of queue exits this week per dchub.cloud data, the most "
+            "since the reform took effect in the spring of last year across the region. Next.")
+    title, _, _ = mod._substack_compose(lede)
+    assert "3.5 GW" in title and "dchub.cloud" in title
+
+
+def test_a_word_cut_never_ends_on_a_connective(mod):
+    # The 100-char window's last whole word is "and".
+    lede = ("The interconnection queue behind the largest cluster on earth now runs "
+            "longer than the build and the permits of every building waiting on it "
+            "across the whole region today. Next.")
+    title, _, _ = mod._substack_compose(lede)
+    assert title == ("The interconnection queue behind the largest cluster on earth now "
+                     "runs longer than the build")
+
+
+def test_a_thousands_separator_is_not_a_clause_break(mod):
+    # "1,979" sits past the 30-char floor, so a comma without its space would cut there.
+    lede = ("Energization dates for operators across the 1,979 tracked deals in 331 "
+            "markets now slip further every single quarter we measure. Next.")
+    title, _, _ = mod._substack_compose(lede)
+    assert title == ("Energization dates for operators across the 1,979 tracked deals in 331 "
+                     "markets now slip further")

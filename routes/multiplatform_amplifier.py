@@ -96,6 +96,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -138,6 +139,16 @@ MASTODON_DEFAULT_INSTANCE = "mastodon.social"
 SUBSTACK_DEFAULT_PUBLICATION = "https://dchubcloud.substack.com"
 SUBSTACK_BASE = "https://substack.com/api/v1"
 SUBSTACK_FALLBACK_TITLE = "DC Hub · Data Center Intelligence"
+# A first line longer than this is a paragraph, not a headline.
+SUBSTACK_HEADLINE_MAX = 100
+# A sentence ends at . ! ? followed by whitespace and a capital, digit or
+# quote — so "74/100", "3.5 GW" and "dchub.cloud" do not split.
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9"\u201c])')
+# Clause breaks a headline may end on. ", " needs the space, or "23,027"
+# would split.
+_CLAUSE_BREAK = re.compile(r"(?:, |; |: | \u2014 | \u2013 | - )")
+_HEADLINE_TAIL_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from",
+                        "in", "of", "on", "or", "the", "to", "with"}
 SUBSTACK_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/124.0 Safari/537.36")
@@ -642,26 +653,51 @@ def _substack_body_doc(paragraphs: list[str]) -> dict:
     return {"type": "doc", "content": content}
 
 
+def _headline_from_paragraph(paragraph: str) -> str:
+    """A whole headline taken from the front of a paragraph — never a
+    fragment ending in "…". Its first sentence when that fits; else the
+    longest leading clause that fits; else a word-boundary cut that does not
+    end on a connective ("… deals and")."""
+    text = paragraph.lstrip("#").strip()
+    first = _SENTENCE_END.split(text, maxsplit=1)[0].strip()
+    if len(first) <= SUBSTACK_HEADLINE_MAX:
+        return first.rstrip(".").strip() or SUBSTACK_FALLBACK_TITLE
+    cuts = [m.start() for m in _CLAUSE_BREAK.finditer(first)
+            if 30 <= m.start() <= SUBSTACK_HEADLINE_MAX]
+    if cuts:
+        return first[:cuts[-1]].strip()
+    words = first[:SUBSTACK_HEADLINE_MAX + 1].split()[:-1]
+    while words and words[-1].lower().strip(",;:") in _HEADLINE_TAIL_WORDS:
+        words.pop()
+    return " ".join(words).rstrip(",;:—–-").strip() or SUBSTACK_FALLBACK_TITLE
+
+
 def _substack_compose(body: str) -> tuple[str, str, list[str]]:
     """(title, subtitle, body_paragraphs) from the framed body string.
 
     The dispatcher hands every platform ONE string, so the title is derived
-    here rather than passed: the first line is the headline (LinkedIn posts
-    open with one — "DCPI Mover · 24h", "Hyperscaler AI Deal"). A first line
-    too short to be a headline borrows the next one, and a subtitle is only
-    taken when doing so still leaves a body behind."""
+    here rather than passed: a headline-length first line IS the headline
+    (LinkedIn posts often open with one — "DCPI Mover · 24h", "Hyperscaler AI
+    Deal"). A first line too short to be a headline borrows the next one, and
+    a subtitle is only taken when doing so still leaves a body behind.
+
+    ★ A first line longer than SUBSTACK_HEADLINE_MAX is the post's opening
+    PARAGRAPH. It stays in the body whole, and the headline is derived from
+    it. Before 2026-09-23 it was cut to 119 chars + "…" as the title and
+    dropped from the body — post 100478 published with its lede missing."""
     lines = [ln.strip() for ln in (body or "").splitlines() if ln.strip()]
     if not lines:
         return (SUBSTACK_FALLBACK_TITLE, "", [])
+    if len(lines[0].lstrip("#").strip()) > SUBSTACK_HEADLINE_MAX:
+        return (_headline_from_paragraph(lines[0]), "", lines)
     idx = 0
     title = lines[idx]
     idx += 1
-    if len(title) < 15 and idx < len(lines):
+    if (len(title) < 15 and idx < len(lines)
+            and len(title) + 3 + len(lines[idx]) <= SUBSTACK_HEADLINE_MAX):
         title = (title + " — " + lines[idx]).strip()
         idx += 1
     title = title.lstrip("#").strip() or SUBSTACK_FALLBACK_TITLE
-    if len(title) > 120:
-        title = title[:119].rstrip() + "…"
     subtitle = ""
     if idx < len(lines) and len(lines[idx]) <= 140 and (len(lines) - idx) >= 3:
         subtitle = lines[idx]
