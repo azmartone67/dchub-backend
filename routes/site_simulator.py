@@ -32,6 +32,7 @@ import psycopg2.extras
 
 from util.db_honesty import close_quietly, open_conn, try_fetchone, unpoison
 from util.us_states import state_match_pair
+from util.water_stress import water_band
 
 
 site_simulator_bp = Blueprint("site_simulator", __name__)
@@ -64,31 +65,11 @@ def _fmt_err(e) -> str:
 
 
 # WRI Aqueduct 4.0 baseline water stress reaches us as
-# `water_risk.water_stress_score`: 0-100, 100 = most stressed.
-# routes/water_aqueduct_ingest.py normalises WRI's PUBLISHED bws_cat bucket
-# (-1 Arid & Low Use, 0 Low, 1 Low-Medium, 2 Medium-High, 3 High,
-# 4 Extremely High) with cat/4*100, so the five categories land on
-# 0 / 25 / 50 / 75 / 100 and a state roll-up is a mean of those.
-#
-# ★ Band back to the 1-5 index on the CATEGORY midpoints, not on WRI's
-# withdrawal-percentage cut-offs (<10%, 10-20%, 20-40%, 40-80%, >80%). The
-# stored score is a normalised category, not a withdrawal ratio — reading 25.0
-# as "25% withdrawal, Medium-High" would shift every state a band.
-_WATER_BANDS = ((12.5, 1), (37.5, 2), (62.5, 3), (87.5, 4))
-
-
-def _water_band(score):
-    """0-100 WRI score -> the 1-5 index (1 Low .. 5 Extremely High).
-
-    None passes straight through: a stress index we could not read stays null
-    and never becomes a number.
-    """
-    if score is None:
-        return None
-    for edge, band in _WATER_BANDS:
-        if score < edge:
-            return band
-    return 5
+# `water_risk.water_stress_score` (0-100, 100 = most stressed), and the 1-5
+# banding lives in util.water_stress so the three other routes that carried
+# the same dead `usgs_water_stress.stress_index` read share ONE answer rather
+# than each growing a copy. util/us_states.py records where hand-copies end.
+_water_band = water_band
 
 
 def _pull_signals(state: str) -> dict:

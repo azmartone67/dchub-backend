@@ -193,8 +193,14 @@ class FakeDB:
         if "FROM market_power_scores WHERE market_slug = %s" in sql:
             slug = p[0]
             return [_mps_row(slug)] if any(r[0] == slug for r in SCORE_ROWS) else []
-        if "usgs_water_stress" in sql:
-            return [{"stress": 3.25}]
+        # ★ water_risk, not usgs_water_stress. This fixture used to answer
+        # `AVG(stress_index) FROM usgs_water_stress` with a plausible 3.25 —
+        # a column that has never existed on that table. Answering a query
+        # the real database raises UndefinedColumn on is how these tests sat
+        # green over a dead read for months (#5259 and follow-up). 56.25 is
+        # the WRI Medium-High midpoint, which bands to 3.
+        if "FROM water_risk" in sql:
+            return [{"water_stress_score": 56.25}]
         if "eia_retail_rates" in sql:
             return [{"rate_cents_kwh": 8.75}]
         self.misses.append(sql[:160])

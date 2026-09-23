@@ -23,7 +23,7 @@ analysis URL to their user.
 
 Performance: each endpoint targets <200ms p95 by aggregating from
 already-cached internal tables (substations, market_power_scores,
-eia_retail_rates, tax_incentives_neon, usgs_water_stress). External
+eia_retail_rates, tax incentives, water_risk). External
 HIFLD calls are NOT made server-side — agents already have lat/lon,
 and our substations table mirrors HIFLD nightly so the lookup is local.
 """
@@ -38,6 +38,10 @@ from typing import Optional
 from flask import Blueprint, request, jsonify
 import psycopg2
 import psycopg2.extras
+
+from util.db_honesty import try_fetchone
+from util.us_states import state_match_pair
+from util.water_stress import water_band
 
 
 land_power_mcp_bp = Blueprint("land_power_mcp", __name__)
@@ -262,31 +266,52 @@ def _build_analysis(lat: float, lon: float, state: str,
                 except Exception as e:
                     result["dcpi"]["_error"] = str(e)[:100]
 
+                abbr, full = state_match_pair(state)
+
                 # ── Retail rate (industrial) ──
-                try:
-                    cur.execute("""
-                        SELECT rate_cents_kwh, period
-                          FROM eia_retail_rates
-                         WHERE UPPER(state) = %s AND LOWER(sector) = 'industrial'
-                         ORDER BY period DESC LIMIT 1
-                    """, (state.upper(),))
-                    r = cur.fetchone()
-                    if r:
-                        result["power"]["industrial_rate_cents_kwh"] = round(float(r["rate_cents_kwh"]), 2)
-                except Exception:
-                    pass
+                # ★ eia_retail_rates.state holds FULL names ("Virginia"), and
+                # the table also carries census-region rows ("East North
+                # Central"), so match BOTH spellings. Measured live
+                # 2026-09-21: `UPPER(state) = 'VA'` -> 0 rows;
+                # `'VIRGINIA'` -> 10 (industrial 10.09 c/kWh, period 2026).
+                # The query never failed — it just answered "no data for VA"
+                # forever, and _quick_score's rate factor never fired.
+                r, err = try_fetchone(cur, """
+                    SELECT rate_cents_kwh, period
+                      FROM eia_retail_rates
+                     WHERE UPPER(state) IN (%s, %s)
+                       AND LOWER(sector) = 'industrial'
+                     ORDER BY period DESC LIMIT 1
+                """, (abbr, full))
+                if err:
+                    result["power"]["_rate_error"] = err
+                elif r and r.get("rate_cents_kwh") is not None:
+                    result["power"]["industrial_rate_cents_kwh"] = round(
+                        float(r["rate_cents_kwh"]), 2)
 
                 # ── Water stress ──
-                try:
-                    cur.execute("""
-                        SELECT AVG(stress_index) AS s FROM usgs_water_stress
-                         WHERE UPPER(state) = %s
-                    """, (state.upper(),))
-                    r = cur.fetchone()
-                    if r and r.get("s") is not None:
-                        result["water"]["stress_index"] = round(float(r["s"]), 1)
-                except Exception:
-                    pass
+                # ★ NOT usgs_water_stress. It has no stress column of any
+                # kind (its columns are site_id / site_name / latitude /
+                # longitude / state / county / aquifer_name / well_depth_ft /
+                # water_level_ft / water_level_date / site_type), it covers
+                # 16 states, and its water_level_ft groundwater proxy is the
+                # one withdrawn 2026-07-07 for reading INVERTED. So
+                # `AVG(stress_index)` raised UndefinedColumn on every call
+                # and stress_index was served null for every site. water_risk
+                # carries the verified WRI Aqueduct roll-up (0-100), banded
+                # here to the 1-5 index _quick_score compares on.
+                r, err = try_fetchone(cur, """
+                    SELECT water_stress_score
+                      FROM water_risk
+                     WHERE UPPER(state) = %s
+                     ORDER BY computed_at DESC NULLS LAST
+                     LIMIT 1
+                """, (abbr,))
+                if err:
+                    result["water"]["_error"] = err
+                elif r and r.get("water_stress_score") is not None:
+                    result["water"]["stress_index"] = water_band(
+                        float(r["water_stress_score"]))
 
                 # ── Tax incentives ──
                 # util.tax_incentives, not tax_incentives_neon: the table
@@ -367,7 +392,7 @@ def _build_analysis(lat: float, lon: float, state: str,
     # Water factor
     water = result["water"].get("stress_index")
     if water is not None and water >= 4:
-        score -= 8; notes.append(f"high water stress (state avg {water}/5) — cooling risk")
+        score -= 8; notes.append(f"high water stress (WRI band {water}/5) — cooling risk")
 
     # Tax factor
     tax = result["tax"]
