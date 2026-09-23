@@ -226,3 +226,22 @@ def test_board_summary_publishes_post_baseline_rows_not_the_snapshot_delta(conn)
     assert rec["status"] == "growing"
     assert osm.TRANSMISSION_CUTOFF in rec["inclusion_rule"]
     assert osm.TRANSMISSION_CUTOFF in rec["status_reason"]
+
+
+def test_substation_near_one_we_hold_is_not_new(conn):
+    """#5306's first live run inserted 809 OSM substations, 399 of them within
+    50 m of a substation already held — the same station twice."""
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO substations (name, lat, lng, source)
+                       VALUES ('Wilkins Substation', 33.0, -112.0, 'HIFLD')""")
+    conn.commit()
+
+    def sub(i, lat, lng, name):
+        return {"type": "node", "id": i, "lat": lat, "lon": lng, "tags": {"name": name}}
+    ins, counts = _sweep(conn, osm.write_substations, "AZ", [
+        sub(10, 33.0004, -112.0, "SRP Wilkins Substation"),   # ~45 m: same station, new name
+        sub(11, 33.0100, -112.0, "Far Substation"),           # ~1.1 km: new
+        sub(12, 33.0102, -112.0, "Far Substation (way)"),     # ~22 m from #11: same sweep dup
+    ])
+    assert ins == 1 and counts["near_held_skipped"] == 2
+    assert _rows(conn, "SELECT name FROM substations WHERE source='osm'") == [("Far Substation",)]

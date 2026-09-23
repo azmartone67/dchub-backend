@@ -95,6 +95,15 @@ ID_FLOORS = {
 NEW_NODE_SHARE = 0.5
 TRANSMISSION_MIN_KV = 69          # EIA's transmission layer starts at 69 kV
 GAS_NEAR_FEDERAL_KM = 1.0
+# ★ 2026-09-23: an OSM substation within this distance of ANY substation we
+# already hold is the same substation, not a new one. Measured on the first
+# run after #5306 (809 new source='osm' rows, read-only): 399 sat within 50 m
+# of a held row (59 of them the same OSM element under a new name, e.g.
+# "SRP Wilkins Substation" beside "Wilkins Substation"), 423 within 150 m,
+# 441 within 300 m; 246 had nothing within ~1 km. The cliff is at 50 m, so
+# 150 m catches the coordinate drift between HIFLD and OSM without swallowing
+# a neighbouring station.
+SUBSTATION_NEAR_HELD_M = 150.0
 
 STATE_SLEEP_S = float(os.environ.get("OSM_LOADER_STATE_SLEEP_S", "2"))
 # Wall-clock budget per loader; states not reached are reported as failed.
@@ -381,8 +390,54 @@ def _insert_returning(cur, sql, rows, template=None):
 # (module-level so tests/test_osm_lane_baseline_pg.py can run it against a
 # real Postgres).
 
+class _PointGrid:
+    """Held points bucketed by ~1 km cells, for a cheap "anything within R?"."""
+    CELL = 0.01
+
+    def __init__(self):
+        self.cells = {}
+
+    def _key(self, lat, lng):
+        return (int(math.floor(lat / self.CELL)), int(math.floor(lng / self.CELL)))
+
+    def add(self, lat, lng):
+        self.cells.setdefault(self._key(lat, lng), []).append((lat, lng))
+
+    def near(self, lat, lng, metres):
+        ki, kj = self._key(lat, lng)
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                for (a, b) in self.cells.get((ki + di, kj + dj), ()):
+                    if _haversine_km(lat, lng, a, b) * 1000.0 <= metres:
+                        return True
+        return False
+
+
+def _held_substations(cur, pts, margin=0.02):
+    """Grid of every substation we hold inside the bbox of `pts` (any source)."""
+    grid = _PointGrid()
+    if not pts:
+        return grid
+    lats = [p[0] for p in pts]
+    lngs = [p[1] for p in pts]
+    cur.execute("""SELECT lat, lng FROM substations
+                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s""",
+                (min(lats) - margin, max(lats) + margin,
+                 min(lngs) - margin, max(lngs) + margin))
+    for a, b in cur.fetchall():
+        if a is not None and b is not None:
+            grid.add(float(a), float(b))
+    return grid
+
+
 def write_substations(conn, state, els):
-    """One state's substations in one statement; returns (inserted, {}).
+    """One state's substations in one statement; returns (inserted, counts).
+
+    Not a duplicate of what we hold: an element within SUBSTATION_NEAR_HELD_M
+    of any substation already in the table (HIFLD, an earlier OSM row under
+    another name, discovery) is skipped and counted as near_held_skipped, and
+    so is a second element of the same sweep within that distance (a node and
+    a way drawn for one station).
 
     source / source_id use the tag the existing OSM discovery lane already
     writes (infrastructure_discovery.py: source='osm', source_id='osm_sub_<id>'),
@@ -390,24 +445,31 @@ def write_substations(conn, state, els):
     already held are left exactly as they are (ON CONFLICT DO NOTHING) — the
     46,376 NULL-source rows are neither restamped nor relabelled.
     """
-    rows = []
+    cands = []
     for el in els:
-        tags = el.get('tags') or {}
         lat, lng = _center(el)
-        if not lat or not lng:
-            continue
-        rows.append(((tags.get('name') or f"OSM-{el.get('id')}")[:200],
-                     (tags.get('operator') or 'Unknown')[:200],
-                     _parse_voltage_kv(tags.get('voltage')), lat, lng,
-                     (tags.get('addr:city') or '')[:100], state, 'US',
-                     'osm', f"osm_sub_{el.get('id')}"))
+        if lat and lng:
+            cands.append((float(lat), float(lng), el))
+    rows, skipped = [], 0
     with conn.cursor() as cur:
+        grid = _held_substations(cur, cands)
+        for lat, lng, el in cands:
+            if grid.near(lat, lng, SUBSTATION_NEAR_HELD_M):
+                skipped += 1
+                continue
+            grid.add(lat, lng)
+            tags = el.get('tags') or {}
+            rows.append(((tags.get('name') or f"OSM-{el.get('id')}")[:200],
+                         (tags.get('operator') or 'Unknown')[:200],
+                         _parse_voltage_kv(tags.get('voltage')), lat, lng,
+                         (tags.get('addr:city') or '')[:100], state, 'US',
+                         'osm', f"osm_sub_{el.get('id')}"))
         ins = _insert_returning(cur, """
             INSERT INTO substations
               (name, operator, voltage_kv, lat, lng, city, state, country,
                source, source_id)
             VALUES %s ON CONFLICT DO NOTHING RETURNING 1""", rows)
-    return ins, {}
+    return ins, {"near_held_skipped": skipped}
 
 
 def load_substations(states=None, progress=None):
