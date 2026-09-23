@@ -41,6 +41,10 @@ def _ensure_tables():
 
 # Each surface registered with its staleness window + how to refresh it
 SURFACES = [
+    # A freshness_checks KEY, not a table: nothing reads a dcpi_scores table
+    # here (none has ever existed), and refresh_dcpi writes market_power_scores.
+    # Renaming it would not retire the live row (api_auto_refresh walks every
+    # freshness_checks row by its stored refresh_func), so both would show.
     {"name": "dcpi_scores",       "stale_hours": 26,  "refresh_func": "refresh_dcpi"},
     {"name": "testimonials",      "stale_hours": 30*24, "refresh_func": "refresh_testimonials"},
     # Phase JJ (2026-05-14): homepage_stats cap 1h → 4h. The refresh_stats

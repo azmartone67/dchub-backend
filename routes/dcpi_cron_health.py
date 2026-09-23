@@ -40,7 +40,7 @@ def _conn():
 
 @dcpi_health_bp.route("/health", methods=["GET"])
 def health():
-    """Inspect dcpi_runs table or fallback to dcpi_scores recompute history."""
+    """Inspect dcpi_runs, or fall back to market_power_scores.computed_at."""
     out = {
         "at": datetime.datetime.utcnow().isoformat() + "Z",
         "blueprint": "dcpi_health_bp",
@@ -85,16 +85,21 @@ def health():
             out.setdefault("probe_errors", {})[table] = type(e).__name__
             continue
 
-    # No table found — fall back to checking dcpi_scores freshness
+    # No recent run rows — fall back to how fresh the scores themselves are.
+    # 2026-09-23: this read dcpi_v2_scores, which has never existed in
+    # production (neither has dcpi_scores), so the one moment it runs — no
+    # dcpi_runs row in 48h, i.e. the recompute cron is dead — it answered an
+    # error and no verdict. market_power_scores is where the recompute writes.
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
                 SELECT COUNT(*), MAX(computed_at)
-                FROM dcpi_v2_scores
+                FROM market_power_scores
                 WHERE computed_at > NOW() - INTERVAL '24 hours'
             """)
             row = cur.fetchone()
             out["fallback_check"] = {
+                "source_table": "market_power_scores",
                 "scores_last_24h": row[0],
                 "last_score_at":   row[1].isoformat() if row[1] else None,
             }

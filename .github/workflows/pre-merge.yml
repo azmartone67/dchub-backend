@@ -1344,6 +1344,31 @@ jobs:
             echo "::error::the radar SLA columns SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Readers of the phantom dcpi_scores table, same Postgres ─────────
+      # dcpi_scores and dcpi_v2_scores have never existed in production. The
+      # winback digest read one and printed a typed "232 tracked power
+      # markets"; the LinkedIn DCPI mover probed both inside one transaction,
+      # so the aborted transaction killed its market_power_scores read and it
+      # posted a typed market. Only a real Postgres has the missing table and
+      # the aborted transaction. Owns and recreates market_power_scores,
+      # dcpi_daily_snapshots, discovered_facilities, linkedin_quad_posts and
+      # dcpi_runs.
+      - name: dcpi_scores readers SQL against a real Postgres
+        env:
+          DCPI_SCORES_READERS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_dcpi_scores_readers_sql.py -v --tb=short
+
+      - name: Prove the dcpi_scores readers SQL test actually RAN
+        env:
+          DCPI_SCORES_READERS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_dcpi_scores_readers_sql.py \
+            -q -rs --tb=no > dsr.txt 2>&1 || { cat dsr.txt; exit 1; }
+          cat dsr.txt
+          if grep -qi "skipped" dsr.txt; then
+            echo "::error::the dcpi_scores readers SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1402,6 +1427,7 @@ jobs:
             efs.txt
             osm.txt
             rsla.txt
+            dsr.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

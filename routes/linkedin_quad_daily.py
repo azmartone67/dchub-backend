@@ -238,55 +238,74 @@ def _ensure_table():
 _ensure_table()
 
 
-def _build_dcpi_mover():
-    """Pick biggest DCPI verdict shift in last 24h.
+#: Oldest snapshot a "24h" mover may come from. The snapshot writer runs
+#: ~06:00 UTC and this slot at 08:00, so today's normally exists; one day of
+#: slack covers a late cron. Anything older is not a 24h move.
+_MOVER_MAX_SNAPSHOT_AGE_DAYS = 1
 
-    r48 (2026-05-25): fallback no longer hardcodes 'Rural SPP, Kansas'
-    every time (the cause of repeated posts). Falls through to a
-    random pick from market_power_scores top 10 — different result
-    each call.
+
+def _build_dcpi_mover():
+    """The DCPI mover for the 08:00 slot, or None when there is no real row.
+
+    2026-09-23. This used to probe dcpi_v2_scores, dcpi_scores, then
+    market_power_scores inside ONE `with _conn()`. The first two have never
+    existed in production, and psycopg2 opens with autocommit off, so the
+    first UndefinedTable aborted the transaction and the market_power_scores
+    probe raised InFailedSqlTransaction (replayed read-only on production the
+    same day). Every call therefore ended in a hardcoded list of eight markets
+    with typed scores ("Cheyenne, WY BUILD 69.5"), which this slot posts to
+    LinkedIn when the composer raises. The owner decided the list goes: no
+    real row, no post (run() skips the slot).
+
+    1. The top verdict shift at the newest dcpi_daily_snapshots snapshot,
+       from routes.mcp_sse_events._fetch_dcpi_verdict_shifts. Imported, not
+       re-derived: it already drops restatements (method_version change or
+       off-band verdict) and orders decisive-then-magnitude, and two surfaces
+       disagreeing about what moved is worse than either being wrong.
+    2. Otherwise a PUBLISHED market_power_scores row whose stored verdict is
+       what the bands give from its own scores. That is current state, not a
+       move, so the payload carries no prior_verdict and the post does not
+       say anything moved.
     """
     if not (_pg and _dsn()): return None
     try:
+        from routes.mcp_sse_events import _fetch_dcpi_verdict_shifts
+        shifts = _fetch_dcpi_verdict_shifts()[0]
+    except Exception:
+        shifts = []
+    cutoff = (utc_now().date()
+              - datetime.timedelta(days=_MOVER_MAX_SNAPSHOT_AGE_DAYS)).isoformat()
+    for s in shifts:
+        if (s.get("snapshot_date") or "") < cutoff:
+            break  # every shift shares the newest snapshot_date
+        return {"market": s.get("market_name") or s.get("market"),
+                "verdict": s.get("now"), "prior_verdict": s.get("was"),
+                "score": s.get("excess_power_score"),
+                "snapshot_date": s.get("snapshot_date"), "since": s.get("since"),
+                "source": "dcpi_daily_snapshots"}
+    try:
+        from util.dcpi_method import verdict_case_sql
+        from util.dcpi_score_row import PUBLISHED_ONLY
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Try a few possible schemas for verdict history
-            for sql in [
-                """SELECT market, verdict, score, ROUND(score - LAG(score) OVER (PARTITION BY market ORDER BY computed_at), 1) AS delta
-                   FROM dcpi_v2_scores
-                   WHERE computed_at > NOW() - INTERVAL '36 hours'
-                   ORDER BY ABS(score - COALESCE(LAG(score) OVER (PARTITION BY market ORDER BY computed_at), score)) DESC NULLS LAST
-                   LIMIT 1""",
-                """SELECT market_name AS market, verdict, score FROM dcpi_scores
-                   WHERE computed_at > NOW() - INTERVAL '24 hours'
-                   ORDER BY score DESC LIMIT 1""",
-                # r48: third path — market_power_scores is the actual
-                # canonical table on this Neon instance.
-                """SELECT market_name AS market, verdict,
-                          excess_power_score AS score
-                     FROM market_power_scores
-                    WHERE computed_at > NOW() - INTERVAL '48 hours'
-                      AND verdict IN ('BUILD','CAUTION','AVOID')
-                    ORDER BY RANDOM() LIMIT 1""",
-            ]:
-                try:
-                    cur.execute(sql)
-                    row = cur.fetchone()
-                    if row: return dict(row)
-                except Exception: continue
-    except Exception: pass
-    # r48: rotating fallback — pick from a varied list, not one market
-    import random as _random
-    fallbacks = [
-        {"market": "Cheyenne, WY",         "verdict": "BUILD",   "score": 69.5},
-        {"market": "Midlothian, TX",       "verdict": "BUILD",   "score": 65.6},
-        {"market": "Rural SPP, Kansas",    "verdict": "BUILD",   "score": 67.2},
-        {"market": "Council Bluffs, IA",   "verdict": "BUILD",   "score": 68.1},
-        {"market": "Hillsboro, OR",        "verdict": "BUILD",   "score": 64.8},
-        {"market": "Quincy, WA",           "verdict": "BUILD",   "score": 66.4},
-        {"market": "Boardman, OR",         "verdict": "BUILD",   "score": 63.2},
-        {"market": "New Albany, OH",       "verdict": "BUILD",   "score": 62.9},
-    ]
-    return _random.choice(fallbacks)
+            # Spliced with .replace(), never an f-string or %: same rule as
+            # agent_broadcast and util/dcpi_score_row.py.
+            cur.execute("""
+                SELECT market_name AS market, verdict,
+                       excess_power_score AS score
+                  FROM market_power_scores
+                 WHERE {published}
+                   AND computed_at > NOW() - INTERVAL '48 hours'
+                   AND verdict IN ('BUILD','CAUTION','AVOID')
+                   AND verdict = {band}
+                 ORDER BY RANDOM() LIMIT 1""".replace(
+                "{published}", PUBLISHED_ONLY).replace(
+                "{band}", verdict_case_sql("excess_power_score", "constraint_score")))
+            row = cur.fetchone()
+            if row:
+                return {**dict(row), "source": "market_power_scores"}
+    except Exception:
+        pass
+    return None
 
 
 def _build_industry_pulse():
@@ -413,11 +432,22 @@ def _format_post_base(slot, payload):
         # frozen literal. See _canon_markets.
         _mk = _canon_markets()
         _mk_clause = f"{_mk} markets" if _mk else "markets"
+        # A shift names both verdicts and both snapshot dates. A current-state
+        # row (no prior_verdict) must not claim anything moved.
+        if payload.get("prior_verdict"):
+            _head = (f"📊 {payload.get('market','?')} moved {payload.get('prior_verdict')} → "
+                     f"{payload.get('verdict','?')} on the DC Power Index "
+                     f"(excess power {payload.get('score','?')}/100; snapshot "
+                     f"{payload.get('snapshot_date','?')} vs {payload.get('since','?')})")
+            _why = "This kind of move signals"
+        else:
+            _head = (f"📊 {payload.get('market','?')} scores {payload.get('score','?')}/100 "
+                     f"on the DC Power Index ({payload.get('verdict','?')})")
+            _why = "Scores like this signal"
         return (
-            f"🚀 {payload.get('market','?')} just hit {payload.get('score','?')}/100 "
-            f"on the DC Power Index ({payload.get('verdict','?')})\n\n"
-            f"The DC Power Index ranks {_mk_clause} daily. This kind of move "
-            f"signals where AI capex is actually flowing — not where the headlines say it is.\n\n"
+            f"{_head}\n\n"
+            f"The DC Power Index ranks {_mk_clause} daily. {_why} "
+            f"where AI capex is actually flowing — not where the headlines say it is.\n\n"
             f"Top BUILD markets right now span 3 ISOs (WECC, SPP, ERCOT). Grid fundamentals "
             f"now outweigh proximity to legacy colocation hubs.\n\n"
             f"Track them all: {landing}\n\n"
@@ -1143,6 +1173,18 @@ def run():
         # Engine itself errored — fall back to the legacy generators
         if target_slot["topic"] == "dcpi_mover":
             payload = _build_dcpi_mover()
+            if not payload:
+                # No real DCPI row: owner decision 2026-09-23 is no post, never
+                # a typed fallback and never a mover post with no mover in it.
+                # Reachable with bypass=True, so only stamp a claim we hold.
+                _eng_err = f"{type(_e_eng).__name__}: {str(_e_eng)[:120]}"
+                if _slot_claimed:
+                    _stamp_claim_outcome(
+                        slot_date, target_slot["hour"],
+                        "suppressed: no_dcpi_data — engine " + _eng_err)
+                return jsonify({"skipped": True, "reason": "no_dcpi_data",
+                                "engine_error": _eng_err,
+                                "slot": target_slot}), 200
         elif target_slot["topic"] == "hyperscaler_deal":
             payload = _build_hyperscaler_deal()
         elif target_slot["topic"] == "ai_capex_index":
