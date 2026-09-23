@@ -860,6 +860,17 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
                          "dcpi_scores → recompute). Escalates for tables whose refresh "
                          "is external-cron only (discovered_facilities, news_items)."),
     },
+    # 2026-09-23: the radar could not read a table-age SLA column (missing,
+    # not a timestamp, or the query raised). No refresh — nothing says the
+    # table is stale; the SLA tuple itself is wrong. Escalate so it is seen.
+    "sla_column_unmeasurable": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": ("Escalation-only: a data-freshness SLA row names a column "
+                         "the radar cannot measure, so it could never breach. Fix "
+                         "the tuple in check_data_freshness_sla_breach."),
+    },
     "cron_phase_missing_schedule": {
         "action":      _action_cron_missing_schedule,
         "method":      None,

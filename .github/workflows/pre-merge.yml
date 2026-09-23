@@ -1319,6 +1319,29 @@ jobs:
             echo "::error::the energy first-seen SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Radar table-age SLA columns, against the same Postgres ──────────
+      # check_data_freshness_sla_breach read transmission_lines.updated_at, a
+      # column the table does not have; the UndefinedColumn was swallowed, so
+      # the row could never breach. A missing or TEXT column is a schema fact
+      # no fake cursor holds, so the shipped EIA ingest writes the rows and the
+      # shipped radar reads them here. Owns and recreates only
+      # transmission_lines, gas_pipelines and substations.
+      - name: Radar SLA columns SQL against a real Postgres
+        env:
+          RADAR_SLA_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_radar_sla_columns_sql.py -v --tb=short
+
+      - name: Prove the radar SLA columns SQL test actually RAN
+        env:
+          RADAR_SLA_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_radar_sla_columns_sql.py \
+            -q -rs --tb=no > rsla.txt 2>&1 || { cat rsla.txt; exit 1; }
+          cat rsla.txt
+          if grep -qi "skipped" rsla.txt; then
+            echo "::error::the radar SLA columns SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1376,6 +1399,7 @@ jobs:
             ip.txt
             efs.txt
             osm.txt
+            rsla.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
