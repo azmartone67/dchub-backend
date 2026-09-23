@@ -30,6 +30,12 @@ The None paths, read off the builders:
   N5 capability (16:00) and a forced agent_demand have no legacy builder:
      they skip and stamp too, instead of the generic template (owner
      decision 2026-09-23)
+  P1 industry_pulse quotes a market's DCPI score and verdict, so its market
+     must be a quotable row (published, recomputed in 48h, on-band) — one
+     case per way a BUILD row with excess > 60 (the old filter) is not
+  P2 among ineligible rows the one quotable row is always the one picked
+  P3 a quotable row that is not BUILD is never the counter-take market (the
+     copy calls it "buildable capacity")
   C1 control: a fresh matching headline is not skipped, is posted, and the
      run still reports the engine error
   C2 control: a fresh headline and a BUILD market are not skipped either
@@ -123,6 +129,22 @@ def _one(sql, params=None):
 
 def _today():
     return _dt.datetime.now(_dt.timezone.utc).date()
+
+
+def _mps(slug, name, verdict, excess, constraint, *, published=True, age="0 hours"):
+    _exec("INSERT INTO market_power_scores (market_slug, market_name, verdict, "
+          "excess_power_score, constraint_score, published, computed_at) "
+          "VALUES (%s,%s,%s,%s,%s,%s, now() - %s::interval)",
+          params=(slug, name, verdict, excess, constraint, published, age))
+
+
+# Each is a stored BUILD with excess > 60, so the pre-2026-09-23 filter took
+# it. Bands: BUILD needs excess >= 65 and constraint <= 50.
+_NOT_QUOTABLE = {
+    "unpublished": ("hotel", "Hotel, VA", "BUILD", 70, 30, False, "0 hours"),
+    "off_band":    ("india", "India, TX", "BUILD", 62, 30, True, "0 hours"),   # bands say CAUTION
+    "stale":       ("juliet", "Juliet, OR", "BUILD", 70, 30, True, "3 days"),
+}
 
 
 def _news(title, age="2 hours"):
@@ -276,6 +298,45 @@ def test_n3_industry_pulse_query_error_skips_and_stamps(lq):
     body = _run(lq, "industry_pulse")
 
     _assert_skipped(lq, body, 20, "no_industry_pulse_data")
+
+
+@pytest.mark.parametrize("why", sorted(_NOT_QUOTABLE))
+def test_p1_industry_pulse_never_quotes_an_unquotable_market(lq, why):
+    slug, name, verdict, excess, constraint, published, age = _NOT_QUOTABLE[why]
+    _mps(slug, name, verdict, excess, constraint, published=published, age=age)
+    _news("Hyperscale campus clears zoning")
+
+    p = lq._build_industry_pulse()
+
+    assert p is not None and p["news"], p      # the control: news was read
+    assert p["market"] is None, (why, p["market"])
+    body = _run(lq, "industry_pulse")
+    assert not body.get("skipped"), body
+    assert len(lq._test_posted) == 1 and name not in lq._test_posted[0], lq._test_posted
+
+
+def test_p2_the_quotable_market_is_the_one_picked(lq):
+    for row in _NOT_QUOTABLE.values():
+        slug, name, verdict, excess, constraint, published, age = row
+        _mps(slug, name, verdict, excess, constraint, published=published, age=age)
+    _mps("kilo", "Kilo, NE", "BUILD", 72, 30)
+    _news("Hyperscale campus clears zoning")
+
+    # ORDER BY RANDOM(): with the filter gone, 8 draws from 4 rows all
+    # landing on Kilo has probability 4^-8.
+    picks = {lq._build_industry_pulse()["market"]["market_name"] for _ in range(8)}
+
+    assert picks == {"Kilo, NE"}, picks
+
+
+def test_p3_a_quotable_caution_market_is_not_the_counter_take(lq):
+    _mps("lima", "Lima, KS", "CAUTION", 55, 60)   # published, fresh, on-band
+    _news("Hyperscale campus clears zoning")
+
+    p = lq._build_industry_pulse()
+
+    assert p is not None and p["news"], p
+    assert p["market"] is None, p["market"]
 
 
 def test_c2_industry_pulse_with_data_is_posted(lq):
