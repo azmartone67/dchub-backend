@@ -255,6 +255,7 @@ def _check_one(p: Probe, lat: float, lng: float, where: str) -> dict | None:
                 "issue": "map_layer_outside_coverage_error",
                 "url": tag,
                 "count": status,
+                "count_kind": "http_status",
                 "detail": (
                     f"Map layer '{p.layers}' ({path}) returned HTTP {status} at "
                     f"the non-US canary. This is a US-only dataset, so ZERO rows "
@@ -267,6 +268,7 @@ def _check_one(p: Probe, lat: float, lng: float, where: str) -> dict | None:
             "issue": "map_layer_bad_status",
             "url": tag,
             "count": status,
+            "count_kind": "http_status",
             "detail": (f"Map layer '{p.layers}' ({path}) returned HTTP {status}; "
                        f"allowed: {sorted(p.allow)}. The layer renders empty for "
                        f"users. Body: {body[:180]!r}"),
@@ -371,7 +373,8 @@ def _persist(findings: list[dict]) -> dict:
         for f in findings:
             r = upsert_brain_finding(
                 cur, issue=f["issue"], url=f["url"], count=f.get("count", 1),
-                detail=f.get("detail", ""), detector="map_layer_probe")
+                detail=f.get("detail", ""), detector="map_layer_probe",
+                count_kind=f.get("count_kind") or "")
             outcomes[r] = outcomes.get(r, 0) + 1
         conn.commit()
         return {"persisted": len(findings), "outcomes": outcomes}

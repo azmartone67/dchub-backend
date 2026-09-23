@@ -240,7 +240,7 @@ def _norm_query(q: str) -> str:
 
 
 def _file_finding(issue: str, url: str, detail: str, detector: str,
-                  count: int = 1) -> bool:
+                  count: int = 1, count_kind: str = "") -> bool:
     """One bounded brain finding through the CANONICAL writer. Never raises."""
     c = _db()
     if c is None:
@@ -250,7 +250,7 @@ def _file_finding(issue: str, url: str, detail: str, detector: str,
         with c.cursor() as cur:
             upsert_brain_finding(cur, issue=issue[:200], url=url[:500],
                                  count=count, detail=detail[:2000],
-                                 detector=detector)
+                                 detector=detector, count_kind=count_kind)
         c.commit()
         return True
     except Exception:
@@ -631,7 +631,8 @@ def _lane_sentinels() -> dict:
                 detail=("Golden checks failing: " +
                         "; ".join(f"{x['check']} ({x['detail'] or 'assert'})"
                                   for x in failed[:5])),
-                detector="agentic_answer_sentinel", count=len(failed))
+                detector="agentic_answer_sentinel", count=len(failed),
+                count_kind="item_count")
         if (prev and not _disabled("deploy_sentinel")
                 and out["failed"] > int(prev[1] or 0)):
             out["deploy_regression"] = True
@@ -643,7 +644,8 @@ def _lane_sentinels() -> dict:
                         f"Failing: {'; '.join(x['check'] for x in failed[:5])}. "
                         f"SHADOW: auto-rollback not armed "
                         f"(DEPLOY_SENTINEL_AUTOROLLBACK reserved)."),
-                detector="agentic_deploy_sentinel", count=out["failed"])
+                detector="agentic_deploy_sentinel", count=out["failed"],
+                count_kind="item_count")
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {str(e)[:120]}"
         try: c.rollback()
