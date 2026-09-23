@@ -7,9 +7,14 @@ a GitHub Actions runner (tools/infra_fetch.py) fetches the live EIA service and
 POSTs compact attribute rows here, which writes Neon.
 
 Source: EIA US_Electric_Power_Transmission_Lines (FiaPA4ga0iQKduv3 org, ~94,619
-features). Attributes only (returnGeometry=false — the target table stores no
-geometry). Fields: ID, TYPE, STATUS, OWNER, VOLTAGE, VOLT_CLASS, SUB_1, SUB_2,
-SOURCE, VAL_DATE.
+features). Fields: ID, TYPE, STATUS, OWNER, VOLTAGE, VOLT_CLASS, SUB_1, SUB_2,
+SOURCE, VAL_DATE. The table stores no geometry, but length_miles and state are
+DERIVED from it (EPSG:4326, util/polyline_geometry.py) — by the runner, or by
+_fetch on the fallback path. Until 2026-09-23 the fetch was attributes-only and
+all 94,619 rows landed with state NULL and length_miles 0 (the column default),
+so land_power_crawler's per-state transmission_line_count and
+total_transmission_miles read 0 everywhere. A row without a measurement is
+written as NULL, never 0: 0 miles is a claim, NULL is the absence of one.
 
 Safety:
   - Admin-gated (X-Admin-Key / X-Internal-Key).
@@ -31,6 +36,7 @@ Safety:
 """
 import json
 import logging
+import math
 import os
 import urllib.parse
 import urllib.request
@@ -46,14 +52,28 @@ _SRC = "eia-arcgis-runner"
 # runner-tagged rows). Kept in sync with tools/infra_fetch.py / the workflow.
 _DELETE_SOURCES = ("eia-arcgis-runner", "HIFLD", "hifld", "hifld-runner")
 # EIA Electric Power Transmission Lines (national, ~94,619 features). Same
-# reliable FiaPA4ga0iQKduv3 org the working gas ingest uses. Attributes only.
+# reliable FiaPA4ga0iQKduv3 org the working gas ingest uses.
 _SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
         "US_Electric_Power_Transmission_Lines/FeatureServer/0/query")
 
 # Row tuple shape (matches tools/infra_fetch.fetch_transmission_lines):
-#   (hifld_id, name, operator, voltage_kv, from_sub, to_sub, status, line_type)
+#   (hifld_id, name, operator, voltage_kv, from_sub, to_sub, status, line_type,
+#    length_miles, state)
+# length_miles + state were appended LAST so an older 8-field row still coerces
+# (to NULL, NULL) instead of shifting every column.
 _ROW_FIELDS = ("hifld_id", "name", "operator", "voltage_kv",
-               "from_sub", "to_sub", "status", "line_type")
+               "from_sub", "to_sub", "status", "line_type",
+               "length_miles", "state")
+
+
+# Share of rows that must carry BOTH a measured length and a state, or the
+# full-replace is refused before any connection opens (the old rows survive).
+# Measured 2026-09-23 over the full live layer: 94,619/94,619 lengths,
+# 94,617/94,619 states (the 2 misses: a 0.07 mi stub off Harbor Beach, MI, in
+# Lake Huron and a tie line in Canada). A geometry request the service ignores,
+# or an old 8-field client, measures ~0% and is refused here instead of writing
+# another all-NULL layer.
+MEASURED_FLOOR = 0.98
 
 
 def _dsn() -> str:
@@ -80,6 +100,23 @@ def _voltage(v):
         return None
 
 
+def _miles(v):
+    """Measured length; None (not 0) for anything that is not a finite, >= 0 number."""
+    if isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return round(f, 3) if math.isfinite(f) and f >= 0 else None
+
+
+def _state(v):
+    """Two-letter code as util/state_polygons emits it; anything else is None."""
+    s = str(v or "").strip().upper()
+    return s if len(s) == 2 and s.isascii() and s.isalpha() else None
+
+
 def _clean(s, n):
     if s is None:
         return None
@@ -92,9 +129,11 @@ def _clean(s, n):
 def _fetch(cap: int):
     """Paginate the EIA transmission service → list of row tuples (see _ROW_FIELDS).
 
-    Attributes only (returnGeometry=false). Pages of 2000 (service
-    maxRecordCount). Maps OWNER→operator, VOLTAGE→voltage_kv, SUB_1/2→from/to_sub,
-    OWNER (or ID)→name."""
+    Pages of 2000 (service maxRecordCount). Maps OWNER→operator,
+    VOLTAGE→voltage_kv, SUB_1/2→from/to_sub, OWNER (or ID)→name, and measures
+    the EPSG:4326 geometry into length_miles + state — the same helper the
+    runner uses, so the fallback cannot regress to NULL/0 on its own."""
+    from util.polyline_geometry import measure_line
     rows = []
     offset = 0
     page = 2000
@@ -102,7 +141,9 @@ def _fetch(cap: int):
         params = urllib.parse.urlencode({
             "where": "1=1",
             "outFields": "ID,TYPE,STATUS,OWNER,VOLTAGE,SUB_1,SUB_2",
-            "returnGeometry": "false",
+            "returnGeometry": "true",
+            "outSR": "4326",
+            "geometryPrecision": "6",
             "resultOffset": offset,
             "resultRecordCount": page,
             "f": "json",
@@ -117,6 +158,7 @@ def _fetch(cap: int):
             hid = _clean(a.get("ID"), 64)
             owner = _clean(a.get("OWNER"), 200)
             name = owner or hid
+            miles, state = measure_line((f.get("geometry") or {}).get("paths"))
             rows.append((
                 hid,
                 (name or "")[:200] if name else None,
@@ -126,6 +168,8 @@ def _fetch(cap: int):
                 _clean(a.get("SUB_2"), 200),
                 _clean(a.get("STATUS"), 80),
                 _clean(a.get("TYPE"), 80),
+                _miles(miles),
+                _state(state),
             ))
         offset += page
         if len(feats) < page:
@@ -147,6 +191,8 @@ def _coerce_body_row(r):
         _clean(g(5), 200),
         _clean(g(6), 80),
         _clean(g(7), 80),
+        _miles(g(8)),
+        _state(g(9)),
     )
 
 
@@ -166,7 +212,8 @@ def ingest_transmission_lines():
 
     # Runner-provided rows (preferred): Railway's egress to ArcGIS is unreliable,
     # so the GitHub runner fetches + POSTs. Body: {"rows":[[hifld_id,name,operator,
-    # voltage_kv,from_sub,to_sub,status,line_type],...]}, optionally gzipped.
+    # voltage_kv,from_sub,to_sub,status,line_type,length_miles,state],...]},
+    # optionally gzipped.
     # Falls back to the server-side _fetch when no body is sent.
     body_rows = None
     raw = request.get_data() or b""
@@ -199,6 +246,13 @@ def ingest_transmission_lines():
 
     if not rows:
         return jsonify(ok=False, error="no rows to ingest (refused empty full-replace)"), 400
+
+    with_len = sum(1 for r in rows if r[8] is not None)
+    with_state = sum(1 for r in rows if r[9] is not None)
+    if min(with_len, with_state) < MEASURED_FLOOR * len(rows):
+        return jsonify(ok=False, error=(
+            f"refused full-replace: length_miles on {with_len}/{len(rows)} rows, "
+            f"state on {with_state}/{len(rows)} (floor {MEASURED_FLOOR:.0%})")), 400
 
     inserted = 0
     try:
