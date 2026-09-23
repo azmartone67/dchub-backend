@@ -831,7 +831,7 @@ def _section_water(cur, meta: dict) -> dict:
                             High or Extremely High (>=40% withdrawal/supply)
       estimated_gpy       — gallons/year @ 100 gal/MW-day industry avg
 
-    ★ Until #5260 this classified with `if float(stress) >= 4.0`, a threshold
+    ★ Until #5263 this classified with `if float(stress) >= 4.0`, a threshold
     written for a 1-5 index, against the 0-100 column. Every state but the
     very least-stressed cleared it, so `stressed_state_pct` published ~100%.
     It also did `_as_float(r[0]) or _as_float(r[1])`, falling back to

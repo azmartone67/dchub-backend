@@ -948,7 +948,7 @@ def _section_risk(cur, hero: dict) -> dict:
     by routes/water_aqueduct_ingest.py). It is NOT a 1-5 index — `water_band`
     carries the 1-5 WRI category beside it for callers that want one.
 
-    Until #5260 this selected `drought_d2_months`, a column water_risk has
+    Until #5263 this selected `drought_d2_months`, a column water_risk has
     never had, so the read threw on every call; the `except` branch then tried
     `stress_score` / `market`, which do not exist either, and a bare
     `except: pass` ate that too. Section 8 published `water_stress: null` on
