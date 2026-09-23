@@ -56,9 +56,13 @@ def test_the_checkout_lookup_is_the_paid_attributed_join_itself():
     assert (funnel.replace("pay.client_reference_id", "%s")
                   .replace("pay.paid_at", "now()")) == live
     # And the lane's own filters ride both — not restated in either.
-    from routes.handoff_definition import relayed_checkout_session_filters
+    # r-paid-attributed-keyed-refs (2026-09-23): this join's identity widened
+    # past a session, to also accept a durable pack_key/sub_key ref —
+    # paid_attributed_click_filters(), not relayed_checkout_session_filters()
+    # (that one stays human_acted_v7's alone, unchanged).
+    from routes.handoff_definition import paid_attributed_click_filters
     for sql in (funnel, live):
-        assert relayed_checkout_session_filters() in sql
+        assert paid_attributed_click_filters() in sql
 
 
 def test_the_live_lookup_takes_exactly_one_bound_parameter():

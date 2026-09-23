@@ -40,23 +40,26 @@ DEFN = (ROOT / "routes" / "handoff_definition.py").read_text(encoding="utf-8")
 
 from routes.handoff_definition import (  # noqa: E402
     PAID_RELAYED_CHECKOUT_LOOKBACK, PAID_SIGNAL_RELAYED_BRIDGE_BASIS,
-    _relayed_click_session_for, paid_relayed_click_session_sql,
-    paid_signal_relayed_bridge_predicate, paid_signal_relayed_session_sql,
-    relayed_checkout_session_filters)
+    _relayed_click_session_for, paid_attributed_click_filters,
+    paid_relayed_click_session_sql,
+    paid_signal_relayed_bridge_predicate, paid_signal_relayed_session_sql)
 
 
 # ── one builder, not two spellings ──────────────────────────────────────
 def test_the_lane_resolves_its_session_with_the_paid_join_builder():
     """★ The same function paid_attributed uses. If this lane spelled the join
     itself, the funnel could attribute one payment to two different sessions
-    and both numbers would look measured."""
+    and both numbers would look measured. Since 2026-09-23 that shared
+    builder's identity is paid_attributed_click_filters() (a durable
+    pack_key/sub_key ref counts too), not relayed_checkout_session_filters()
+    — human_acted_v7 keeps the narrower one, alone."""
     sess = paid_signal_relayed_session_sql()
     assert _relayed_click_session_for(
         "(select pay2.client_reference_id from mcp_checkout_payments pay2"
         " where pay2.stripe_session_id = p.stripe_session_id"
         " order by pay2.paid_at desc limit 1)", "p.conv_at") in sess
     # and the lane's row filters are the lane's, not restated
-    assert relayed_checkout_session_filters() in sess
+    assert paid_attributed_click_filters() in sess
     assert PAID_RELAYED_CHECKOUT_LOOKBACK in sess
 
 

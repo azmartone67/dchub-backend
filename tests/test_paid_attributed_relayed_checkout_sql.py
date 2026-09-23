@@ -18,7 +18,7 @@ cannot produce are written or aged by hand.
   P2   k- Pro click, session S2; paid                  counts, as S2
   P3   one pk- key clicked from S3, later from S4      counts ONCE, as S4
   P4   bare session ref S5; paid; a Fix E row for S5   counts once across lanes
-  P5   pk- click with no session; paid                 out: no session to test
+  P5   pk- click with no session; paid                 counts, as the ref itself (2026-09-23)
   P6   a- anonymous ref; paid                          out: same reason
   P7   k- click from a declared operator session       excluded; in incl_self
   P8   the click came AFTER the payment                out: it did not sell it
@@ -29,6 +29,7 @@ cannot produce are written or aged by hand.
   P13  P1 delivered again                              one row (idempotent)
   P14  payment outside the window                      out
   P16  unsigned click (by hand); paid                  out: sig_ok
+  P17  k- sub_key click with no session; paid          counts, as the ref itself (2026-09-23)
   V1   pack granted to session S15 (mcp_topups)        counts (v1 lane)
 
 Set PAID_ATTRIBUTED_SQL_DSN to run it. CI passes the db-parity service DSN
@@ -73,8 +74,8 @@ S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16 = (
 _OPS = self_traffic_session_prefixes()
 OP = _OPS[0] + "-0000-4000-8000-0000000000aa"
 PK1, PK3, PK5 = ("pk-" + _hex(x) for x in ("pk1", "pk3", "pk5"))
-K2, K7, K8, K9, K10, K12, K14, K16 = (
-    "k-" + _hex(x) for x in ("k2", "k7", "k8", "k9", "k10", "k12", "k14", "k16"))
+K2, K7, K8, K9, K10, K12, K14, K16, K17 = (
+    "k-" + _hex(x) for x in ("k2", "k7", "k8", "k9", "k10", "k12", "k14", "k16", "k17"))
 AE6 = "a-" + _hex("ae6")[:24]
 
 DDL = """
@@ -109,6 +110,7 @@ _CLICKS = [
     ("P10", "pro", K10, S10, REAL_UA),
     ("P12", "pro", K12, S12, PROBE_UA),
     ("P14", "pro", K14, S14, REAL_UA),
+    ("P17", "pro", K17, "", REAL_UA),
 ]
 
 
@@ -135,6 +137,7 @@ _PAYMENTS = [
     ("P13", _checkout("cs_test_p1", PK1)),
     ("P14", _checkout("cs_test_p14", K14, mode="subscription", amount=9900)),
     ("P16", _checkout("cs_test_p16", K16, mode="subscription", amount=9900)),
+    ("P17", _checkout("cs_test_p17", K17, mode="subscription", amount=9900)),
 ]
 
 
@@ -275,7 +278,7 @@ def test_the_writer_records_paid_sessions_once(db):
     assert rec["P1"]["ok"] and rec["P1"]["idempotent"] is False
     assert rec["P13"]["ok"] and rec["P13"]["idempotent"] is True
     assert "cs_test_p11" not in db["stored"]
-    assert len(db["stored"]) == 13
+    assert len(db["stored"]) == 14
     assert db["stored"]["cs_test_p1"] == (PK1, "pack_key", "payment", 1000, True)
     assert db["stored"]["cs_test_p2"][:2] == (K2, "sub_key")
     assert db["stored"]["cs_test_p4"][:2] == (S5, "session")
@@ -290,7 +293,11 @@ def test_each_payment_is_attributed_to_the_latest_qualifying_click(db):
     assert got["cs_test_p3"] == S4          # the later of the two sessions
     assert got["cs_test_p4"] == S5          # a bare session ref is its own session
     assert got["cs_test_p7"] == OP          # attributed; the exclusion is the headline's job
-    for cs in ("cs_test_p5", "cs_test_p6",  # no session on the click
+    # r-paid-attributed-keyed-refs (2026-09-23): a pack_key/sub_key click with
+    # NO session now attributes to the ref itself, not None.
+    assert got["cs_test_p5"] == PK5
+    assert got["cs_test_p17"] == K17
+    for cs in ("cs_test_p6",                # anon ref: still deliberately out
                "cs_test_p8",                # click after payment
                "cs_test_p9",                # click outside the lookback
                "cs_test_p12",               # probe UA
@@ -300,11 +307,13 @@ def test_each_payment_is_attributed_to_the_latest_qualifying_click(db):
 
 def test_the_headline_counts_each_paying_session_once(db):
     # S1, S2, S4 and S5 from the relayed lane (S5 also has its Fix E row),
-    # S15 from the pack grant. OP is excluded; P10 is not live; P14 is old.
-    assert db["headline"] == 5
-    assert db["headline_incl"] == 6
-    assert db["relayed"] == 4
-    assert db["relayed_incl"] == 5
+    # S15 from the pack grant, plus PK5 and K17 since 2026-09-23 (session-less
+    # pack_key/sub_key refs now attribute to the ref itself). OP is excluded;
+    # P10 is not live; P14 is old.
+    assert db["headline"] == 7
+    assert db["headline_incl"] == 8
+    assert db["relayed"] == 6
+    assert db["relayed_incl"] == 7
 
 
 def test_v1_could_not_see_a_keyed_purchase(db):
@@ -315,9 +324,9 @@ def test_v1_could_not_see_a_keyed_purchase(db):
 
 def test_the_ceiling_and_the_attributable_subset(db):
     assert db["payments_raw"] == {
-        "payments": 11,                    # P10 not live, P11 unrecorded, P13 dup, P14 old
-        "matched_a_relayed_click": 8,      # not P8 (after), P12 (probe), P16 (unsigned)
-        "attributable_to_a_session": 5,    # P1 P2 P3 P4 P7
+        "payments": 12,                    # P10 not live, P11 unrecorded, P13 dup, P14 old
+        "matched_a_relayed_click": 9,      # not P8 (after), P12 (probe), P16 (unsigned)
+        "attributable_to_a_session": 7,    # P1 P2 P3 P4 P5 P7 P17
     }
 
 

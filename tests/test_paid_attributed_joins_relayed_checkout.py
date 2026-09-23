@@ -78,12 +78,19 @@ def test_the_payments_read_is_one_literal_the_dataset_inventory_can_see():
 
 
 def test_the_relayed_lane_reuses_the_human_acted_click_definition():
-    """The click must qualify exactly as human_acted's /go/c/ lane counts it,
-    so the lane is built from that lane's own strings, never a copy."""
+    """The click's QUALITY bar (signed, real UA) is human_acted's own, reused
+    never restated. Its IDENTITY is wider since 2026-09-23
+    (PAID_ATTRIBUTED_CLICK_IDENTITY / paid_attributed_click_filters(), not
+    RELAYED_CHECKOUT_SESSION_ID / relayed_checkout_session_filters() —
+    human_acted_v7 keeps reading those alone, unchanged): a durable
+    pack_key/sub_key ref is a valid PAYMENT identity even with no session,
+    but is not a valid stand-in for a session in human_acted_v7's
+    DISTINCT-session count (one key, many real sessions)."""
     lane = _split(H.paid_attributed_count_sql(IV))[0][2]
-    for part in (H.RELAYED_CHECKOUT_SESSION_ID, H.relayed_checkout_session_filters(),
-                 "from mcp_checkout_clicks cc"):
+    for part in (H.relayed_checkout_signed(), H.relayed_checkout_real_ua(),
+                 H.PAID_ATTRIBUTED_CLICK_IDENTITY, "from mcp_checkout_clicks cc"):
         assert part in lane, part[:80]
+    assert H.RELAYED_CHECKOUT_SESSION_ID not in lane
     for clause in ("cc.ref = pay.client_reference_id",
                    "cc.clicked_at <= pay.paid_at",
                    "cc.clicked_at > pay.paid_at - interval '"
