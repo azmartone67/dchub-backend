@@ -550,7 +550,12 @@ def test_the_water_reads_target_the_store_that_has_the_signal():
         # dcpi's bulk read uses the shared STATE_WATER_STRESS_SQL constant, so
         # accept either the literal or the import of the one that carries it.
         has_literal = "water_stress_score" in sqls and "FROM water_risk" in sqls
-        has_shared = "STATE_WATER_STRESS_SQL" in src
+        # Two shared spellings reach the same table: dcpi's bulk read uses the
+        # STATE_WATER_STRESS_SQL constant, and site_simulator goes through
+        # util.water_risk.read_state_stress, which owns the query outright.
+        has_shared = ("STATE_WATER_STRESS_SQL" in src
+                      or "read_state_stress" in src
+                      or "read_states_stress" in src)
         assert has_literal or has_shared, (
             f"{rel}: water stress must come from water_risk.water_stress_score "
             f"— the verified WRI Aqueduct roll-up")
@@ -581,6 +586,14 @@ def test_both_retail_reads_match_the_full_state_name():
         "are stale and it is now vacuous")
 
 
+#: Accessors that issue a read on a route's behalf and use util.db_honesty
+#: themselves. A read that moved behind one of these is still an honest read,
+#: so it counts — otherwise consolidating a query looks identical to deleting
+#: its error handling.
+_HONEST_ACCESSORS = ("read_state_stress(cur,", "read_states_stress(cur,",
+                     "state_incentive(cur,")
+
+
 def test_reads_go_through_the_importable_honesty_helper():
     for rel, minimum in ((DCPI, 3), (LPM, 2), (SIM, 3)):
         src = _src(rel)
@@ -588,10 +601,12 @@ def test_reads_go_through_the_importable_honesty_helper():
             f"{rel}: the reads must use util.db_honesty, not a function-local "
             f"copy — a fence can assert an import, it cannot inspect a "
             f"private helper")
-        n = src.count("try_fetchone(cur,") + src.count("try_fetchall(cur,")
+        n = (src.count("try_fetchone(cur,") + src.count("try_fetchall(cur,")
+             + sum(src.count(a) for a in _HONEST_ACCESSORS))
         assert n >= minimum, (
-            f"{rel}: only {n} reads go through try_fetch*; a bare cur.execute "
-            f"in a try/except swallows the error again")
+            f"{rel}: only {n} reads go through try_fetch* or an honest "
+            f"accessor; a bare cur.execute in a try/except swallows the "
+            f"error again")
 
 
 def test_the_band_has_exactly_one_implementation():
@@ -600,9 +615,15 @@ def test_the_band_has_exactly_one_implementation():
     could not check any of them."""
     for rel in ALL_ROUTES:
         src = _src(rel)
-        assert "from util.water_stress import" in src, (
-            f"{rel} must import the shared band, not re-derive it")
-        assert "12.5" not in src or "util.water_stress" in src, (
+        # Two shared spellings are legitimate. util.water_stress hands back a
+        # band to score on; util.water_risk hands back a whole read — score,
+        # band and label — so a route that goes through the read path has its
+        # band from the same shared arithmetic without importing it directly.
+        # routes/site_simulator.py took that second route in #5263's wake.
+        shared = ("from util.water_stress import" in src
+                  or "from util.water_risk import" in src)
+        assert shared, f"{rel} must get the shared band, not re-derive it"
+        assert "12.5" not in src or shared, (
             f"{rel} appears to re-implement the band edges inline")
 
 
@@ -627,7 +648,21 @@ def test_an_unread_water_score_never_becomes_a_number():
 
 def test_the_shared_band_matches_the_one_site_simulator_shipped():
     """#5259 pinned these exact values. Centralising the implementation must
-    not have moved any state a band."""
-    import routes.site_simulator as ss
-    assert [ss._water_band(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] == [1, 2, 3, 4, 5]
-    assert ss._water_band(71.8) == 4 and ss._water_band(12.5) == 2
+    not have moved any state a band.
+
+    ★ routes/site_simulator.py no longer exposes a band of its own — it moved
+    onto util.water_risk.read_state_stress, which returns an already-banded
+    read. So the values are pinned against BOTH shared spellings, and the two
+    are pinned against each other: there are two band functions in the tree
+    (util.water_stress.water_band and util.water_risk.water_band_1_5) and a
+    surface scores the same either way only while they agree.
+    """
+    from util.water_risk import water_band_1_5
+    for band_of in (water_band, water_band_1_5):
+        assert [band_of(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] == [1, 2, 3, 4, 5]
+        assert band_of(71.8) == 4 and band_of(12.5) == 2
+    for score in (0.0, 12.5, 25.0, 37.5, 50.0, 62.5, 71.8, 75.0, 87.5, 100.0):
+        assert water_band(score) == water_band_1_5(score), (
+            f"the two shared bands disagree at {score}: "
+            f"water_stress={water_band(score)} water_risk={water_band_1_5(score)}")
+    assert water_band(None) is water_band_1_5(None) is None

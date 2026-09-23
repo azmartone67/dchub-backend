@@ -55,19 +55,25 @@ import re
 import pytest
 
 import routes.site_simulator as ss
+import util.water_risk as wr
+from util.water_risk import water_band_1_5
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUTE = "routes/site_simulator.py"
 
 # Every read _pull_signals makes, keyed by the SQL fragment that identifies it,
 # and the signal + read_errors key it owns.
-# `owner` says who writes the SQL: "route" literals live in this module,
-# while the tax read is issued by util.tax_incentives through our cursor.
+#
+# `owner` says who writes the SQL: "route" means the literal lives in this
+# module; anything else is the accessor call that issues it on the route's
+# behalf. Water joined tax on the accessor side when site_simulator moved onto
+# util.water_risk — the fragment must still appear in the SQL that reaches the
+# cursor, but it is no longer a literal here, so the fence looks for the call.
 READS = (
     ("FROM eia_retail_rates",    "retail_rate_cents_kwh", "retail_rate",  "route"),
-    ("FROM water_risk",          "water_stress_score",    "water_stress", "route"),
+    ("FROM water_risk",          "water_stress_score",    "water_stress", "read_state_stress(cur,"),
     ("FROM market_power_scores", "dcpi_verdict",          "dcpi",         "route"),
-    ("FROM tax_incentives_neon", "tax_pct_offset",        "tax",          "accessor"),
+    ("FROM tax_incentives_neon", "tax_pct_offset",        "tax",          "state_incentive(cur,"),
 )
 
 
@@ -221,7 +227,7 @@ def test_every_read_is_exercised_by_the_happy_path():
     sqls = " || ".join(_sql_literals())
     src = _src()
     for frag, _signal, _errkey, owner in READS:
-        found = frag in sqls if owner == "route" else "state_incentive(cur," in src
+        found = frag in sqls if owner == "route" else owner in src
         assert found, (
             f"{ROUTE} no longer issues a read matching {frag!r} — this fence's "
             f"fixtures are stale and its cascade tests are now vacuous")
@@ -318,9 +324,18 @@ def test_reads_go_through_the_importable_honesty_helper():
     assert "from util.db_honesty import" in src, (
         "the reads must use util.db_honesty, not a function-local copy — a "
         "fence can assert an import, it cannot inspect a private helper")
-    assert src.count("try_fetchone(cur,") >= 3, (
-        "fewer reads go through try_fetchone than this route makes; a bare "
-        "cur.execute in a try/except swallows the error again")
+    # Every read reaches the cursor through try_fetchone or through an
+    # accessor that uses it — never a bare cur.execute in a try/except, which
+    # is what swallowed the live bug. Tied to READS so the count cannot drift
+    # as reads move in or out of this module.
+    entry_points = src.count("try_fetchone(cur,") + sum(
+        src.count(owner) for _f, _s, _e, owner in READS if owner != "route")
+    assert entry_points >= len(READS), (
+        f"only {entry_points} of {len(READS)} reads go through an honest "
+        f"entry point; a bare cur.execute in a try/except swallows the error")
+    assert "cur.execute(" not in src, (
+        "a raw cur.execute bypasses util.db_honesty's rollback — that is how "
+        "one dead read poisoned the transaction for every read after it")
     assert "except Exception:\n                pass" not in src, (
         "a bare `except Exception: pass` around a read is exactly the swallow "
         "that made the live bug invisible")
@@ -328,8 +343,12 @@ def test_reads_go_through_the_importable_honesty_helper():
 
 def test_the_dead_water_column_stays_gone():
     """usgs_water_stress has no stress column at all, and its water_level_ft
-    proxy was withdrawn on 2026-07-07 for reading INVERTED."""
-    for sql in _sql_literals():
+    proxy was withdrawn on 2026-07-07 for reading INVERTED.
+
+    Scans the util's queries as well: the route's own water SQL is gone, so
+    checking only this file would leave the real query unguarded.
+    """
+    for sql in _sql_literals() + [wr._SQL_ONE, wr._SQL_MANY]:
         assert "usgs_water_stress" not in sql, (
             "the water read is back on usgs_water_stress, which carries no "
             "stress column and whose groundwater proxy is direction-inverted")
@@ -338,10 +357,24 @@ def test_the_dead_water_column_stays_gone():
 
 
 def test_the_water_read_targets_the_store_that_has_the_signal():
-    sqls = " || ".join(_sql_literals())
-    assert "water_stress_score" in sqls and "FROM water_risk" in sqls, (
+    """The query moved into util/water_risk.py, so this fence follows it there.
+
+    ★ It would otherwise go green by VACUITY: the route carries no water SQL
+    any more, and "no SQL mentioning the wrong table" is trivially true of a
+    route that issues no water SQL at all. So assert both halves — the route
+    reaches the store through the one read path, and that path still targets
+    the verified WRI Aqueduct roll-up.
+    """
+    assert "read_state_stress" in _src(), (
+        "the route no longer reaches water_risk at all — this fence and the "
+        "cascade fixtures above are inspecting nothing")
+    util_sql = " || ".join(" ".join(q.split()) for q in (wr._SQL_ONE, wr._SQL_MANY))
+    assert "water_stress_score" in util_sql and "FROM water_risk" in util_sql, (
         "water stress must come from water_risk.water_stress_score — the "
         "verified WRI Aqueduct roll-up")
+    assert "water_risk" not in " || ".join(_sql_literals()), (
+        "the route re-grew its own water_risk SQL — go through "
+        "util.water_risk so the schema facts stay in one place")
 
 
 def test_the_retail_read_matches_the_full_state_name():
@@ -373,31 +406,38 @@ def test_the_route_reads_tax_incentives_through_the_one_accessor():
 
 def test_water_band_is_direction_correct():
     """The 2026-07-07 pause was caused by an INVERTED proxy — arid states read
-    LESS stressed than wet ones. Assert the opposite, as the ingest does."""
-    arid = ss._water_band(71.8)      # AZ, live 2026-09-21
-    wet = ss._water_band(12.5)       # AK, live 2026-09-21
+    LESS stressed than wet ones. Assert the opposite, as the ingest does.
+
+    ★ This route no longer owns the banding: it consumes util.water_risk, so
+    these fences follow the band there. They stay HERE because what they pin
+    is what site_simulator publishes as `water_stress_index` — a shared
+    implementation is still this surface's answer.
+    """
+    arid = water_band_1_5(71.8)      # AZ, live 2026-09-21
+    wet = water_band_1_5(12.5)       # AK, live 2026-09-21
     assert arid > wet, "the 1-5 band is inverted"
-    assert ss._water_band(0.0) == 1 and ss._water_band(100.0) == 5
+    assert water_band_1_5(0.0) == 1 and water_band_1_5(100.0) == 5
 
 
 def test_water_band_covers_the_five_wri_categories():
     """WRI publishes bws_cat -1..4, which the ingest normalises to
     0/25/50/75/100. Each must land on its own band."""
-    assert [ss._water_band(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] == \
+    assert [water_band_1_5(v) for v in (0.0, 25.0, 50.0, 75.0, 100.0)] == \
         [1, 2, 3, 4, 5]
 
 
 def test_an_unread_water_score_never_becomes_a_number():
-    assert ss._water_band(None) is None
+    assert water_band_1_5(None) is None
 
 
 def test_the_high_water_stress_flag_fires_on_the_wri_high_band():
-    """_risk_flags keys on `water_stress_index >= 4`, so the banding and the
-    flag have to agree about what "high" means."""
+    """_risk_flags keys on `water_stress_index >= STRESSED_BAND`, so the
+    banding and the flag have to agree about what "high" means."""
+    assert wr.STRESSED_BAND == 4
     assert "high_water_stress" in ss._risk_flags(
-        {"water_stress_index": ss._water_band(71.8)}, 50.0)
+        {"water_stress_index": water_band_1_5(71.8)}, 50.0)
     assert "high_water_stress" not in ss._risk_flags(
-        {"water_stress_index": ss._water_band(12.5)}, 50.0)
+        {"water_stress_index": water_band_1_5(12.5)}, 50.0)
 
 
 # ------------------------------------------------------- methodology fence

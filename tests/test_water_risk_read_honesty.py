@@ -44,6 +44,7 @@ import ast
 import functools
 import os
 
+import psycopg2.extras
 import pytest
 
 mb = pytest.importorskip("routes.market_brief")
@@ -383,7 +384,8 @@ def test_water_risk_has_one_read_path():
     """
     owners = {p for p, _ in _modules_touching_water_risk()}
     assert READ_PATH in owners, f"{READ_PATH} stopped reading water_risk"
-    for hand_copy in ("routes/market_brief.py", "routes/hyperscaler_brief.py"):
+    for hand_copy in ("routes/market_brief.py", "routes/hyperscaler_brief.py",
+                      "routes/site_simulator.py"):
         assert hand_copy not in owners, (
             f"{hand_copy} reads water_risk directly again — go through "
             f"{READ_PATH} so the schema facts live in one place")
@@ -411,6 +413,89 @@ def test_fence_is_not_vacuous():
         os.path.join(_repo_root(), "routes/market_brief.py"), encoding="utf-8").read()
     assert "read_states_stress" in open(
         os.path.join(_repo_root(), "routes/hyperscaler_brief.py"), encoding="utf-8").read()
+    assert "read_state_stress" in open(
+        os.path.join(_repo_root(), "routes/site_simulator.py"), encoding="utf-8").read()
     assert hasattr(mb, "_section_risk")
     assert hasattr(hb, "_section_water")
     assert wr.STRESSED_BAND == 4
+
+
+# ------------------------------------------------ the two psycopg2 row shapes
+#
+# ★ This is the trap that consolidating routes/site_simulator.py onto this
+# module walked into. The two briefs read with a plain `conn.cursor()`, which
+# yields TUPLES. site_simulator reads with a RealDictCursor, which yields a
+# dict subclass — so the positional `row[0]` this module used raises
+# `KeyError: 0` there instead of returning the first column.
+#
+# It matters because of WHERE that raise lands. `_shape` runs after
+# try_fetchone has already returned, so a throw inside it is not turned into
+# the `(None, "Type: msg")` this module promises to every caller. It unwinds
+# into the caller's own `except` — and in site_simulator that except wraps the
+# whole cursor block, so the DCPI and tax reads queued after water would never
+# run. That is the #5259 cascade exactly, rebuilt out of a row shape, arriving
+# through the shared read path that exists to prevent it.
+
+
+def _dict_row(pairs):
+    """A RealDictCursor row: a dict subclass, NOT a positional sequence."""
+    return psycopg2.extras.RealDictRow(pairs)
+
+
+def test_a_dict_row_really_does_index_by_key_not_position():
+    """The premise the fences below rest on, asserted rather than assumed.
+
+    If psycopg2 ever makes RealDictRow positionally indexable, this goes red
+    and someone re-reads the comment above, instead of the fences quietly
+    ceasing to test anything.
+    """
+    row = _dict_row([("water_stress_score", _AZ_SCORE), ("bws_category", "High")])
+    with pytest.raises(KeyError):
+        row[0]
+
+
+def test_the_read_path_gives_one_answer_under_either_cursor_factory():
+    """One read path has to mean one answer, whichever cursor the caller used."""
+    as_tuple = wr._shape((_AZ_SCORE, "High"))
+    as_dict = wr._shape(_dict_row([("water_stress_score", _AZ_SCORE),
+                                   ("bws_category", "High")]))
+    assert as_tuple == as_dict, (as_tuple, as_dict)
+    assert as_dict["score"] == _AZ_SCORE
+    assert as_dict["band"] == 4
+    assert as_dict["category"] == "High"
+    assert as_dict["stressed"] is True
+
+
+def test_a_dict_row_does_not_escape_as_an_unnamed_throw():
+    """A RealDictCursor read must come back as (value, None) — never a raise.
+
+    A raise here is invisible to `read_errors`: it is not the named error this
+    module contracts to return, so the caller reports a generic cursor failure
+    at best and loses every read after it at worst.
+    """
+    cur = _FakeCursor(rows={"FROM water_risk": [
+        _dict_row([("water_stress_score", _AZ_SCORE), ("bws_category", "High")])]})
+    out, err = wr.read_state_stress(cur, "AZ")
+    assert err is None
+    assert out["score"] == _AZ_SCORE
+    assert out["band"] == 4
+
+
+def test_the_many_state_read_survives_a_dict_row_too():
+    """`UPPER(state) AS state` is what makes the key readable by name."""
+    cur = _FakeCursor(rows={"FROM water_risk": [
+        _dict_row([("state", "AZ"), ("water_stress_score", _AZ_SCORE),
+                   ("bws_category", "High")]),
+        _dict_row([("state", "AK"), ("water_stress_score", _AK_SCORE),
+                   ("bws_category", "Low-Medium")]),
+    ]})
+    out, err = wr.read_states_stress(cur, ["AZ", "ak"])
+    assert err is None
+    assert out["AZ"]["band"] == 4
+    assert out["AK"]["band"] == 2
+
+
+def test_the_many_state_sql_still_aliases_the_key_column():
+    """If the alias goes, the dict path above silently keys on `upper`."""
+    flat = " ".join(wr._SQL_MANY.split()).lower()
+    assert "upper(state) as state" in flat, wr._SQL_MANY
