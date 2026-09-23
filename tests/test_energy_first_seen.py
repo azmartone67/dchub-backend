@@ -213,6 +213,28 @@ def test_an_unreadable_registry_is_measuring_never_the_count_delta(exists, row):
     assert "not measured" in rec["status_reason"]
 
 
+def test_a_first_seen_column_layer_keeps_its_own_basis_and_skips_the_registry():
+    """Two first-seen mechanisms share _summary: #5300's first_seen_at column
+    (project lanes) and this registry. Merging them once left `growth_basis`
+    twice in one dict literal. The last key wins, which would have relabelled
+    the project lanes as count_snapshot."""
+    rec, cur = _run("gas_pipeline_projects", _hist([120] * 8))
+    assert rec["growth_basis"] == "first_seen_column", rec["growth_basis"]
+    assert not any("energy_first_seen" in s for s in cur.sql)
+
+
+def test_no_dict_literal_in_infra_growth_repeats_a_key():
+    """A repeated key in a dict literal is legal Python, and the later value
+    silently wins. Two PRs that each add the same response key produce exactly
+    that when they are merged."""
+    src = open(os.path.join(ROOT, "routes", "infra_growth.py"), encoding="utf-8").read()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Dict):
+            keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+            dups = sorted({k for k in keys if keys.count(k) > 1})
+            assert not dups, f"dict at line {node.lineno} repeats {dups}; the last one wins"
+
+
 def test_a_non_registry_layer_still_uses_the_snapshot_difference():
     rec, cur = _run("substations", _hist([110] + [100] * 7))
     assert rec["delta_window"] == 10 and rec["growth_basis"] == "count_snapshot"
