@@ -48,6 +48,8 @@ ASSET_INGEST = (
     "generator-inventory-ingest.yml",
     "planned-generators-ingest.yml",
     "fcc-fiber-refresh.yml",
+    "gas-pipeline-projects-ingest.yml",
+    "transmission-projects-ingest.yml",
 )
 
 # Frozen 2026-09-02. Everything else in .github/workflows that still turns a

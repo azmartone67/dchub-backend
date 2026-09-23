@@ -2295,6 +2295,16 @@ try:
     except Exception as _igr_early:
         import logging
         logging.getLogger(__name__).warning('infra_growth wiring failed: %s', _igr_early)
+    # 2026-09-22: gas-pipeline + transmission PROJECT ingest (EIA pipeline
+    # projects, ERCOT TPIT). Registered here, beside the board that reports it,
+    # and not in the late-line region: a weekly runner POSTing to a
+    # possibly-404ing endpoint would read as a dead source, not a dead route.
+    try:
+        from routes.infra_projects_ingest import register_infra_projects_ingest
+        register_infra_projects_ingest(app)
+    except Exception as _ipi_early:
+        import logging
+        logging.getLogger(__name__).warning('infra_projects_ingest wiring failed: %s', _ipi_early)
     # r-white-glove BUILD 1 (2026-07-18), MOVED HERE 2026-08-06: canonical-facts
     # propagation — pushes ai_surface_canon's numbers out to the MCP registry
     # listings so partners stop advertising stale copy, plus run-history at
