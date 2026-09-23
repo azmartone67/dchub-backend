@@ -6636,7 +6636,7 @@
    ]
   },
   "GET /api/v1/agent/tools-manifest": {
-   "source": "routes/tools_manifest.py:110",
+   "source": "routes/tools_manifest.py:111",
    "handler": "tools_manifest",
    "resolution": "resolved",
    "open_at": [
@@ -7762,7 +7762,7 @@
    "keys": []
   },
   "GET /api/v1/brain/autopilot/library": {
-   "source": "routes/brain_autopilot.py:2677",
+   "source": "routes/brain_autopilot.py:2688",
    "handler": "autopilot_library",
    "resolution": "resolved",
    "open_at": [
@@ -7836,7 +7836,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2656",
+   "source": "routes/brain_autopilot.py:2667",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -7850,7 +7850,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/recent": {
-   "source": "routes/brain_autopilot.py:3248",
+   "source": "routes/brain_autopilot.py:3259",
    "handler": "autopilot_recent",
    "resolution": "resolved",
    "open_at": [
@@ -7863,7 +7863,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/status": {
-   "source": "routes/brain_autopilot.py:2604",
+   "source": "routes/brain_autopilot.py:2615",
    "handler": "autopilot_status",
    "resolution": "resolved",
    "open_at": [
@@ -7893,7 +7893,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/verification-status": {
-   "source": "routes/brain_autopilot.py:3516",
+   "source": "routes/brain_autopilot.py:3527",
    "handler": "autopilot_verification_status",
    "resolution": "resolved",
    "open_at": [
@@ -8365,14 +8365,14 @@
    ]
   },
   "GET /api/v1/brain/heartbeat": {
-   "source": "routes/brain_autopilot.py:2800",
+   "source": "routes/brain_autopilot.py:2811",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/brain/heartbeat-alt": {
-   "source": "routes/brain_autopilot.py:2800",
+   "source": "routes/brain_autopilot.py:2811",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
@@ -17622,14 +17622,14 @@
    ]
   },
   "GET /api/v1/mcp/tools": {
-   "source": "routes/mcp_tool_catalog.py:547",
+   "source": "routes/mcp_tool_catalog.py:550",
    "handler": "api_tool_manifest",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/mcp/tools.json": {
-   "source": "routes/mcp_tool_catalog.py:547",
+   "source": "routes/mcp_tool_catalog.py:550",
    "handler": "api_tool_manifest",
    "resolution": "opaque",
    "open_at": [],
@@ -27729,7 +27729,7 @@
    "keys": []
   },
   "POST /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2656",
+   "source": "routes/brain_autopilot.py:2667",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -27743,7 +27743,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/run": {
-   "source": "routes/brain_autopilot.py:2191",
+   "source": "routes/brain_autopilot.py:2202",
    "handler": "autopilot_run",
    "resolution": "resolved",
    "open_at": [
@@ -27777,7 +27777,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/verify": {
-   "source": "routes/brain_autopilot.py:3295",
+   "source": "routes/brain_autopilot.py:3306",
    "handler": "autopilot_verify",
    "resolution": "resolved",
    "open_at": [
