@@ -8848,6 +8848,7 @@ def _sla_unmeasurable(tbl: str, col: str, sla_hrs: int, label: str, why: str) ->
     return {
         "issue":  "sla_column_unmeasurable",
         "url":    f"table:{tbl}",
+        "count_kind": "item_count",  # one unmeasurable column, not a recurrence tally
         "count":  1,
         "detail": (f"{label}: age cannot be measured on {tbl}.{col} — {why}. "
                    f"This {sla_hrs}h SLA row can never breach, so its silence "
