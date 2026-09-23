@@ -23,6 +23,8 @@ import os
 import psycopg2
 from flask import Blueprint, jsonify, request
 
+from util import first_seen as _first_seen
+
 log = logging.getLogger("planned_generators_ingest")
 planned_gen_ingest_bp = Blueprint("planned_generators_ingest", __name__)
 
@@ -52,6 +54,22 @@ def _num(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _gen_key(r):
+    """EIA's stable unit key, "plant_id:generator_id". Empty when either half
+    is missing, and first_seen.plan() drops empty keys."""
+    p = str(r.get("plant_id") or "").strip()
+    g = str(r.get("generator_id") or "").strip()
+    return f"{p}:{g}" if p and g else ""
+
+
+def _table_gen_keys(cur):
+    """Unit keys in planned_generators right now. Read only on the registry's
+    first run."""
+    cur.execute("SELECT plant_id, generator_id FROM planned_generators WHERE source = %s",
+                (_SRC,))
+    return [f"{p}:{g}" for p, g in cur.fetchall() if p and g]
 
 
 @planned_gen_ingest_bp.route("/api/v1/admin/ingest/planned-generators", methods=["POST"])
@@ -102,8 +120,11 @@ def ingest_planned_generators():
         return jsonify(ok=False, error="0 rows provided (runner parses the EIA-860M Planned sheet and POSTs them) — skipped to avoid wiping table"), 400
 
     inserted = 0
+    first_seen_out = None
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            # First-seen registry DDL on this DIRECT connection (util/first_seen.py).
+            _first_seen.ensure(c)
             with c.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS planned_generators (
@@ -129,6 +150,15 @@ def ingest_planned_generators():
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_plangen_state ON planned_generators(state)")
                 cur.execute("CREATE INDEX IF NOT EXISTS ix_plangen_ba ON planned_generators(ba_code)")
+                # ★ BEFORE the DELETE, in the same transaction: this table is a
+                # full replace, so ingested_at and COUNT(*) both say nothing
+                # about which units are new. The registry keys each unit on
+                # (plant_id, generator_id); on its first run the table as it
+                # stands now is baseline too. If the replace below fails, the
+                # outer rollback takes the registry rows with it.
+                first_seen_out = _first_seen.record(
+                    cur, "planned_generators", "", [_gen_key(r) for r in rows],
+                    seed_keys=lambda: _table_gen_keys(cur))
                 cur.execute("DELETE FROM planned_generators WHERE source = %s", (_SRC,))
 
                 cols = _FIELDS + ["source"]
@@ -154,7 +184,7 @@ def ingest_planned_generators():
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200], inserted=inserted), 500
 
-    return jsonify(ok=True, inserted=inserted, source=_SRC)
+    return jsonify(ok=True, inserted=inserted, source=_SRC, first_seen=first_seen_out)
 
 
 @planned_gen_ingest_bp.route("/api/v1/planned-generators", methods=["GET"])

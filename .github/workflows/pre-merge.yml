@@ -1280,6 +1280,26 @@ jobs:
           cat ip.txt
           if grep -qi "skipped" ip.txt; then
             echo "::error::the infra projects SQL test SKIPPED — it proves nothing"; exit 1
+      # energy_first_seen decides what /whats-new may call "new" for
+      # interconnection requests and EIA generating units. Its record() never
+      # raises, so SQL that Postgres refuses would read as "nothing new" in
+      # production. Only a real Postgres shows that day one is all baseline and
+      # that a repeated feed adds nothing. Owns and drops only energy_first_seen
+      # and fs_probe_ingest.
+      - name: Energy first-seen registry SQL against a real Postgres
+        env:
+          ENERGY_FIRST_SEEN_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_energy_first_seen_sql.py -v --tb=short
+
+      - name: Prove the energy first-seen SQL test actually RAN
+        env:
+          ENERGY_FIRST_SEEN_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_energy_first_seen_sql.py \
+            -q -rs --tb=no > efs.txt 2>&1 || { cat efs.txt; exit 1; }
+          cat efs.txt
+          if grep -qi "skipped" efs.txt; then
+            echo "::error::the energy first-seen SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
       # ── Gate liveness ledger ─────────────────────────────────────────────
@@ -1337,6 +1357,7 @@ jobs:
             lm.txt
             mkp.txt
             ip.txt
+            efs.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

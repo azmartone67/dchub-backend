@@ -38,6 +38,7 @@ from flask import Blueprint, jsonify, request
 from util.deals import DEALS_OK
 from util.dominant_source import (MASK_LAG_DAYS, dominant_source_lag,
                                   tables_with_a_source_column)
+from util.first_seen import added_counts
 
 infra_growth_bp = Blueprint("infra_growth", __name__)
 
@@ -90,6 +91,13 @@ _LAYERS = [
     # off a COUNT(*) delta, so the initial load cannot publish as news.
     ("gas_pipeline_projects",   "gas_pipeline_projects",    "periodic", 21),
     ("transmission_projects",   "transmission_projects",    "periodic", 21),
+    # ★ ENERGY LAYERS THAT CHANGE, added 2026-09-22. All three loaders restamp
+    # every row they write, so neither their timestamp nor a COUNT(*) delta
+    # can say what is new. Their `added` comes from util/first_seen.py instead
+    # (see _FIRST_SEEN below), never from the snapshot difference.
+    ("interconnection_requests", "interconnect_queue",      "daily",    4),
+    ("planned_generators",      "planned_generators",       "periodic", 45),
+    ("generator_inventory",     "generator_inventory",      "periodic", 14),
 ]
 _CAT = {l[0]: l[2] for l in _LAYERS}
 _STALE = {l[0]: l[3] for l in _LAYERS}
@@ -124,6 +132,12 @@ _FRESH_COL = {
     # would report a live loader as 133 days dead.
     "subsea_cables":           "updated_at",
     "subsea_landings":         "updated_at",
+    # Refresh stamps only. The queue upsert sets loaded_at on every row in
+    # that day's feed; both EIA loaders DELETE and re-INSERT, so ingested_at is
+    # one shared instant. Each one proves the loader ran and nothing more.
+    "interconnection_requests": "loaded_at",
+    "planned_generators":      "ingested_at",
+    "generator_inventory":     "ingested_at",
 }
 # Columns stored as TEXT rather than a timestamp type; need ::timestamptz.
 _FRESH_TEXT = {"power_plants_discovered"}
@@ -162,6 +176,25 @@ _EXPECTED_CADENCE = {
     # times a year plus ad-hoc updates.
     "gas_pipeline_projects":   "quarterly",
     "transmission_projects":   "quarterly",
+    "interconnection_requests": "daily",        # iso-queue-ingest.yml, 7 ISO feeds
+    "planned_generators":      "monthly",       # EIA-860M Planned sheet
+    "generator_inventory":     "weekly",        # EIA-860M operable, pulled Mondays
+}
+
+# label -> (registry layer in util/first_seen.py, noun for the reason line,
+#           the stable key it is counted on).
+# ★ A LAYER LISTED HERE NEVER USES THE SNAPSHOT DIFFERENCE FOR `added`. Its
+# loader rewrites every row, so a count delta is net churn: 40 new planned
+# units and 40 that went operational read as 0, and a table rebuilt from
+# nothing reads as +everything. If the registry cannot be read, the layer is
+# "measuring" (UNMEASURED). It does not fall back to the count delta.
+_FIRST_SEEN = {
+    "interconnection_requests": ("interconnect_queue", "interconnection requests",
+                                 "(ISO, queue id)"),
+    "planned_generators":      ("planned_generators", "planned generating units",
+                                "EIA (plant id, generator id)"),
+    "generator_inventory":     ("generator_inventory", "operable generating units",
+                                "EIA (plant id, generator id)"),
 }
 
 # label -> (first-seen timestamp column, initial-load flag column).
@@ -407,6 +440,35 @@ def _layer_status(delta_window, window_days, ingest_age, stale, expected,
             f"{expected or 'periodic'} source — the loader may have broken")
 
 
+def _first_seen_status(fs, noun, key, ingest_age, stale, expected):
+    """(status, reason) for a layer whose `added` comes from the first-seen
+    registry (see _FIRST_SEEN).
+
+    Same classification as _layer_status, but the no-growth reasons change.
+    _layer_status says "the row count did not move", which is not what was
+    measured here. On a delete-and-reinsert table the count can move with
+    nothing new in it. What was measured is that no key in the feed was new.
+    `fs` None means the registry has not recorded an ingest yet, which is
+    UNMEASURED and never zero.
+    """
+    if fs is None:
+        return ("measuring",
+                f"growth not measured yet — new {noun} are counted from a "
+                f"first-seen registry keyed on {key}, and it fills at this "
+                f"layer's next ingest")
+    n, w = fs["added_window"], fs["window_days"]
+    basis = (f"counted from a first-seen registry keyed on {key}, started "
+             f"{str(fs.get('since') or '')[:10]}; the {fs['baseline']:,} "
+             f"registered as a baseline are never counted as new")
+    if n > 0:
+        return ("growing", f"+{n:,} {noun} first seen in the last {w}d — {basis}")
+    status, reason = _layer_status(0, w, ingest_age, stale, expected)
+    if status == "refreshed":
+        reason = (f"re-ingested {ingest_age}d ago; the feed was read and none "
+                  f"of it was new")
+    return (status, f"no {noun} first seen in the last {w}d — {basis}; {reason}")
+
+
 # ── The verdict: ONE predicate for "every layer is fine" ───────────────────
 # ★★★ THE DEFECT THIS CLOSES (measured 2026-09-12 05:40Z, infra-growth-tracker).
 # That run printed, in order: power_plants_discovered "unjudged" at 194 days
@@ -544,6 +606,21 @@ def _freshness(cur, tbl, label):
         return None, None
 
 
+def _first_seen_read(cur, layer):
+    """Registry counts for one layer, or None when they cannot be read.
+
+    Isolated like _freshness: a failed read degrades this one layer to
+    "measuring" and never takes down the board."""
+    try:
+        return added_counts(cur, layer)
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def _at_or_before(hist, target):
     """Most recent count at or before a target date. hist = [(date,count)] newest-first."""
     for d, c in hist:
@@ -648,17 +725,33 @@ def _summary(cur):
             if 1 <= age <= 7:
                 dwin, wdays = int(cur_count) - int(cc), age
                 break
-        # First-seen layers REPLACE every count-derived delta, including the
-        # 1d/7d ones, so no field on the record can republish the initial load
-        # as growth. A failed read leaves all of them None (unmeasured).
+        # ★ Two first-seen mechanisms REPLACE the count-derived deltas, and
+        # neither falls back to the snapshot difference when its read fails
+        # (None stays None = unmeasured):
+        #   _FIRST_SEEN_COLUMN  first_seen_at on the table itself, initial load
+        #                       excluded (project lanes, infra_projects_ingest).
+        #   _FIRST_SEEN         util/first_seen.py registry for loaders that
+        #                       restamp every row; baseline excluded.
         fs_column = label in _FIRST_SEEN_COLUMN
-        if fs_column:
-            fs = _first_seen_added(cur, tbl, label)
-            d1, d7 = fs if fs is not None else (None, None)
-            dwin, wdays = (d7, 7) if fs is not None else (None, None)
-        status, status_reason = _layer_status(
-            dwin, wdays, ingest_age, stale, _EXPECTED_CADENCE.get(label),
-            first_seen=fs_column)
+        fs_spec = _FIRST_SEEN.get(label)
+        first_seen = None
+        if fs_spec:
+            first_seen = _first_seen_read(cur, fs_spec[0])
+            d1 = first_seen["added_1d"] if first_seen else None
+            dwin = first_seen["added_window"] if first_seen else None
+            wdays = first_seen["window_days"] if first_seen else None
+            d7 = dwin if (wdays or 0) >= 7 else None
+            status, status_reason = _first_seen_status(
+                first_seen, fs_spec[1], fs_spec[2], ingest_age, stale,
+                _EXPECTED_CADENCE.get(label))
+        else:
+            if fs_column:
+                fs = _first_seen_added(cur, tbl, label)
+                d1, d7 = fs if fs is not None else (None, None)
+                dwin, wdays = (d7, 7) if fs is not None else (None, None)
+            status, status_reason = _layer_status(
+                dwin, wdays, ingest_age, stale, _EXPECTED_CADENCE.get(label),
+                first_seen=fs_column)
         # ★ APPENDED TO EVERY STATUS, including "growing" — which is the one
         # substations actually reads. A layer gaining 1-8 rows a day from a
         # 0.56% lane while its canonical loader is dead is BOTH growing and
@@ -675,11 +768,6 @@ def _summary(cur):
         rec = {"layer": label, "category": cat, "count": int(cur_count),
                "delta_1d": d1, "delta_7d": d7, "delta_window": dwin, "window_days": wdays,
                "days_since_change": dsc, "flatline": flat, "as_of": str(cur_date),
-               # How `delta_*` was counted: a COUNT(*) difference between
-               # snapshots, or rows first seen in the window with the table's
-               # initial load excluded (_FIRST_SEEN_COLUMN).
-               "growth_basis": ("first_seen_column" if fs_column
-                                else "count_snapshot"),
                # Derived health, so a cadence chip ("periodic"/"static") never
                # ships alone — it is a schedule, not a verdict.
                "status": status, "status_reason": status_reason,
@@ -705,7 +793,16 @@ def _summary(cur):
                "dominant_source": mask_src,
                "dominant_source_rows": mask_rows,
                "dominant_source_lag_days": mask_lag,
-               "expected_cadence": _EXPECTED_CADENCE.get(label)}
+               "expected_cadence": _EXPECTED_CADENCE.get(label),
+               # What `added` counts: "count_snapshot" = difference of two
+               # daily COUNT(*)s; "first_seen_column" = first_seen_at on the
+               # table, initial load excluded (_FIRST_SEEN_COLUMN);
+               # "first_seen_registry" = keys first carried by an ingest,
+               # baseline excluded (util/first_seen.py, _FIRST_SEEN).
+               "growth_basis": ("first_seen_registry" if fs_spec
+                                else "first_seen_column" if fs_column
+                                else "count_snapshot"),
+               "first_seen": first_seen}
         out.append(rec)
         if flat:
             flatlines.append(f"{label} (no change in {dsc}d, expected <{stale}d, "
@@ -797,6 +894,9 @@ _FRIENDLY = {
     "subsea_cables": "Subsea cables", "subsea_landings": "Subsea cable landings",
     "gas_pipeline_projects": "Gas pipeline projects",
     "transmission_projects": "Transmission projects (ERCOT)",
+    "interconnection_requests": "Interconnection requests",
+    "planned_generators": "Planned generating units",
+    "generator_inventory": "Operable generating units",
 }
 
 # Provenance so the public feed — and anything downstream that messages these
@@ -821,6 +921,9 @@ _PROVENANCE = {
     "subsea_landings":         ("public",  "TeleGeography"),
     "gas_pipeline_projects":   ("public",  "EIA pipeline projects"),
     "transmission_projects":   ("public",  "ERCOT TPIT"),
+    "interconnection_requests": ("public", "ISO interconnection queues"),
+    "planned_generators":      ("public",  "EIA-860M"),
+    "generator_inventory":     ("public",  "EIA-860M"),
 }
 
 
@@ -1100,7 +1203,12 @@ def whats_new():
                         "'growth_basis' says what 'added' counts: 'count_snapshot' is the difference "
                         "of two daily totals; 'first_seen_column' (gas pipeline and "
                         "transmission projects) counts rows whose first_seen_at falls in the "
-                        "window, and a layer's initial load is never counted as new. "
+                        "window, and a layer's initial load is never counted as new; "
+                        "'first_seen_registry' (interconnection requests, planned and operable "
+                        "generating units, whose loaders rewrite every row) counts items whose "
+                        "stable upstream key an ingest carried for the first time, and the items "
+                        "already present when the registry started are a baseline that is never "
+                        "counted as new. "
                         "'Data centers' total is the raw tracked count; 'verified' is the deduped subset. "
                         "Layers marked provenance='public' unify third-party open data (HIFLD/FCC/EIA); "
                         "'curated' layers are crawled/curated by DC Hub. "
