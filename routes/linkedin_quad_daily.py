@@ -261,6 +261,25 @@ _ensure_table()
 _MOVER_MAX_SNAPSHOT_AGE_DAYS = 1
 
 
+def _quotable_score_row_sql() -> str:
+    """WHERE predicate for a market_power_scores row a public post may quote:
+    PUBLISHED, recomputed within 48h, and carrying the verdict the bands give
+    from its own scores. Both posts that print a DCPI score and verdict read
+    through this (_build_dcpi_mover's fallback and _build_industry_pulse), so
+    they cannot disagree about which rows are quotable. Parenthesised, since
+    PUBLISHED_ONLY's own note warns AND binds tighter than OR.
+
+    Spliced with .replace(), never an f-string or %: same rule as
+    agent_broadcast and util/dcpi_score_row.py.
+    """
+    from util.dcpi_method import verdict_case_sql
+    from util.dcpi_score_row import PUBLISHED_ONLY
+    return ("({published} AND computed_at > NOW() - INTERVAL '48 hours' "
+            "AND verdict = {band})").replace(
+        "{published}", PUBLISHED_ONLY).replace(
+        "{band}", verdict_case_sql("excess_power_score", "constraint_score"))
+
+
 def _build_dcpi_mover():
     """The DCPI mover for the 08:00 slot, or None when there is no real row.
 
@@ -301,22 +320,15 @@ def _build_dcpi_mover():
                 "snapshot_date": s.get("snapshot_date"), "since": s.get("since"),
                 "source": "dcpi_daily_snapshots"}
     try:
-        from util.dcpi_method import verdict_case_sql
-        from util.dcpi_score_row import PUBLISHED_ONLY
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Spliced with .replace(), never an f-string or %: same rule as
-            # agent_broadcast and util/dcpi_score_row.py.
             cur.execute("""
                 SELECT market_name AS market, verdict,
                        excess_power_score AS score
                   FROM market_power_scores
-                 WHERE {published}
-                   AND computed_at > NOW() - INTERVAL '48 hours'
+                 WHERE {quotable}
                    AND verdict IN ('BUILD','CAUTION','AVOID')
-                   AND verdict = {band}
                  ORDER BY RANDOM() LIMIT 1""".replace(
-                "{published}", PUBLISHED_ONLY).replace(
-                "{band}", verdict_case_sql("excess_power_score", "constraint_score")))
+                "{quotable}", _quotable_score_row_sql()))
             row = cur.fetchone()
             if row:
                 return {**dict(row), "source": "market_power_scores"}
@@ -336,6 +348,7 @@ def _build_industry_pulse():
     """
     if not (_pg and _dsn()): return None
     try:
+        _quotable = _quotable_score_row_sql()
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # Pull a recent contrarian-worthy headline
             cur.execute("""
@@ -350,13 +363,17 @@ def _build_industry_pulse():
                  ORDER BY RANDOM() LIMIT 1
             """)
             news_row = cur.fetchone()
-            # Pull a random BUILD market for the counter-take
+            # A random BUILD market for the counter-take. The post prints its
+            # score and verdict as live DCPI, so (2026-09-23) it must be a
+            # quotable row: this used to take ANY stored 'BUILD' with excess
+            # > 60, so an unpublished row, one weeks stale, or a BUILD the
+            # bands no longer give could be posted. The band check subsumes
+            # the old > 60: BUILD needs excess >= 65.
             cur.execute("""
                 SELECT market_name, verdict, excess_power_score
                   FROM market_power_scores
-                 WHERE verdict = 'BUILD' AND excess_power_score > 60
-                 ORDER BY RANDOM() LIMIT 1
-            """)
+                 WHERE verdict = 'BUILD' AND {quotable}
+                 ORDER BY RANDOM() LIMIT 1""".replace("{quotable}", _quotable))
             mkt_row = cur.fetchone()
             return {
                 "news": dict(news_row) if news_row else None,
