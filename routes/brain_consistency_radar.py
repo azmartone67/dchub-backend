@@ -8722,7 +8722,11 @@ def check_data_freshness_sla_breach() -> list[dict]:
         # entry in brain_autopilot.py (gas-refresh, substations-refresh)
         # for autonomous recovery. transmission_lines has none since
         # 2026-09-23 — its refresher TRUNCATEd the table; a breach escalates.
-        ("transmission_lines",     "updated_at",   720,  "HIFLD transmission lines"),
+        # transmission_lines reads last_updated (2026-09-23): it has no
+        # updated_at column, so this row could never breach. Its one writer,
+        # routes/transmission_ingest.py, stamps last_updated = NOW() on every
+        # row of the weekly EIA full-replace.
+        ("transmission_lines",     "last_updated", 720,  "EIA transmission lines"),
         ("gas_pipelines",          "updated_at",   720,  "EIA gas pipelines"),
         ("substations",            "updated_at",   720,  "HIFLD substations"),
         # 2026-07-02 — data-moat feed sentinels. This sweep found
@@ -8754,6 +8758,19 @@ def check_data_freshness_sla_breach() -> list[dict]:
                     cur.execute(f"SELECT to_regclass('public.{tbl}')")
                     if not (cur.fetchone() or [None])[0]:
                         continue  # table doesn't exist on this deploy
+                    # An SLA row naming a column that is missing or not a
+                    # timestamp can never breach. Report it: silence from
+                    # this row would otherwise read as "fresh".
+                    cur.execute(
+                        "SELECT data_type FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = %s "
+                        "AND column_name = %s", (tbl, col))
+                    dtype = (cur.fetchone() or [None])[0]
+                    if dtype not in _SLA_TIMESTAMP_TYPES:
+                        why = (f'column "{col}" does not exist' if dtype is None
+                               else f'column "{col}" is {dtype}, not a timestamp')
+                        findings.append(_sla_unmeasurable(tbl, col, sla_hrs, label, why))
+                        continue
                     cur.execute(
                         f"SELECT MAX({col}) FROM {tbl}"
                     )
@@ -8785,14 +8802,40 @@ def check_data_freshness_sla_breach() -> list[dict]:
                                        f"this table has missed at least one window. "
                                        f"Check Railway logs for the cron's name."),
                         })
-                except Exception:
-                    continue
+                except Exception as e:
+                    findings.append(_sla_unmeasurable(
+                        tbl, col, sla_hrs, label,
+                        f"the age query raised {type(e).__name__}: {str(e)[:120]}"))
     except Exception:
         pass
     finally:
         try: c.close()
         except Exception: pass
     return findings
+
+
+_SLA_TIMESTAMP_TYPES = ("timestamp with time zone", "timestamp without time zone")
+
+
+def _sla_unmeasurable(tbl: str, col: str, sla_hrs: int, label: str, why: str) -> dict:
+    """A table-age SLA row the radar could not evaluate.
+
+    Its own issue, not data_freshness_sla_breach: that one maps to a
+    REFRESH_MAP endpoint in brain_autopilot, and an unreadable column is no
+    evidence the table is stale. The detail must not match the
+    data_freshness_sla_breach error class's pattern (brain_error_classes) —
+    not even this function's caller's name, which contains it — so triage
+    files a missing column under schema_drift_column_missing instead."""
+    return {
+        "issue":  "sla_column_unmeasurable",
+        "url":    f"table:{tbl}",
+        "count":  1,
+        "detail": (f"{label}: age cannot be measured on {tbl}.{col} — {why}. "
+                   f"This {sla_hrs}h SLA row can never breach, so its silence "
+                   f"is not evidence the table is current. Point its tuple in "
+                   f"the SLAS list (routes/brain_consistency_radar.py) at a "
+                   f"timestamp column the table's writer sets."),
+    }
 
 
 def check_mcp_tool_sunset_candidate() -> list[dict]:
