@@ -64,6 +64,21 @@ OVERPASS_URL = os.environ.get("OSM_OVERPASS_URL",
 # default was measured accepted (HTTP 200) on 2026-09-22.
 USER_AGENT = os.environ.get("OSM_USER_AGENT",
                             "DCHubBot/1.0 (+https://dchub.cloud/contact)")
+# ★ 2026-09-23: fallback endpoints, tried in turn when the one before them is
+# busy (429/5xx/timeout) or refuses this client. Measured the same minute, the
+# same Connecticut substations query: overpass-api.de 504 in 9 s ("too busy"),
+# overpass.kumi.systems 200 in 42 s, overpass.private.coffee 200 in 112 s —
+# while the live weekly sweep was losing 3 of its first 6 states to 504s on
+# the main instance alone. Comma-separated, env-overridable; empty disables.
+OVERPASS_MIRRORS = [u.strip() for u in os.environ.get(
+    "OSM_OVERPASS_MIRRORS",
+    "https://overpass.kumi.systems/api/interpreter,"
+    "https://overpass.private.coffee/api/interpreter").split(",") if u.strip()]
+
+
+def _overpass_urls():
+    urls = [OVERPASS_URL] + [u for u in OVERPASS_MIRRORS if u != OVERPASS_URL]
+    return urls
 
 US_STATES = [
     'AL','AK','AZ','AR','CA','CO','CT','DC','DE','FL',
@@ -146,10 +161,20 @@ def _overpass_fetch(query, timeout=200, retries=3, backoff=20, on_attempt=None):
     ★ Overpass reports a server-side timeout or memory abort as HTTP 200 with a
     `remark` and a TRUNCATED element list. Accepting that as a sweep would
     baseline a state on partial data, so it is a timeout here, not ok.
+
+    Attempts rotate through _overpass_urls() (primary, then mirrors), so a busy
+    primary costs one attempt, not the state. `rejected` is returned only when
+    EVERY endpoint tried refused the client (403/406).
     """
     body = urllib.parse.urlencode({'data': query}).encode('utf-8')
     status = "error"
+    urls = _overpass_urls()
+    retries = max(retries, len(urls))
+    refused = set()
     for attempt in range(retries):
+        url = urls[attempt % len(urls)]
+        if url in refused:
+            continue
         if on_attempt:
             try:
                 on_attempt()
@@ -157,7 +182,7 @@ def _overpass_fetch(query, timeout=200, retries=3, backoff=20, on_attempt=None):
                 pass
         try:
             req = urllib.request.Request(
-                OVERPASS_URL, data=body, method="POST",
+                url, data=body, method="POST",
                 headers={'User-Agent': USER_AGENT, 'Accept': 'application/json',
                          'Content-Type': 'application/x-www-form-urlencoded'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -169,11 +194,14 @@ def _overpass_fetch(query, timeout=200, retries=3, backoff=20, on_attempt=None):
                 return data, "ok"
         except urllib.error.HTTPError as e:
             if e.code in (403, 406):
-                # The service refuses this CLIENT; every state gets the same
-                # answer, so neither a retry nor the next state helps.
-                logger.error("Overpass REJECTED the request (HTTP %d) — check "
-                             "OSM_USER_AGENT (%r)", e.code, USER_AGENT)
-                return None, "rejected"
+                # That endpoint refuses this CLIENT; retrying it is pointless,
+                # but another endpoint may accept us.
+                logger.error("Overpass %s REJECTED the request (HTTP %d) — check "
+                             "OSM_USER_AGENT (%r)", url, e.code, USER_AGENT)
+                refused.add(url)
+                if len(refused) == len(urls):
+                    return None, "rejected"
+                continue
             status = ("throttle" if e.code == 429 else
                       "timeout" if e.code in (502, 503, 504) else "error")
         except (socket.timeout, TimeoutError):
