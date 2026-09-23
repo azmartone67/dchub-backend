@@ -12,12 +12,12 @@
  },
  "stats": {
   "python_files_scanned": 1502,
-  "endpoints_total": 1808,
-  "endpoints_resolved": 1289,
+  "endpoints_total": 1810,
+  "endpoints_resolved": 1291,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 453,
-  "keys_total": 10754,
-  "keys_strictly_protected": 9742,
+  "keys_total": 10775,
+  "keys_strictly_protected": 9763,
   "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -14801,6 +14801,40 @@
     "ok"
    ]
   },
+  "GET /api/v1/infra-projects": {
+   "source": "routes/infra_projects_ingest.py:782",
+   "handler": "get_infra_projects",
+   "resolution": "resolved",
+   "open_at": [
+    "coverage_note",
+    "gas_pipeline_projects",
+    "ignored",
+    "sources",
+    "summary.by_type",
+    "summary.matching",
+    "summary.returned",
+    "transmission_projects",
+    "type",
+    "types_queried"
+   ],
+   "keys": [
+    "coverage_note",
+    "filters",
+    "gas_pipeline_projects",
+    "ignored",
+    "ok",
+    "sources",
+    "summary",
+    "summary.as_of",
+    "summary.by_type",
+    "summary.matching",
+    "summary.returned",
+    "summary.truncated",
+    "transmission_projects",
+    "type",
+    "types_queried"
+   ]
+  },
   "GET /api/v1/infrastructure": {
    "source": "main.py:42096",
    "handler": "cf_stub_infrastructure",
@@ -15649,6 +15683,26 @@
    "resolution": "opaque",
    "open_at": [],
    "keys": []
+  },
+  "GET /api/v1/land-power/upgrade-ladder": {
+   "source": "routes/land_power_mcp.py:635",
+   "handler": "upgrade_ladder",
+   "resolution": "resolved",
+   "open_at": [
+    "access",
+    "free_key",
+    "key_bound",
+    "required_plan",
+    "rungs"
+   ],
+   "keys": [
+    "access",
+    "free_key",
+    "key_bound",
+    "required_plan",
+    "rungs",
+    "success"
+   ]
   },
   "GET /api/v1/land-power/usage": {
    "source": "land_power_usage_limiter.py:478",
