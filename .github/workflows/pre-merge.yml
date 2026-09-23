@@ -1497,6 +1497,7 @@ jobs:
             dsr.txt
             clr.txt
             lql.txt
+            lqc.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

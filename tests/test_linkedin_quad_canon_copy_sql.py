@@ -109,11 +109,12 @@ def _exec(*stmts):
 def lq(monkeypatch):
     """Recreate the owned tables empty and start canon cold on them.
 
-    discovered_facilities is created (empty) for every test, not just F1:
-    canon reads it first, in the same transaction as the markets read, with
-    no rollback between them. A missing table aborts that transaction and the
-    markets read fails with it. K1 passed while this fixture left the table
-    to whichever test ran before it, and failed once it dropped the table."""
+    discovered_facilities is created (empty) for every test, not just F1, so
+    no test depends on a table another file left behind. K1 did, once: canon
+    read it first in the markets read's transaction with no rollback, so a
+    missing table killed the markets read, and K1 passed only on the copy
+    test_dcpi_scores_readers_sql.py left. #5362 made each canon read its own
+    transaction, which fixes the cause; this keeps the fixture honest anyway."""
     import canonical_stats as cs
     from routes import linkedin_quad_daily as lq
     monkeypatch.setenv("PGOPTIONS", "-c lock_timeout=15000")
