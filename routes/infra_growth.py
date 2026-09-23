@@ -897,6 +897,12 @@ _FRIENDLY = {
     "interconnection_requests": "Interconnection requests",
     "planned_generators": "Planned generating units",
     "generator_inventory": "Operable generating units",
+    # The four GEM layers had no entry, so /whats-new printed the raw keys
+    # ("gem_global_power") as card titles. Measured live 2026-09-22.
+    "gem_global_power": "Global generating units (GEM)",
+    "gem_lng_terminals": "LNG terminals (GEM)",
+    "gem_pipelines": "Global gas pipelines (GEM)",
+    "gem_coal_mines": "Coal mines (GEM)",
 }
 
 # Provenance so the public feed — and anything downstream that messages these
@@ -921,6 +927,10 @@ _PROVENANCE = {
     "subsea_landings":         ("public",  "TeleGeography"),
     "gas_pipeline_projects":   ("public",  "EIA pipeline projects"),
     "transmission_projects":   ("public",  "ERCOT TPIT"),
+    "gem_global_power":        ("public",  "Global Energy Monitor"),
+    "gem_lng_terminals":       ("public",  "Global Energy Monitor"),
+    "gem_pipelines":           ("public",  "Global Energy Monitor"),
+    "gem_coal_mines":          ("public",  "Global Energy Monitor"),
     "interconnection_requests": ("public", "ISO interconnection queues"),
     "planned_generators":      ("public",  "EIA-860M"),
     "generator_inventory":     ("public",  "EIA-860M"),

@@ -301,6 +301,17 @@ def test_both_queue_ingest_modes_record_first_seen_after_the_upsert():
         assert rec > up, f"first-seen record at line {rec} runs before the upsert at {up}"
 
 
+def test_every_board_layer_has_a_card_title_and_a_source_credit():
+    """whats_new renders `_FRIENDLY.get(layer, layer)`, so a layer with no
+    entry prints its raw key as the card title. The four GEM layers did,
+    live, on 2026-09-22 ("gem_global_power"). A layer with no _PROVENANCE
+    entry falls back to a generic 'public data' credit."""
+    G = _growth()
+    for label, _t, _c, _s in G._LAYERS:
+        assert label in G._FRIENDLY, f"{label} would render as a raw key on /whats-new"
+        assert label in G._PROVENANCE, f"{label} would be credited to 'public data'"
+
+
 def test_every_registry_layer_is_declared_on_the_board():
     G = _growth()
     labels = {l[0] for l in G._LAYERS}
