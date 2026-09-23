@@ -27,6 +27,9 @@ The None paths, read off the builders:
   N3 industry_pulse, no news table: the swallowed-error path, same outcome
   N4 a forced run that lost the claim to a live peer skips without stamping
      the peer's row
+  N5 capability (16:00) and a forced agent_demand have no legacy builder:
+     they skip and stamp too, instead of the generic template (owner
+     decision 2026-09-23)
   C1 control: a fresh matching headline is not skipped, is posted, and the
      run still reports the engine error
   C2 control: a fresh headline and a BUILD market are not skipped either
@@ -231,6 +234,24 @@ def test_n4_a_forced_run_never_stamps_a_peers_live_claim(lq):
     assert (body.get("skipped"), body.get("reason")) == (True, "no_hyperscaler_news"), body
     assert lq._test_posted == [], lq._test_posted
     assert _row(12)[1] == "claimed_in_flight", _row(12)
+
+
+@pytest.mark.parametrize("topic", ["capability", "agent_demand"])
+def test_n5_slots_with_no_legacy_builder_skip_not_the_generic_template(lq, topic):
+    # Fresh data sits in both tables, so a skip here cannot be a builder
+    # finding nothing: these topics have no builder at all.
+    _news("CoreWeave signs a 400 MW lease")
+
+    body = _run(lq, topic)
+
+    assert (body.get("skipped"), body.get("reason")) == (True, "no_legacy_builder"), body
+    assert body.get("engine_error") == _ENGINE_ERR, body
+    assert lq._test_posted == [], lq._test_posted
+    # agent_demand's slot hour is the hour of the request; read by topic.
+    row = _one("SELECT success, error_msg, post_text FROM linkedin_quad_posts "
+               "WHERE topic = %s", (topic,))
+    assert row is not None, "run() never claimed the slot"
+    assert row == (False, f"suppressed: no_legacy_builder — engine {_ENGINE_ERR}", None), row
 
 
 def test_c1_a_fresh_headline_is_posted_and_keeps_the_engine_error(lq):

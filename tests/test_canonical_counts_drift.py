@@ -3496,7 +3496,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/handoff_truth_master_shell.py': {'facilities_retired_12650'},
     'routes/integrations_landing.py': {'isos_non_canonical', 'tool_count_literal'},
     'routes/linkedin_partnership_weekly.py': {'deals_stale_floor', 'isos_non_canonical'},
-    'routes/linkedin_quad_daily.py': {'isos_non_canonical'},
     'routes/lost_conversion_outreach.py': {'tool_count_literal'},
     'routes/market_brief.py': {'deals_stale_floor'},
     # r-market-cta (2026-09-17): dropped. market_deep_dive.py's three CTA
@@ -3790,9 +3789,13 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # floor in one A/B variant; "all 48 tools" in the Starter lead line) when
     # the retired Starter copy left both files. Two files, two decrements,
     # lowered in the SAME commit that drains them.
-    assert len(outside) >= 71, (
+    # ★2026-09-23: 71 -> 70. routes/linkedin_quad_daily.py drained its
+    # isos_non_canonical token: the dcpi_mover template's typed "Top BUILD
+    # markets right now span 3 ISOs (WECC, SPP, ERCOT)" was removed (no data
+    # backed it). Owner-approved public-copy change.
+    assert len(outside) >= 70, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 71 did when last measured. If debt was genuinely drained, lower this "
+        "— 70 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

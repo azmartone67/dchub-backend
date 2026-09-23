@@ -685,15 +685,24 @@ def test_agent_broadcast_coverage_item_quotes_buildings(pinned_canon):
         % (format(DISTINCT, ","), [i.get("summary") for i in items]))
 
 
-def test_quad_legacy_fallback_bodies_clear_the_gate(pinned_canon):
-    """The legacy quad templates ARE a publish path, for every real slot.
+def test_quad_legacy_fallback_bodies_clear_the_gate(pinned_canon, monkeypatch):
+    """The legacy quad templates were a publish path, for every real slot.
 
-    run_slot reaches them twice — the engine's except-branch, and the "absolute
+    run_slot reached them twice — the engine's except-branch, and the "absolute
     last resort" when the composer returns nothing — and its generic branch
     carried "21,401 data center facilities. 4,000+ M&A deals. 10 ISOs tracked in
     real time." Render each real slot with no payload (the shape that lands on
     the generic fallback) and gate the body.
+
+    2026-09-23: run() no longer reaches the generic body (every except-branch
+    topic without data skips, and compose_story_post never returns empty text
+    without skip), and _canon_media_phrases prints a count only when canon
+    MEASURED it. The pinned reading is marked measured under exactly the names
+    it carries. That is facilities_verified, the deprecated alias, and not
+    facilities_with_keeper_distinct, so this also pins that the gate is
+    alias-aware: a gate on the canonical name alone drops the count here.
     """
+    monkeypatch.setattr(canonical_stats, "_live_keys", set(pinned_canon))
     quad = pytest.importorskip("routes.linkedin_quad_daily", reason="needs Flask")
     slots = list(quad.SLOTS)
     assert slots, "SLOTS is empty — this test would iterate nothing"

@@ -1414,6 +1414,28 @@ jobs:
             echo "::error::the LinkedIn quad legacy builders SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── LinkedIn quad legacy copy vs canon, same Postgres ───────────────
+      # _canon_markets() printed canon's static seed ("300+") as a measured
+      # count whenever canon had not measured markets; it is now gated on
+      # stat_is_live. Only a real Postgres has canon's own query against a
+      # present or missing market_power_scores. Owns and recreates
+      # market_power_scores.
+      - name: LinkedIn quad canon copy SQL against a real Postgres
+        env:
+          LINKEDIN_QUAD_CANON_COPY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_linkedin_quad_canon_copy_sql.py -v --tb=short
+
+      - name: Prove the LinkedIn quad canon copy SQL test actually RAN
+        env:
+          LINKEDIN_QUAD_CANON_COPY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_linkedin_quad_canon_copy_sql.py \
+            -q -rs --tb=no > lqc.txt 2>&1 || { cat lqc.txt; exit 1; }
+          cat lqc.txt
+          if grep -qi "skipped" lqc.txt; then
+            echo "::error::the LinkedIn quad canon copy SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1475,6 +1497,7 @@ jobs:
             dsr.txt
             clr.txt
             lql.txt
+            lqc.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
