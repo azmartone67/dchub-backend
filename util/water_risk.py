@@ -69,10 +69,20 @@ in routes/interconnection_queues.py still refuses to score off it.
 whole range — #5281 pinned them to each other rather than merging them — so
 the duplicate was invisible in behaviour and would have stayed invisible
 until one of the two drifted. util/deals.py (#2079) is the same class at
-seven copies. This module is now the only band and the only reader; the SQL
-and the schema facts above are stated once, here, and a fence in
-tests/test_water_risk_read_honesty.py fails the build if a second band
-implementation or a second `FROM water_risk` reader reappears.
+seven copies. #5285 folded it in here; this module is now the only band and
+the only reader, the SQL and the schema facts above are stated once, and a
+fence in tests/test_water_risk_read_honesty.py fails the build if a second
+band implementation or a second `FROM water_risk` reader reappears.
+
+  The fold changed one behaviour. That bulk query selected `WHERE
+  water_stress_score IS NOT NULL`, so it returned the newest row per state
+  THAT HAD a score; `read_states_stress` returns the newest row per state and
+  reports whatever score it carries, null included. Identical on today's data
+  — all 51 rows come from the single 2026-07-10 run and every one is scored —
+  and a deliberate choice either way: a row that exists with a null score is
+  a coverage fact, not something to hide behind a missing key. That function
+  states the rule as its own contract, so a caller never has to go looking up
+  a module that is no longer here to read.
 """
 from util.db_honesty import try_fetchall, try_fetchone
 
@@ -231,14 +241,15 @@ def read_states_stress(cur, states):
     a state that simply has no row — 51 silent nulls averaged into a confident
     number.
 
-    ★ ONE DIFFERENCE FROM THE RETIRED `STATE_WATER_STRESS_SQL` (#5262), which
-    carried `WHERE water_stress_score IS NOT NULL`: that picked the newest row
-    WITH a score, this picks the newest row and reports its score, null or
-    not. Identical today — all 51 rows come from the single 2026-07-10 run and
-    every one has a score — and deliberately so: a row that exists with a null
-    score is a coverage fact the caller may want, not something to hide behind
-    a missing key. Callers that need a number must still gate on `band is not
-    None`, exactly as they had to before.
+    ★ NULL SCORES ARE NOT FILTERED OUT, so a caller that needs a number must
+    gate on `band is not None`. The newest row per state comes back whatever
+    its score, which keeps "the row exists and its score is null" apart from
+    "there is no row at all" — the first is a coverage fact worth reporting,
+    and collapsing it into a missing key would be this module's own failure
+    mode wearing a different hat.
+
+    The bulk query this replaced filtered the nulls in SQL instead; the
+    module docstring's retirement note has the history.
     """
     keys = sorted({(s or "").strip().upper() for s in (states or []) if s})
     if not keys:
