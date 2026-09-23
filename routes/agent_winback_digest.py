@@ -109,16 +109,39 @@ def _safeall(cur, sql, params=None):
         return []
 
 
+def _markets_tracked():
+    """Canon's DCPI market floor (e.g. "300+"), or None when canon has not
+    measured it.
+
+    2026-09-23: this was `SELECT count(DISTINCT market) FROM dcpi_scores` with
+    default=232. dcpi_scores has never existed in production (to_regclass is
+    NULL), so the read always raised and every digest with new facilities in
+    it said "232 tracked power markets", a typed number. The count is canon's:
+    canonical_stats measures COUNT(DISTINCT market_name) over published
+    market_power_scores, and resolve_canon() publishes this same phrase as
+    public.markets.
+
+    stat_is_live() is asked AFTER markets_phrase(), which is what runs the
+    query. A phrase built from the static seed is not a measurement, so it
+    reads as absent and the email drops the clause rather than print it."""
+    try:
+        from canonical_stats import markets_phrase, stat_is_live
+        phrase = markets_phrase()
+        return phrase if stat_is_live("markets") else None
+    except Exception:
+        return None
+
+
 def _changes(cur) -> dict:
     """The 'what changed this week' payload. NOTE: deals.created_at and
     discovered_facilities.discovered_at are TEXT — must cast ::timestamptz."""
-    out = {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": 232,
+    out = {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": None,
            "dcpi_movers": [], "news": []}
     out["new_deals"] = int(_safe1(cur, "SELECT count(*) FROM deals WHERE created_at::timestamptz > NOW() - INTERVAL '7 days'", default=0) or 0)
     out["deal_titles"] = [r[0] for r in _safeall(cur,
         "SELECT COALESCE(title, company, target) FROM deals WHERE created_at::timestamptz > NOW() - INTERVAL '7 days' ORDER BY created_at::timestamptz DESC LIMIT 3") if r and r[0]]
     out["new_facilities"] = int(_safe1(cur, "SELECT count(*) FROM discovered_facilities WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'", default=0) or 0)
-    out["markets_tracked"] = int(_safe1(cur, "SELECT count(DISTINCT market) FROM dcpi_scores", default=232) or 232)
+    out["markets_tracked"] = _markets_tracked()
     # Lever #2 (2026-06-26): the digest promised "DCPI movers + news" but shipped
     # only counts. Both feeds are live in-DB — add them (fail-soft via _safeall;
     # DCPI movers stay empty until 7d of dcpi_daily_snapshots accumulate).
@@ -188,7 +211,10 @@ def _html(email: str, interests: list, ch: dict) -> str:
         deals = f'<p style="margin:14px 0 4px"><strong>{ch["new_deals"]} new M&amp;A deals</strong> tracked this week, including:</p><ul style="margin:0 0 14px;padding-left:20px;color:#444">{items}</ul>'
     elif ch.get("new_deals"):
         deals = f'<p style="margin:14px 0"><strong>{ch["new_deals"]} new M&amp;A deals</strong> tracked this week.</p>'
-    fac = f'<p style="margin:0 0 14px"><strong>{ch["new_facilities"]} newly discovered facilities</strong> added across {ch.get("markets_tracked",232)} tracked power markets.</p>' if ch.get("new_facilities") else ""
+    # No market count when canon has none: the clause goes, a number is not typed in.
+    _mt = ch.get("markets_tracked")
+    _across = f' across {_mt} tracked power markets' if _mt else ""
+    fac = f'<p style="margin:0 0 14px"><strong>{ch["new_facilities"]} newly discovered facilities</strong> added{_across}.</p>' if ch.get("new_facilities") else ""
     return (f'<div style="font-family:-apple-system,Segoe UI,Inter,sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e">'
             f'<h2 style="font-size:20px;margin:0 0 6px">What changed on DC Hub this week</h2>'
             f'<p style="color:#888;font-size:13px;margin:0 0 18px">The live data layer for AI agents — dchub.cloud</p>'
@@ -261,7 +287,7 @@ def preview():
         return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
     email = (request.args.get("email") or "preview@example.com").strip().lower()
     c = _conn()
-    interests, ch = [], {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": 232}
+    interests, ch = [], {"new_deals": 0, "deal_titles": [], "new_facilities": 0, "markets_tracked": None}
     if c is not None:
         try:
             cur = c.cursor()
