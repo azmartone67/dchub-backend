@@ -478,8 +478,11 @@ def _format_post_base(slot, payload):
         return (
             f"📰 {title}\n\n"
             f"DC Hub Hyperscaler Deal Tracker watches every Stargate, Oracle, "
-            f"CoreWeave, AMD, NVIDIA capex move in real-time. AI infrastructure is "
-            f"now a $1B+/week cadence — track who's deploying where.\n\n"
+            f"CoreWeave, AMD, NVIDIA capex move in real-time. Track who's "
+            f"deploying where.\n\n"
+            # 2026-09-23: removed "AI infrastructure is now a $1B+/week
+            # cadence" (owner decision). Nothing computes it at render; it was
+            # a typed rate published as fact.
             f"Live ticker: {landing}\n\nSource: {url}\n\n"
             f"#AICapex #DataCenter #Hyperscaler #DCHubMedia"
         )

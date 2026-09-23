@@ -31,7 +31,7 @@ The None paths, read off the builders:
      they skip and stamp too, instead of the generic template (owner
      decision 2026-09-23)
   C1 control: a fresh matching headline is not skipped, is posted, and the
-     run still reports the engine error
+     run still reports the engine error; the post types no "$1B+/week" rate
   C2 control: a fresh headline and a BUILD market are not skipped either
 
 Tables are created from the repo's own DDL: news from
@@ -263,6 +263,8 @@ def test_c1_a_fresh_headline_is_posted_and_keeps_the_engine_error(lq):
     assert body["payload"].get("engine_error") == _ENGINE_ERR, body
     assert len(lq._test_posted) == 1, lq._test_posted
     assert "📰 CoreWeave signs a 400 MW lease" in lq._test_posted[0], lq._test_posted[0]
+    # No typed deal rate (owner decision 2026-09-23): nothing computes one.
+    assert "$1B" not in lq._test_posted[0] and "/week" not in lq._test_posted[0], lq._test_posted[0]
     success, error_msg, post_text = _row(12)
     assert success is True and "CoreWeave signs a 400 MW lease" in post_text, (success, error_msg)
 
