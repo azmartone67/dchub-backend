@@ -1391,6 +1391,29 @@ jobs:
             echo "::error::the canon live reads SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── LinkedIn quad legacy builders with no data, same Postgres ───────
+      # When the composer raises, run() falls back to a legacy builder per
+      # slot. A builder's None used to reach payload["engine_error"] = ...,
+      # a TypeError that 500'd and left the claim at 'claimed_in_flight'
+      # (counted as abandoned). Only a real Postgres has the empty news
+      # query, the missing table and the claim row. Owns and recreates news,
+      # market_power_scores and linkedin_quad_posts.
+      - name: LinkedIn quad legacy builders SQL against a real Postgres
+        env:
+          LINKEDIN_QUAD_LEGACY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_linkedin_quad_legacy_none_sql.py -v --tb=short
+
+      - name: Prove the LinkedIn quad legacy builders SQL test actually RAN
+        env:
+          LINKEDIN_QUAD_LEGACY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_linkedin_quad_legacy_none_sql.py \
+            -q -rs --tb=no > lql.txt 2>&1 || { cat lql.txt; exit 1; }
+          cat lql.txt
+          if grep -qi "skipped" lql.txt; then
+            echo "::error::the LinkedIn quad legacy builders SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1451,6 +1474,7 @@ jobs:
             rsla.txt
             dsr.txt
             clr.txt
+            lql.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
