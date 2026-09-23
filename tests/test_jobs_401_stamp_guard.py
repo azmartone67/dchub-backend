@@ -113,7 +113,8 @@ def test_keeper_jobs_declare_tight_intervals():
     assert "energy-discovery" not in jr._JOB_INTERVALS
     import routes.brain_consistency_radar as bcr
     assert "energy-discovery" in bcr._INTENTIONAL_STALE_CRONS
-    # Same treatment for infrastructure-sync, retired 2026-09-22 (sourceless
-    # fiber discovery). Both schedulers were removed; no interval, allowlisted.
+    # Same treatment for infrastructure-sync, retired 2026-09-22 (its fiber
+    # leg cannot be green on a schedule). Both schedulers removed; no interval,
+    # allowlisted.
     assert "infrastructure-sync" not in jr._JOB_INTERVALS
     assert "infrastructure-sync" in bcr._INTENTIONAL_STALE_CRONS

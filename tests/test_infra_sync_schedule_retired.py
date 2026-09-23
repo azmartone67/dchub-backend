@@ -3,9 +3,12 @@
 MEASURED 2026-09-22. daily-infra-sync.yml (04:08 UTC) had failed every day
 since its last success on 2026-09-02, and dchub-jobs.yml fired the same
 endpoint at 01:00. /api/jobs/infrastructure-sync has one live leg — fiber
-discovery — and it has no source (PeeringDB /api/ix carries no coordinates;
-the owner ruled out synthetic PeeringDB pairing on 2026-09-07). The owner
-decided to stop running it rather than keep a red no PR can clear.
+discovery — and the owner decided to stop running it rather than keep a red
+no PR can clear. The decision was taken on a "no source" premise; the first
+manual run after it (2026-09-23) showed the premise was stale: the lane places
+184 PeeringDB exchanges (#4325) but is SATURATED — 2,672 re-upserts,
+rows_persisted 0 — which the handler scores as a 500. Still a red no PR can
+clear, and the same loader keeps running from crawler_scheduler.
 
 The red was ALSO the wrong red. The endpoint is relayed to dchub-worker and
 web answers 202 when the job outlives the 180s relay budget (01:16 -> 01:19,
@@ -64,8 +67,9 @@ def test_daily_infra_sync_has_no_schedule_but_stays_dispatchable():
     trig = _triggers(doc)
     assert "schedule" not in trig, (
         "daily-infra-sync.yml is scheduled again. Its only live leg (fiber "
-        "discovery) has no source, so a cron here is a daily red nobody can "
-        "clear. Re-schedule only with a real source AND a restored dead-man beat.")
+        "discovery) is saturated and scored a 500 every run, so a cron here is "
+        "a daily red nobody can clear. Re-schedule only when a scheduled run "
+        "can honestly be green, AND restore the dead-man beat with it.")
     assert "workflow_dispatch" in trig, (
         "daily-infra-sync.yml lost workflow_dispatch — it is the manual door, "
         "and a file with no trigger at all reads as abandoned")
@@ -198,8 +202,8 @@ def test_202_then_watermark_moves_with_ok_is_green(tmp_path):
 
 
 def test_202_then_worker_reports_500_is_red_and_names_it(tmp_path):
-    """THE CURRENT PRODUCTION STATE. The worker finishes and the handler says
-    500 (fiber no_source). That is the verdict, and it is red."""
+    """The worker finishes and the handler says 500. That is the verdict, and
+    it is red — whatever the reason inside it."""
     rc, out, _ = _run(tmp_path, {
         "post": _ACCEPTED,
         "watermarks": [_wm(_PREV, "http_500"), _wm(_NEXT, "http_500")],
@@ -250,8 +254,31 @@ def test_in_band_500_no_source_is_red_and_names_it(tmp_path):
         "watermarks": [_wm(_PREV, "http_500")],
     })
     assert rc == 1, out
-    assert "no_source" in out, out
+    errs = [l for l in out.splitlines() if l.startswith("::error::")]
+    assert errs and "no_source" in errs[-1], errs or out
 
+
+
+def test_in_band_500_names_the_handlers_errors_not_just_the_fiber_leg(tmp_path):
+    """THE MEASURED PRODUCTION BODY (manual run 2026-09-23 04:03). fiber
+    status is 'ok' and fiber.error is null — the failure lives in
+    results.errors (the zero-delta rule). Reading only fiber.error printed
+    'fiber status=ok: ' with no reason at all."""
+    rc, out, _ = _run(tmp_path, {
+        "post": [500, {"success": False, "job": JOB, "results": {
+            "counter_unreliable": "loader reported 2672 DISCOVERED write "
+                                  "attempt(s) but fiber_routes did not change",
+            "errors": ["fiber: 2672 write attempts persisted 0 rows"],
+            "fiber": {"status": "ok", "error": None, "discovered": 2672},
+            "rows_persisted": 0}}],
+        "watermarks": [_wm(_PREV, "http_500")],
+    })
+    assert rc == 1, out
+    # Judge the ::error:: annotation, not the whole output: the step also
+    # echoes the raw body, which contains the same words whatever it reads.
+    errs = [l for l in out.splitlines() if l.startswith("::error::")]
+    assert errs, out
+    assert "2672 write attempts persisted 0 rows" in errs[-1], errs
 
 # ── 4. the retired cron does not page ───────────────────────────────────────
 

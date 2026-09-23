@@ -1,16 +1,25 @@
 # ★ 2026-09-22 — SCHEDULE RETIRED. MANUAL ONLY. (owner decision)
 #
-# /api/jobs/infrastructure-sync has one real leg left — fiber discovery via
-# fiber_network_discovery.run_fiber_discovery — and that leg has NO SOURCE:
-# PeeringDB /api/ix carries no coordinates, and on 2026-09-07 the owner ruled
-# that pairing PeeringDB facilities into synthetic routes is not an acceptable
-# route source. So every run was an honest 500 (fiber no_source), and this
-# workflow went red every day after 2026-09-02 with nothing any PR could do
-# about it. The owner chose to stop running the sourceless step rather than
-# carry a red nobody can clear. Fiber routes still arrive through their real
-# lanes, which this retirement does not touch — measured 2026-09-23,
-# fiber_routes rows created in the prior 30 days: kmz 1,863, peeringdb 1,179
-# (the fiber_integration carrier/PeeringDB syncs), osm 2.
+# /api/jobs/infrastructure-sync has one live leg — fiber discovery via
+# fiber_network_discovery.run_fiber_discovery — and it could not go green on a
+# schedule. The retirement was decided on the premise that the leg had no
+# source (PeeringDB /api/ix carries no coordinates). ★ CORRECTED 2026-09-23 by
+# the first manual run after the retirement: that premise has been stale since
+# #4325 (2026-09-09) placed the IX lane through /api/ixfac + /api/fac
+# coordinates. The run returned HTTP 500 with fiber status=ok, 184 exchanges
+# placed, discovered=2672 and rows_persisted=0, i.e. "fiber: 2672 write attempts
+# persisted 0 rows". The lane is SATURATED: every route it can derive already
+# exists, and the handler deliberately treats "claimed writes, table did not
+# move" as a failure (see its docstring). So every run was red for a structural
+# reason. That is still a red no PR can clear, so the retirement stands.
+#
+# ★ THE LANE ITSELF STILL RUNS. crawler_scheduler's in-process
+# infrastructure_sync slot (00:00 / 12:00 UTC, feed worker:infrastructure_sync
+# on /api/v1/ops/deadman) calls the same run_fiber_discovery, so the derived
+# 'peeringdb' routes (route_type ix_interconnect) keep being refreshed without
+# this door. Measured 2026-09-23: those were the peeringdb fiber_routes rows
+# created in the prior 30 days (1,137 on 09-10, 42 on 09-15); the surveyed
+# carrier_kmz lane added 1,863. Neither is touched by this retirement.
 #
 # Retired in lockstep:
 #   · this file's cron and its dead-man beat. The ledger row for feed
@@ -30,9 +39,11 @@
 # GHOST (it was built from this file's 16-day disappearance in July).
 # Dispatch-only is the retirement that lane can read.
 #
-# ★ TO RE-SCHEDULE: only once run_fiber_discovery has a real surveyed source
-# (the still-open owner item of 2026-09-07: NTIA BEAD / FCC BDC, or retuning
-# the fiber SLA). Restore the cron AND a dead-man beat together — a beat with
+# ★ TO RE-SCHEDULE: only once a scheduled run can honestly be green, which
+# means a new surveyed source (the still-open owner item of 2026-09-07: NTIA
+# BEAD / FCC BDC) or an owner decision on how the handler should judge a
+# saturated derived lane (it re-upserts, adds nothing, and the zero-delta rule
+# calls that a failure). Restore the cron AND a dead-man beat together — a beat with
 # no cron ages to a red that means nothing, and a cron with no beat is
 # invisible to /api/v1/ops/deadman.
 #
@@ -50,7 +61,7 @@
 # watermark is cron_last_run via GET /api/jobs/last-run (read its docstring in
 # routes/jobs_routes.py). last_completed_at is stamped only by the process that
 # actually RAN the handler, and last_status is that handler's own verdict
-# ('ok' for a 2xx, 'http_500' for the honest no_source failure).
+# ('ok' for a 2xx, 'http_500' when its errors list is non-empty).
 #
 # History (2026-08-10 restore): the pre-restore body sent X-Internal-Key (a
 # 401 against _require_admin_key), could not go red (`set +e`, `exit 0`),
@@ -145,14 +156,14 @@ jobs:
               echo "::notice::$JOB completed OK on dchub-worker (the handler returned 2xx, which it does only when its errors list is empty)"
               exit 0
             fi
-            echo "::error::$JOB completed on dchub-worker with last_status=${STATUS:-<none>} — that is the handler's own verdict. A 500 here is the fiber leg's honest no_source (see the 'JOB infrastructure-sync' line in the dchub-worker log for the reason)."
+            echo "::error::$JOB completed on dchub-worker with last_status=${STATUS:-<none>} — that is the handler's own verdict. The reason is in the 'JOB infrastructure-sync' line of the dchub-worker log (measured 2026-09-23: 2672 re-upserts of existing PeeringDB IX routes, 0 new rows)."
             exit 1
           fi
 
           # Anything but a 202 was answered in-band (the worker finished
           # inside the relay budget, or web ran it locally): the body IS the
           # verdict. `success` is computed by the handler from its errors.
-          V=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));f=((d.get('results') or {}).get('fiber') or {});print('%s|%s|%s' % (d.get('success'), f.get('status'), str(f.get('error') or '')[:200]))" "$T/infra.json" 2>/dev/null || echo "unparseable||")
+          V=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));r=d.get('results') or {};f=r.get('fiber') or {};e=r.get('errors') or ([f.get('error')] if f.get('error') else []);print('%s|%s|%s' % (d.get('success'), f.get('status'), '; '.join(str(x) for x in e)[:300]))" "$T/infra.json" 2>/dev/null || echo "unparseable||")
           echo "success=${V%%|*} fiber=$(printf '%s' "$V" | cut -d'|' -f2)"
           if [ "$CODE" = "200" ] && [ "${V%%|*}" = "True" ]; then
             echo "::notice::$JOB ran in-band and reported success"
