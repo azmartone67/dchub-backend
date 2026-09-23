@@ -390,8 +390,13 @@ def _sweep(loader, states, query_for, write_state, progress=None, carried=None):
     t0 = time.monotonic()
     for i, state in enumerate(states):
         if time.monotonic() - t0 > LOADER_BUDGET_S:
-            for s in states[i:]:
-                res["failed_states"][s] = "budget"
+            # ★ 2026-09-23: these used to be recorded as FAILED states, which
+            # on a slow Overpass day made a healthy sweep an error (measured:
+            # transmission ended 27/51 "failed" after exactly 45 min, most of
+            # them simply not reached). They are not failures, they are not
+            # done yet: the run ends 'incomplete' and the next start resumes.
+            res["budget_exhausted"] = True
+            res["not_reached"] = list(states[i:])
             break
         data, status = _overpass_fetch(query_for(state), on_attempt=_beat)
         if status != "ok":
@@ -824,6 +829,14 @@ def classify(res):
     db_failed = sorted(s for s, why in failed.items() if str(why).startswith("db:"))
     if db_failed:
         return "error", f"DB write failed for {len(db_failed)} state(s): {', '.join(db_failed[:8])}"
+    if res.get("budget_exhausted"):
+        # Not final and not a failure: resumable, like a stalled run. It never
+        # beats the dead-man ledger (run_tracked), so a sweep that is never
+        # finished still goes overdue there.
+        return "incomplete", (f"wall-clock budget reached after "
+                              f"{res.get('states_done', 0)}/{total} states; "
+                              f"{len(res.get('not_reached') or [])} not reached yet — "
+                              f"the next start resumes")
     if total == 0 or len(failed) > MAX_FAILED_STATE_SHARE * total:
         return "error", (f"{len(failed)}/{total} states failed "
                          f"({', '.join(sorted(failed)[:8])})")
@@ -874,8 +887,10 @@ def start_run(loader):
             cur.execute(
                 """SELECT id, COALESCE(detail->'done_states', '[]'::jsonb)
                      FROM osm_load_runs
-                    WHERE loader = %s AND status = 'running'
-                      AND heartbeat_at < NOW() - make_interval(secs => %s)
+                    WHERE loader = %s
+                      AND ((status = 'running'
+                            AND heartbeat_at < NOW() - make_interval(secs => %s))
+                           OR status = 'incomplete')
                       AND started_at > NOW() - make_interval(hours => %s)
                     ORDER BY id DESC LIMIT 1 FOR UPDATE""",
                 (loader, STALL_AFTER_S, RESUME_WITHIN_H))
@@ -893,8 +908,9 @@ def start_run(loader):
                                   SET status = 'abandoned', finished_at = NOW(),
                                       note = %s
                                 WHERE id = %s""",
-                            (f"thread died mid-sweep (no heartbeat); resumed by run {rid} "
-                             f"with {len(carried)} state(s) carried", dead[0]))
+                            (f"stopped mid-sweep (thread died or budget reached); "
+                             f"resumed by run {rid} with {len(carried)} state(s) "
+                             f"carried", dead[0]))
         conn.commit()
         return rid
     finally:
@@ -959,6 +975,10 @@ def run_tracked(loader, run_id=None):
             _update_run(run_id, res if isinstance(res, dict) else {}, status, note)
         except Exception as e:  # noqa: BLE001
             logger.error("osm_load_runs finish write failed for %s: %s", loader, e)
+    if status == "incomplete":
+        # Resumable, not an outcome: only a finished sweep beats the ledger.
+        return {"run_id": run_id, "status": status, "note": note,
+                "inserted": (res or {}).get("inserted") if isinstance(res, dict) else None}
     try:
         from routes.ingest_runs import record_beat
         record_beat(feed, status=status,

@@ -304,3 +304,23 @@ def test_driver_loader_subset_selection():
     assert [l for _e, l in sub] == ["osm_transmission_lines", "osm_pipelines"]
     with pytest.raises(SystemExit):
         drive.selected("osm_transmision_lines")      # a typo must not run nothing
+
+
+# ── a budget stop is resumable, not a failure (2026-09-23) ──────────────────
+def test_budget_stop_is_incomplete_not_failed(monkeypatch):
+    monkeypatch.setattr(osm, "_overpass_fetch", lambda q, on_attempt=None, **k: ({"elements": []}, "ok"))
+    monkeypatch.setattr(osm, "_dsn", lambda: "postgres://x")
+    monkeypatch.setattr(osm, "LOADER_BUDGET_S", -1)          # budget already spent
+    res = osm._sweep("t", ["AL", "AK"], lambda st: st, lambda c, st, els: (0, {}))
+    assert res["failed_states"] == {}, "an unreached state is not a failed one"
+    assert res["not_reached"] == ["AL", "AK"]
+    st, note = osm.classify(res)
+    assert st == "incomplete" and "resumes" in note
+
+
+def test_driver_resumes_an_incomplete_run():
+    seq = iter([{"state": "incomplete", "states_done": 24},
+                {"state": "success", "states_done": 51}])
+    row, _r, n = drive.drive_one("ep", fire_fn=lambda e: (1, "started"),
+                                 wait_fn=lambda rid: next(seq))
+    assert row["state"] == "success" and n == 2

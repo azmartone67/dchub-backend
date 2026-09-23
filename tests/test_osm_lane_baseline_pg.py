@@ -349,3 +349,32 @@ def test_power_plant_backfill_is_stamped_at_its_own_baseline(conn):
         cur.execute("SELECT NOW()")
         t1 = cur.fetchone()[0]
         assert ig._backfill_between(cur, "power_plants_discovered", t0, t1) == 2
+
+
+def test_an_incomplete_run_is_resumed_and_never_beats(conn, monkeypatch):
+    import psycopg2
+    monkeypatch.setattr(osm, "_connect", lambda: psycopg2.connect(DSN))
+    osm.ensure_tables(conn)
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO osm_load_runs (loader, status, detail)
+                       VALUES ('osm_transmission_lines', 'incomplete',
+                               '{"done_states": ["AL", "AK"]}') RETURNING id""")
+        inc = cur.fetchone()[0]
+        # a FINISHED run (error / success) is an outcome, never resumed
+        cur.execute("""INSERT INTO osm_load_runs (loader, status, detail)
+                       VALUES ('osm_pipelines', 'error', '{"done_states": ["TX"]}')""")
+    conn.commit()
+    rid = osm.start_run("osm_transmission_lines")
+    assert osm._carried_for(rid) == ["AK", "AL"]
+    assert _rows(conn, "SELECT status FROM osm_load_runs WHERE id=%s", (inc,)) == [("abandoned",)]
+    assert osm._carried_for(osm.start_run("osm_pipelines")) == []
+
+    beats = []
+    import routes.ingest_runs as ir
+    monkeypatch.setattr(ir, "record_beat", lambda *a, **k: beats.append((a, k)))
+    monkeypatch.setitem(osm.TRACKED, "osm_substations",
+                        ("osm-substations", lambda progress=None, carried=None:
+                         {"states_total": 51, "states_done": 10, "budget_exhausted": True,
+                          "not_reached": ["TX"], "failed_states": {}, "inserted": 3}))
+    out = osm.run_tracked("osm_substations")
+    assert out["status"] == "incomplete" and beats == [], "an incomplete sweep must not beat"
