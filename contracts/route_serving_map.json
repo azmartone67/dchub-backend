@@ -1041,6 +1041,11 @@
     "auto_sync"
    ]
   },
+  "GET /api/admin/osm-load-runs": {
+   "modules": [
+    "main"
+   ]
+  },
   "GET /api/admin/pending-facilities": {
    "modules": [
     "discovery_pipeline"
@@ -5126,6 +5131,11 @@
     "routes.upgrade_pool_outreach"
    ]
   },
+  "GET /api/v1/admin/usage-tracker/partner-traffic": {
+   "modules": [
+    "routes.api_usage_tracker"
+   ]
+  },
   "GET /api/v1/admin/usage-tracker/status": {
    "modules": [
     "routes.api_usage_tracker"
@@ -8016,6 +8026,11 @@
     "routes.industry_pulse"
    ]
   },
+  "GET /api/v1/infra-projects": {
+   "modules": [
+    "routes.infra_projects_ingest"
+   ]
+  },
   "GET /api/v1/infrastructure": {
    "modules": [
     "main"
@@ -8794,6 +8809,11 @@
   "GET /api/v1/land-power/snapshot": {
    "modules": [
     "dchub_iteration_2_routes"
+   ]
+  },
+  "GET /api/v1/land-power/upgrade-ladder": {
+   "modules": [
+    "routes.land_power_mcp"
    ]
   },
   "GET /api/v1/land-power/usage": {
@@ -13551,6 +13571,11 @@
     "routes.pair_code"
    ]
   },
+  "GET /upgrade/": {
+   "modules": [
+    "routes.stripe_direct_upgrade"
+   ]
+  },
   "GET /upgrade/h/<token>": {
    "modules": [
     "routes.human_relay"
@@ -15636,6 +15661,11 @@
     "routes.ingest_runs"
    ]
   },
+  "POST /api/v1/admin/ingest/gas-pipeline-projects": {
+   "modules": [
+    "routes.infra_projects_ingest"
+   ]
+  },
   "POST /api/v1/admin/ingest/gas-pipelines": {
    "modules": [
     "routes.gas_pipeline_ingest"
@@ -15674,6 +15704,11 @@
   "POST /api/v1/admin/ingest/transmission-lines": {
    "modules": [
     "routes.transmission_ingest"
+   ]
+  },
+  "POST /api/v1/admin/ingest/transmission-projects": {
+   "modules": [
+    "routes.infra_projects_ingest"
    ]
   },
   "POST /api/v1/admin/integrity/master-tick": {

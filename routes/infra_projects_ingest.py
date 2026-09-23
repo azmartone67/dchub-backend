@@ -503,6 +503,352 @@ def ingest_transmission_projects():
     return _ingest(TX_TABLE, _TX_DDL, _TX_FIELDS, TX_SOURCE, normalize_tx_rows)
 
 
+# ── PUBLIC READ: GET /api/v1/infra-projects (2026-09-23) ───────────────────
+# The read side of the two tables above, for the map, the MCP tool
+# get_infra_projects and anyone citing them. Public and keyless, like its
+# neighbour /api/v1/planned-generators (the get_power_pipeline endpoint): both
+# sources are public facts (EIA public domain; ERCOT terms §5 allow
+# redistribution in compilations), so there is no paid depth to trim. It sits
+# outside free_tier_gate.GATED_PREFIXES on purpose — note '/api/v1/transmission'
+# IS gated and is a prefix match, which is why this path is not
+# '/api/v1/transmission-projects' (pinned in tests/test_infra_projects_read.py).
+#
+# COVERAGE, stated in every response rather than implied: gas pipeline projects
+# are US-wide (EIA); transmission projects are ERCOT (Texas) only so far.
+# Generation projects are /api/v1/planned-generators; existing (as-built) assets
+# are the asset layers.
+
+_TYPES = {"gas_pipeline": GAS_TABLE, "transmission": TX_TABLE}
+_READ_LIMIT_DEFAULT = 100
+_READ_LIMIT_MAX = 1000
+_READ_CACHE_TTL_S = 300
+_READ_CACHE_MAX = 256
+_read_cache: dict = {}
+
+_GAS_READ_COLS = (
+    "project_name", "operator", "project_type", "status", "prev_status",
+    "status_changed_at", "in_service_year", "completed_date", "states", "beg_state",
+    "end_state", "regions", "capacity_mmcfd", "miles", "cost_musd", "cost_musd_text",
+    "diameter_in", "pipeline_type", "authority", "docket", "demand_served", "notes",
+    "project_url", "source_row_updated", "source_release", "first_seen_at",
+    "in_initial_load", "in_latest_release", "source_url", "license")
+
+_TX_READ_COLS = (
+    "project_number", "title", "description", "status", "source_status", "source_list",
+    "prev_status", "status_changed_at", "owner", "iso", "from_location", "to_location",
+    "county_from", "county_to", "states", "kv", "miles_new", "miles_rebuilt", "mva",
+    "projected_isd", "actual_isd", "rpg_number", "tier", "comments", "source_release",
+    "first_seen_at", "in_initial_load", "in_latest_release", "source_url", "license")
+
+# Long free text is cut in the list view; the row keeps its source_url.
+_TEXT_CAP = {"notes": 400, "description": 400, "comments": 400}
+
+_SOURCES = {
+    "gas_pipeline": {
+        "name": "EIA U.S. natural gas pipeline projects",
+        "publisher": "U.S. Energy Information Administration",
+        "source_url": GAS_SOURCE_URL,
+        "license": GAS_LICENSE,
+        "coverage": "United States (all states, interstate and intrastate)",
+        "cadence": "EIA releases quarterly; DC Hub checks weekly",
+        "capacity_unit": "MMcf/d",
+    },
+    "transmission": {
+        "name": "ERCOT Transmission Project and Information Tracking (TPIT)",
+        "publisher": "Electric Reliability Council of Texas",
+        "source_url": TX_SOURCE_PAGE,
+        "license": TX_LICENSE,
+        "coverage": "ERCOT (Texas) only — no other ISO or utility yet",
+        "cadence": "ERCOT republishes several times a year; DC Hub checks weekly",
+        "capacity_unit": "kV",
+    },
+}
+
+_COVERAGE_NOTE = (
+    "Gas pipeline projects are US-wide (EIA). Transmission projects are ERCOT "
+    "(Texas) only so far. Generation projects: /api/v1/planned-generators. "
+    "Existing, already-built pipelines, lines and substations are the asset "
+    "layers, not this list.")
+
+
+def _truthy(v):
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _date_arg(v):
+    """'YYYY-MM-DD' or 'YYYY' → date; '' → None; anything else raises ValueError."""
+    s = str(v or "").strip()
+    if not s:
+        return None
+    if re.fullmatch(r"\d{4}", s):
+        return datetime.date(int(s), 1, 1)
+    d = _date(s)
+    if d is None or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        raise ValueError(s)
+    return d
+
+
+def parse_read_args(args):
+    """Query args → (opts, error). Pure, so the HTTP layer and the tests share it.
+
+    A filter that only one project type carries (min_capacity is gas MMcf/d,
+    min_kv is transmission kV) narrows type=all to that type — a transmission
+    line has no MMcf/d, so it cannot satisfy "capacity at least X". Sent against
+    the OTHER explicit type it is reported in `ignored`, never silently dropped.
+    """
+    t = (args.get("type") or "all").strip().lower()
+    aliases = {"gas": "gas_pipeline", "gas_pipelines": "gas_pipeline",
+               "pipeline": "gas_pipeline", "tx": "transmission",
+               "transmission_projects": "transmission", "both": "all"}
+    t = aliases.get(t, t)
+    if t not in ("all", "gas_pipeline", "transmission"):
+        return None, "type must be gas_pipeline, transmission or all"
+    opts = {"type": t, "ignored": []}
+    for k in ("min_capacity", "min_kv"):
+        raw = (args.get(k) or "").strip()
+        if not raw:
+            opts[k] = None
+            continue
+        try:
+            opts[k] = float(raw)
+        except ValueError:
+            return None, f"{k} must be a number"
+    for k in ("in_service_after", "in_service_before", "new_since"):
+        try:
+            opts[k] = _date_arg(args.get(k))
+        except ValueError:
+            return None, f"{k} must be YYYY-MM-DD or YYYY"
+    st = (args.get("state") or "").strip().upper()
+    if st and not re.fullmatch(r"[A-Z]{2}", st):
+        return None, "state must be a 2-letter code, e.g. TX"
+    opts["state"] = st or None
+    statuses = [s.strip().lower() for s in (args.get("status") or "").split(",")
+                if s.strip()]
+    opts["status"] = statuses[:10] or None
+    opts["include_delisted"] = _truthy(args.get("include_delisted"))
+    try:
+        lim = int(args.get("limit") or _READ_LIMIT_DEFAULT)
+    except (TypeError, ValueError):
+        return None, "limit must be an integer"
+    opts["limit"] = max(1, min(lim, _READ_LIMIT_MAX))
+
+    types = ["gas_pipeline", "transmission"] if t == "all" else [t]
+    if t == "all":
+        if opts["min_capacity"] is not None and opts["min_kv"] is None:
+            types = ["gas_pipeline"]
+        elif opts["min_kv"] is not None and opts["min_capacity"] is None:
+            types = ["transmission"]
+    elif t == "transmission" and opts["min_capacity"] is not None:
+        opts["ignored"].append("min_capacity applies to gas pipeline projects only")
+    elif t == "gas_pipeline" and opts["min_kv"] is not None:
+        opts["ignored"].append("min_kv applies to transmission projects only")
+    opts["types"] = types
+    return opts, None
+
+
+def build_where(kind, opts):
+    """(sql, params) for one project type. Every value is a bound parameter."""
+    where, params = [], []
+    if not opts["include_delisted"]:
+        where.append("in_latest_release")
+    if opts["state"]:
+        # gas `states` is a comma list ('TX,LA'); transmission is always 'TX'.
+        where.append("%s = ANY(string_to_array(UPPER(REPLACE(COALESCE(states, ''), "
+                     "' ', '')), ','))")
+        params.append(opts["state"])
+    if opts["status"]:
+        where.append("LOWER(status) = ANY(%s)")
+        params.append(list(opts["status"]))
+    if opts["new_since"]:
+        # "New" is what a later release added — the initial load is a backfill
+        # of what already existed, never news (same rule as /whats-new).
+        where.append("first_seen_at >= %s AND NOT in_initial_load")
+        params.append(opts["new_since"])
+    if kind == "gas_pipeline":
+        if opts["min_capacity"] is not None:
+            where.append("capacity_mmcfd >= %s")
+            params.append(opts["min_capacity"])
+        if opts["in_service_after"]:
+            where.append("in_service_year >= %s")
+            params.append(opts["in_service_after"].year)
+        if opts["in_service_before"]:
+            where.append("in_service_year <= %s")
+            params.append(opts["in_service_before"].year)
+    else:
+        if opts["min_kv"] is not None:
+            where.append("kv >= %s")
+            params.append(opts["min_kv"])
+        isd = "COALESCE(actual_isd, projected_isd)"
+        if opts["in_service_after"]:
+            where.append(f"{isd} >= %s")
+            params.append(opts["in_service_after"])
+        if opts["in_service_before"]:
+            where.append(f"{isd} <= %s")
+            params.append(opts["in_service_before"])
+    return (" AND ".join(where) or "TRUE"), params
+
+
+def _jsonable(v):
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.isoformat()
+    if v is not None and type(v).__name__ == "Decimal":
+        f = float(v)
+        return int(f) if f == int(f) else f
+    return v
+
+
+def _row(cols, r):
+    out = {}
+    for k, v in zip(cols, r):
+        v = _jsonable(v)
+        cap = _TEXT_CAP.get(k)
+        if cap and isinstance(v, str) and len(v) > cap:
+            v = v[:cap].rstrip() + "…"
+        out[k] = v
+    return out
+
+
+def _num_out(v):
+    v = _jsonable(v)
+    return round(v, 1) if isinstance(v, float) else v
+
+
+def _read_one(cur, kind, opts):
+    """Rows + summary for one project type, on an open cursor."""
+    table = _TYPES[kind]
+    where, params = build_where(kind, opts)
+    if kind == "gas_pipeline":
+        cols = _GAS_READ_COLS
+        order = "capacity_mmcfd DESC NULLS LAST, project_name"
+        sums = ("COALESCE(SUM(capacity_mmcfd), 0), COALESCE(SUM(miles), 0), "
+                "COALESCE(SUM(cost_musd), 0)")
+    else:
+        cols = _TX_READ_COLS
+        order = "kv DESC NULLS LAST, miles_new DESC NULLS LAST, project_number"
+        sums = "COALESCE(SUM(miles_new), 0), COALESCE(SUM(miles_rebuilt), 0), 0"
+    if opts["new_since"]:
+        order = "first_seen_at DESC, " + order
+    cur.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE {where} "
+                f"ORDER BY {order} LIMIT %s", params + [opts["limit"]])
+    rows = [_row(cols, r) for r in cur.fetchall()]
+    cur.execute(f"SELECT COUNT(*), {sums} FROM {table} WHERE {where}", params)
+    matching, s1, s2, s3 = cur.fetchone()
+    cur.execute(f"SELECT COALESCE(status, 'Unknown'), COUNT(*) FROM {table} "
+                f"WHERE {where} GROUP BY 1 ORDER BY 2 DESC, 1", params)
+    by_status = {k: n for k, n in cur.fetchall()}
+    cur.execute(f"SELECT st, COUNT(*) FROM (SELECT UNNEST(string_to_array("
+                f"UPPER(REPLACE(COALESCE(NULLIF(states, ''), 'Unknown'), ' ', '')), ',')) "
+                f"AS st FROM {table} WHERE {where}) s GROUP BY 1 ORDER BY 2 DESC, 1",
+                params)
+    by_state = {k: n for k, n in cur.fetchall()}
+    cur.execute(f"SELECT MAX(source_release), MAX(last_seen_at), "
+                f"COUNT(*) FILTER (WHERE in_latest_release) FROM {table}")
+    release, checked, listed = cur.fetchone()
+    summary = {"matching": matching, "returned": len(rows),
+               "by_status": by_status, "by_state": by_state}
+    if kind == "gas_pipeline":
+        summary.update(total_capacity_mmcfd=_num_out(s1), total_miles=_num_out(s2),
+                       total_cost_musd=_num_out(s3))
+    else:
+        summary.update(total_miles_new=_num_out(s1), total_miles_rebuilt=_num_out(s2))
+    src = dict(_SOURCES[kind], as_of=_jsonable(release), last_checked=_jsonable(checked),
+               projects_listed=listed)
+    return rows, summary, src
+
+
+def read_projects(cur, opts):
+    """(rows, by_type, sources) for parsed opts, on an open cursor — each a dict
+    keyed gas_pipeline / transmission, None for a type not queried. Pure of
+    Flask; the endpoint composes the body itself so the response-key contract
+    (scripts/api_response_contract.py) can read its keys statically."""
+    rows = {"gas_pipeline": None, "transmission": None}
+    by_type = {"gas_pipeline": None, "transmission": None}
+    sources = {"gas_pipeline": None, "transmission": None}
+    for kind in opts["types"]:
+        rows[kind], by_type[kind], sources[kind] = _read_one(cur, kind, opts)
+    return rows, by_type, sources
+
+
+def _cache_key(opts):
+    return json.dumps({k: _jsonable(v) for k, v in opts.items()}, sort_keys=True,
+                      default=str)
+
+
+def _connect_read():
+    return psycopg2.connect(_dsn(), sslmode="require", connect_timeout=8)
+
+
+@infra_projects_ingest_bp.route("/api/v1/infra-projects", methods=["GET"])
+def get_infra_projects():
+    """PUBLIC read API for gas pipeline projects (EIA, US-wide) and transmission
+    projects (ERCOT TPIT, Texas only). Query params, all optional:
+
+      type=gas_pipeline|transmission|all   (default all)
+      state=TX                2-letter; gas matches any state a project crosses
+      status=Construction     case-insensitive, comma list allowed
+      min_capacity=500        gas MMcf/d (narrows type=all to gas)
+      min_kv=345              transmission kV (narrows type=all to transmission)
+      in_service_after / in_service_before = YYYY-MM-DD or YYYY
+                              gas: in-service YEAR; transmission: actual ISD,
+                              else projected ISD
+      new_since=YYYY-MM-DD    first seen on/after, initial load excluded
+      include_delisted=1      also rows the latest release no longer lists
+      limit=100               per type (max 1000)
+
+    Every row carries source_url, license and first_seen_at; `summary` covers
+    every matching row, not just the returned ones.
+    """
+    opts, err = parse_read_args(request.args)
+    if err:
+        return jsonify(ok=False, error=err), 400
+    key = _cache_key(opts)
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    hit = _read_cache.get(key)
+    if hit and now - hit[0] < _READ_CACHE_TTL_S:
+        rows, by_type, sources = hit[1]
+    else:
+        if not _dsn():
+            return jsonify(ok=False, error="no DATABASE_URL"), 503
+        try:
+            c = _connect_read()
+            try:
+                with c.cursor() as cur:
+                    rows, by_type, sources = read_projects(cur, opts)
+            finally:
+                c.close()
+        except Exception as e:  # noqa: BLE001 — a read failure is never cached
+            log.warning("infra-projects read failed: %s", str(e)[:200])
+            return jsonify(ok=False, error=str(e)[:160]), 500
+        if len(_read_cache) >= _READ_CACHE_MAX:
+            _read_cache.clear()
+        _read_cache[key] = (now, (rows, by_type, sources))
+    matching = sum(b["matching"] for b in by_type.values() if b)
+    returned = sum(b["returned"] for b in by_type.values() if b)
+    out = {
+        "ok": True,
+        "type": opts["type"],
+        "types_queried": list(opts["types"]),
+        "filters": {k: _jsonable(opts[k]) for k in (
+            "state", "status", "min_capacity", "min_kv", "in_service_after",
+            "in_service_before", "new_since", "include_delisted", "limit")},
+        "ignored": list(opts["ignored"]),
+        "summary": {
+            "matching": matching,
+            "returned": returned,
+            "truncated": returned < matching,
+            "as_of": {k: (s["as_of"] if s else None) for k, s in sources.items()},
+            "by_type": by_type,
+        },
+        "gas_pipeline_projects": rows["gas_pipeline"],
+        "transmission_projects": rows["transmission"],
+        "sources": sources,
+        "coverage_note": _COVERAGE_NOTE,
+    }
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = f"public, max-age={_READ_CACHE_TTL_S}"
+    return resp
+
+
 def register_infra_projects_ingest(app):
     try:
         app.register_blueprint(infra_projects_ingest_bp)
