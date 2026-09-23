@@ -598,7 +598,11 @@ def test_repo_worker_is_canon_clean_and_current():
     # worker.js is pasted into the CF dashboard. Verify with (want 4.9.73-…):
     #   curl -s -o /dev/null -D - "https://api.dchub.cloud/api/v1/stats?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.73-kv-writes-only-credential-free'" in src
+    # ★2026-09-23 4.9.74: MCP_FALLBACK_TOOLS 91 -> 92, get_infra_projects
+    # (derived from dchub-mcp-server's toolspec.json). 4.9.73 was live at this
+    # commit. ⚠ PASTE OUTSTANDING: paste after the MCP tool is live. Verify
+    # with the curl above (want 4.9.74-…).
+    assert "WORKER_VERSION = '4.9.74-infra-projects'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

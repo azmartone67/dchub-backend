@@ -37,6 +37,7 @@ _TOOL_REST = {
     "get_news":               ("/api/news", "GET"),
     "get_pipeline":           ("/api/v1/pipeline", "GET"),
     "get_power_pipeline":     ("/api/v1/planned-generators", "GET"),
+    "get_infra_projects":     ("/api/v1/infra-projects", "GET"),
     "get_interconnection_queue": ("/api/v1/interconnection-queue/snapshot", "GET"),
     "get_grid_data":          ("/api/v1/grid/intelligence/<iso>", "GET"),
     "get_grid_intelligence":  ("/api/v1/grid/intelligence/<iso>", "GET"),
