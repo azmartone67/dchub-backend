@@ -146,16 +146,48 @@ def test_http_200_with_a_timeout_remark_is_not_a_sweep(monkeypatch):
     assert osm._overpass_fetch("q", retries=2) == (None, "timeout")
 
 
-def test_406_is_rejected_without_retrying(monkeypatch):
+def test_406_everywhere_is_rejected_one_call_per_endpoint(monkeypatch):
     calls = []
 
-    def boom(*a, **k):
-        calls.append(1)
+    def boom(req, *a, **k):
+        calls.append(req.full_url)
         raise urllib.error.HTTPError("u", 406, "Not Acceptable", {}, None)
     monkeypatch.setattr(osm.urllib.request, "urlopen", boom)
     monkeypatch.setattr(osm.time, "sleep", lambda s: None)
-    assert osm._overpass_fetch("q", retries=3) == (None, "rejected")
-    assert len(calls) == 1
+    assert osm._overpass_fetch("q", retries=6) == (None, "rejected")
+    # a refusing endpoint is never retried
+    assert sorted(calls) == sorted(osm._overpass_urls())
+
+
+def test_busy_primary_falls_through_to_a_mirror(monkeypatch):
+    """2026-09-23: overpass-api.de 504'd in 9 s while two mirrors answered the
+    same query with 200 — the sweep was losing states to the primary alone."""
+    urls = osm._overpass_urls()
+    assert len(urls) >= 2 and urls[0] == osm.OVERPASS_URL
+    seen = []
+
+    def fake(req, *a, **k):
+        seen.append(req.full_url)
+        if req.full_url == urls[0]:
+            raise urllib.error.HTTPError(urls[0], 504, "busy", {}, None)
+        return _Resp(b'{"elements": [{"id": 1}]}')
+    monkeypatch.setattr(osm.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(osm.time, "sleep", lambda s: None)
+    data, status = osm._overpass_fetch("q")
+    assert status == "ok" and data["elements"] == [{"id": 1}]
+    assert seen == urls[:2]
+
+
+def test_refused_primary_falls_through_to_a_mirror(monkeypatch):
+    urls = osm._overpass_urls()
+
+    def fake(req, *a, **k):
+        if req.full_url == urls[0]:
+            raise urllib.error.HTTPError(urls[0], 406, "no", {}, None)
+        return _Resp(b'{"elements": []}')
+    monkeypatch.setattr(osm.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(osm.time, "sleep", lambda s: None)
+    assert osm._overpass_fetch("q")[1] == "ok"
 
 
 def test_clean_200_is_ok(monkeypatch):
