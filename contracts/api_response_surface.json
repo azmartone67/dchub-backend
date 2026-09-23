@@ -22132,7 +22132,7 @@
    "keys": []
   },
   "GET /api/v1/site/simulate-buildout": {
-   "source": "routes/site_simulator.py:333",
+   "source": "routes/site_simulator.py:324",
    "handler": "simulate_buildout",
    "resolution": "resolved",
    "open_at": [
