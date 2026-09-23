@@ -23,13 +23,18 @@ What is enforced
 1. Every finding dict ({"issue": ..., "count": ...} literal, or
    dict(issue=..., count=...)) in a module that feeds the radar's persister
    carries a `count_kind` — a non-empty string literal from _KINDS.
-   "Feeds the radar" is DERIVED: the radar itself plus every routes.* module
-   it imports that builds a finding dict. A new detector module wired into
-   the radar is scanned without anyone editing this file.
+   The scope is DERIVED: the radar itself, every routes.* module it imports
+   that builds a finding dict, and every module whose writer call forwards
+   `f.get("count_kind")` out of a dict. A new detector module wired into the
+   radar is scanned without anyone editing this file, and a forward cannot
+   stand in for a declaration its dicts never make.
 2. Every call to brain_findings_writer.upsert_brain_finding that passes a
    `count` (keyword or 4th positional) also passes `count_kind=`. This is the
    other door into brain_findings: a detector that writes directly never
-   builds a radar dict, so (1) alone cannot see it.
+   builds a radar dict, so (1) alone cannot see it. A helper that passes its
+   own `count`/`count_kind` parameters through to the writer is judged at
+   ITS call sites instead (in its module, or imported by name elsewhere) —
+   otherwise `count_kind=count_kind` with a default of "" reads as declared.
 3. Neither shape may be bypassed by writing `count` after construction
    (`f["count"] = n`, `.update(count=n)`) or by a `**` splat on the writer.
 
@@ -49,6 +54,7 @@ entry is reported as stale rather than silently granting headroom.
 """
 import ast
 import collections
+import functools
 import glob
 import os
 
@@ -267,20 +273,25 @@ _UNDECLARED_DICTS = {
         'glama_origin_publishes_email_ownership': 1,
         'glama_ownership_doc_unparseable': 1,
     },
+    'routes/infra_coverage.py': {
+        'layer_scope_contradiction': 2,
+    },
+    'routes/map_layer_probe.py': {
+        'map_layer_bad_shape': 2,
+        'map_layer_empty_in_coverage': 1,
+        'map_layer_unreachable': 1,
+    },
     'routes/site_sentinel.py': {
         'f"nav_indeterminate:{r[\'path\']}"': 1,
         'f"nav_missing:{r[\'path\']}"': 1,
     },
 }
-_UNDECLARED_DICTS_CEILING = 177
+_UNDECLARED_DICTS_CEILING = 183
 
 # ── register 2: undeclared writer calls, per (file, issue) ──────────────
 _UNDECLARED_CALLS = {
     'routes/agentic_master_shell.py': {
-        'issue[:200]': 1,
-    },
-    'routes/brain_autonomy_loop.py': {
-        "it['issue']": 1,
+        "f'unmet_demand:{norm[:160]}'": 1,
     },
     'routes/brain_autopilot.py': {
         'pattern_unfixable_needs_rechannel': 1,
@@ -333,9 +344,6 @@ _UNDECLARED_CALLS = {
     'routes/depth_master_shell.py': {
         'issue': 1,
     },
-    'routes/expired_demote.py': {
-        'expired_onetime_demote_run': 1,
-    },
     'routes/frontend_reliability_master_shell.py': {
         'issue': 1,
     },
@@ -349,18 +357,15 @@ _UNDECLARED_CALLS = {
     'routes/hosting_capacity_ingest.py': {
         'grid_depth:hosting_capacity_ingest': 1,
     },
-    'routes/infra_coverage.py': {
-        "f['issue']": 1,
-    },
-    'routes/map_layer_probe.py': {
-        "f['issue']": 1,
-    },
     'routes/mcp_per_tool_conversion.py': {
         'mcp_tool_high_converter': 1,
         'mcp_tool_zero_conversion': 1,
     },
     'routes/mcp_presence_crawler.py': {
-        'issue': 1,
+        "f'mcp_presence_drift:{registry_name}'": 1,
+        "f'mcp_presence_human_loop:{registry_name}'": 1,
+        'mcp_registry_discovered': 1,
+        'mcp_registry_unreachable:mcphive': 1,
     },
     'routes/monetization_master_shell.py': {
         'issue': 1,
@@ -400,16 +405,17 @@ _UNDECLARED_CALLS = {
     'routes/white_glove_propagation.py': {
         'white_glove_listing_copy_drift': 2,
     },
-    'self_growing_index.py': {
-        'issue': 1,
-    },
 }
-_UNDECLARED_CALLS_CEILING = 53
+_UNDECLARED_CALLS_CEILING = 51
 
-# The size of each register when this file landed. A ceiling may be lowered;
-# raising one past its high-water mark fails.
-_DICTS_HIGH_WATER = 177
-_CALLS_HIGH_WATER = 53
+# The largest each register may ever be. A ceiling may be lowered; raising one
+# past its high-water mark fails. The ONLY legitimate raise is a SCOPE change
+# that brings pre-existing sites under the guard, recorded here:
+#   177 -> 183  map_layer_probe (4) + infra_coverage (2) joined rule 1 when
+#               their persisters began forwarding count_kind; all six are
+#               literal `"count": 1` dicts that predate this guard.
+_DICTS_HIGH_WATER = 183
+_CALLS_HIGH_WATER = 51
 
 # Anti-vacuity floors (~20% under the measured value when this file landed).
 # A refactor that moves detectors out from under the scan must not read as
@@ -418,15 +424,19 @@ _MIN_DETECTOR_FILES = 7
 _MIN_FINDING_DICTS = 200
 _MIN_DECLARED_DICTS = 60
 _MIN_WRITER_CALLS_WITH_COUNT = 40
+_MIN_FORWARDING_MODULES = 3   # radar, autonomy loop, map/infra probes
+_MIN_FORWARDING_WRAPPERS = 2  # agentic shell, mcp presence, self-growing index
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
+@functools.lru_cache(maxsize=None)
 def _read(rel: str) -> str:
     with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
         return fh.read()
 
 
+@functools.lru_cache(maxsize=None)
 def _parse(rel: str) -> ast.AST:
     return ast.parse(_read(rel), filename=rel)
 
@@ -464,9 +474,41 @@ def _radar_imports() -> set:
     return {p for p in out if os.path.isfile(os.path.join(ROOT, p))}
 
 
+def _reads_count_kind_from_an_object(node) -> bool:
+    """True for `f.get("count_kind")` / `f["count_kind"]` anywhere in node."""
+    for n in ast.walk(node):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "get" and n.args
+                and isinstance(n.args[0], ast.Constant)
+                and n.args[0].value == "count_kind"):
+            return True
+        if (isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant)
+                and n.slice.value == "count_kind"):
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=None)
+def _forwarding_modules() -> frozenset:
+    """Modules whose writer call carries count_kind OUT OF a finding dict.
+
+    Forwarding `f.get("count_kind") or ""` declares nothing by itself — it
+    is only as good as the dicts it reads. So a module that forwards joins
+    rule 1's scope, or the forward would be a placeholder that satisfies
+    rule 2 while its dicts stay unchecked."""
+    out = set()
+    for rel, tree in _writer_modules():
+        for call, _ in _direct_writer_calls(tree):
+            kind = next((k.value for k in call.keywords
+                         if k.arg == "count_kind"), None)
+            if kind is not None and _reads_count_kind_from_an_object(kind):
+                out.add(rel)
+    return frozenset(out)
+
+
 def _detector_files() -> list:
     files = {RADAR}
-    for rel in _radar_imports():
+    for rel in _radar_imports() | _forwarding_modules():
         if rel in _NOT_A_DETECTOR:
             continue
         if any(True for _ in _finding_dicts(_parse(rel))):
@@ -488,7 +530,8 @@ def _undeclared_dicts() -> dict:
     return live, sites
 
 
-def _python_files() -> list:
+@functools.lru_cache(maxsize=None)
+def _python_files() -> tuple:
     skip = {"tests", "node_modules", "venv", ".venv", "site-packages",
             "__pycache__"}
     out = []
@@ -498,7 +541,7 @@ def _python_files() -> list:
         if any(x in skip or x.startswith(".") for x in parts[:-1]):
             continue
         out.append(rel.replace(os.sep, "/"))
-    return sorted(out)
+    return tuple(sorted(out))
 
 
 def _writer_names(tree) -> set:
@@ -512,41 +555,140 @@ def _writer_names(tree) -> set:
     return names
 
 
-def _writer_calls(rel: str, tree):
-    """(lineno, issue_key, has_count, has_kind, has_splat) per writer call."""
+# upsert_brain_finding(cur, issue, url, count, ...): positional slots.
+_WRITER_PARAMS = ("cur", "issue", "url", "count")
+
+
+def _writer_modules():
+    """(rel, tree) for every module that names the writer."""
+    for rel in _python_files():
+        if rel == "routes/brain_findings_writer.py":
+            continue
+        src = _read(rel)
+        if WRITER_FN in src:
+            yield rel, _parse(rel)
+
+
+def _direct_writer_calls(tree):
+    """(call, enclosing function or None) per direct writer call."""
     local = _writer_names(tree)
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        f = n.func
-        if not ((isinstance(f, ast.Name) and f.id in local)
-                or (isinstance(f, ast.Attribute) and f.attr == WRITER_FN)):
-            continue
-        kws = {k.arg: k.value for k in n.keywords}
-        issue = kws.get("issue", n.args[1] if len(n.args) > 1 else None)
-        yield (n.lineno,
-               _key(issue) if issue is not None else "<none>",
-               "count" in kws or len(n.args) >= 4,
-               "count_kind" in kws,
-               None in kws or any(isinstance(a, ast.Starred) for a in n.args))
+
+    def walk(node, fn):
+        for c in ast.iter_child_nodes(node):
+            inner = c if isinstance(c, (ast.FunctionDef,
+                                        ast.AsyncFunctionDef)) else fn
+            if isinstance(c, ast.Call):
+                f = c.func
+                if ((isinstance(f, ast.Name) and f.id in local)
+                        or (isinstance(f, ast.Attribute)
+                            and f.attr == WRITER_FN)):
+                    yield c, fn
+            yield from walk(c, inner)
+    yield from walk(tree, None)
+
+
+def _params(fn) -> list:
+    a = fn.args
+    return [x.arg for x in a.posonlyargs + a.args + a.kwonlyargs]
+
+
+def _mentions(node, names) -> bool:
+    return any(isinstance(n, ast.Name) and n.id in names
+               for n in ast.walk(node))
+
+
+@functools.lru_cache(maxsize=None)
+def _forwarding_wrappers() -> dict:
+    """{(home_rel, fn_name): params} for helpers that pass their OWN
+    `count` and `count_kind` parameters through to the writer.
+
+    Such a helper's writer call looks declared, but the kind is whatever its
+    caller supplied — default "". The declaration therefore has to be read at
+    the helper's CALL SITES, which is where rule 2 is applied instead.
+    One level deep: a wrapper of a wrapper is not followed."""
+    out = {}
+    for rel, tree in _writer_modules():
+        for call, fn in _direct_writer_calls(tree):
+            if fn is None:
+                continue
+            params = _params(fn)
+            if "count" not in params or "count_kind" not in params:
+                continue
+            kws = {k.arg: k.value for k in call.keywords}
+            if ("count_kind" in kws and _mentions(kws["count_kind"],
+                                                  {"count_kind"})
+                    and "count" in kws and _mentions(kws["count"], {"count"})):
+                out[(rel, fn.name)] = params
+    return out
+
+
+def _call_record(call, params, via=""):
+    """(lineno, issue_key, has_count, has_kind, has_splat, via)."""
+    kws = {k.arg: k.value for k in call.keywords}
+
+    def arg(name):
+        if name in kws:
+            return kws[name]
+        i = params.index(name) if name in params else None
+        return call.args[i] if i is not None and len(call.args) > i else None
+
+    issue = arg("issue")
+    return (call.lineno,
+            _key(issue) if issue is not None else "<none>",
+            arg("count") is not None,
+            arg("count_kind") is not None,
+            None in kws or any(isinstance(a, ast.Starred) for a in call.args),
+            via)
+
+
+def _module_name(rel: str) -> str:
+    return rel[:-3].replace("/", ".")
 
 
 def _all_writer_calls():
+    """(rel, lineno, issue_key, has_count, has_kind, has_splat, via) for
+    every direct writer call AND every call to a forwarding wrapper."""
+    wrappers = _forwarding_wrappers()
+    for rel, tree in _writer_modules():
+        for call, fn in _direct_writer_calls(tree):
+            if fn is not None and (rel, fn.name) in wrappers:
+                continue  # judged at its call sites below
+            yield (rel,) + _call_record(call, _WRITER_PARAMS)
+    by_name = collections.defaultdict(list)
+    for (home, name), params in wrappers.items():
+        by_name[name].append((home, params))
+    if not by_name:
+        return
     for rel in _python_files():
         src = _read(rel)
-        if WRITER_FN not in src or rel == "routes/brain_findings_writer.py":
+        if not any(name in src for name in by_name):
             continue
-        tree = ast.parse(src, filename=rel)
-        for call in _writer_calls(rel, tree):
-            yield (rel,) + call
+        tree = _parse(rel)
+        bound = {}  # local name -> (home, wrapper name, params)
+        for name, homes in by_name.items():
+            for home, params in homes:
+                if home == rel:
+                    bound[name] = (home, name, params)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom) and n.module:
+                for a in n.names:
+                    for home, params in by_name.get(a.name, ()):
+                        if _module_name(home) == n.module:
+                            bound[a.asname or a.name] = (home, a.name, params)
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id in bound):
+                home, name, params = bound[n.func.id]
+                yield (rel,) + _call_record(n, params, f"{home}::{name}")
 
 
 def _undeclared_calls():
     live, sites = {}, collections.defaultdict(list)
-    for rel, line, issue, has_count, has_kind, _ in _all_writer_calls():
+    for rel, line, issue, has_count, has_kind, _, via in _all_writer_calls():
         if has_count and not has_kind:
             live.setdefault(rel, collections.Counter())[issue] += 1
-            sites[(rel, issue)].append(f"{rel}:{line}")
+            sites[(rel, issue)].append(
+                f"{rel}:{line}" + (f" (via {via})" if via else ""))
     return live, sites
 
 
@@ -616,6 +758,20 @@ def test_scan_sees_the_finding_population():
 def test_scan_sees_the_writer_population():
     n = sum(1 for c in _all_writer_calls() if c[3])
     assert n >= _MIN_WRITER_CALLS_WITH_COUNT, (n, _MIN_WRITER_CALLS_WITH_COUNT)
+
+
+def test_forwarding_is_recognised():
+    """The two derivations above must actually fire, or a forward and a
+    wrapper would both read as declared while checking nothing."""
+    fwd = _forwarding_modules()
+    assert RADAR in fwd, "the radar's persister forwards f.get('count_kind')"
+    assert len(fwd) >= _MIN_FORWARDING_MODULES, sorted(fwd)
+    assert not (fwd - set(_detector_files())
+                - {r for r in fwd if not any(
+                    True for _ in _finding_dicts(_parse(r)))}), (
+        "a forwarding module with finding dicts escaped rule 1's scope")
+    wrappers = _forwarding_wrappers()
+    assert len(wrappers) >= _MIN_FORWARDING_WRAPPERS, sorted(wrappers)
 
 
 # ── rule 1: finding dicts ───────────────────────────────────────────────
@@ -707,7 +863,7 @@ def test_undeclared_call_register_only_shrinks():
 
 def test_writer_calls_are_not_splatted():
     """`upsert_brain_finding(cur, **f)` hides both keys from rule 2."""
-    bad = [f"{rel}:{line}" for rel, line, _, _, _, splat
+    bad = [f"{rel}:{line}" for rel, line, _, _, _, splat, _
            in _all_writer_calls() if splat]
     assert not bad, f"spell out count/count_kind instead of splatting: {bad}"
 

@@ -187,6 +187,7 @@ def _audit_finding(cur, summary: str, count: int) -> None:
             issue="expired_onetime_demote_run",
             url="/api/v1/admin/lifecycle/demote-expired",
             count=max(1, int(count)),
+            count_kind="item_count",  # rows demoted this run, not a recurrence
             detail=summary[:1000],
             detector="expired_demote_cron",
             status="open",

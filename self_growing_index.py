@@ -157,7 +157,7 @@ def _explainable(query):
 
 
 def _write_finding(cur, issue: str, url: str, count: int, detail: str,
-                   detector: str) -> str:
+                   detector: str, count_kind: str = "") -> str:
     """★2026-09-02 (D14): route through the canonical brain_findings_writer.
     This module's conn is AUTOCOMMIT (DDL rule, see _conn), and the writer is
     savepoint-wrapped: `SAVEPOINT` outside a transaction block fails, and the
@@ -173,7 +173,7 @@ def _write_finding(cur, issue: str, url: str, count: int, detail: str,
     try:
         verdict = upsert_brain_finding(cur, issue=issue, url=url, count=count,
                                        detail=detail, detector=detector,
-                                       status="open")
+                                       status="open", count_kind=count_kind)
         conn.commit()
         return verdict
     except Exception:
@@ -196,7 +196,7 @@ def _file_finding(cur, applied, proposed):
                   f"for hot seq-scans; proposed {n_prop} more (cap/complex). "
                   f"Pillar: performance_self_heal.")
         _write_finding(cur, "self_growing_index", "", n_app, detail[:800],
-                       "self_growing_index")
+                       "self_growing_index", count_kind="item_count")
     except Exception as e:
         logger.warning("sgi: finding write failed: %s", e)
 
@@ -353,7 +353,8 @@ def check_edge_origin_divergence(probes=None):
                         "dchubapiproxy worker is stuck (no backend breaker-reset channel) "
                         "-> needs a worker redeploy/rollback. Pillar: edge_origin_integrity.")
             _write_finding(cur, "edge_origin_divergence", diverged[0]["path"],
-                           len(diverged), detail[:900], "edge_origin_divergence")
+                           len(diverged), detail[:900], "edge_origin_divergence",
+                           count_kind="item_count")
         except Exception as e:
             logger.warning("sgi: divergence finding write failed: %s", str(e)[:120])
         finally:

@@ -632,7 +632,8 @@ def _write_findings(items: list) -> list:
                     outcome = upsert_brain_finding(
                         cur, issue=it["issue"], url="dchub://runtime",
                         count=it["count"], detail=it["detail"],
-                        detector="autonomy_runtime")
+                        detector="autonomy_runtime",
+                        count_kind=it.get("count_kind") or "")
                     if outcome in ("inserted", "updated"):
                         filed.append({"issue": it["issue"], "outcome": outcome})
                 except Exception:

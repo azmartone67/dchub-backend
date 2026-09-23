@@ -939,7 +939,7 @@ def _our_actual_tool_count() -> int | None:
 
 # ── brain_findings writer ─────────────────────────────────────────────
 def _write_brain_finding(cur, issue: str, url: str, detail: str,
-                         count: int = 1) -> None:
+                         count: int = 1, count_kind: str = "") -> None:
     """Upsert into brain_findings via the canonical writer.
 
     2026-06-06: the old inline INSERT used seen_count + ON CONFLICT
@@ -950,7 +950,8 @@ def _write_brain_finding(cur, issue: str, url: str, detail: str,
     try:
         from routes.brain_findings_writer import upsert_brain_finding
         upsert_brain_finding(cur, issue=issue, url=url, count=count,
-                             detail=detail, detector="mcp_presence_crawler")
+                             detail=detail, detector="mcp_presence_crawler",
+                             count_kind=count_kind)
     except Exception as e:
         logger.warning("mcp_presence: brain_findings write failed: %s", e)
 
@@ -1154,7 +1155,7 @@ def crawl_mcp_presence() -> dict:
                                 f"ago (threshold={STALE_DAYS_THRESHOLD}d). "
                                 f"Re-submit or refresh."
                             ),
-                            count=stale_days,
+                            count=stale_days, count_kind="days",
                         )
 
                     summary["registries"].append({

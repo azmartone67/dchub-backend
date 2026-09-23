@@ -81,6 +81,9 @@ def test_a_failing_write_rolls_back_and_restores_autocommit(monkeypatch):
 
 def test_both_call_sites_use_the_helper(monkeypatch):
     calls = []
-    monkeypatch.setattr(sgi, "_write_finding", lambda *a: calls.append(a[1]) or "inserted")
+    monkeypatch.setattr(sgi, "_write_finding",
+                        lambda *a, **k: calls.append((a[1], k.get("count_kind")))
+                        or "inserted")
     sgi._file_finding(_Cur(), [{"index": "ix_a"}], [])
-    assert calls == ["self_growing_index"]
+    # count is len(applied) — how many indexes were created, not a recurrence.
+    assert calls == [("self_growing_index", "item_count")]

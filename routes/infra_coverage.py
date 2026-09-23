@@ -276,7 +276,8 @@ def _persist(findings: list) -> dict:
         for f in findings:
             upsert_brain_finding(cur, issue=f["issue"], url=f["url"],
                                  count=f.get("count", 1), detail=f.get("detail", ""),
-                                 detector="infra_coverage")
+                                 detector="infra_coverage",
+                                 count_kind=f.get("count_kind") or "")
         conn.commit()
         return {"persisted": len(findings)}
     except Exception as e:
