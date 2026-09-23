@@ -24,6 +24,19 @@
   ],
   "updates": [
     {
+      "id": "infra-projects-tool",
+      "status": "published",
+      "announced": "2026-09-23",
+      "tag": "MCP tool",
+      "title": "Gas pipeline and transmission projects, queryable by agents",
+      "body": "Agents can now ask which gas pipeline and transmission line projects are planned, approved or under construction, not only what is already built. get_infra_projects returns the EIA natural gas pipeline projects list for the whole United States: operator, status, states crossed, capacity, miles, cost and docket. It also returns ERCOT's transmission project list, which covers Texas only so far: owner, endpoints, voltage, miles and in-service dates. Filter by state, status, capacity, voltage or in-service window, or ask only for projects first seen since a date; the initial load is never counted as new. Every row cites its source and license. The tool is free with or without a key, and it is in the grid and gas tool packs. New power generation stays in get_power_pipeline, and existing pipelines and lines stay in get_infrastructure.",
+      "code": "get_infra_projects",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
       "id": "capacity-source",
       "status": "published",
       "announced": "2026-09-13",
