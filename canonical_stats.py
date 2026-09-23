@@ -401,6 +401,21 @@ def _query_live() -> dict:
     if c is None:
         return out
     try:
+        # ★2026-09-23 AUTOCOMMIT: every read below is its own transaction.
+        # psycopg2 opens a transaction on the first statement and aborts it on
+        # the first failure, after which every statement on the connection
+        # raises InFailedSqlTransaction. Each metric here is caught by its own
+        # `except Exception: pass`, so one failing read (a statement timeout, a
+        # dropped column) used to leave every read AFTER it on the seed or
+        # cached value, never marked live: stat_is_live("markets") read False
+        # because the keeper-distinct count above it had failed. Autocommit
+        # ends that for the reads already here and for any added later, which
+        # a rollback in each except would not. The counts need no shared
+        # transaction: under READ COMMITTED each statement took its own
+        # snapshot anyway. Set here, not in _conn(), so a replaced _conn() is
+        # still covered. Tested against a real Postgres in
+        # tests/test_canon_live_reads_independent_sql.py.
+        c.autocommit = True
         cur = c.cursor()
         # Canonical facility count — discovered_facilities is the authoritative
         # table ("what we actually track"), NOT the legacy `facilities` table.
@@ -697,11 +712,14 @@ def _query_live() -> dict:
         #   hardcode, the same reason substations/dcpi_countries/news_sources were
         #   each added in turn.
         #
-        # ★ ROLLBACK BETWEEN COUNTS, unlike the blocks above. psycopg2 aborts the
-        #   whole transaction on a failed statement, so a missing table in the
-        #   first of these would make the other two fail too and silently publish
-        #   the pin for all three — the "cascade into a row of zeros" that
-        #   fiber_integration.py documents at length. Each count is independent.
+        # ★ EACH COUNT IS INDEPENDENT. psycopg2 aborts the whole transaction on
+        #   a failed statement, so in one transaction a missing table in the
+        #   first of these would make the other two fail too and silently
+        #   publish the pin for all three — the "cascade into a row of zeros"
+        #   that fiber_integration.py documents at length. The connection is in
+        #   autocommit (top of this function), so a failure here ends only its
+        #   own statement. This loop used to roll back in its except instead,
+        #   which covered these three counts and none of the reads above them.
         for _pub_key, _sql in (
             ("substations",        "SELECT COUNT(*) FROM substations"),
             # ★ fiber: COUNT(*) FROM fiber_routes is the DOCUMENTED canonical
@@ -730,12 +748,8 @@ def _query_live() -> dict:
                     _live_keys.add(_pub_key)
             except Exception:
                 # An absent count must stay ABSENT, never 0 — a zero is a
-                # measurement. Roll back so the next count still has a usable
-                # transaction.
-                try:
-                    c.rollback()
-                except Exception:
-                    pass
+                # measurement.
+                pass
 
         # ── assets: ONE owner for the mapped-asset total ──────────────────
         # See _measure_asset_total() for why this imports the member table
