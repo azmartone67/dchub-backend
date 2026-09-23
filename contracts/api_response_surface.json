@@ -68,7 +68,7 @@
    ]
   },
   "DELETE /api/v1/agentic/intents/<pid>": {
-   "source": "routes/agentic_master_shell.py:1204",
+   "source": "routes/agentic_master_shell.py:1206",
    "handler": "intents_delete",
    "resolution": "resolved",
    "open_at": [],
@@ -6659,7 +6659,7 @@
    ]
   },
   "GET /api/v1/agentic/intents": {
-   "source": "routes/agentic_master_shell.py:1141",
+   "source": "routes/agentic_master_shell.py:1143",
    "handler": "intents",
    "resolution": "resolved",
    "open_at": [
@@ -6679,7 +6679,7 @@
    ]
   },
   "GET /api/v1/agentic/research/<pid>": {
-   "source": "routes/agentic_master_shell.py:1111",
+   "source": "routes/agentic_master_shell.py:1113",
    "handler": "research_poll",
    "resolution": "resolved",
    "open_at": [
@@ -7762,7 +7762,7 @@
    "keys": []
   },
   "GET /api/v1/brain/autopilot/library": {
-   "source": "routes/brain_autopilot.py:2688",
+   "source": "routes/brain_autopilot.py:2695",
    "handler": "autopilot_library",
    "resolution": "resolved",
    "open_at": [
@@ -7836,7 +7836,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2667",
+   "source": "routes/brain_autopilot.py:2674",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -7850,7 +7850,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/recent": {
-   "source": "routes/brain_autopilot.py:3259",
+   "source": "routes/brain_autopilot.py:3266",
    "handler": "autopilot_recent",
    "resolution": "resolved",
    "open_at": [
@@ -7863,7 +7863,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/status": {
-   "source": "routes/brain_autopilot.py:2615",
+   "source": "routes/brain_autopilot.py:2622",
    "handler": "autopilot_status",
    "resolution": "resolved",
    "open_at": [
@@ -7893,7 +7893,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/verification-status": {
-   "source": "routes/brain_autopilot.py:3527",
+   "source": "routes/brain_autopilot.py:3534",
    "handler": "autopilot_verification_status",
    "resolution": "resolved",
    "open_at": [
@@ -8365,14 +8365,14 @@
    ]
   },
   "GET /api/v1/brain/heartbeat": {
-   "source": "routes/brain_autopilot.py:2811",
+   "source": "routes/brain_autopilot.py:2818",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/brain/heartbeat-alt": {
-   "source": "routes/brain_autopilot.py:2811",
+   "source": "routes/brain_autopilot.py:2818",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
@@ -15465,7 +15465,7 @@
    ]
   },
   "GET /api/v1/jobs/infra-coverage": {
-   "source": "routes/infra_coverage.py:293",
+   "source": "routes/infra_coverage.py:294",
    "handler": "infra_coverage",
    "resolution": "partial",
    "open_at": [],
@@ -15474,7 +15474,7 @@
    ]
   },
   "GET /api/v1/jobs/map-layer-probe": {
-   "source": "routes/map_layer_probe.py:389",
+   "source": "routes/map_layer_probe.py:392",
    "handler": "map_layer_probe",
    "resolution": "partial",
    "open_at": [],
@@ -16721,14 +16721,14 @@
    ]
   },
   "GET /api/v1/mcp-presence/recent": {
-   "source": "routes/mcp_presence_crawler.py:2367",
+   "source": "routes/mcp_presence_crawler.py:2368",
    "handler": "recent_endpoint",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/mcp-presence/status": {
-   "source": "routes/mcp_presence_crawler.py:2063",
+   "source": "routes/mcp_presence_crawler.py:2064",
    "handler": "status_endpoint",
    "resolution": "opaque",
    "open_at": [],
@@ -17378,7 +17378,7 @@
    ]
   },
   "GET /api/v1/mcp/presence/recent": {
-   "source": "routes/mcp_presence_crawler.py:2367",
+   "source": "routes/mcp_presence_crawler.py:2368",
    "handler": "recent_endpoint",
    "resolution": "opaque",
    "open_at": [],
@@ -19494,7 +19494,7 @@
    ]
   },
   "GET /api/v1/permitting/intel": {
-   "source": "routes/agentic_master_shell.py:1225",
+   "source": "routes/agentic_master_shell.py:1227",
    "handler": "permitting_intel",
    "resolution": "resolved",
    "open_at": [
@@ -23601,7 +23601,7 @@
    ]
   },
   "GET /api/v1/usage-status": {
-   "source": "free_tier_gate.py:861",
+   "source": "free_tier_gate.py:879",
    "handler": "usage_status",
    "resolution": "opaque",
    "open_at": [],
@@ -24017,7 +24017,7 @@
    ]
   },
   "GET /api/v1/whats-new": {
-   "source": "routes/infra_growth.py:995",
+   "source": "routes/infra_growth.py:1081",
    "handler": "whats_new",
    "resolution": "resolved",
    "open_at": [
@@ -27094,7 +27094,7 @@
    ]
   },
   "POST /api/v1/agentic/intents": {
-   "source": "routes/agentic_master_shell.py:1141",
+   "source": "routes/agentic_master_shell.py:1143",
    "handler": "intents",
    "resolution": "resolved",
    "open_at": [
@@ -27114,7 +27114,7 @@
    ]
   },
   "POST /api/v1/agentic/research": {
-   "source": "routes/agentic_master_shell.py:1066",
+   "source": "routes/agentic_master_shell.py:1068",
    "handler": "research_submit",
    "resolution": "resolved",
    "open_at": [
@@ -27132,7 +27132,7 @@
    ]
   },
   "POST /api/v1/agentic/scenario": {
-   "source": "routes/agentic_master_shell.py:988",
+   "source": "routes/agentic_master_shell.py:990",
    "handler": "scenario",
    "resolution": "resolved",
    "open_at": [
@@ -27729,7 +27729,7 @@
    "keys": []
   },
   "POST /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2667",
+   "source": "routes/brain_autopilot.py:2674",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -27743,7 +27743,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/run": {
-   "source": "routes/brain_autopilot.py:2202",
+   "source": "routes/brain_autopilot.py:2209",
    "handler": "autopilot_run",
    "resolution": "resolved",
    "open_at": [
@@ -27777,7 +27777,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/verify": {
-   "source": "routes/brain_autopilot.py:3306",
+   "source": "routes/brain_autopilot.py:3313",
    "handler": "autopilot_verify",
    "resolution": "resolved",
    "open_at": [
@@ -29845,7 +29845,7 @@
    ]
   },
   "POST /api/v1/jobs/infra-coverage": {
-   "source": "routes/infra_coverage.py:293",
+   "source": "routes/infra_coverage.py:294",
    "handler": "infra_coverage",
    "resolution": "partial",
    "open_at": [],
@@ -29854,7 +29854,7 @@
    ]
   },
   "POST /api/v1/jobs/map-layer-probe": {
-   "source": "routes/map_layer_probe.py:389",
+   "source": "routes/map_layer_probe.py:392",
    "handler": "map_layer_probe",
    "resolution": "partial",
    "open_at": [],
@@ -30257,7 +30257,7 @@
    ]
   },
   "POST /api/v1/map/layer-toggle": {
-   "source": "free_tier_gate.py:935",
+   "source": "free_tier_gate.py:953",
    "handler": "register_layer_toggle",
    "resolution": "resolved",
    "open_at": [],
@@ -30267,7 +30267,7 @@
    ]
   },
   "POST /api/v1/map/register-load": {
-   "source": "free_tier_gate.py:898",
+   "source": "free_tier_gate.py:916",
    "handler": "register_map_load",
    "resolution": "resolved",
    "open_at": [
