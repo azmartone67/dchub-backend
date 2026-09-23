@@ -33,7 +33,9 @@ The None paths, read off the builders:
 
 Tables are created from the repo's own DDL: news from
 news_aggregator.CREATE_TABLE_SQL, linkedin_quad_posts from the module's
-_ensure_table(). market_power_scores copies production's column types and
+_ensure_table(). news_aggregator is READ, not imported: it sys.exit(1)s when
+feedparser is missing, and the db-parity job does not install it (CI run
+35926954996 errored every test at setup that way). market_power_scores copies production's column types and
 constraint NAMES from tests/test_dcpi_scores_readers_sql.py (read there from
 information_schema and pg_constraint, 2026-09-23).
 
@@ -41,6 +43,7 @@ Set LINKEDIN_QUAD_LEGACY_SQL_DSN to run it. CI passes the db-parity service
 DSN and then asserts this file did not skip. Owns and recreates only news,
 market_power_scores and linkedin_quad_posts.
 """
+import ast
 import datetime as _dt
 import os
 import sys
@@ -75,6 +78,18 @@ _MPS_DDL = """CREATE TABLE market_power_scores (
        method_version TEXT)"""
 
 _ENGINE_ERR = "RuntimeError: engine down"
+
+
+def _news_ddl():
+    """news_aggregator.CREATE_TABLE_SQL, read from its source without running
+    the module (see the module docstring)."""
+    with open(os.path.join(ROOT, "news_aggregator.py")) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if (isinstance(node, ast.Assign)
+                and any(getattr(t, "id", None) == "CREATE_TABLE_SQL" for t in node.targets)):
+            return ast.literal_eval(node.value)
+    raise AssertionError("news_aggregator.CREATE_TABLE_SQL not found")
 
 
 def _connect():
@@ -119,13 +134,12 @@ def lq(monkeypatch):
     keep canon and the network out of it, and stop the engine."""
     import canonical_stats as cs
     import content_publisher
-    import news_aggregator
     from routes import linkedin_content_engine, media_editorial
     from routes import linkedin_quad_daily as lq
 
     monkeypatch.setenv("PGOPTIONS", "-c lock_timeout=15000")
     _exec(*[f"DROP TABLE IF EXISTS {t}" for t in _OWNED])
-    _exec(news_aggregator.CREATE_TABLE_SQL, _MPS_DDL)
+    _exec(_news_ddl(), _MPS_DDL)
     monkeypatch.setenv("DATABASE_URL", DSN)
     monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
     lq._ensure_table()
