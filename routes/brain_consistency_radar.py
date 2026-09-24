@@ -607,6 +607,12 @@ def check_zone_worker_version_drift() -> list[dict]:
     # import it locally under aliases); keep that pattern rather than
     # adding a module-level import other code might shadow.
     import time as _t
+    # ★ The cache-buster belongs on the REQUEST only. A finding's `url` is the
+    #   squasher's finding_key, and the busted probe URL is a new key every run:
+    #   one drift filed a fresh awaiting_decision row per heal-cache refresh
+    #   (rows 486, 488, 489 on 2026-09-23, 3h apart, one finding), and the
+    #   self-clear sweep could not tell "fixed" from "the key changed". So the
+    #   findings below report the bare URL.
     probe = f"{_ZONE_WORKER_PROBE_URL}?_={int(_t.time())}"
     _, headers = _http_get(probe, timeout=8)
     if not headers:
@@ -616,7 +622,7 @@ def check_zone_worker_version_drift() -> list[dict]:
     if not deployed:
         return [{
             "issue": "zone_worker_version_header_missing",
-            "url": probe,
+            "url": _ZONE_WORKER_PROBE_URL,
             "count": 1,
             "detail": ("GET /mcp returned no X-DC-Worker-Version. Either /mcp "
                        "stopped routing through the zone worker, or the worker "
@@ -633,7 +639,7 @@ def check_zone_worker_version_drift() -> list[dict]:
         # the same version differently. Worth saying, not worth alarming about.
         return [{
             "issue": "zone_worker_version_suffix_mismatch",
-            "url": probe,
+            "url": _ZONE_WORKER_PROBE_URL,
             "count": 1,
             "detail": (f"worker.js declares '{in_repo}' and GET /mcp reports "
                        f"'{deployed}' — same numeric version, different label. "
@@ -645,7 +651,7 @@ def check_zone_worker_version_drift() -> list[dict]:
     if dep_t > repo_t:
         findings.append({
             "issue": "zone_worker_deployed_ahead_of_repo",
-            "url": probe,
+            "url": _ZONE_WORKER_PROBE_URL,
             "count": 1,
             "detail": (f"GET /mcp reports '{deployed}' but worker.js in this "
                        f"repo declares an OLDER '{in_repo}'. Production is "
@@ -663,7 +669,7 @@ def check_zone_worker_version_drift() -> list[dict]:
     else:
         findings.append({
             "issue": "zone_worker_commit_not_pasted",
-            "url": probe,
+            "url": _ZONE_WORKER_PROBE_URL,
             "count": 1,
             "detail": (f"worker.js declares '{in_repo}' but GET /mcp still "
                        f"reports '{deployed}'. The change is merged and has "
