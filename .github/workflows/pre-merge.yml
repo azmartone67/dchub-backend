@@ -120,8 +120,9 @@ jobs:
         run: |
           python3 scripts/check_no_leaked_credentials.py --self-test
           python3 scripts/check_no_leaked_credentials.py
-      # worker.js is the CF ZONE worker (dchubapiproxy), deployed only by manual
-      # dashboard paste — live-vs-repo drift detection depends on WORKER_VERSION
+      # worker.js is the CF ZONE worker (dchubapiproxy), deployed on merge by
+      # deploy-zone-worker.yml (#5376) — live-vs-repo drift detection and that
+      # workflow's refusals (live ahead / same version, different content) depend on WORKER_VERSION
       # changing with the content (2026-07-30: #1902/#1978 shipped without bumps
       # and drift had to be proven by fingerprinting). PR-only: HEAD here is the
       # merge ref, so HEAD^1 is the exact base tip this PR would land on (that's
