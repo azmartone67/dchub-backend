@@ -334,6 +334,23 @@ def human_acted_count_sql(interval_sql: str, *,
             + ") u")
 
 
+def relay_minted_acted_count_sql(interval_sql: str) -> str:
+    """relay_minted sessions that THEMSELVES acted — the same-population rung.
+
+    The denominator is exactly the relay_minted step (mcp_high_intent_sessions,
+    claim minted, first_hit_at in the window). The numerator is the subset of
+    those sessions that pass human_acted_session_predicate (a real-UA relay
+    open OR a signed /go/c click bound to the session) and are not declared
+    operator traffic. Divide this by relay_minted, never human_acted.
+    """
+    return ("select count(distinct s.mcp_session_id) "
+            "from mcp_high_intent_sessions s "
+            "where s.claim_minted_at is not null "
+            "and s.first_hit_at > now() - interval '" + interval_sql + "' "
+            "and " + human_acted_session_predicate("s")
+            + " and " + human_acted_not_self_predicate("s"))
+
+
 # ── the redeem stage: a MACHINE diagnostic, never funnel progress ───────────
 # r-redeem-not-a-leak (2026-08-21). `redeemed` counts
 # mcp_high_intent_sessions.claim_used_at, and the funnel ranked
@@ -472,9 +489,29 @@ def redeem_stage_basis() -> dict:
 # public /ai card printed exactly that as "Biggest leak" and it is the line a
 # partner quotes back.
 #
-# The last three rungs all sit INSIDE mcp_high_intent_sessions (or its relay
-# join), so they compare like with like and their percentages are real.
+# ★ r-acted-outside-minted (2026-09-24). The comment here used to say "the
+# last three rungs all sit INSIDE mcp_high_intent_sessions". That stopped being
+# true for relay_minted→human_acted at v8, when the headline became a UNION
+# with the /go/c click lane: that lane reads mcp_checkout_clicks and never
+# joins the table relay_minted counts. Measured on prod, read-only, 7d at
+# 2026-09-24 ~04:40Z: human_acted 37, of which 3 were relay_minted sessions
+# (and 3 were in the table at ANY time). relay_minted was 267 sessions: 132
+# grok-connectors-manager (one session per tool call), 111 smithery (no UA),
+# 15 BrickBlueBot, 6 Claude, 3 other. So 37/267 = "86% lost" divided a
+# numerator ~92% of which was never in the denominator by a denominator
+# dominated by per-call session rotation. The same-population figure is
+# published beside it as relay_minted_acted (see relay_minted_acted_count_sql).
 _SAME_POP = None
+_HUMAN_ACTED_BOUNDARY = (
+    "NOT a conversion rate — human_acted is NOT a subset of relay_minted. "
+    "relay_minted counts sessions in mcp_high_intent_sessions; human_acted "
+    "(since v8) is the UNION of that table's relay-open lane and signed /go/c "
+    "clicks from mcp_checkout_clicks, which never joins the table, so most of "
+    "its sessions were never in relay_minted. relay_minted is also counted in "
+    "sessions, and some clients open one session per tool call, which "
+    "inflates it. The same-population figure is relay_minted_acted: "
+    "relay_minted sessions that themselves acted."
+)
 _PAYWALL_BOUNDARY = (
     "NOT a conversion rate — these two stages are drawn from different "
     "populations. paywall_hit is written by signalPaywall() with no bot gate; "
@@ -489,7 +526,8 @@ _PAYWALL_BOUNDARY = (
 )
 LEAK_LADDER = (
     ("paywall_hit", "relay_minted", "paywall→relay_mint", _PAYWALL_BOUNDARY),
-    ("relay_minted", "human_acted", "relay_mint→human_acted", _SAME_POP),
+    ("relay_minted", "human_acted", "relay_mint→human_acted",
+     _HUMAN_ACTED_BOUNDARY),
     ("human_acted", "identified", "human_acted→identified", _SAME_POP),
     ("identified", "paid_attributed", "identified→paid", _SAME_POP),
 )

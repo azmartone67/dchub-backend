@@ -62,13 +62,14 @@ def test_the_paywall_rung_declares_it_is_not_a_conversion_rate():
 
 
 def test_inner_rungs_are_comparable_and_say_so():
-    """relay_minted → human_acted → identified → paid all sit inside
-    mcp_high_intent_sessions, so their percentages ARE conversion rates and
-    must not be hedged."""
-    inner = {"paywall_hit": 100, "relay_minted": 90, "human_acted": 0,
+    """human_acted → identified → paid are same-population rungs, so their
+    percentages ARE conversion rates and must not be hedged. (relay_minted →
+    human_acted is not, since 2026-09-24 — see
+    tests/test_relay_minted_acted_sql.py.)"""
+    inner = {"paywall_hit": 100, "relay_minted": 90, "human_acted": 80,
              "identified": 0, "paid_attributed": 0}
     d = biggest_leak_detail(inner)
-    assert d["label"] == "relay_mint→human_acted"
+    assert d["label"] == "human_acted→identified"
     assert d["same_population"] is True
     assert d["population_basis"] is None, (
         "an inner rung must not carry a boundary caveat — hedging a real "
@@ -88,12 +89,14 @@ def test_every_rung_declares_its_comparability():
         assert isinstance(d["same_population"], bool)
 
 
-def test_exactly_one_rung_is_a_boundary_and_it_is_the_paywall_one():
+def test_the_boundary_rungs_are_exactly_paywall_and_human_acted():
     flagged = [(s, dd) for s, dd, _l, b in LEAK_LADDER if b is not None]
-    assert flagged == [("paywall_hit", "relay_minted")], (
-        "the population boundary is between the ungated paywall signal and "
-        "the double-gated high-intent table; flagging others hides real "
-        "leaks, flagging none restores the false headline. Got: %r" % flagged)
+    assert flagged == [("paywall_hit", "relay_minted"),
+                       ("relay_minted", "human_acted")], (
+        "paywall→relay_mint crosses the bot gate; relay_mint→human_acted "
+        "divides by a table human_acted's /go/c lane never joins (r-acted-"
+        "outside-minted, 2026-09-24). Flagging others hides real leaks, "
+        "flagging fewer restores a false headline. Got: %r" % flagged)
 
 
 def test_label_and_detail_stay_one_writer():
