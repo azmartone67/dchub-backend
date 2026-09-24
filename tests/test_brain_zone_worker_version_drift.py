@@ -122,6 +122,13 @@ def test_repo_ahead_means_committed_but_never_pasted(monkeypatch, tmp_path):
     f = _only(R.check_zone_worker_version_drift())
     assert f["issue"] == "zone_worker_commit_not_pasted"
     assert "paste" in f["detail"].lower()
+    # Since 2026-09-23 a merge CAN ship worker.js. The finding must send the
+    # reader to that workflow and the switch that arms it, not only to a paste
+    # (tests/test_deploy_zone_worker.py pins that both exist as named).
+    assert R._ZONE_WORKER_DEPLOY_WORKFLOW in f["detail"]
+    assert R._ZONE_WORKER_ARM_VAR in f["detail"]
+    assert "dry_run=false" in f["detail"]
+    assert "no merge performs" not in f["detail"], "no longer true"
 
 
 def test_the_two_directions_are_different_findings(monkeypatch, tmp_path):

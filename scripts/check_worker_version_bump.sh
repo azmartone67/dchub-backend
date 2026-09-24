@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Fail a change that modifies worker.js without bumping WORKER_VERSION.
 #
-# worker.js is the Cloudflare ZONE worker (dchubapiproxy). It deploys only by
-# manual dashboard paste, so live-vs-repo drift detection hangs entirely on
-# the X-DC-Worker-Version response header differing when the content differs.
+# worker.js is the Cloudflare ZONE worker (dchubapiproxy). Its deploy
+# (.github/workflows/deploy-zone-worker.yml, since 2026-09-23; a dashboard
+# paste before that) and live-vs-repo drift detection both hang on the
+# X-DC-Worker-Version response header differing when the content differs: the
+# deploy refuses a same-version upload and verifies itself by that header.
 # On 2026-07-30 two PRs (#1902, #1978) changed worker.js without a bump: live
 # and repo reported the identical version string with different content, and
 # the drift had to be proven by content fingerprinting instead.
@@ -58,9 +60,10 @@ if [ "$base_version" = "$head_version" ]; then
   cat <<EOF
 FAIL: $FILE changed but WORKER_VERSION did not (still '$head_version').
 
-worker.js is the Cloudflare zone worker (dchubapiproxy). It deploys only by
-manual dashboard paste, so detecting live-vs-repo drift depends on the
-X-DC-Worker-Version header changing whenever the content changes.
+worker.js is the Cloudflare zone worker (dchubapiproxy). Its deploy workflow
+(.github/workflows/deploy-zone-worker.yml) refuses a same-version upload and
+verifies itself by the X-DC-Worker-Version header, and drift detection reads
+the same header — so the version must change whenever the content does.
 
 Fix: bump the const (near line 415)
 

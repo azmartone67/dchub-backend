@@ -1,0 +1,156 @@
+name: Deploy zone worker (dchubapiproxy)
+
+# worker.js is the Cloudflare ZONE worker `dchubapiproxy` — it fronts
+# dchub.cloud/mcp and all of api.dchub.cloud. Until this workflow its only
+# deploy was a paste into the CF dashboard, so a merged worker.js change sat
+# unshipped until someone remembered, and the brain filed
+# zone_worker_commit_not_pasted for it (routes/brain_consistency_radar.py).
+#
+# All logic is in scripts/deploy_zone_worker.py; read its docstring. In short:
+#   * the only write is PUT .../scripts/dchubapiproxy/content — script bytes
+#     only; bindings (5 secret_text), compatibility date, crons and routes are
+#     left alone. NEVER `wrangler deploy`: a wrangler.toml deploy re-declares
+#     bindings/routes from a file and drops whatever it omits, on the edge in
+#     front of the whole API.
+#   * before writing it reads the live script and REFUSES if live is ahead of
+#     the repo, or if the live bytes are in no commit (a dashboard-only edit
+#     the deploy would erase).
+#   * after writing it re-reads the script and settings, then polls
+#     X-DC-Worker-Version on api.dchub.cloud/api/v1/stats and dchub.cloud/mcp
+#     until both read the repo's WORKER_VERSION, or fails after 5 minutes.
+#   * every run uploads the pre-deploy live script + ROLLBACK.md as an artifact.
+#
+# WHO MAY WRITE (scripts/deploy_zone_worker.py::will_write):
+#   pull_request       never — the read-only preflight (proves the token can read)
+#   workflow_dispatch  dry_run=false, from main only
+#   push to main       only when repo variable ZONE_WORKER_AUTO_DEPLOY is "1".
+#                      Unset, a merge previews and warns; nothing ships. That is
+#                      the switch the owner flips after the first supervised
+#                      real run, and the one to clear to pause auto-deploy (e.g.
+#                      a worker change that must wait for an mcp-server release).
+#
+# Secrets: CLOUDFLARE_API_TOKEN (Account → Workers Scripts: Read to plan, Edit
+# to deploy), CLOUDFLARE_ACCOUNT_ID.
+
+on:
+  push:
+    branches: [main]
+    # worker.js ONLY. Changing the deploy script or this file must never ship
+    # production by itself — least of all the merge that introduces them.
+    paths: [worker.js]
+  pull_request:
+    paths:
+      - worker.js
+      - scripts/deploy_zone_worker.py
+      - .github/workflows/deploy-zone-worker.yml
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only. Set false to deploy main's worker.js to production."
+        type: boolean
+        default: true
+      method:
+        description: "content = PUT /content (bindings untouched). full = whole-script PUT with every live binding inherited — fallback only."
+        type: choice
+        options: [content, full]
+        default: content
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      write: ${{ steps.gate.outputs.write }}
+      action: ${{ steps.plan.outputs.action }}
+    steps:
+      # Full history, no blobs: the "live bytes are in some commit" check reads
+      # every blob id worker.js has had from tree objects alone.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install deps
+        run: python3 -m pip install requests
+
+      - name: May this run write to production?
+        id: gate
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          ARMED: ${{ vars.ZONE_WORKER_AUTO_DEPLOY }}
+        run: >-
+          python3 scripts/deploy_zone_worker.py should-write
+          --dry-run-input "${DRY_RUN:-true}" --armed "${ARMED:-}"
+
+      - name: Read the live script and plan (no writes)
+        id: plan
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: python3 scripts/deploy_zone_worker.py plan --out zone-worker-plan
+
+      - name: Say so when a merge changed worker.js and nothing will ship
+        if: github.event_name == 'push' && steps.gate.outputs.write != 'true' && steps.plan.outputs.action == 'deploy'
+        run: |
+          echo "::warning::worker.js changed on main, but vars.ZONE_WORKER_AUTO_DEPLOY is not 1 — nothing was deployed. Ship it with workflow_dispatch (dry_run=false), or arm the variable."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zone-worker-plan-${{ github.run_id }}
+          path: zone-worker-plan/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  deploy:
+    needs: plan
+    if: needs.plan.outputs.write == 'true' && needs.plan.outputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One writer at a time: two overlapping PUTs could land old-over-new. A
+    # pending run displaced by a newer one loses nothing, because each run
+    # deploys main's TIP (ref: main below), not the commit that triggered it,
+    # and re-checks live state immediately before its write.
+    concurrency:
+      group: zone-worker-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install deps
+        run: python3 -m pip install requests
+
+      - name: Deploy worker.js and verify it live
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ARMED: ${{ vars.ZONE_WORKER_AUTO_DEPLOY }}
+          METHOD: ${{ inputs.method }}
+        run: >-
+          python3 scripts/deploy_zone_worker.py deploy
+          --method "${METHOD:-content}"
+          --dry-run-input "${DRY_RUN:-true}" --armed "${ARMED:-}"
+          --out zone-worker-deploy
+
+      # The rollback path: the exact bytes that were live before this run, the
+      # Cloudflare version id to roll back to, and how (ROLLBACK.md).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zone-worker-predeploy-${{ github.run_id }}
+          path: zone-worker-deploy/
+          retention-days: 90
+          if-no-files-found: warn
