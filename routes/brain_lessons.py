@@ -150,7 +150,7 @@ def _guidance(fam: str, c: dict, files_failed: list, files_worked: list,
     if v == "fails":
         lines.append(
             f"Fixes for `{fam}` did NOT hold {f} of {graded} times — the "
-            f"detector kept firing after the merge. Do not repeat the same "
+            f"finding kept firing after the fix landed. Do not repeat the same "
             f"kind of edit: look for the upstream cause, or refuse and say "
             f"what a human must decide.")
         if files_failed:

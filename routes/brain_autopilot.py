@@ -2015,6 +2015,82 @@ def _escalate_recidivism_once(cur, pattern: str, reason: str,
             pass
 
 
+# ── Lesson gate (2026-09-24): bench what the LESSONS call failing ─────
+# Loop 3c and the recidivism gate both require ZERO verified successes, so an
+# action that works now and then is never benched. Measured 2026-09-24 over
+# 90d via routes/brain_lessons.py: inspector_l22_handoff held 6 of 143,
+# competitor_announcement 5 of 40, render_pipeline_blocked 23 of 107 — each
+# kept firing, and together they are most of the verified failures behind a
+# 32.7% fix_success. This gate benches a pattern whose verified effect rate
+# over _LESSON_GATE_DAYS is at or below the lessons compiler's own "fails"
+# line (brain_lessons.FAILS_AT, imported so the two can never disagree), with
+# at least _LESSON_GATE_MIN_VERIFIED verified outcomes so a thin sample never
+# benches anything. A benched pattern escalates ONCE for a human (same table
+# as the recidivism gate), and releases itself as its rate recovers or its
+# failures age out — it is computed live, never stored.
+# Kill: BRAIN_LESSON_GATE_DISABLED=1.
+_LESSON_GATE_DAYS = _env_int("BRAIN_LESSON_GATE_DAYS", 30)
+_LESSON_GATE_MIN_VERIFIED = _env_int("BRAIN_LESSON_GATE_MIN_VERIFIED", 20)
+
+
+def _lesson_gate_disabled() -> bool:
+    return str(os.environ.get("BRAIN_LESSON_GATE_DISABLED", "")).lower() in ("1", "true", "yes")
+
+
+def _lesson_fail_rate() -> float:
+    try:
+        from routes.brain_lessons import FAILS_AT
+        return float(FAILS_AT)
+    except Exception:
+        return 0.30
+
+
+def lesson_bench_reason(succeeded: int | None, failed: int | None,
+                        min_verified: int | None = None,
+                        fail_rate: float | None = None) -> str | None:
+    """PURE. The suppress reason for a pattern's verified-effect record, or
+    None. A missing count is UNKNOWN, never 0 — only an affirmative record
+    benches."""
+    if succeeded is None or failed is None:
+        return None
+    min_verified = _LESSON_GATE_MIN_VERIFIED if min_verified is None else min_verified
+    fail_rate = _lesson_fail_rate() if fail_rate is None else fail_rate
+    verified = succeeded + failed
+    if verified < max(1, min_verified):
+        return None
+    rate = succeeded / verified
+    if rate > fail_rate:
+        return None
+    return ("lesson_gate (verified effect held %d of %d = %.0f%% over %dd, "
+            "at or below the lessons' 'fails' line of %.0f%% — benched and "
+            "escalated for a different approach)"
+            % (succeeded, verified, 100 * rate, _LESSON_GATE_DAYS,
+               100 * fail_rate))
+
+
+def _lesson_gate_check(cur, pattern: str) -> str | None:
+    if _lesson_gate_disabled():
+        return None
+    try:
+        cur.execute(
+            "SELECT COUNT(*) FILTER (WHERE succeeded IS TRUE),"
+            "       COUNT(*) FILTER (WHERE succeeded IS FALSE)"
+            "  FROM autopilot_outcomes"
+            " WHERE pattern_name = %s"
+            "   AND verified_at > NOW() - make_interval(days => %s)",
+            (pattern, _LESSON_GATE_DAYS))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return lesson_bench_reason(row[0], row[1])
+    except Exception:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def _rate_limit_check(cur, pattern: str, url: str | None) -> tuple[bool, str]:
     """Return (allowed, reason)."""
     if pattern in _quarantined_patterns():
@@ -2024,6 +2100,10 @@ def _rate_limit_check(cur, pattern: str, url: str | None) -> tuple[bool, str]:
     if _rec:
         _escalate_recidivism_once(cur, pattern, _rec)
         return False, _rec
+    _les = _lesson_gate_check(cur, pattern)
+    if _les:
+        _escalate_recidivism_once(cur, pattern, _les)
+        return False, _les
     last_age = _last_action_age_minutes(cur, pattern, url)
     if last_age is not None and last_age < _COOLDOWN_MIN_BETWEEN_SAME_ACTIONS:
         return False, f"cooldown_active ({last_age}min < {_COOLDOWN_MIN_BETWEEN_SAME_ACTIONS}min)"
