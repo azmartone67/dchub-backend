@@ -640,10 +640,32 @@ PRICING_URL = "https://dchub.cloud/pricing"
 # All three helpers are fail-soft: a missing routes/ or a repriced tier
 # degrades to the pricing page, never to a wrong number or a dead link.
 
-def _canonical_link(tier_key):
+def _canonical_link(tier_key, ref=''):
+    """r-bare-pricing-sweep (2026-09-23): was a RAW STRIPE.LINKS lookup —
+    exactly the "hands the human a DIRECT buy.stripe.com URL with no dchub
+    hop" pattern routes/checkout_click_tracker.py was written to end
+    elsewhere, just never applied to this file. Every caller of this
+    function (_starter_cta, _pack5_cta, _cta_gated's stripe_direct,
+    _STRIPE_BUY_NOW) now gets a signed, click-observable /go/c link instead
+    — same STRIPE_LINKS as the source of truth, so no prices/tiers/link IDs
+    drift, just how the link itself is minted.
+
+    'pack5' is STRIPE_LINKS' alias for the $10 credit pack; checkout_url()
+    and every other consumer in this codebase spell it 'metered' — mapped
+    here so mcp_checkout_clicks.plan stays one consistent label, not two
+    names for the same product.
+
+    `ref` is caller-independent by default (still measured — /go/c stamps
+    mcp_checkout_clicks with the plan regardless) — this pass does not
+    thread the pair-code/api_key identity already used elsewhere in this
+    file (_ref_code, _attribute()) into the /go/c token; that is a
+    deliberate follow-up, not required to close the raw-Stripe/bare-pricing
+    gap this sweep targets.
+    """
     try:
-        from routes._stripe_links import STRIPE_LINKS
-        return STRIPE_LINKS.get(tier_key) or PRICING_URL
+        from routes.checkout_click_tracker import checkout_url
+        plan = 'metered' if tier_key == 'pack5' else tier_key
+        return checkout_url(plan, ref)
     except Exception:
         return PRICING_URL
 
@@ -1093,11 +1115,11 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
 
 def _cta_truncated(shown: int, total: int) -> str:
     return (f"📊 Showing {shown} of {total} results (Free tier). "
-            f"Upgrade for full access → {PRICING_URL}?utm_source=mcp&utm_medium=truncate")
+            f"Upgrade for full access → {_canonical_link('developer')}")
 
 def _cta_redacted(tool: str) -> str:
     return (f"🔑 Some fields redacted on Free tier. "
-            f"Full data with Developer license → {PRICING_URL}?utm_source=mcp&utm_tool={tool}")
+            f"Full data with Developer license → {_canonical_link('developer')}")
 
 
 # Phase ZZZZ-savings (2026-05-18): per-tool "what you'd save vs the
@@ -1151,6 +1173,10 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
     block: dict = {}
     teaser = TOOL_TEASER.get(tool_name)
     savings = _SAVINGS_CLAIMS.get(tool_name)
+    # r-bare-pricing-sweep (2026-09-23): the plan block["upgrade_url"] signs
+    # below — tracks recommended_tier per branch rather than a flat default,
+    # since DEVELOPER-tier callers are recommended PRO, not DEVELOPER again.
+    _target_plan = 'developer'
 
     # Tier-aware framing
     if tier == Tier.FREE:
@@ -1158,6 +1184,11 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
         block["recommended_tier"] = "DEVELOPER ($49/mo) for full data"
         if rows_total > rows_visible:
             block["rows_hidden"] = rows_total - rows_visible
+            # NOTE: "free signup" here is deliberately NOT a checkout link —
+            # https://dchub.cloud/signup costs nothing, so there is no
+            # payment to sign/attribute via /go/c. Left as informational
+            # (not part of the bare-pricing-sweep scope, which is about
+            # unattributed PAID checkouts).
             block["unlock_hint"] = (f"{rows_total - rows_visible} more rows hidden. "
                                      f"All visible with free signup ({PRICING_URL}?utm_source=mcp&utm_tool={tool_name}).")
     elif tier == Tier.IDENTIFIED:
@@ -1169,6 +1200,7 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
                                      f"100 rows/call + analyze_site + compare_sites unlocked at $49/mo.")
     elif tier == Tier.DEVELOPER:
         block["showing_tier"] = "DEVELOPER ($49/mo)"
+        _target_plan = 'pro'
         # Price read from tier_registry — the hardcoded "$199/mo" here was
         # two repricings stale (canonical Pro is $299 since r-reprice).
         block["recommended_tier"] = (
@@ -1187,8 +1219,7 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
             f"Developer plan is {_canonical_price('developer', '$49/mo')} for "
             f"{_canonical_monthly('developer'):,} calls/month.")
 
-    block["upgrade_url"] = (f"{PRICING_URL}?utm_source=mcp&utm_medium=value-unlock"
-                            f"&utm_tool={tool_name}")
+    block["upgrade_url"] = _canonical_link(_target_plan)
     return block
 
 
@@ -1390,7 +1421,11 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             # parse natural language.
             "teaser": teaser,
             "echo_args": _safe_echo_args(args),
-            "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_tool={tool_name}",
+            # r-bare-pricing-sweep (2026-09-23): was bare /pricing on the
+            # highest-traffic surface in this file (every upgrade_required
+            # response). Reuses _buy_now_url — already the signed link for
+            # `required` — rather than a second, possibly-inconsistent call.
+            "upgrade_url": _buy_now_url or _canonical_link(_required_name),
             # Phase RRR-revenue3: direct Stripe Payment Link — one click
             # to checkout, no /pricing landing, no sign-up wall.
             # Phase FF+8-funnel: now carries pair-code as
@@ -1403,7 +1438,10 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             # 2026-06-25 (owner): the one-time credit pack is the LEAD option for
             # agents — monthly seats don't fit agent traffic. $10 one-time = 1,000
             # API credits, no subscription. Same attribution path.
-            "usage_url": _attribute("https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i"),
+            # r-bare-pricing-sweep (2026-09-23): was a hardcoded raw Stripe
+            # literal bypassing _canonical_link entirely — now the same
+            # signed source of truth as buy_now_url above.
+            "usage_url": _attribute(_canonical_link("pack5")),
             "usage_price": "$10 one-time = 1,000 API credits",
             "usage_note": ("🤖 $10 one-time = 1,000 API credits, no subscription. "
                            "Best fit for a high-volume agent; we email "
@@ -1544,7 +1582,11 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "error": "rate_limited",
             "message": msg,
             "current_tier": TIER_NAME[tier],
-            "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_medium=ratelimit",
+            # r-bare-pricing-sweep (2026-09-23): `msg` already carries the
+            # signed _pack5_cta()/_starter_cta() text (via the now-fixed
+            # _canonical_link); this structured field gets the same
+            # treatment rather than a bare fallback.
+            "upgrade_url": _canonical_link('developer'),
             # Phase ZZ+1: same agent-native claim CTA for rate-limit
             # responses. The most common case: anonymous caller hits the
             # FREE-tier daily cap → response now includes the structured
@@ -1656,7 +1698,10 @@ def _finalize(result_json: str, tool_name: str, api_key: Optional[str] = None) -
         "remaining": max(0, lim["day"] - usage["today"]),
     }
     if tier == Tier.FREE:
-        data["_meta"]["upgrade_url"] = f"{PRICING_URL}?utm_source=mcp"
+        # r-bare-pricing-sweep (2026-09-23): the single highest-volume
+        # bare-pricing surface in this file — attached to every successful
+        # FREE-tier tool call, not just gated ones.
+        data["_meta"]["upgrade_url"] = _canonical_link('developer')
 
     # Phase ZZZZ-savings (2026-05-18): attach the value_unlock block on
     # EVERY response (not just gated/truncated ones). This is the user's
