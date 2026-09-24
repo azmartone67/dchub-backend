@@ -476,6 +476,58 @@ def reconcile_plan(row: dict, pr: dict | None, live_keys,
     return None
 
 
+def rejection_row(row: dict) -> tuple | None:
+    """The brain_review_decisions row a closed-unmerged agent PR stands for.
+
+    ★ This is the lane's only REAL "no". A human looked at a draft the agent
+    wrote and closed it — exactly the signal /brain/self-assessment has read
+    as `rejection_signal: dead` (0 of 268 reviews, 2026-09-24) because every
+    other brain PR is merged within the hour. Written through the canonical
+    table so human_reviews_30d, check_rejection_skip() and the lessons
+    compiler all see it; keyed on (finding_key, "") the way the merge
+    reconciler keys a label-only rejection.
+
+    None when the row carries no finding_key — a rejection nothing can look
+    up is noise.
+    """
+    key = (row.get("finding_key") or "").strip()
+    if not key:
+        return None
+    from routes.brain_learning import issue_hash
+    url = row.get("agent_pr_url") or "?"
+    return ("code", None, issue_hash(key, ""), key[:200], "reject",
+            "github-close",
+            (f"squasher agent PR {url} CLOSED WITHOUT MERGING — "
+             f"queue row {row.get('id')}")[:500])
+
+
+def _record_rejection(cur, row: dict) -> bool:
+    """Best-effort, inside a SAVEPOINT so a failed insert cannot abort the
+    reconcile transaction that just moved the row to pr_closed."""
+    vals = rejection_row(row)
+    if vals is None:
+        return False
+    try:
+        cur.execute("SAVEPOINT agent_reject")
+        # ON CONFLICT is the house idiom and inert here (the table has no
+        # unique index); idempotency is _apply(where_state="pr_open").
+        cur.execute("""
+            INSERT INTO brain_review_decisions
+                (proposal_kind, proposal_id, issue_hash, issue_label,
+                 decision, reviewer, reviewer_note)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING""", vals)
+        cur.execute("RELEASE SAVEPOINT agent_reject")
+        return True
+    except Exception as e:  # noqa: BLE001
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT agent_reject")
+        except Exception:
+            pass
+        logger.warning("[squasher-agent] rejection write failed: %s", str(e)[:160])
+        return False
+
+
 def _parse_ts(v):
     if not v:
         return None
@@ -620,7 +672,18 @@ def brief_of(row: dict, live_item: dict | None) -> dict:
         "prior_decision_for_human": _clip(row.get("decision"), 1500),
         "prior_confidence": row.get("confidence"),
         "prior_reason": _clip(row.get("reason"), 600),
+        # Compiled from every agent's verified outcomes and human reviews
+        # (routes/brain_lessons.py). "" when this family has nothing to teach.
+        "lessons": _lessons_for(row.get("finding_key")),
     }
+
+
+def _lessons_for(key) -> str:
+    try:
+        from routes.brain_lessons import lessons_for
+        return lessons_for(key).strip()
+    except Exception:  # noqa: BLE001 — lessons must never block a claim
+        return ""
 
 
 def claim_next(live: dict | None = None, qa: dict | None = None) -> dict:
@@ -737,6 +800,11 @@ def reconcile(fetch_pr=None, live: dict | None = None,
                                    where_state="pr_open"):
                     s = plan["agent_state"]
                     out["changed"][s] = out["changed"].get(s, 0) + 1
+                    # Idempotent by construction: _apply(where_state=
+                    # "pr_open") succeeds once per PR, so this runs once.
+                    if s == "pr_closed" and _record_rejection(cur, row):
+                        out["rejections_recorded"] = \
+                            out.get("rejections_recorded", 0) + 1
             conn.commit()
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}

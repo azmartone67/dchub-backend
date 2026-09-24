@@ -988,3 +988,58 @@ def test_claim_step_prints_the_qa_feed_counts(tmp_path, body, expect):
     assert expect in p.stdout.splitlines(), p.stdout
     if body.get("brief"):
         assert "queue_id=7" in out.read_text()
+
+# ── closed-unmerged agent PR = a real human "no" ──────────────────────
+def test_rejection_row_is_keyed_the_way_check_rejection_skip_reads_it():
+    """MUTATION: key on the title or hash with a find_text → the skip gate,
+    which looks up issue_hash(label, ""), would never see the row."""
+    from routes.brain_learning import issue_hash
+    row = {"id": 7, "finding_key": "hardcoded_hero_stat:/pricing",
+           "title": "something else", "agent_pr_url": "https://x/pull/9"}
+    vals = al.rejection_row(row)
+    assert vals[2] == issue_hash("hardcoded_hero_stat:/pricing", "")
+    assert vals[3] == "hardcoded_hero_stat:/pricing"
+    assert vals[4] == "reject" and vals[5] == "github-close"
+    assert "https://x/pull/9" in vals[6]
+
+
+def test_rejection_row_refuses_an_unkeyable_row():
+    assert al.rejection_row({"id": 1, "finding_key": "  "}) is None
+    assert al.rejection_row({"id": 1}) is None
+
+
+def test_closed_unmerged_pr_records_one_reject_on_postgres(pg):
+    """MUTATION: drop the _record_rejection call → 0 rows; call it for every
+    plan state → the merged PR below writes a second, false reject."""
+    with pg.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS brain_review_decisions")
+        cur.execute("""CREATE TABLE brain_review_decisions (
+            id BIGSERIAL PRIMARY KEY, proposal_kind TEXT NOT NULL,
+            proposal_id BIGINT, issue_hash TEXT NOT NULL, issue_label TEXT,
+            decision TEXT NOT NULL, reviewer TEXT, reviewer_note TEXT,
+            decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    live = {"ok": True, "items": {"a": {}, "b": {}}}
+    ra, rb = _insert(pg, "a"), _insert(pg, "b")
+    for rid in (ra, rb):
+        assert al.claim_next(live=live)["brief"]["queue_id"] == rid
+        body, code = al.settle({"queue_id": rid, "outcome": "pr_opened",
+                                "pr_url": f"https://github.com/azmartone67/dchub-backend/pull/{rid}",
+                                "summary": "s"})
+        assert code == 200, body
+    # b merged 7h ago and is still live → merged_unverified, a state change
+    # that must NOT be recorded as a human rejection.
+    merged = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    base = "https://github.com/azmartone67/dchub-backend/pull/"
+    prs = {f"{base}{ra}": {"state": "closed", "merged_at": None},
+           f"{base}{rb}": {"state": "closed", "merged_at": merged}}
+    out = al.reconcile(fetch_pr=lambda url: prs[url], live=live)
+    assert out["rejections_recorded"] == 1, out
+    assert out["changed"] == {"pr_closed": 1, "merged_unverified": 1}, out
+    with pg.cursor() as cur:
+        cur.execute("SELECT issue_label, decision FROM brain_review_decisions")
+        assert cur.fetchall() == [("a", "reject")]
+    # replay: the row is no longer pr_open, so nothing is written twice
+    assert "rejections_recorded" not in al.reconcile(
+        fetch_pr=lambda url: prs[url], live=live)
+    with pg.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS brain_review_decisions")

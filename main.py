@@ -3788,6 +3788,22 @@ try:
     except Exception as _lcs:
         import logging
         logging.getLogger(__name__).warning('loop_closure_master_shell wiring failed: %s', _lcs)
+    # 2026-09-24: brain LESSONS compiler + EVOLUTION SCORECARD. Lessons compiles
+    # verified outcomes, guard refusals and human rejections into one page per
+    # finding family, read back by L5, the spec implementer and the squasher
+    # agent. The scorecard snapshots fix_success / recurring_share /
+    # spec_to_code / negative_signal weekly so "is it evolving?" has a series.
+    # Both admin-only; driven by .github/workflows/brain-evolution-daily.yml.
+    # Kill (lessons read path): BRAIN_LESSONS_DISABLE=1.
+    try:
+        from routes.brain_lessons import brain_lessons_bp
+        app.register_blueprint(brain_lessons_bp)
+        from routes.brain_evolution_scorecard import brain_evolution_scorecard_bp
+        app.register_blueprint(brain_evolution_scorecard_bp)
+        print("[main] brain_lessons_bp + brain_evolution_scorecard_bp registered", flush=True)
+    except Exception as _ble:
+        import logging
+        logging.getLogger(__name__).warning('brain lessons/scorecard wiring failed: %s', _ble)
     # 2026-07-03: AI-Adoption master shell — the loop whose single north-star is
     # DISTINCT EXTERNAL AI AGENTS / WEEK. Orchestrates existing pieces (ai_reach_rollup,
     # brain_ecosystem_watch, mcp_registry_outreach, geo_autopublish) across 5 tiers:

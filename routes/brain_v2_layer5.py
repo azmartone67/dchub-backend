@@ -1393,6 +1393,14 @@ def learn_backend_issues():
         prompt = _build_code_prompt(loop_state, excerpts, babysitter_log=[])
         if _hint:
             prompt = prompt + _hint
+        # 2026-09-24: what past attempts on this finding FAMILY taught —
+        # verified outcomes, guard refusals and human rejections, compiled by
+        # routes/brain_lessons.py. "" when there is nothing to say.
+        try:
+            from routes.brain_lessons import lessons_for as _lessons_for
+            prompt = prompt + _lessons_for(label)
+        except Exception:
+            pass
         claude_calls += 1
         text, err = _call_claude(prompt, _LEARN_CODE_SYSTEM)
         if err or not text:

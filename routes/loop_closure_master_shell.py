@@ -656,6 +656,31 @@ def lane_spec_debt(scan: dict | None = None, attempted=None) -> dict:
     return out
 
 
+def attempt_note(res: dict) -> str:
+    """Why an implementer call did or did not open a PR, in one line.
+
+    ★ The first armed tick (2026-09-23) recorded `acted=false, note=""`: the
+    implementer's own `note` is set only on its dry/unarmed paths, while the
+    drafter's refusal (`rationale`), gate closure (`reason`) and failures
+    (`error`) live on the nested `pr` dict or on `error`. Reading `note` alone
+    threw every one of them away, so a refused spec looked identical to a
+    silent no-op and the next reader had nothing to act on.
+    """
+    res = res if isinstance(res, dict) else {}
+    pr = res.get("pr") if isinstance(res.get("pr"), dict) else {}
+    for label, val in (("", res.get("note")),
+                       ("refused: ", pr.get("rationale")),
+                       ("gate: ", pr.get("reason")),
+                       ("drafter error: ", pr.get("error")),
+                       ("error: ", res.get("error")),
+                       ("", res.get("reason"))):
+        if val:
+            return f"{label}{val}"[:200]
+    if pr.get("pr_url"):
+        return f"opened {pr['pr_url']}"[:200]
+    return ""
+
+
 def act_spec_debt(measured: dict, dry: bool) -> dict:
     """Drive brain_spec_implementer for ONE landed spec.
 
@@ -682,7 +707,7 @@ def act_spec_debt(measured: dict, dry: bool) -> dict:
     acted = bool(res.get("acted")) and not dry
     pr = res.get("pr") if isinstance(res.get("pr"), dict) else {}
     summary = {"ok": bool(res.get("ok", True)), "acted": acted, "doc": doc,
-               "dry": dry, "note": str(res.get("note") or "")[:200],
+               "dry": dry, "note": attempt_note(res),
                "pr": pr.get("pr_url"),
                "action": "drove brain_spec_implementer for one landed spec"}
     if dry:

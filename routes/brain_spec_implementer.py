@@ -251,8 +251,28 @@ def plan_for_spec(spec_name: str, corpus=None) -> dict:
                            "cannot build a directive from this spec")}
     return {**common, "would_act": True,
             "recommendation": recommendation,
-            "directive": build_directive(spec_name, title, recommendation,
-                                         obligations)}
+            "directive": (build_directive(spec_name, title, recommendation,
+                                          obligations)
+                          + _spec_lessons(title))}
+
+
+def _spec_lessons(title: str) -> str:
+    """What past attempts on this spec's finding family taught
+    (routes/brain_lessons.py), or "". The drafter's own label is
+    "implement <doc>", which names no finding, so the lookup happens here
+    where the spec's heading does."""
+    try:
+        h = title or ""
+        if h.startswith("Brain proposal") and "\u2014" in h:
+            h = h.split("\u2014", 1)[1].strip()
+        target = _load_spec_debt_issues().spec_target(h) or {}
+        issue = target.get("issue") if isinstance(target, dict) else None
+        if not issue:
+            return ""
+        from routes.brain_lessons import lessons_for
+        return lessons_for(issue)
+    except Exception:  # noqa: BLE001 — lessons must never block a plan
+        return ""
 
 
 def implement_spec(spec_name: str, kind: str = "spec", item_id: int = 0,
