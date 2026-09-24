@@ -31293,23 +31293,10 @@ def data_freshness():
             'scheduler': 'manual',
             'refresh_interval': 'on-demand',
             # No freshness source, so no health claim a caller could check.
-            # The same rule `markets` applies a dozen lines below.
             'health': 'unknown' if pipeline_count > 0 else 'stale'
         }
 
-        # markets is the worse of the two: record_count is a STATIC CONSTANT, not a
-        # measurement. Kept (callers depend on the shape) but labelled, and no longer
-        # allowed to report 'healthy' — a static list cannot be fresh or stale, so
-        # the honest verdict is 'unknown'.
-        feeds['markets'] = {
-            'record_count': len(SAMPLE_MARKETS),
-            'record_count_source': 'static_constant',
-            'last_updated': None,
-            'freshness_source': 'none',
-            'scheduler': 'static + live DB overlay',
-            'refresh_interval': 'real-time (DB counts)',
-            'health': 'unknown'
-        }
+        # feeds['markets'] is built below, after _freshness_of: see r-markets-live.
 
         # ★★★ A ROW COUNT IS NOT A FRESHNESS MEASUREMENT, AND `healthy` CLAIMED IT
         #   WAS. Six of the nine feeds here derived
@@ -31364,6 +31351,41 @@ def data_freshness():
             'last_updated': _fr_tx['last_updated'],
             'newest_record': _fr_tx['newest_record'],
             'health': _fr_tx['health']
+        }
+
+        # ★ r-markets-live (2026-09-24). record_count was len(SAMPLE_MARKETS), a
+        #   16-row seed list, published as the size of the markets feed beside a
+        #   "300+ markets" canon: an agent reading get_backup_status (Grok did,
+        #   live, 2026-09-24) sees 16, or null once the anonymous tier masks it,
+        #   and no live figure behind the claim. The count is now the one the
+        #   canon floors: canonical_stats' COUNT(DISTINCT market_name) over
+        #   published market_power_scores, cached there (no query added here).
+        #   It is published as live only when stat_is_live('markets') says a
+        #   real query measured it; a cold process publishes null + 'unmeasured',
+        #   never the seed. Freshness comes from the scores table itself, judged
+        #   against the declared cadence (dcpi-daily.yml: "DCPI Recompute (4x
+        #   daily)").
+        try:
+            from canonical_stats import get_canonical_stats, stat_is_live
+            _mk_stats = get_canonical_stats()
+            _mk_live = stat_is_live('markets')
+        except Exception:
+            _mk_stats, _mk_live = {}, False
+        markets_count = int(_mk_stats.get('markets') or 0) if _mk_live else None
+        _iv_mk = '6 hours (DCPI recompute, 4x daily)'
+        _fr_mk = _freshness_of('market_power_scores', markets_count or 0, _iv_mk)
+        feeds['markets'] = {
+            'record_count': markets_count,
+            'record_count_source': 'live_table' if _mk_live else 'unmeasured',
+            'record_count_basis': ('COUNT(DISTINCT market_name) FROM market_power_scores '
+                                   'WHERE published, excluding 3 aggregate slugs; the figure '
+                                   'the "300+ markets" canon floors (canonical_stats)'),
+            'scheduler': 'dcpi-daily.yml',
+            'refresh_interval': _iv_mk,
+            'freshness_source': _fr_mk['freshness_source'],
+            'last_updated': _fr_mk['last_updated'],
+            'newest_record': _fr_mk['newest_record'],
+            'health': _fr_mk['health'] if _mk_live else 'unknown'
         }
 
         fiber_count = safe_query("SELECT COUNT(*) FROM fiber_routes", 0)
