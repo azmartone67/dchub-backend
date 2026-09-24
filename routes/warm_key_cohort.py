@@ -207,6 +207,7 @@ def _gather() -> tuple:
     non_paid = sorted(NON_PAID_TIERS)
     rows, errors = [], {}
     suppressed, paid_emails, calls, walls = set(), set(), {}, {}
+    consented, last_walls = set(), {}
     excluded_tiers = None
     try:
         with c.cursor() as cur:
@@ -216,6 +217,21 @@ def _gather() -> tuple:
                 suppressed = {r[0] for r in cur.fetchall() if r and r[0]}
             except Exception as e:  # noqa: BLE001
                 errors["suppression"] = f"{type(e).__name__}: {str(e)[:90]}"
+                c.rollback()
+
+            # ★ r-optin-consents (2026-09-24): CONFIRMED consent held by the
+            # ADDRESS. routes/marketing_opt_in._set_opted_in writes the key
+            # flag only on keys bound to the address AT confirm time, and
+            # always writes opt_in_consents.confirmed_at. A key bound after the
+            # click, or an address that confirmed before it held any key, had
+            # consent this export could not see. Still only the double-opt-in
+            # click: a request row with no confirmed_at is NOT consent.
+            try:
+                cur.execute("SELECT DISTINCT lower(trim(email)) FROM opt_in_consents "
+                            "WHERE confirmed_at IS NOT NULL AND email IS NOT NULL")
+                consented = {r[0] for r in cur.fetchall() if r and r[0]}
+            except Exception as e:  # noqa: BLE001
+                errors["opt_in_consents"] = f"{type(e).__name__}: {str(e)[:90]}"
                 c.rollback()
 
             # Addresses that ALREADY hold a paid key. Same table, so this is
@@ -325,6 +341,23 @@ def _gather() -> tuple:
             except Exception as e:  # noqa: BLE001
                 errors["walls"] = f"{type(e).__name__}: {str(e)[:90]}"
                 c.rollback()
+
+            # The MOST RECENT wall, beside the most-hit one: a soft offer
+            # names what they tried last, which is not always what they tried
+            # most (2026-09-24, item 6 of the convert-P0 ship list).
+            try:
+                cur.execute(
+                    """SELECT DISTINCT ON (lower(trim(s.user_email)))
+                              lower(trim(s.user_email)), s.tool_requested
+                         FROM mcp_upgrade_signals s
+                        WHERE s.user_email IS NOT NULL AND s.user_email <> ''
+                          AND s.tool_requested IS NOT NULL
+                        ORDER BY lower(trim(s.user_email)), s.created_at DESC""")
+                last_walls = {r[0]: r[1] for r in (cur.fetchall() or [])
+                              if r and r[0]}
+            except Exception as e:  # noqa: BLE001
+                errors["last_walls"] = f"{type(e).__name__}: {str(e)[:90]}"
+                c.rollback()
     except Exception as e:  # noqa: BLE001
         _release(c, error=True)
         return [], {"error": f"{type(e).__name__}: {str(e)[:160]}"}
@@ -359,10 +392,11 @@ def _gather() -> tuple:
             "last_call": (last_call.isoformat() if hasattr(last_call, "isoformat")
                           else ""),
             "top_tool_wall": tool or "",
+            "last_tool_wall": last_walls.get(email) or "",
             "wall_hits": wall_hits,
             "already_paid": email in paid_emails,
             "suppressed": email in suppressed,
-            "marketing_opt_in": bool(opt_in),
+            "marketing_opt_in": bool(opt_in) or email in consented,
             "name": (name or "").strip(),
         })
     meta = {"excluded_by_tier": excluded_tiers}
@@ -482,7 +516,8 @@ def summarize(rows: list) -> dict:
 
 _CSV_FIELDS = ["email", "name", "tier", "domain", "domain_kind",
                "days_since_bind", "age_bucket", "calls_after_bind", "last_call",
-               "top_tool_wall", "wall_hits", "keys_held", "marketing_opt_in"]
+               "top_tool_wall", "last_tool_wall", "wall_hits", "keys_held",
+               "marketing_opt_in"]
 
 
 @warm_key_cohort_bp.route("/api/v1/admin/audience/warm-keys", methods=["GET"])

@@ -888,20 +888,24 @@ def _function_source(rel, name):
     return ast.get_source_segment(src, fns[0]), fns[0]
 
 
-_OPTIN_LINK = "https://dchub.cloud/api/v1/marketing/opt-in/request?"
+_OPTIN_LINK = "https://dchub.cloud/api/v1/opt-in/request?"
 
 
-def test_our_own_opt_in_link_carries_a_key_and_is_not_reported():
-    """Negative control on the real by-design site: _optin_cta_block writes the
-    caller's key into an opt-in link on our own host. It must read clean, and
-    the same function pointed at another host must not — otherwise the clean
-    read shows only that the detector cannot see the function."""
+def test_our_own_opt_in_link_carries_no_key_and_the_detector_still_sees_it():
+    """_optin_cta_block used to write the caller's key into this link on our
+    own host, the by-design site this control was built on. Since 2026-09-24
+    it writes none (nothing read it). Control, on the real function: it reads
+    clean, and the same function with the key write restored AND the link
+    moved to another host is reported, so the clean read is not blindness."""
     seg, fn = _function_source("mcp_gatekeeper.py", "_optin_cta_block")
     written = _secret_subscript_writes(_scope_nodes(fn))
-    assert [k for w in written.values() for _ln, k in w] == ["key"], written
+    assert [k for w in written.values() for _ln, k in w] == [], written
     assert scan_source_urlencode(seg, "mcp_gatekeeper.py") == []
     assert seg.count(_OPTIN_LINK) == 1
-    moved = seg.replace(_OPTIN_LINK, "https://api.example.com/v1/opt-in/request?")
+    anchor = '    params = {"source": "paywall_optin_cta", "tool": tool_name}\n'
+    assert seg.count(anchor) == 1, "anchor moved; update the control"
+    moved = (seg.replace(anchor, anchor + '    params["key"] = api_key\n')
+             .replace(_OPTIN_LINK, "https://api.example.com/v1/opt-in/request?"))
     assert [h[2] for h in scan_source_urlencode(moved, "<moved>")] == ["key"]
 
 
