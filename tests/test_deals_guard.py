@@ -176,8 +176,10 @@ _ALLOW = {
     "main.py": {
         # `stats['deals_rows']` — documented in place as the RAW row count;
         # `total_deals` beside it is repointed to the deduped canon, so the
-        # raw number is the point of the field.
-        "func:get_stats",
+        # raw number is the point of the field. (The read lives in
+        # _stats_compute_response since 2026-09-24: get_stats()'s slow path was
+        # split out so the boot warmer runs the same code.)
+        "func:_stats_compute_response",
         # Admin dedup/repair console: finds duplicate groups, inspects
         # candidates and reports post-DELETE totals.
         "func:admin_deals_cleanup",

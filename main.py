@@ -23527,6 +23527,59 @@ _STATS_TTL = 300  # 5min
 _STATS_PROC_START = _t_stats.monotonic()
 _STATS_BOOT_GRACE_S = int(os.environ.get("STATS_BOOT_GRACE_S", "210"))  # ~watchdog 300s grace − margin
 
+# ★ BOOT WARM (2026-09-24). The window above keeps the ~15-query slow path off
+# the REQUEST thread while a process is young — but nothing warmed the memo
+# during the window, so every caller got the boot payload for the full ~225s
+# after every start. On 2026-09-24 Railway redeployed ~15 times in an hour (once
+# per merge); sampling admin/build-info uptime_s against this route showed BOOT
+# until ~225s, then the first real compute (1.5s), then memo — and then the next
+# deploy started the clock again. So the first boot-window request now starts
+# ONE background run of the very same slow path (_stats_compute_response), and
+# the memo check at the top of get_stats() serves its result the moment it
+# lands. One attempt per process: a failure is logged and the window then ends
+# on its own clock, exactly as before. Kill switch: STATS_BOOT_WARM_DISABLE=1.
+_STATS_WARM = {"started": False, "finished": False, "error": None, "seconds": None}
+_STATS_WARM_LOCK = threading.Lock()
+_STATS_WARM_DELAY_S = float(os.environ.get("STATS_BOOT_WARM_DELAY_S", "5"))
+
+
+def _stats_boot_warm_run():
+    t0 = _t_stats.monotonic()
+    try:
+        if _STATS_WARM_DELAY_S > 0:
+            _t_stats.sleep(_STATS_WARM_DELAY_S)  # let the boot itself settle first
+        with app.app_context():  # the slow path builds its response with jsonify
+            _stats_compute_response()
+        if not _STATS_CACHE["value"]:
+            # _stats_compute_response() catches its own errors and answers from
+            # the degradation cache without storing the memo: that is a failure
+            # here even though nothing raised.
+            _STATS_WARM["error"] = "slow path returned without storing the memo"
+    except Exception as e:  # noqa: BLE001 — a warm must never take the process down
+        _STATS_WARM["error"] = f"{type(e).__name__}: {e}"[:200]
+    finally:
+        _STATS_WARM["seconds"] = round(_t_stats.monotonic() - t0, 2)
+        _STATS_WARM["finished"] = True
+        if _STATS_WARM["error"]:
+            logger.warning("[stats] boot warm failed after %ss: %s",
+                           _STATS_WARM["seconds"], _STATS_WARM["error"])
+        else:
+            logger.info("[stats] boot warm: memo ready %ss after the first "
+                        "boot-window request", _STATS_WARM["seconds"])
+
+
+def _kick_stats_boot_warm():
+    """Start at most ONE background warm of the stats memo per process."""
+    if os.environ.get("STATS_BOOT_WARM_DISABLE") == "1":
+        return False
+    with _STATS_WARM_LOCK:
+        if _STATS_WARM["started"]:
+            return False
+        _STATS_WARM["started"] = True
+    threading.Thread(target=_stats_boot_warm_run, name="stats-boot-warm",
+                     daemon=True).start()
+    return True
+
 @app.route('/api/v1/tiers', methods=['GET'])
 def get_tiers():
     """r43-H: canonical tier registry (single source of truth). Lets the
@@ -23570,6 +23623,7 @@ def get_stats():
     # is unreachable once the memo is warm, so steady-state callers are
     # unaffected. X-Cache=BOOT lets us observe it in logs/headers.
     if (now - _STATS_PROC_START) < _STATS_BOOT_GRACE_S:
+        _kick_stats_boot_warm()  # once per process; this response stays fast
         try:
             _deg, _deg_age = get_degraded_data('v1_stats')
         except Exception:
@@ -23592,6 +23646,15 @@ def get_stats():
         _bresp.headers["Cache-Control"] = "no-store"  # don't let an edge cache the stub
         return _bresp
 
+    return _stats_compute_response()
+
+
+def _stats_compute_response():
+    """The ~15-query slow path of GET /api/v1/stats: computes the payload, stores
+    the 5-min memo and the degradation cache, and returns the MISS response.
+    Split out of get_stats() (2026-09-24) so the boot warmer runs exactly this
+    code rather than a copy of it. Needs an app context (jsonify); reads nothing
+    from the request."""
     conn = None
     try:
         conn = get_read_db()
