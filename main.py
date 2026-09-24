@@ -6853,6 +6853,30 @@ def _is_bulk_export_path(path):
     return "/export" in p or p.endswith((".csv", ".geojson"))
 
 
+def _is_ops_path(path):
+    """An internal / ops surface: a dashboard, admin or site-widget endpoint,
+    not a product API an agent would build on.
+
+    r-no-keys-on-ops (2026-09-24, owner). Measured on auto_trial_keys (48h):
+    one Claude-desktop UA on 38.77.23.151 minted 553 keys on /api/v1/mcp/funnel
+    and /api/v1/mcp/retention in 2.5h (a dashboard polling them), and another
+    on 72.208.88.69 minted one per poll of /api/v1/testimonials*. A trial key
+    there opens nothing a caller builds on; it only inflates mint counts. The
+    endpoints still answer exactly as before, keyless."""
+    p = (path or "").lower()
+    return p.startswith((
+        "/api/v1/brain/",
+        "/api/v1/testimonials",           # /testimonials and /testimonials/stats
+        "/api/v1/founding-members",
+        "/api/v1/founding-customers",
+        "/api/v1/mcp/funnel",
+        "/api/v1/mcp/retention",
+        "/api/v1/mcp/dashboard",
+        "/api/v1/ops/",
+        "/api/v1/admin/",
+    ))
+
+
 def auto_issue_key_for_ai_agents():
     try:
         path = request.path or ""
@@ -6865,6 +6889,10 @@ def auto_issue_key_for_ai_agents():
         # wall AND a fresh X-DC-Auto-Issued-Key it could not use on it. The
         # wall offers the plan that opens the export instead.
         if _is_bulk_export_path(path):
+            return None
+        # r-no-keys-on-ops: internal/ops/site-widget paths never mint.
+        # (/api/founding-members is outside /api/v1/ and never reached here.)
+        if _is_ops_path(path):
             return None
         # Bail if the caller already has any auth shape.
         if (request.headers.get("X-API-Key")
