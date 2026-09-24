@@ -127,8 +127,14 @@ def _one(sql, params=None):
         c.close()
 
 
+# The day the lq fixture froze run()'s clock on. _today() returns it while a
+# test runs, so a test that straddles 00:00 UTC still reads the rows run()
+# wrote (slot_date = its frozen now.date()).
+_CLOCK = {}
+
+
 def _today():
-    return _dt.datetime.now(_dt.timezone.utc).date()
+    return _CLOCK.get("day") or _dt.datetime.now(_dt.timezone.utc).date()
 
 
 def _mps(slug, name, verdict, excess, constraint, *, published=True, age="0 hours"):
@@ -153,10 +159,17 @@ def _news(title, age="2 hours"):
           params=(title, "https://example.com/" + title.split()[0].lower(), age))
 
 
+# Where the lq fixture pins run()'s clock: 10:30 UTC is outside every slot's
+# HH:00-HH:14 window (08/12/16/20), so no test depends on when CI starts.
+# Override per test with @pytest.mark.parametrize("lq", [(h, m)], indirect=True).
+_FROZEN_AT = (10, 30)
+
+
 @pytest.fixture
-def lq(monkeypatch):
+def lq(monkeypatch, request):
     """Recreate the owned tables empty, point the module at this database,
-    keep canon and the network out of it, and stop the engine."""
+    keep canon and the network out of it, stop the engine, and freeze the
+    route's clock (see _FROZEN_AT)."""
     import canonical_stats as cs
     import content_publisher
     from routes import linkedin_content_engine, media_editorial
@@ -192,6 +205,7 @@ def lq(monkeypatch):
 
     monkeypatch.setattr(lq, "_post_to_linkedin", _capture)
     lq._test_posted = posted
+    _freeze_utc(monkeypatch, lq, *getattr(request, "param", _FROZEN_AT))
     yield lq
 
 
@@ -222,11 +236,13 @@ def _assert_skipped(lq, body, hour, reason):
 
 def _freeze_utc(monkeypatch, lq, hour, minute):
     """Pin the clock run() reads (`datetime.datetime.utcnow()` in the route
-    module) to today at hour:minute UTC. Only the module's own `datetime`
-    name is swapped, so psycopg2 and the test's _today() keep the real one."""
+    module) to hour:minute UTC on the test's day (_CLOCK). Only the module's
+    own `datetime` name is swapped, so psycopg2 keeps the real one."""
     import types
 
-    frozen = _dt.datetime.combine(_today(), _dt.time(hour, minute))
+    day = _CLOCK.get("day") or _today()
+    frozen = _dt.datetime.combine(day, _dt.time(hour, minute))
+    monkeypatch.setitem(_CLOCK, "day", day)
 
     class _Frozen(_dt.datetime):
         @classmethod
@@ -271,6 +287,45 @@ def test_w2_force_without_topic_inside_a_window_keeps_the_hours_slot(lq, monkeyp
 
     assert body.get("slot", {}).get("topic") == "dcpi_mover", body
     assert _row(8) is not None, body
+
+
+# ── the fixture's own clock ─────────────────────────────────────────────
+
+def _status_hour(lq):
+    from flask import Flask
+    app = Flask(__name__)
+    app.register_blueprint(lq.linkedin_quad_bp)
+    return app.test_client().get("/api/v1/linkedin-quad/status").get_json()["current_utc_hour"]
+
+
+def test_k1_the_fixture_freezes_the_route_clock(lq):
+    # Every other test relies on this: without it they run on the wall clock
+    # and a forced topic lands inside HH:00-HH:14 of a slot hour whenever CI
+    # happens to start then (PR #5459's db-parity at 08:09 UTC). Both reads
+    # below come from the route's own clock; either is off by hours if the
+    # fixture stops freezing it. agent_demand's synthesized slot takes
+    # now.hour, so its claimed row shows the hour run() saw.
+    assert _status_hour(lq) == _FROZEN_AT[0]
+
+    _run(lq, "agent_demand")
+
+    got = _one("SELECT slot_date, slot_hour FROM linkedin_quad_posts "
+               "WHERE topic = 'agent_demand'")
+    assert got == (_today(), _FROZEN_AT[0]), got
+
+
+@pytest.mark.parametrize("lq", [(8, 5)], indirect=True)
+def test_k2_a_forced_topic_holds_with_the_fixture_frozen_at_0805(lq):
+    # The CI failure's shape, pinned: 08:05 is inside dcpi_mover's window, and
+    # a forced hyperscaler_deal must still run hyperscaler_deal at 12:00.
+    assert _status_hour(lq) == 8
+    _exec("DROP TABLE news")
+
+    body = _run(lq, "hyperscaler_deal")
+
+    assert body.get("slot", {}).get("topic") == "hyperscaler_deal", body
+    _assert_skipped(lq, body, 12, "no_hyperscaler_news")
+    assert _row(8) is None, "dcpi_mover's 08:00 slot was claimed instead"
 
 
 # ── hyperscaler_deal (12:00) ────────────────────────────────────────────
