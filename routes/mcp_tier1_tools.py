@@ -159,6 +159,31 @@ def _end_user_tier():
             env["HTTP_X_INTERNAL_KEY"] = _stashed
 
 
+def _facility_match(facility_id):
+    """WHERE clause + params that resolve a facility_id against discovered_facilities.
+
+    Accepts the integer id, the stored slug, the bare name-slug, or the
+    canonical slug that search_facilities, get_facility and the live page
+    serve: provider-name-<hash8>, where hash8 is facility_slug.stable_hash8
+    (MD5 of provider|name), not the id.
+
+    ★ r-findalt-slug (2026-09-24): score_facility and find_alternatives each
+    carried their own copy of this. Only score_facility's had the hash8 match,
+    so the slug search_facilities returned for QTS Ashburn Mega Campus
+    (qts-qts-ashburn-mega-campus-9838ab12) scored fine and 404'd on
+    find_alternatives, measured live. One resolver, called by both."""
+    fid = str(facility_id)
+    h8 = ""
+    hp = fid.rsplit('-', 1)
+    if len(hp) == 2 and len(hp[1]) == 8 and all(ch in '0123456789abcdef' for ch in hp[1].lower()):
+        h8 = hp[1].lower()
+    where = ("CAST(id AS TEXT) = %s"
+             " OR LOWER(slug) = LOWER(%s)"
+             " OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)"
+             " OR (%s <> '' AND " + hash_sql('') + " = %s)")
+    return where, (fid, fid, fid, h8, h8)
+
+
 def _specs_visible(tier):
     """True when this caller may see operator + capacity on find_alternatives."""
     return (_SPEC_TIER_RANK.get(tier, 0)
@@ -823,15 +848,16 @@ def find_alternatives():
                 # only CAST(id AS TEXT) matched, so an agent that searched → got a
                 # slug → called find_alternatives got a 404 (Devin QA 2026-06-07).
                 # name-slug match needs no stored slug column → schema-safe.
+                # r-findalt-slug (2026-09-24): now through _facility_match, the
+                # resolver score_facility uses, so the canonical slug resolves too.
+                _where, _params = _facility_match(facility_id)
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status, canonical_slug
                       FROM discovered_facilities
-                     WHERE CAST(id AS TEXT) = %s
-                        OR LOWER(slug) = LOWER(%s)
-                        OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
+                     WHERE """ + _where + """
                      LIMIT 1
-                """, (str(facility_id), str(facility_id), str(facility_id)))
+                """, _params)
                 target = cur.fetchone()
 
                 if not target:
@@ -1080,21 +1106,15 @@ def score_facility():
                 # provider-name-LEFT(MD5(id),8). Extract the trailing 8-hex hash8
                 # (same logic as get_facility_by_slug) so the search→score
                 # round-trip resolves instead of 404ing.
-                _h8 = ""
-                _hp = str(facility_id).rsplit('-', 1)
-                if len(_hp) == 2 and len(_hp[1]) == 8 and all(ch in '0123456789abcdef' for ch in _hp[1].lower()):
-                    _h8 = _hp[1].lower()
+                _where, _params = _facility_match(facility_id)
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status,
                            source, source_url, confidence_score, canonical_slug
                       FROM discovered_facilities
-                     WHERE CAST(id AS TEXT) = %s
-                        OR LOWER(slug) = LOWER(%s)
-                        OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
-                        OR (%s <> '' AND """ + hash_sql('') + """ = %s)
+                     WHERE """ + _where + """
                      LIMIT 1
-                """, (str(facility_id), str(facility_id), str(facility_id), _h8, _h8))
+                """, _params)
                 f = cur.fetchone()
 
                 if not f:
