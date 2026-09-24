@@ -82,6 +82,16 @@ jobs:
               d = json.load(open("next.json"))
           except Exception as e:
               d = {"ok": False, "error": f"unparseable: {type(e).__name__}"}
+          # The QA feed runs before the budget check, so report it on EVERY
+          # run — including a budget-blocked one, where it is the only work done.
+          q = d.get("qa")
+          if isinstance(q, dict):
+              if q.get("skipped"):
+                  print(f"QA feed: skipped ({q['skipped']})")
+              else:
+                  print(f"QA feed: filed={q.get('filed', 0)} cleared={q.get('cleared', 0)}")
+          else:
+              print("QA feed: not reported by /agent/next")
           b = d.get("brief")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               if b:

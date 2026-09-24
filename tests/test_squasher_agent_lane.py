@@ -957,3 +957,34 @@ def test_qa_board_refuses_rather_than_reporting_no_reds(monkeypatch, latest, unr
         latest = _fresh()
     b = _qa_board_with(monkeypatch, latest, unreadable)
     assert b["ok"] is False and b["reds"] == {} and b["reason"]
+
+
+# ══ 14 · the claim step reports the QA feed on every run ═══════════════════
+
+def _claim_script():
+    run = next(s["run"] for s in JOBS["claim"]["steps"] if s.get("id") == "claim")
+    return run.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+
+
+@pytest.mark.parametrize("body, expect", [
+    ({"ok": True, "idle": "daily budget spent (6/24h)", "qa": {"filed": 2, "cleared": 1}},
+     "QA feed: filed=2 cleared=1"),
+    ({"ok": True, "idle": "x", "qa": {"filed": 0, "cleared": 0, "skipped": "board is 12.0h old"}},
+     "QA feed: skipped (board is 12.0h old)"),
+    ({"ok": True, "idle": "x"}, "QA feed: not reported by /agent/next"),
+    ({"ok": True, "qa": {"filed": 1, "cleared": 0},
+      "brief": {"queue_id": 7, "finding_key": "dchub://qa-superuser/k"}},
+     "QA feed: filed=1 cleared=0"),
+], ids=["budget-blocked", "board-refused", "old-backend", "claimed"])
+def test_claim_step_prints_the_qa_feed_counts(tmp_path, body, expect):
+    """Runs the step's REAL inline script against a canned /agent/next body."""
+    (tmp_path / "next.json").write_text(json.dumps(body))
+    out = tmp_path / "gh_output"
+    out.write_text("")
+    p = subprocess.run([sys.executable, "-I", "-"], input=_claim_script(), text=True,
+                       capture_output=True, cwd=tmp_path,
+                       env=dict(os.environ, GITHUB_OUTPUT=str(out)))
+    assert p.returncode == 0, p.stderr
+    assert expect in p.stdout.splitlines(), p.stdout
+    if body.get("brief"):
+        assert "queue_id=7" in out.read_text()
