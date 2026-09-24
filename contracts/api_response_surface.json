@@ -12,12 +12,12 @@
  },
  "stats": {
   "python_files_scanned": 1510,
-  "endpoints_total": 1810,
-  "endpoints_resolved": 1291,
+  "endpoints_total": 1811,
+  "endpoints_resolved": 1292,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 453,
-  "keys_total": 10775,
-  "keys_strictly_protected": 9763,
+  "keys_total": 10780,
+  "keys_strictly_protected": 9768,
   "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -31129,6 +31129,24 @@
    "resolution": "opaque",
    "open_at": [],
    "keys": []
+  },
+  "POST /api/v1/opt-in/request": {
+   "source": "routes/marketing_opt_in.py:470",
+   "handler": "opt_in_request",
+   "resolution": "resolved",
+   "open_at": [
+    "message",
+    "ok",
+    "reason",
+    "sent"
+   ],
+   "keys": [
+    "error",
+    "message",
+    "ok",
+    "reason",
+    "sent"
+   ]
   },
   "POST /api/v1/outreach/backfill": {
    "source": "routes/outreach.py:126",
