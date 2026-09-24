@@ -41719,6 +41719,16 @@ try:
         print("📣 Public claims feed: ✅ Registered (/api/v1/ops/claims)")
     except Exception as _oc_e:
         print(f"📣 Public claims feed: ⚠️ {_oc_e}")
+    # ★2026-09-24 — the PUBLIC, keyless AGENT BRIEF (routes/ops_brief.py):
+    # measured facts, refuted theories, frozen surfaces, decisions and open
+    # items, served from data/agent_brief.json. Outside agents read it before
+    # proposing a change. Kill switch OPS_BRIEF_DISABLE=1 answers 404.
+    try:
+        from routes.ops_brief import register_ops_brief
+        register_ops_brief(app)
+        print("🧭 Agent brief: ✅ Registered (/api/v1/ops/brief)")
+    except Exception as _ob_e:
+        print(f"🧭 Agent brief: ⚠️ {_ob_e}")
     # ★2026-08-26 — the PUBLIC, keyless ACTIVATION-SIGNAL feed
     # (routes/ops_activation.py). The lagging numbers (paid, MRR) have read 0
     # for the whole window and cannot say whether anything is turning; these
