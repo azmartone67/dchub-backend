@@ -26,6 +26,7 @@ brain_findings table (same as other autopilot findings).
 import json
 import datetime
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -161,6 +162,9 @@ _REGISTRIES = [
         "name":         "awesome-mcp-servers (GitHub README)",
         "url":          "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md",
         "submission_url": "https://github.com/punkpeye/awesome-mcp-servers/pulls",
+        # The README lists ~1,000 servers, so its first "N tools" / "Pro $N/mo"
+        # is somebody else's. Compare only the line that is OUR entry.
+        "copy_anchor":  "azmartone67/dchub-mcp-server",
     },
     {
         # 2026-06-27: the modelcontextprotocol/servers README now states
@@ -260,9 +264,103 @@ _REGISTRIES = [
 ]
 
 
+# ── Copy currency: PRESENT IS NOT VERIFIED (2026-09-24) ─────────
+# `present` answers one question — does the page carry our marker — so a
+# listing serving a superseded generation of our copy scored exactly like a
+# current one, and /ai counted it under "monitored registries verified live".
+# Measured 2026-09-24 on https://mcp.so/servers/dchub-mcp-server, whose own
+# meta description reads "79 tools, 12,650+ facilities." and whose FAQ quotes
+# "Pro: $299/mo", against canon 92 tools / 24,500+ / Pro $99.
+#
+# The body is ALREADY fetched for the presence check, so this costs no second
+# request. It reuses the existing canon comparison (mcp_registry_outreach.
+# _listing_drift, which caught this same mcp.so copy on 2026-09-20) and adds
+# the two figures that detector does not read: tool count and the Pro price.
+#
+# ★ MATERIAL, not exact. Canon floors rise weekly and every registry re-crawls
+#   on its own cadence, so exact equality flags EVERY listing — measured today
+#   Smithery (our own, current copy) differs only by 127k vs 133k substations,
+#   Glama by 91 vs 92 tools. A badge that marks all of them stale says nothing.
+#   A count is stale when it is off canon by more than _COPY_MATERIAL (20%); a
+#   price is stale on ANY mismatch, because it is what a buyer is quoted.
+#   Measured 2026-09-24 against those bodies, 20% separates mcp.so (-48%
+#   facilities, $299) and the awesome-mcp-servers entry (33 tools, -64%) from
+#   Glama (-6.5%), LobeHub (-11%) and Smithery (-4.5%).
+# ★ THREE STATES. No comparable figure, or unreadable canon => "unknown",
+#   never "current": a check that found nothing must not read as clean.
+_COPY_MATERIAL = 0.20
+_TOOLS_RE = re.compile(r"\b(\d{2,3})\s+(?:MCP\s+)?tools\b", re.I)
+_PRO_PRICE_RE = re.compile(r"\bPro\b[^$\n]{0,24}\$\s?(\d{2,4})\s*/\s*mo", re.I)
+
+
+def _copy_scope(reg: dict, body: str) -> str:
+    """The part of a body that is OUR copy. Default: all of it."""
+    anchor = (reg or {}).get("copy_anchor")
+    if not anchor:
+        return body or ""
+    a = anchor.lower()
+    return "\n".join(ln for ln in (body or "").splitlines() if a in ln.lower())
+
+
+def _copy_check(text: str, canon: dict | None, pro_usd) -> dict:
+    """Compare a listing's copy against canon; see the block above."""
+    if not canon or canon.get("ok") is False:
+        return {"state": "unknown", "checked": 0, "stale": [],
+                "reason": "canon_unreadable"}
+    from routes.mcp_registry_outreach import _listing_drift
+    base = _listing_drift(text or "", canon)
+    checked = int(base.get("checked") or 0)
+    rows = [dict(d) for d in (base.get("drift") or [])]
+    flat = re.sub(r"\s+", " ", text or "")
+    want_tools = canon.get("tools")
+    m = _TOOLS_RE.search(flat)
+    if m and isinstance(want_tools, int) and want_tools > 0:
+        checked += 1
+        got = int(m.group(1))
+        if got != want_tools:
+            rows.append({"key": "tools", "listed": got, "canon": want_tools})
+    m = _PRO_PRICE_RE.search(flat)
+    if m and isinstance(pro_usd, int) and pro_usd > 0:
+        checked += 1
+        got = int(m.group(1))
+        if got != pro_usd:
+            rows.append({"key": "pro_usd_month", "listed": got,
+                         "canon": pro_usd, "exact": True})
+    stale = [d for d in rows
+             if d.get("exact")
+             or abs(d["listed"] - d["canon"]) > _COPY_MATERIAL * d["canon"]]
+    if not checked:
+        return {"state": "unknown", "checked": 0, "stale": [],
+                "reason": "no_comparable_figure_on_page"}
+    return {"state": "stale" if stale else "current", "checked": checked,
+            "stale": [{k: d[k] for k in ("key", "listed", "canon")}
+                      for d in stale],
+            "immaterial": [{k: d[k] for k in ("key", "listed", "canon")}
+                           for d in rows if d not in stale],
+            "threshold": _COPY_MATERIAL}
+
+
+def _copy_canon():
+    """(canon dict, Pro USD/month) — the same sources /api/v1/canon/phrases and
+    /.well-known/mcp_facts.json publish. Failure => (None, None) => unknown."""
+    canon = pro = None
+    try:
+        from routes.canon_phrases import _build_canon_body, _cached_body
+        canon, _ = _cached_body(_build_canon_body)
+    except Exception:
+        canon = None
+    try:
+        import tier_registry
+        pro = tier_registry.price("pro")
+    except Exception:
+        pro = None
+    return canon, pro
+
+
 def _probe_all() -> Dict[str, dict]:
     """Probe every registry; return per-id status."""
     out = {}
+    canon, pro_usd = _copy_canon()
     for r in _REGISTRIES:
         redirected_to = None
         if r.get("probe") == "official_registry":
@@ -282,6 +380,10 @@ def _probe_all() -> Dict[str, dict]:
             verdict = "fetch_error"
         else:
             verdict = f"http_{status}"
+        copy = None
+        if verdict == "present" and r.get("probe") != "official_registry":
+            # The official-registry probe returns a synthetic body (no copy).
+            copy = _copy_check(_copy_scope(r, body), canon, pro_usd)
         out[r["id"]] = {
             "registry":       r["name"],
             "registry_url":   r["url"],
@@ -290,6 +392,7 @@ def _probe_all() -> Dict[str, dict]:
             "http_status":    status,
             "actionable":     r.get("actionable", True),
             "redirected_to":  redirected_to,
+            "copy":           copy,
         }
     return out
 
@@ -602,6 +705,11 @@ def mcp_registries_status():
     """
     results = _probe_all_cached()
     present_count = sum(1 for r in results.values() if r["verdict"] == "present")
+    # Present AND not serving materially stale copy. `present` keeps its old
+    # meaning (the marker is on the page) so existing readers are unchanged.
+    stale_copy = sorted(k for k, r in results.items()
+                        if r["verdict"] == "present"
+                        and ((r.get("copy") or {}).get("state") == "stale"))
     # "missing" counts only ACTIONABLE absences (a registry we could
     # actually submit to). Non-actionable surfaces (no PR path, e.g.
     # Cursor) are surfaced separately so the weekly watch workflow,
@@ -637,6 +745,7 @@ def mcp_registries_status():
         "present":        present_count,
         "missing":        missing_actionable,
         "not_actionable": not_actionable,
+        "present_stale_copy": stale_copy,
         "results":        results,
         "doc":            "https://dchub.cloud/api/v1/brain/mcp-registries",
         "submission_pattern": (
