@@ -69,10 +69,11 @@ def test_zone_hostnames_are_judged_exactly_as_before(host):
     assert _verdict("/api/v1/facilities", host=host) == ("cached", RULE1_ID)
 
 
-@pytest.mark.parametrize("path", ["/api/v1/deals", "/api/v1/stats"])
+@pytest.mark.parametrize("path", ["/api/v1/deals", "/api/v1/seo/x"])
 def test_path_bypass_rules_still_win_on_the_railway_host(path):
     """Excluding Railway from rule 1 must not turn a bypass into anything else
-    (rule 19 bypasses /api/v1/stats on every host since #5405)."""
+    (rule 19 bypasses /api/v1/seo/ on every host. It named /api/v1/stats from
+    #5405 until the follow-up to #5460, which left stats to the worker)."""
     assert _verdict(path, host=RAILWAY)[0] == "bypass"
     assert _verdict(path, host="api.dchub.cloud")[0] == "bypass"
 

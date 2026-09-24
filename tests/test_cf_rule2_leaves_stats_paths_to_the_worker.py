@@ -61,9 +61,10 @@ def test_rule2_does_not_match_the_stats_paths(path, host):
     assert _rule2_matches(path, host) is False
 
 
-@pytest.mark.parametrize("path", ["/api/v1/site/stats", "/api/v1/discovery/last-7d"])
-def test_site_stats_and_last_7d_match_no_rule_anonymously(path):
+@pytest.mark.parametrize("path", STATS_PATHS)
+def test_stats_paths_match_no_rule_anonymously(path):
     # Not 'bypass': a bypass rule would make the worker's put() store nothing.
+    # /api/v1/stats joined once rule 19 dropped it (the follow-up to #5460).
     assert _verdict(path, host="api.dchub.cloud") == ("no-rule", None)
 
 

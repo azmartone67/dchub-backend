@@ -87,9 +87,16 @@ EXIT_OK, EXIT_NEW_GAP, EXIT_SELF = 0, 1, 2
 # now /api/v1/facilities, measured MISS->HIT that day. Stats itself is measured
 # 'bypass' after the rule-19 apply (ruleset v68): two un-busted GETs each on
 # dchub.cloud and api.dchub.cloud read DYNAMIC, 2026-09-24 06:10Z.
+# ★ 2026-09-24 later: /api/v1/stats left rule 19 again, and rule 2 excludes it
+# (#5460), so no zone rule matches it. The bypass had also made the zone
+# worker's Cache API put() store nothing. 'no-rule' measured on its two
+# siblings after rule 2 dropped them (v71, 2026-09-24 07:52Z): un-busted-path
+# key read DYNAMIC `put` then HIT on one origin request id, still HIT at age 358,
+# re-fetched by 650s (origin CDN-Cache-Control max-age=600). Stats itself is
+# re-measured after this rule-19 change is applied.
 ORACLE = {
     "/api/v1/facilities": "cached",
-    "/api/v1/stats": "bypass",
+    "/api/v1/stats": "no-rule",
     "/api/v1/health": "bypass",
     "/grid": "bypass",
     "/api/v1/mcp/tools/export_facility_csv": "bypass",
