@@ -51,6 +51,7 @@ safe_db, which silently SKIPs DDL under SKIP_DDL=1).
 """
 import os
 import html
+import re
 import hmac
 import logging
 from datetime import datetime, timezone
@@ -421,7 +422,49 @@ def _result_page(title, msg, *, cta=True):
 </table></td></tr></table></body></html>"""
 
 
+_SOURCE_OK = re.compile(r"[a-z0-9_-]{1,64}")
+
+
+def _clean_source(raw) -> str:
+    s = str(raw or "").strip().lower()[:64]
+    return s if _SOURCE_OK.fullmatch(s) else "optin_request"
+
+
+def _form_page(source: str) -> str:
+    """The human page the paywall opt-in link opens (r-optin-link-dead,
+    2026-09-24). GET renders this and sends NOTHING: chat clients and mail
+    scanners prefetch links, and a GET that mailed someone would let a
+    preview fire a confirmation."""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>DC Hub updates</title></head>
+<body style="margin:0;background:#eef0f5;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:48px 16px">
+<table role="presentation" width="460" cellpadding="0" cellspacing="0" style="max-width:460px;background:#fff;border-radius:14px;border:1px solid #e6e9f0">
+<tr><td bgcolor="#0f1117" style="background:#0f1117;border-radius:14px 14px 0 0;text-align:center;padding:22px 0">
+<img src="{BRAND_LOGO}" width="84" height="84" alt="DC Hub" style="width:84px;height:84px;border:0"></td></tr>
+<tr><td style="padding:26px 28px;color:#0f172a;font-size:16px;line-height:1.6">
+<p style="margin:0 0 14px">Get the free grid-data upgrade guide and early access to new DC Hub datasets.</p>
+<form method="post" action="/api/v1/opt-in/request">
+<input type="hidden" name="source" value="{html.escape(source)}">
+<input type="email" name="email" required placeholder="you@company.com" autocomplete="email"
+ style="width:100%;box-sizing:border-box;padding:12px;font-size:16px;border:1px solid #ccd;border-radius:9px">
+<button type="submit" style="width:100%;margin-top:10px;background:#6366f1;color:#fff;border:0;padding:12px;border-radius:10px;font-weight:600;font-size:16px;cursor:pointer">Send me the confirmation email</button>
+</form>
+<p style="margin:14px 0 0;color:#667;font-size:13px">We email one confirmation link; nothing else is sent unless you click it. Unsubscribe anytime. Your tool access is unchanged either way.</p>
+</td></tr></table></td></tr></table></body></html>"""
+
+
 # ── routes ───────────────────────────────────────────────────────────────
+@marketing_opt_in_bp.get("/api/v1/opt-in/request")
+def opt_in_request_page():
+    """The page behind the paywall opt-in link. Renders a form; sends nothing."""
+    resp = Response(_form_page(_clean_source(request.args.get("source"))),
+                    status=200, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @marketing_opt_in_bp.post("/api/v1/opt-in/request")
 def opt_in_request():
     """Express interest → send a tokenized confirm email. Does NOT set opt-in.
@@ -429,7 +472,19 @@ def opt_in_request():
     Body: {"email": "...", "source": "..."}. Suppressed / recently-asked /
     already-opted-in addresses are a polite {ok:true, sent:false}. Always 200
     (never an error that forces a retry decision); no enumeration signal beyond
-    the coarse reason."""
+    the coarse reason.
+
+    A form post from the page above gets an HTML page back, not JSON; the
+    wording is the same whether or not an email went out."""
+    if request.form and not request.is_json:
+        email = (request.form.get("email") or "").strip().lower()
+        if email:
+            request_opt_in(email, source=_clean_source(request.form.get("source")))
+        return Response(_result_page(
+            "Check your inbox",
+            "If that address can receive our email, a confirmation link is on "
+            "its way. Nothing else is sent unless you click it.", cta=True),
+            status=200, mimetype="text/html")
     body = request.get_json(silent=True) or {}
     email = (str(body.get("email") or "")).strip().lower()
     source = (str(body.get("source") or "optin_request")).strip()[:64]

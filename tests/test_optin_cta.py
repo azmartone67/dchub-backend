@@ -98,9 +98,12 @@ def test_flag_on_free_high_usage_tool_returns_cta(monkeypatch):
         # honest value + an unsubscribe promise, no dark pattern
         assert "early access" in cta["optin_value"].lower()
         assert "unsubscribe" in cta["optin_value"].lower()
-        # URL points at the opt-in REQUEST flow, carries source + tool
+        # URL points at the opt-in REQUEST page, carries source + tool.
+        # 2026-09-24: /api/v1/marketing/opt-in/request 404'd live (no route),
+        # and the link carried the caller's API key, which nothing read.
         assert cta["optin_url"].startswith(
-            "https://dchub.cloud/api/v1/marketing/opt-in/request")
+            "https://dchub.cloud/api/v1/opt-in/request?")
+        assert "key=" not in cta["optin_url"] and "key_123" not in cta["optin_url"]
         assert "source=paywall_optin_cta" in cta["optin_url"]
         assert f"tool={tool}" in cta["optin_url"]
 

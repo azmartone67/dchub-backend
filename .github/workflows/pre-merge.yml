@@ -1472,6 +1472,19 @@ jobs:
             echo "::error::the agent_broadcast published-only SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── warm-keys export consent + last wall (r-optin-consents) ───────────
+      # routes/warm_key_cohort._gather's SQL, own schema, same Postgres.
+      - name: warm-keys export SQL against a real Postgres
+        env:
+          WARM_KEYS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_warm_key_cohort_sql.py \
+            -q -rs --tb=short > wk.txt 2>&1 || { cat wk.txt; exit 1; }
+          cat wk.txt
+          if grep -qi "skipped" wk.txt; then
+            echo "::error::the warm-keys SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1536,6 +1549,7 @@ jobs:
             lqc.txt
             abp.txt
             pp.txt
+            wk.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

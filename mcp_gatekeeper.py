@@ -783,17 +783,19 @@ def _optin_cta_block(tool_name: str, tier: int,
     if tool_name not in OPTIN_CTA_TOOLS:
         return None
 
-    # Opt-in REQUEST endpoint. Hitting it triggers the double-opt-in flow:
-    # the server emails a tokenized CONFIRM link, and ONLY the confirm click
-    # sets marketing_opt_in=true + logs consent. The CTA carries the source
-    # tool (attribution) but no consent is implied by clicking this link.
+    # Opt-in REQUEST page. Opening it shows an email form and sends nothing;
+    # submitting it starts the double opt-in (routes/marketing_opt_in): one
+    # tokenized CONFIRM email, and ONLY that click sets marketing_opt_in.
+    #
+    # ★ 2026-09-24 (r-optin-link-dead). This link pointed at
+    # /api/v1/marketing/opt-in/request, a path no route serves (404 live), and
+    # the real /api/v1/opt-in/request was POST-only (405 to a click), so no
+    # human could ever opt in through it. It also carried the caller's API key,
+    # which nothing read: a credential in a link an agent relays into a chat
+    # for nothing. `api_key` stays in the signature for the caller.
     from urllib.parse import urlencode
     params = {"source": "paywall_optin_cta", "tool": tool_name}
-    if api_key:
-        # Lets the request flow pre-resolve the bound email for this key (if
-        # any) so the human only confirms — still double-opt-in, no auto-set.
-        params["key"] = api_key
-    optin_url = f"https://dchub.cloud/api/v1/marketing/opt-in/request?{urlencode(params)}"
+    optin_url = f"https://dchub.cloud/api/v1/opt-in/request?{urlencode(params)}"
 
     note = (
         "📓 Power user? Get our free grid-data upgrade guide + early access to "
