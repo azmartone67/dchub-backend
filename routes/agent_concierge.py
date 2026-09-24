@@ -1461,6 +1461,8 @@ def agent_upgrade_receipt():
         # is sold from ENTERPRISE_FROM_USD_YEAR — this said "$9/mo" and
         # "$25K+/yr", neither of which is on sale at that price.
         "tier_hint": {
+            # starter kept for the response contract; not on sale.
+            "starter":   {"calls":  200, "price": "retired — existing subscribers only"},
             "credit_pack": {"calls": 1000, "price": "$10 one-time"},
             "developer": {"calls":  500, "price": "$49/mo"},
             "enterprise":{"calls": 10000, "price": "from $12,000/yr"},
