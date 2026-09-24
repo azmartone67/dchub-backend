@@ -58,7 +58,10 @@ def test_the_headline_is_the_two_v1_tables_union_the_relayed_checkout_lane():
     assert len(lanes) == 3
     assert [_anchor(x) for x in lanes[:2]] == ["mcp_session_upgrades", "mcp_topups"]
     payments = H._paid_payments_sql(IV)
-    assert lanes[2].endswith(" from " + payments)
+    assert lanes[2].endswith(" from " + payments + " where "
+                             + H.not_operator_payer_predicate("pay.stripe_session_id"))
+    incl = _split(H.paid_attributed_count_sql(IV, include_self_traffic=True))[0]
+    assert incl[2].endswith(" from " + payments)
     assert _anchor(payments[1:]) == "mcp_checkout_payments"
 
 
@@ -110,7 +113,19 @@ def test_the_exclusion_binds_once_on_the_unions_identity():
                 "su.mcp_session_id", "tp.mcp_session_id"):
         assert external_session_predicate(col) not in H.paid_attributed_count_sql(IV), col
     incl_lanes, incl_tail = _split(H.paid_attributed_count_sql(IV, include_self_traffic=True))
-    assert incl_lanes == lanes and ext not in incl_tail
+    assert ext not in incl_tail
+    # v4 (2026-09-24): the ONLY other difference is the operator-payer clause,
+    # once per lane, on that lane's own Checkout Session column. Stripping it
+    # must give back include_self_traffic's lanes exactly.
+    payer = {"su": "su.stripe_session_id", "tp": "tp.stripe_session_id",
+             "pay": "pay.stripe_session_id"}
+    stripped = []
+    for lane, col in zip(lanes, (payer["su"], payer["tp"], payer["pay"])):
+        pred = H.not_operator_payer_predicate(col)
+        assert lane.count(pred) == 1, col
+        stripped.append(lane.replace(" and " + pred, "").replace(" where " + pred, ""))
+    assert stripped == incl_lanes
+    assert all("not exists (select 1 from mcp_conversions oc" not in x for x in incl_lanes)
 
 
 def test_the_lane_published_alone_is_the_headlines_lane():
