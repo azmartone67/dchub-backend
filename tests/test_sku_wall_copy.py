@@ -196,3 +196,23 @@ def test_stripe_config_plan_info_has_no_monthly_enterprise_price():
     assert a.PLAN_INFO["enterprise"]["price_annual"] is None
     # and the gate summary still reads the registry, saying "By contact"
     assert a._build_gate_plans()["enterprise"].startswith("By contact")
+
+
+# ── expired launch promo (r-claim-promo, 2026-09-24) ─────────────────────
+# DCMCP50_LAUNCH ("50% off the first 3 months") expired 2026-07-01; the MCP
+# server stopped advertising it that day and stopped attaching it to checkout
+# links on 07-12 (Stripe showed "invalid promo code"). The /claim success page
+# was never gated and kept promising it to every freshly-claimed trial key.
+@pytest.mark.parametrize("render", ["_render_success", "_render_state_success"])
+def test_claim_success_page_promises_no_expired_promo(render):
+    import routes.mcp_high_intent_claim as m
+    args = ("buyer@acme-energy.co", "dch_trial_x")
+    html = getattr(m, render)(*args, *(("rank_sites",) if render == "_render_success" else ()))
+    assert "dch_trial_x" in html          # it really rendered the success page
+    assert "DCMCP50" not in html
+    assert "50% off" not in html
+
+
+def test_no_wall_file_carries_the_expired_promo_code():
+    for path in FIXED_FILES:
+        assert "DCMCP50" not in _code_without_comments(path), path
