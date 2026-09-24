@@ -5371,6 +5371,74 @@ def check_trial_taste_abuse() -> list[dict]:
     return findings
 
 
+def check_weekly_mint_spike() -> list[dict]:
+    """r-mint-scan (2026-09-24). Trial-key mints in the last 7 days far above
+    the trailing baseline (the four prior 7-day windows).
+
+    Measured on /api/v1/mcp/retention key_reuse: 195, 226, 238 mints/week for
+    the weeks of 08-24..09-07, then 11,442 for 09-14 — from 145 ip hashes — and
+    nothing fired. check_trial_taste_abuse above is 24h-scoped and gated on
+    grid/fiber usage shape, so a probe that mints and never calls is outside
+    what it can see.
+
+    Fires when mints_7d > DCHUB_MINT_SPIKE_MULTIPLE (5) x median(trailing 4)
+    AND mints_7d >= DCHUB_MINT_SPIKE_MIN (300). Counts RAW mints (scan
+    included): the alert is about the volume, and the KPIs already exclude it.
+    The detail also reports how many of the window's mints the KPI scan filter
+    excludes, so a reader can tell a probe spike from real growth.
+    Pure decision: routes/mint_guard.weekly_mint_spike.
+    """
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        from routes.mint_guard import scored_trial_keys_cte, weekly_mint_spike
+        _cte, _cte_params = scored_trial_keys_cte("INTERVAL '35 days'")
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.auto_trial_keys')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute(f"""
+                    WITH {_cte}
+                    SELECT FLOOR(EXTRACT(EPOCH FROM (NOW() - minted_at)) / 604800)::int AS w,
+                           COUNT(*), COUNT(*) FILTER (WHERE is_scan),
+                           COUNT(DISTINCT request_ip_hash)
+                      FROM scored
+                     GROUP BY 1
+                """, _cte_params)
+                rows = {int(r[0]): (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0))
+                        for r in cur.fetchall()}
+            except Exception:
+                return findings
+    except Exception:
+        return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    latest, scan, ips = rows.get(0, (0, 0, 0))
+    trailing = [rows.get(w, (0, 0, 0))[0] for w in (1, 2, 3, 4)]
+    hit = weekly_mint_spike(latest, trailing)
+    if not hit:
+        return findings
+    findings.append({
+        "issue":    "trial_key_mint_spike",
+        "severity": "warning",
+        "url":      "/api/v1/mcp/retention",
+        # a MAGNITUDE (keys minted in 7d), not a recurrence tally
+        "count_kind": "item_count",
+        "count":    latest,
+        "detail":  (f"7d: {latest:,} trial keys minted from {ips:,} ip hashes — "
+                    f"{hit['ratio']}x the trailing 4-week median ({hit['median']:g}; "
+                    f"weekly {', '.join(str(x) for x in trailing)}). {scan:,} of them "
+                    f"match the KPI scan definition (routes/mint_guard.py) and are "
+                    f"already excluded from key_reuse / pct_reused_30d. A spike from "
+                    f"few ip hashes is probe traffic, not growth: check the per-caller "
+                    f"ceilings (DCHUB_MINT_RL_*) are holding before reading any mint KPI."),
+    })
+    return findings
+
+
 def check_auto_trial_conversion() -> list[dict]:
     """Tracks whether the auto-mint-trial flow (DDDDD) is actually
     converting agents → signups → upgrades. Fires informational
@@ -13607,6 +13675,9 @@ def scan_all() -> list[dict]:
                # rotating-IP mint spike with ~zero email-binds (farming the
                # free Pro data instead of converting).
                check_trial_taste_abuse,
+               # r-mint-scan (2026-09-24): weekly mint volume vs the trailing
+               # 4-week median — the 11,442-mint week fired nothing.
+               check_weekly_mint_spike,
                # Phase RRR-cron-wiring (2026-05-18) — HTTP-cron orphan
                # detector. Sibling to check_orphaned_scheduler_functions
                # — that one catches Thread() loops never started; this

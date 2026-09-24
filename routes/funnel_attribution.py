@@ -67,23 +67,37 @@ def attribution_summary():
                     SELECT to_regclass('public.auto_trial_keys')
                 """)
                 if (cur.fetchone() or [None])[0]:
-                    cur.execute("""
+                    # r-mint-scan (2026-09-24): this is the other surface that
+                    # published the "79% of agents retried with their key" figure
+                    # — computed over 11,442 scan-week mints and over born-gated
+                    # keys whose call_count starts at the carried seed. Read the
+                    # NON-scan rows and real_calls (seed subtracted), and publish
+                    # what was excluded. Definition: routes/mint_guard.py.
+                    from routes.mint_guard import (scored_trial_keys_cte,
+                                                   scan_definition_note)
+                    _cte, _cte_params = scored_trial_keys_cte("INTERVAL '30 days'")
+                    cur.execute(f"""
+                        WITH {_cte}
                         SELECT
-                          COUNT(*) AS minted,
-                          COUNT(DISTINCT request_ip_hash) AS unique_callers,
-                          COUNT(*) FILTER (WHERE call_count >= 2) AS used_2plus,
-                          COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
-                          COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL) AS upgraded
-                          FROM auto_trial_keys
-                         WHERE minted_at >= NOW() - INTERVAL '30 days'
-                    """)
-                    r = cur.fetchone() or (0, 0, 0, 0, 0)
+                          COUNT(*) FILTER (WHERE NOT is_scan) AS minted,
+                          COUNT(DISTINCT request_ip_hash) FILTER (WHERE NOT is_scan) AS unique_callers,
+                          COUNT(*) FILTER (WHERE NOT is_scan AND real_calls >= 2) AS used_2plus,
+                          COUNT(*) FILTER (WHERE NOT is_scan AND signed_up_email IS NOT NULL) AS signed_up,
+                          COUNT(*) FILTER (WHERE NOT is_scan AND upgraded_tier IS NOT NULL) AS upgraded,
+                          COUNT(*) AS minted_incl_scan,
+                          COUNT(*) FILTER (WHERE is_scan) AS excluded_scan_mints
+                          FROM scored
+                    """, _cte_params)
+                    r = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0)
                     s = out["stages"]
                     s["trials_minted"]           = int(r[0] or 0)
                     s["anon_unique_callers"]     = int(r[1] or 0)
                     s["trials_used_2plus_calls"] = int(r[2] or 0)
                     s["trials_signed_up"]        = int(r[3] or 0)
                     s["trials_upgraded"]         = int(r[4] or 0)
+                    s["trials_minted_incl_scan"] = int(r[5] or 0)
+                    s["excluded_scan_mints"]     = int(r[6] or 0)
+                    out["scan_exclusion"] = scan_definition_note()
             except Exception:
                 pass
     finally:
@@ -100,7 +114,8 @@ def attribution_summary():
         "signup_to_upgrade_pct":   round(100.0 * s["trials_upgraded"] / max(1, s["trials_signed_up"]), 1),
     }
     out["interpretation"] = (
-        f"Of {minted:,} trial keys minted in last 30d, "
+        f"Of {minted:,} trial keys minted in last 30d "
+        f"(excluding {s.get('excluded_scan_mints', 0):,} scan-traffic mints), "
         f"{s['trials_used_2plus_calls']} agents retried with their key "
         f"({out['rates']['calls_to_2plus_use_pct']}%), "
         f"{s['trials_signed_up']} converted to permanent IDENTIFIED "

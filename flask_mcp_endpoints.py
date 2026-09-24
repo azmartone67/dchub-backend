@@ -2927,6 +2927,33 @@ def claim_key():
     except Exception:
         _carry_calls = 0
 
+    # ── r-mint-scan (2026-09-24): PER-CALLER MINT CEILING ──────────────────
+    # The sibling of the auto-mint door's ceiling (routes/auto_trial.py), with
+    # the same thresholds (routes/mint_guard.py). Every branch above that hands
+    # back an existing key has already returned, so this only ever refuses a
+    # NEW key. The unused-key cap above stops unused-key enumeration; this
+    # stops raw volume from one caller whatever it does with the keys.
+    #   * IP scope skipped for a verified partner workspace: its tenants share
+    #     one egress by design (r-partner-meter).
+    #   * UA scope skipped for the MCP gateway (internal key): callAPIWrite
+    #     forwards the agent's IP but sends the gateway's own UA, so counting
+    #     it would pool every MCP claim into one bucket.
+    # FAIL-OPEN: a failed count claims through.
+    try:
+        from routes.mint_guard import (check_mint_rate, is_internal_request,
+                                       rate_limited_body)
+        with _pool.connection() as conn, conn.cursor() as cur:
+            _rl_hit = check_mint_rate(
+                cur, "claim", ip_key=ip, ua=ua,
+                count_ip=not _meter_scope,
+                count_ua=not is_internal_request(request))
+    except Exception:
+        _rl_hit = None
+    if _rl_hit:
+        _note_install_attempt("rate_limited")
+        return (jsonify(**rate_limited_body(_rl_hit)), 429,
+                {"Retry-After": str(int(_rl_hit["retry_after"]))})
+
     # Mint the key
     api_key = "dch_live_" + secrets.token_hex(16)
     developer_id = "dev_" + secrets.token_hex(8)
