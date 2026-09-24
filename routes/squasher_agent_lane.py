@@ -36,6 +36,13 @@ THE CONTRACT
     (/api/v1/heal/findings, the read sweep_self_cleared trusts). An agent run
     costs real money; a finding that already self-cleared is not worth one.
     An unreadable or empty detector claims NOTHING (blind != clean).
+  * QA reds are fed in too (2026-09-24): every claim first files the QA
+    super-user board's actionable reds that QA's OWN lane has handed off
+    (parked, or its one PR attempt refused/errored, no QA PR open) as
+    source='qa' rows, claimed ahead of heal rows. Liveness for them is the
+    FULL fresh board (not the 4-per-hour slice /heal/findings carries), and
+    this lane closes its own qa rows when a fresh board stops reporting them
+    — squasher_queue's sweep never touches source='qa'.
   * Finding classes in AGENT_EXCLUDED_ISSUE_PREFIXES are skipped (today:
     operator_profile_gap — missing data, which no code change fixes).
   * Rows with an action_class are skipped: a granted class has its own
@@ -221,6 +228,113 @@ def live_findings() -> dict:
     return {"ok": True, "items": items}
 
 
+# ── QA super-user reds ───────────────────────────────────────────────────
+#
+# Owner 2026-09-24: "feed the agent failing QA reds too". Measured that day:
+# QA reds already reach /heal/findings, but only QA_INTAKE_MAX (4) per hour,
+# rotated, and nothing ever filed them into squasher_work_queue — so the agent
+# could not see them unless someone clicked "Queue fix". QA also has its own
+# auto-investigate → auto-propose lane (draft PRs, ONE attempt per finding
+# ever); taking only what that lane has finished with means the two actors
+# never both open a PR for one red.
+
+QA_PREFIX = "dchub://qa-superuser/"
+QA_SOURCE = "qa"
+_QA_FEED_MAX = 5            # rows filed per claim — a bounded trickle
+_QA_CLEAR_MIN_AGE_H = 6     # a qa row must be this old before a clear counts
+_SEV_RANK = {"critical": 0, "major": 1}
+
+
+def qa_board() -> dict:
+    """{ok, reds: {dchub-key: finding}} — the latest QA board's ACTIONABLE
+    reds with QA's own investigation/proposal/park state attached — or an
+    honest refusal. Refuses (never "no reds") when the board is stale, its
+    must-fail control did not fire, or the investigation table is unreadable:
+    without that last one we cannot tell what QA's lane has handed off."""
+    try:
+        from routes import qa_superuser_dashboard as qd
+        from routes.brain_qa_superuser_intake import run_refusal
+        latest = (qd._load(limit=1) or {}).get("latest")
+        why = run_refusal(latest)
+        if why:
+            return {"ok": False, "reds": {}, "reason": why}
+        reds = [f for f in (latest.get("findings") or [])
+                if isinstance(f, dict) and f.get("key")
+                and qd.is_actionable_finding(f)]
+        view = {"findings": reds}
+        qd._attach_investigations(view)
+        if any(f.get("investigation_unreadable") for f in reds):
+            return {"ok": False, "reds": {},
+                    "reason": "QA investigations unreadable — cannot tell "
+                              "what QA's own lane has handed off"}
+        return {"ok": True, "reds": {QA_PREFIX + str(f["key"]): f for f in reds}}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reds": {},
+                "reason": f"QA board unreadable: {type(e).__name__}"}
+
+
+def qa_handed_off(f: dict) -> bool:
+    """Has QA's own lane FINISHED with this red without a PR? Pure.
+    Parked (refuted / no recommendation) or its single PR attempt refused or
+    errored — and no QA PR open or in flight."""
+    p = f.get("proposal") or {}
+    if p.get("pr_url") or p.get("state") in ("opened", "running"):
+        return False
+    if f.get("parked"):
+        return True
+    return p.get("state") in ("refused", "error")
+
+
+def qa_item(key: str, f: dict) -> dict:
+    """A QA red in /heal/findings item shape — the agent's detector_item."""
+    sev = str(f.get("severity") or "")
+    return {"url": key, "issue": f"qa_{sev} {str(f.get('title') or '')[:160]}",
+            "severity": sev, "verdict": f.get("verdict"),
+            "surface": f.get("surface"), "seat": f.get("seat"),
+            "evidence": str(f.get("evidence") or "")[:2000],
+            "red_when": f.get("red_when"), "basis": f.get("basis"),
+            "remedy": f.get("remedy"), "failing_since": f.get("failing_since"),
+            "qa_key": f.get("key")}
+
+
+def merge_qa_items(items: dict, qa: dict) -> dict:
+    """heal items + every current QA red (full board, not the capped slice).
+    A refused board adds nothing. Pure."""
+    out = dict(items or {})
+    if (qa or {}).get("ok"):
+        for k, f in (qa.get("reds") or {}).items():
+            out[k] = qa_item(k, f)
+    return out
+
+
+def qa_feed_plan(reds: dict, open_keys) -> list[tuple[str, dict]]:
+    """Which reds to file now: handed off, not already open, critical first,
+    capped. Pure."""
+    todo = [(k, f) for k, f in (reds or {}).items()
+            if k not in open_keys and qa_handed_off(f)]
+    todo.sort(key=lambda kf: (_SEV_RANK.get(str(kf[1].get("severity")), 9), kf[0]))
+    return todo[:_QA_FEED_MAX]
+
+
+def qa_clear_plan(rows: list[dict], red_keys, now: datetime | None = None
+                  ) -> list[int]:
+    """Open source='qa' rows a FRESH board no longer reports, old enough that
+    one missing run is not a flap. Pure; the caller must only pass red_keys
+    from a board qa_board() accepted."""
+    now = now or _now()
+    out = []
+    for r in rows:
+        if r.get("source") != QA_SOURCE or r.get("finding_key") in red_keys:
+            continue
+        at = r.get("requested_at")
+        if at is not None and at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if at is None or now - at < timedelta(hours=_QA_CLEAR_MIN_AGE_H):
+            continue
+        out.append(r["id"])
+    return out
+
+
 # ── pure decisions (the unit under test) ─────────────────────────────────
 
 def pick_candidate(rows: list[dict], live_keys, now: datetime | None = None,
@@ -384,7 +498,11 @@ _SELECT = ("SELECT " + ", ".join(
 
 def _rows(cur, where: str, params=(), limit: int = 200) -> list[dict]:
     cur.execute(f"{_SELECT} WHERE {where} "
-                "ORDER BY COALESCE(seen_count, 1) DESC, requested_at ASC, id ASC"
+                # COALESCE: `NULL = 'qa'` is NULL, and Postgres sorts NULLs
+                # FIRST under DESC — a NULL-source row would outrank qa rows.
+                "ORDER BY (COALESCE(source, '') = 'qa') DESC,"
+                " COALESCE(seen_count, 1) DESC,"
+                " requested_at ASC, id ASC"
                 " LIMIT %s", (*params, limit))
     return [dict(zip(_ROW_COLS, r)) for r in cur.fetchall()]
 
@@ -427,6 +545,65 @@ def reclaim_stale(cur, now: datetime | None = None) -> int:
     return n
 
 
+def feed_qa(cur, qa: dict) -> dict:
+    """File handed-off QA reds as source='qa' rows and close the qa rows a
+    fresh board no longer reports. No-op on a refused board. Each insert has
+    its own savepoint, so a lost race on the open-row index costs that row
+    only."""
+    out = {"filed": 0, "cleared": 0}
+    if not (qa or {}).get("ok"):
+        out["skipped"] = (qa or {}).get("reason") or "QA board not read"
+        return out
+    from routes.squasher_queue import _OPEN_STATUSES
+    open_sql = ", ".join("'%s'" % st for st in _OPEN_STATUSES)
+    cur.execute("SELECT finding_key FROM squasher_work_queue WHERE status IN ("
+                + open_sql + ") AND LEFT(finding_key, %s) = %s",
+                (len(QA_PREFIX), QA_PREFIX))
+    open_keys = {r[0] for r in cur.fetchall()}
+    # SAVEPOINT exists only inside a transaction block; on an autocommit
+    # connection each statement is already isolated (the psycopg2
+    # savepoint/autocommit trap squasher_queue._apply_schema_ddl documents).
+    guarded = not getattr(getattr(cur, "connection", None), "autocommit", False)
+    for key, f in qa_feed_plan(qa["reds"], open_keys):
+        inv = f.get("investigation") or {}
+        prop = f.get("proposal") or {}
+        why = ((f.get("parked") or {}).get("why") or prop.get("detail")
+               or prop.get("state") or "")
+        try:
+            if guarded:
+                cur.execute("SAVEPOINT sq_agent_qa")
+            # Bare DO NOTHING (no target) honours the partial open-row unique
+            # index without naming it; a lost race files nothing. One string,
+            # status as a parameter: regression_lint reads an INSERT only up
+            # to its first quote character.
+            cur.execute(
+                """INSERT INTO squasher_work_queue (finding_key, title, source,
+                       status, reason, analysis, decision, confidence, last_seen)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                   ON CONFLICT DO NOTHING RETURNING id""",
+                (key, qa_item(key, f)["issue"][:200], QA_SOURCE,
+                 "awaiting_decision",
+                 ("QA lane handed off: " + str(why))[:600],
+                 str(inv.get("recommendation") or "")[:4000] or None,
+                 str(why)[:1500] or None, inv.get("confidence")))
+            filed = cur.fetchone() is not None
+            if guarded:
+                cur.execute("RELEASE SAVEPOINT sq_agent_qa")
+            out["filed"] += 1 if filed else 0
+        except Exception:  # noqa: BLE001
+            if guarded:
+                cur.execute("ROLLBACK TO SAVEPOINT sq_agent_qa")
+    rows = _rows(cur, "source = %s AND status IN (" + open_sql + ")",
+                 (QA_SOURCE,))
+    for rid in qa_clear_plan(rows, set(qa["reds"])):
+        if _apply(cur, rid, {"status": "self_cleared", "finished_at": _now(),
+                             "note": "self-cleared: a fresh QA board no longer "
+                                     "reports this red (must-fail control "
+                                     "fired). No fix is claimed here."}):
+            out["cleared"] += 1
+    return out
+
+
 def brief_of(row: dict, live_item: dict | None) -> dict:
     """Everything the agent is told. Plain data — the workflow renders it
     into the prompt as a fenced block, never as instructions."""
@@ -446,26 +623,29 @@ def brief_of(row: dict, live_item: dict | None) -> dict:
     }
 
 
-def claim_next(live: dict | None = None) -> dict:
+def claim_next(live: dict | None = None, qa: dict | None = None) -> dict:
     """{ok, brief} | {ok, idle: reason}. Never raises."""
     live = live if live is not None else live_findings()
     if not live.get("ok"):
         return {"ok": True, "idle": f"detector unreadable: {live.get('reason')}"}
+    qa = qa if qa is not None else qa_board()
+    items = merge_qa_items(live["items"], qa)
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_columns(cur)
             reclaimed = reclaim_stale(cur)
+            fed = feed_qa(cur, qa)
             if _used_24h(cur) >= max_per_day():
                 conn.commit()
-                return {"ok": True, "reclaimed": reclaimed,
+                return {"ok": True, "reclaimed": reclaimed, "qa": fed,
                         "idle": f"daily budget spent ({max_per_day()}/24h)"}
             where = "status IN (%s)" % ", ".join(
                 "'%s'" % s for s in CLAIMABLE_STATUSES)
-            row = pick_candidate(_rows(cur, where), set(live["items"]),
-                                 live_items=live["items"])
+            row = pick_candidate(_rows(cur, where), set(items),
+                                 live_items=items)
             if not row:
                 conn.commit()
-                return {"ok": True, "reclaimed": reclaimed,
+                return {"ok": True, "reclaimed": reclaimed, "qa": fed,
                         "idle": "no live, unattempted hand-off rows"}
             # Compare-and-set: two workflow runs cannot claim the same row.
             cur.execute(
@@ -479,7 +659,8 @@ def claim_next(live: dict | None = None) -> dict:
                 return {"ok": True, "idle": "lost the claim race"}
             conn.commit()
             return {"ok": True, "reclaimed": reclaimed,
-                    "brief": brief_of(row, live["items"].get(row["finding_key"]))}
+                    "qa": fed,
+                    "brief": brief_of(row, items.get(row["finding_key"]))}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
@@ -530,13 +711,18 @@ def _fetch_pr(url: str) -> dict | None:
         return None
 
 
-def reconcile(fetch_pr=None, live: dict | None = None) -> dict:
+def reconcile(fetch_pr=None, live: dict | None = None,
+              qa: dict | None = None) -> dict:
     fetch_pr = fetch_pr or _fetch_pr
     out = {"ok": True, "checked": 0, "changed": {}, "unreadable": 0}
     live = live if live is not None else live_findings()
+    qa = qa if qa is not None else qa_board()
     # An unreadable detector must not produce merged_unverified: pass an
-    # empty live set, which can only ever say "nothing yet".
-    live_keys = set(live.get("items") or {}) if live.get("ok") else set()
+    # empty live set, which can only ever say "nothing yet". QA reds come
+    # from the full fresh board (a refused board adds nothing), so a merged
+    # PR whose QA red is still on the board is reported, not waited on.
+    live_keys = (set(merge_qa_items(live.get("items") or {}, qa))
+                 if live.get("ok") else set())
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_columns(cur)

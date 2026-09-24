@@ -599,7 +599,7 @@ def test_claim_compare_and_set_refuses_a_row_already_running(pg, monkeypatch):
     ra = _insert(pg, "a")
     assert al.claim_next(live=live)["brief"]["queue_id"] == ra
     stale_view = dict(_row(id=ra, finding_key="a"), requested_at=None)
-    monkeypatch.setattr(al, "pick_candidate", lambda rows, keys, now=None: stale_view)
+    monkeypatch.setattr(al, "pick_candidate", lambda rows, keys, now=None, **kw: stale_view)
     d = al.claim_next(live=live)
     assert "brief" not in d and d["idle"] == "lost the claim race"
     assert _state(pg, ra)[1:3] == ("running", 1)
@@ -759,3 +759,201 @@ def test_the_agent_checkout_has_full_history():
     co = [st for st in JOBS["agent"]["steps"]
           if str(st.get("uses", "")).startswith("actions/checkout")]
     assert len(co) == 1 and co[0]["with"].get("fetch-depth") == 0
+
+
+# ══ 13 · QA super-user reds fed to the agent ═══════════════════════════════
+
+def _red(key="web::public-pages#21d6c8", sev="critical", **kw):
+    f = {"key": key, "severity": sev, "verdict": "RED",
+         "title": "1 public page(s) do not render", "evidence": "GET /x -> 500"}
+    f.update(kw)
+    return f
+
+
+QA_OK = lambda reds: {"ok": True, "reds": {al.QA_PREFIX + f["key"]: f for f in reds}}
+
+
+@pytest.mark.parametrize("f, handed_off", [
+    (_red(parked={"why": "refuted"}), True),
+    (_red(proposal={"state": "refused", "detail": "find not unique"}), True),
+    (_red(proposal={"state": "error"}), True),
+    (_red(), False),                                          # QA lane still working
+    (_red(proposal={"state": "running"}), False),
+    (_red(proposal={"state": "opened", "pr_url": "https://x/pull/1"}), False),
+    (_red(parked={"why": "refuted"}, proposal={"state": "refused", "pr_url": "u"}), False),
+], ids=["parked", "refused", "error", "untouched", "running", "opened", "parked-with-pr"])
+def test_qa_handed_off(f, handed_off):
+    assert al.qa_handed_off(f) is handed_off
+
+
+def test_qa_feed_plan_files_only_new_handed_off_reds_critical_first_capped():
+    reds = {al.QA_PREFIX + f"k{i}": _red(f"k{i}", "major", parked={"why": "x"})
+            for i in range(8)}
+    reds[al.QA_PREFIX + "crit"] = _red("crit", "critical", proposal={"state": "refused"})
+    reds[al.QA_PREFIX + "busy"] = _red("busy", "critical")          # not handed off
+    plan = al.qa_feed_plan(reds, open_keys={al.QA_PREFIX + "k0"})
+    keys = [k for k, _ in plan]
+    assert keys[0] == al.QA_PREFIX + "crit"
+    assert al.QA_PREFIX + "k0" not in keys and al.QA_PREFIX + "busy" not in keys
+    assert len(plan) == 5
+
+
+def test_qa_clear_plan_closes_only_old_qa_rows_the_board_dropped():
+    old = NOW - timedelta(hours=7)
+    rows = [_row(id=1, source="qa", finding_key=al.QA_PREFIX + "gone", requested_at=old),
+            _row(id=2, source="qa", finding_key=al.QA_PREFIX + "still", requested_at=old),
+            _row(id=3, source="qa", finding_key=al.QA_PREFIX + "new",
+                 requested_at=NOW - timedelta(hours=1)),
+            _row(id=4, source="heal", finding_key="gone-heal", requested_at=old),
+            _row(id=5, source="qa", finding_key=al.QA_PREFIX + "naive",
+                 requested_at=old.replace(tzinfo=None))]
+    assert al.qa_clear_plan(rows, {al.QA_PREFIX + "still"}, NOW) == [1, 5]
+
+
+def test_merge_qa_items_uses_the_full_board_and_refuses_a_refused_one():
+    reds = [_red(f"k{i}", "major") for i in range(7)]           # > the 4/h intake cap
+    merged = al.merge_qa_items({"h": {"url": "h"}}, QA_OK(reds))
+    assert len(merged) == 8
+    assert merged[al.QA_PREFIX + "k3"]["issue"].startswith("qa_major ")
+    assert al.merge_qa_items({"h": {}}, {"ok": False, "reds": {"x": _red()}}) == {"h": {}}
+
+
+class _FakeCur:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, *a, **k): pass
+    def fetchone(self): return (9,)
+    def fetchall(self): return []
+
+
+class _FakeConn:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def cursor(self): return _FakeCur()
+    def commit(self): pass
+    def rollback(self): pass
+
+
+def test_claim_next_can_claim_a_qa_row_only_via_the_board(monkeypatch):
+    """The heal slice does NOT carry this red; only the QA board does."""
+    key = al.QA_PREFIX + "web::public-pages#21d6c8"
+    qa_row = _row(id=9, finding_key=key, source="qa", title="qa_critical x",
+                  requested_at=None)
+    fed = []
+    monkeypatch.setattr(al, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(al, "_ensure_columns", lambda cur: True)
+    monkeypatch.setattr(al, "reclaim_stale", lambda cur, now=None: 0)
+    monkeypatch.setattr(al, "_used_24h", lambda cur: 0)
+    monkeypatch.setattr(al, "feed_qa", lambda cur, qa: fed.append(qa) or {"filed": 0})
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [qa_row])
+    heal = {"ok": True, "items": {"https://dchub.cloud/x": {"url": "https://dchub.cloud/x"}}}
+    d = al.claim_next(live=heal, qa=QA_OK([_red()]))
+    assert d["brief"]["queue_id"] == 9, d
+    assert d["brief"]["detector_item"]["qa_key"] == "web::public-pages#21d6c8"
+    assert fed and fed[0]["ok"]                       # the feed ran with the board
+    d2 = al.claim_next(live=heal, qa={"ok": False, "reds": {}, "reason": "stale"})
+    assert "brief" not in d2                          # refused board → not live
+
+
+def test_reconcile_sees_a_still_red_qa_finding_after_merge(monkeypatch):
+    key = al.QA_PREFIX + "k1"
+    merged = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
+    row = _row(id=5, finding_key=key, source="qa", agent_state="pr_open",
+               agent_pr_url=PR, status="awaiting_decision")
+    applied = []
+    monkeypatch.setattr(al, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(al, "_ensure_columns", lambda cur: True)
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [row])
+    monkeypatch.setattr(al, "_apply", lambda cur, rid, upd, where_state=None:
+                        applied.append(upd) or True)
+    out = al.reconcile(fetch_pr=lambda u: {"state": "closed", "merged_at": merged},
+                       live={"ok": True, "items": {"other": {}}}, qa=QA_OK([_red("k1")]))
+    assert out["changed"] == {"merged_unverified": 1}, out
+
+
+def test_qa_rows_are_ordered_first():
+    import inspect
+    src = inspect.getsource(al._rows)
+    assert src.index("(COALESCE(source, '') = 'qa') DESC") < src.index("seen_count")
+
+
+def test_lifecycle_qa_feed_and_clear_on_postgres(pg, monkeypatch):
+    reds = [_red("a", "major", parked={"why": "refuted"}),
+            _red("b", "critical", proposal={"state": "refused", "detail": "ambiguous"},
+                 investigation={"recommendation": "fix the route", "confidence": 0.4}),
+            _red("c", "critical")]                                # QA still working
+    qa = QA_OK(reds)
+    import psycopg2
+    with psycopg2.connect(DSN) as tx, tx.cursor() as cur:   # the claim_next path:
+        out = al.feed_qa(cur, qa)                            # inside a transaction
+        tx.commit()
+    assert out["filed"] == 2
+    with pg.cursor() as cur:
+        cur.execute("SELECT finding_key, source, status, analysis FROM squasher_work_queue"
+                    " ORDER BY finding_key")
+        got = cur.fetchall()
+    assert [(k, s, st) for k, s, st, _ in got] == [
+        (al.QA_PREFIX + "a", "qa", "awaiting_decision"),
+        (al.QA_PREFIX + "b", "qa", "awaiting_decision")]
+    assert got[1][3] == "fix the route"
+    with pg.cursor() as cur:                                     # idempotent
+        assert al.feed_qa(cur, qa)["filed"] == 0
+    # a heal row seen 50x still loses to a qa row in claim order
+    _insert(pg, "heal-key", seen=50)
+    d = al.claim_next(live={"ok": True, "items": {"heal-key": {}}}, qa=qa)
+    assert d["brief"]["finding_key"].startswith(al.QA_PREFIX), d
+    # "a" drops off a fresh board; its row is 7h old → self-cleared
+    with pg.cursor() as cur:
+        cur.execute("UPDATE squasher_work_queue SET requested_at = NOW() - INTERVAL"
+                    " '7 hours' WHERE finding_key = %s", (al.QA_PREFIX + "a",))
+        out = al.feed_qa(cur, QA_OK(reds[1:]))
+    assert out["cleared"] == 1
+    assert _state(pg, _id_of(pg, al.QA_PREFIX + "a"))[0] == "self_cleared"
+
+
+def _id_of(c, key):
+    with c.cursor() as cur:
+        cur.execute("SELECT id FROM squasher_work_queue WHERE finding_key = %s", (key,))
+        return cur.fetchone()[0]
+
+
+def _qa_board_with(monkeypatch, latest, unreadable=False):
+    from routes import qa_superuser_dashboard as qd
+    monkeypatch.setattr(qd, "_load", lambda limit=1: {"latest": latest})
+
+    def attach(view):
+        for f in view["findings"]:
+            if unreadable:
+                f["investigation_unreadable"] = "db down"
+    monkeypatch.setattr(qd, "_attach_investigations", attach)
+    return al.qa_board()
+
+
+def _fresh(**kw):
+    d = {"generated_at": datetime.now(timezone.utc).isoformat(), "canary_fired": True,
+         "findings": [_red("r1", "critical"), _red("g1", "minor", verdict="GAUGE"),
+                      _red("p1", "major", verdict="PASS")]}
+    d.update(kw)
+    return d
+
+
+def test_qa_board_keeps_only_actionable_reds_from_a_fresh_board(monkeypatch):
+    b = _qa_board_with(monkeypatch, _fresh())
+    assert b["ok"] and list(b["reds"]) == [al.QA_PREFIX + "r1"]
+
+
+@pytest.mark.parametrize("latest, unreadable", [
+    (None, False),
+    ("no-canary", False),
+    ("stale", False),
+    ("fresh", True),
+], ids=["no-run", "must-fail-did-not-fire", "stale-board", "investigations-unreadable"])
+def test_qa_board_refuses_rather_than_reporting_no_reds(monkeypatch, latest, unreadable):
+    if latest == "no-canary":
+        latest = _fresh(canary_fired=False)
+    elif latest == "stale":
+        latest = _fresh(generated_at=(datetime.now(timezone.utc) - timedelta(days=3)).isoformat())
+    elif latest == "fresh":
+        latest = _fresh()
+    b = _qa_board_with(monkeypatch, latest, unreadable)
+    assert b["ok"] is False and b["reds"] == {} and b["reason"]
