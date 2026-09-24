@@ -11470,7 +11470,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/embed/<slug>": {
-   "source": "routes/dcpi.py:9955",
+   "source": "routes/dcpi.py:9962",
    "handler": "embed_widget_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11634,14 +11634,14 @@
    ]
   },
   "GET /api/v1/dcpi/iso-comparison": {
-   "source": "routes/dcpi.py:6594",
+   "source": "routes/dcpi.py:6601",
    "handler": "api_iso_comparison",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/iso/<iso_code>": {
-   "source": "routes/dcpi.py:6525",
+   "source": "routes/dcpi.py:6532",
    "handler": "api_iso_deep_dive",
    "resolution": "opaque",
    "open_at": [],
@@ -11730,7 +11730,7 @@
    ]
   },
   "GET /api/v1/dcpi/oembed": {
-   "source": "routes/dcpi.py:6729",
+   "source": "routes/dcpi.py:6736",
    "handler": "api_oembed",
    "resolution": "resolved",
    "open_at": [
@@ -11749,35 +11749,35 @@
    ]
   },
   "GET /api/v1/dcpi/og/<slug>": {
-   "source": "routes/dcpi.py:9951",
+   "source": "routes/dcpi.py:9958",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/og/<slug>.svg": {
-   "source": "routes/dcpi.py:9951",
+   "source": "routes/dcpi.py:9958",
    "handler": "og_card_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page": {
-   "source": "routes/dcpi.py:9942",
+   "source": "routes/dcpi.py:9949",
    "handler": "public_dashboard_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/page/<slug>": {
-   "source": "routes/dcpi.py:9946",
+   "source": "routes/dcpi.py:9953",
    "handler": "public_market_page_alias",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/dcpi/press": {
-   "source": "routes/dcpi.py:9959",
+   "source": "routes/dcpi.py:9966",
    "handler": "press_kit_alias",
    "resolution": "opaque",
    "open_at": [],
@@ -11943,7 +11943,7 @@
    ]
   },
   "GET /api/v1/dcpi/ticker.html": {
-   "source": "routes/dcpi.py:9389",
+   "source": "routes/dcpi.py:9396",
    "handler": "ticker_widget",
    "resolution": "opaque",
    "open_at": [],
@@ -11965,7 +11965,7 @@
    ]
   },
   "GET /api/v1/dcpi/trending": {
-   "source": "routes/dcpi.py:9360",
+   "source": "routes/dcpi.py:9367",
    "handler": "api_trending",
    "resolution": "resolved",
    "open_at": [
@@ -17210,7 +17210,7 @@
    ]
   },
   "GET /api/v1/mcp/high-intent/stats": {
-   "source": "routes/mcp_high_intent_claim.py:1613",
+   "source": "routes/mcp_high_intent_claim.py:1612",
    "handler": "high_intent_stats",
    "resolution": "resolved",
    "open_at": [
@@ -29016,7 +29016,7 @@
    ]
   },
   "POST /api/v1/dcpi/lite-recompute": {
-   "source": "routes/dcpi.py:9967",
+   "source": "routes/dcpi.py:9974",
    "handler": "lite_recompute",
    "resolution": "resolved",
    "open_at": [
@@ -29077,7 +29077,7 @@
    ]
   },
   "POST /api/v1/dcpi/recompute": {
-   "source": "routes/dcpi.py:6798",
+   "source": "routes/dcpi.py:6805",
    "handler": "api_recompute",
    "resolution": "opaque",
    "open_at": [],
@@ -29172,7 +29172,7 @@
    ]
   },
   "POST /api/v1/dcpi/snapshot": {
-   "source": "routes/dcpi.py:6830",
+   "source": "routes/dcpi.py:6837",
    "handler": "api_snapshot",
    "resolution": "resolved",
    "open_at": [
@@ -30494,7 +30494,7 @@
    ]
   },
   "POST /api/v1/mcp/high-intent/redeem": {
-   "source": "routes/mcp_high_intent_claim.py:1454",
+   "source": "routes/mcp_high_intent_claim.py:1453",
    "handler": "claim_redeem_agent",
    "resolution": "resolved",
    "open_at": [
