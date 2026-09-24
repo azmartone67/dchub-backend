@@ -60,6 +60,24 @@
       "decision": "Restoring PJM-DOM data (raise the gridstatus budget, or set PJM_API_KEY) is the owner's call.",
       "by": "owner",
       "date": "2026-09-24"
+    },
+    {
+      "id": "dec-brief-path",
+      "decision": "The public agent brief lives at https://dchub.cloud/api/v1/ops/brief.",
+      "by": "owner",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "dec-plans-page",
+      "decision": "/plans is an informational page only: plan names, inclusions, limits and prices as text. No buy buttons, no /go/p/ links, no Stripe redirects; one plain link to dchub.cloud to sign in and subscribe. /pricing stays as-is for the web funnel. The 'needs a plan' line on /mcp/chatgpt points to /plans only.",
+      "by": "owner",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "dec-chatgpt-keyless-tier",
+      "decision": "No full keyless tier. /mcp/chatgpt serves the same trimmed anonymous previews as today's policy, with all commerce removed: no checkout, relay, price, key or session-ID output. If OpenAI rejects for limited functionality, revisit specific read-only tools then.",
+      "by": "owner",
+      "date": "2026-09-24"
     }
   ],
   "measured": [
@@ -143,12 +161,12 @@
     },
     {
       "id": "o-chatgpt-profile",
-      "item": "Directory-compliant /mcp/chatgpt profile.",
+      "item": "Directory-compliant /mcp/chatgpt profile, and the /plans page it links to. Report the tool count and a sample no-key response for owner verification before resubmitting.",
       "owner": "DC Hub",
-      "conflicts": [
-        "m-pricing-checkout: /pricing is not informational. It needs a plain /plans page (or /pricing without checkout buttons) before /mcp/chatgpt can link to it.",
-        "The keyless tier on that path must be a complete experience. Today's anonymous tier is trimmed previews by measured policy, so this is an owner decision on what anonymous ChatGPT users get.",
-        "No conflict with frz-claude-relay-wording as long as /mcp is unchanged."
+      "conflicts": [],
+      "resolved_by": [
+        "dec-plans-page",
+        "dec-chatgpt-keyless-tier"
       ]
     },
     {
