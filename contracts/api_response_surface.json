@@ -11,13 +11,13 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1513,
+  "python_files_scanned": 1514,
   "endpoints_total": 1811,
   "endpoints_resolved": 1292,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 453,
-  "keys_total": 10785,
-  "keys_strictly_protected": 9773,
+  "keys_total": 10786,
+  "keys_strictly_protected": 9774,
   "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -8717,13 +8717,14 @@
    ]
   },
   "GET /api/v1/brain/mcp-registries": {
-   "source": "routes/mcp_registry_watch.py:597",
+   "source": "routes/mcp_registry_watch.py:700",
    "handler": "mcp_registries_status",
    "resolution": "resolved",
    "open_at": [
     "missing",
     "not_actionable",
     "present",
+    "present_stale_copy",
     "probed_at",
     "probed_at_source",
     "results",
@@ -8735,6 +8736,7 @@
     "not_actionable",
     "ok",
     "present",
+    "present_stale_copy",
     "probed_at",
     "probed_at_source",
     "results",
@@ -8743,7 +8745,7 @@
    ]
   },
   "GET /api/v1/brain/mcp-registries/discover": {
-   "source": "routes/mcp_registry_watch.py:785",
+   "source": "routes/mcp_registry_watch.py:894",
    "handler": "mcp_registries_discover",
    "resolution": "resolved",
    "open_at": [
