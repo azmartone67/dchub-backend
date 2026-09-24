@@ -103,7 +103,8 @@ WARM_TIER = "{ browserMaxAge: 180, edgeTtl: 300, publicKeyCache: true }"
 
 def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
          content_type="image/png", cache_control="public, max-age=604800, immutable",
-         set_cookie=None, status=200, put_rejects=None):
+         set_cookie=None, status=200, put_rejects=None, cache_drops=False,
+         seed_readback=None, seed_put_error=None):
     """Execute the REAL assetCachePut + the REAL STEP-2 ordering on a streaming
     body, and report what the client and the cache each ended up with."""
     src = open(WORKER, encoding="utf-8").read()
@@ -114,6 +115,8 @@ def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
 {_block(src, "function _pkcSkipReason(", "}")}
 {_line(src, "const _pkcPutErrors = ")}
 {_block(src, "function _pkcNotePutError(", "}")}
+{_line(src, "const _pkcReadback = ")}
+{_block(src, "function _pkcNoteReadback(", "}")}
 {_block(src, "function originAllowsSharedStore(", "}")}
 {_block(src, "function assetCachePut(", "}")}
 
@@ -130,7 +133,9 @@ globalThis.caches = {{ default: {{
     if ({json.dumps(put_rejects)} !== null) throw new Error({json.dumps(put_rejects or "")});
     stored = new Uint8Array(await res.arrayBuffer());
   }},
-  async match() {{ return null; }},
+  // The fake cache models both outcomes: a real store (match returns what put
+  // kept) and Cloudflare accepting then dropping it (cache_drops).
+  async match() {{ return ({str(cache_drops).lower()} || !stored) ? undefined : new Response(stored); }},
 }} }};
 
 const waits = [];
@@ -153,6 +158,10 @@ const kvIsCacheable = () => false;
 const kvCacheKey = (u) => 'kv:' + u;
 const kvCacheStore = async () => {{}};
 const resp = mkOrigin();
+// A PREVIOUS request's outcome for this key, as the isolate would hold it.
+const _seedKey = _assetCacheKey(url, !!tier.pkcAsset).url;
+if ({json.dumps(seed_readback)} !== null) _pkcReadback.set(_seedKey, {json.dumps(seed_readback)});
+if ({json.dumps(seed_put_error)} !== null) _pkcPutErrors.set(_seedKey, {json.dumps(seed_put_error)});
 
 // ---- the SHIPPED sequence, verbatim from worker.js -----------------------
 const result = await (async () => {{
@@ -174,13 +183,18 @@ console.log(JSON.stringify({{
   wait_error: waitError,
   store_verdict: result.headers.get('x-dc-edge-store'),
   put_errors: Object.fromEntries(_pkcPutErrors),
+  readback: Object.fromEntries(_pkcReadback),
+  readback_header: result.headers.get('x-dc-edge-store-readback'),
+  last_error_header: result.headers.get('x-dc-edge-store-last-error'),
   expected_bytes: PNG.length,
 }}));
 """
     out = subprocess.run(["node", "--input-type=module", "-e", js],
                          capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, f"node failed: {out.stderr}"
-    return json.loads(out.stdout)
+    # The worker's own console.log lines ([edge-store] ...) share stdout; the
+    # harness's result is always the last line.
+    return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 # ── the outage invariant ───────────────────────────────────────────────────
@@ -296,3 +310,35 @@ def test_a_rejected_put_is_recorded_not_swallowed_and_never_fails_the_request():
 def test_the_asset_tier_gets_the_verdict_header_too():
     r = _run()
     assert r["store_verdict"] == "put"
+
+
+# ── readback after put (4.9.78) ────────────────────────────────────────────
+
+@pytest.mark.parametrize("drops,verdict", [(False, "readback-hit"), (True, "readback-miss")])
+def test_a_resolved_put_is_read_back_and_the_outcome_recorded(drops, verdict):
+    """put() resolving is not proof of a store: /api/v1/stats resolved every
+    put and never hit. The readback must say which it was."""
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="public, max-age=300", cache_drops=drops)
+    assert r["wait_error"] is None
+    assert r["client_error"] is None and r["client_bytes"] == r["expected_bytes"]
+    rb = r["readback"]
+    assert list(rb) == ["https://api.dchub.cloud/api/v1/stats?style=editorial&title=X"], rb
+    assert next(iter(rb.values())).endswith(verdict), rb
+
+
+def test_a_rejected_put_is_not_read_back():
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="public, max-age=300", put_rejects="refused")
+    assert r["readback"] == {}, r["readback"]
+    assert r["wait_error"] is None
+
+
+def test_the_previous_outcome_is_returned_on_the_next_miss():
+    """The readback and the put() error land AFTER the response they belong to,
+    so the only place a curl can see them is the NEXT miss for the same key."""
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="private", seed_readback="T0 readback-miss",
+             seed_put_error="T0 boom")
+    assert r["readback_header"] == "T0 readback-miss", r
+    assert r["last_error_header"] == "T0 boom", r

@@ -649,7 +649,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.77-edge-store-verdict';
+const WORKER_VERSION = '4.9.78-edge-store-readback';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2255,6 +2255,20 @@ function _pkcSkipReason(tier, resp) {
 // surfaced on the NEXT miss for that key as x-dc-edge-store-last-error.
 // Bounded; diagnostics only — never read to decide anything.
 const _pkcPutErrors = new Map();
+// 4.9.78: 4.9.77 showed /api/v1/stats answering `x-dc-edge-store: put` on every
+// read, no put() rejection in wrangler tail, and still never a hit. So put()
+// RESOLVES and the entry is not there next time. Reading the key back the moment
+// put() resolves splits the two remaining causes: readback-miss = Cloudflare
+// accepted and dropped it at write time; readback-hit = it was stored, and is
+// evicted or mis-keyed before the next request. Logged (wrangler tail) and
+// surfaced on the next miss for that key as x-dc-edge-store-readback.
+const _pkcReadback = new Map();
+function _pkcNoteReadback(key, hit) {
+  const verdict = hit ? 'readback-hit' : 'readback-miss';
+  if (_pkcReadback.size >= 200) _pkcReadback.delete(_pkcReadback.keys().next().value);
+  _pkcReadback.set(key, `${new Date().toISOString()} ${verdict}`);
+  console.log(`[edge-store] ${verdict} ${key}`);
+}
 function _pkcNotePutError(key, e) {
   const msg = String((e && e.message) || e).slice(0, 200);
   if (_pkcPutErrors.size >= 200) _pkcPutErrors.delete(_pkcPutErrors.keys().next().value);
@@ -2296,7 +2310,11 @@ function assetCachePut(ctx, url, resp, ttl, stripBust = true) {
     // request" took the route down for three days.
     const key = _assetCacheKey(url, stripBust);
     ctx.waitUntil(Promise.resolve(caches.default.put(key, store))
-      .then(() => { _pkcPutErrors.delete(key.url); })
+      .then(async () => {
+        _pkcPutErrors.delete(key.url);
+        const back = await caches.default.match(key);
+        _pkcNoteReadback(key.url, !!back);
+      })
       .catch((e) => { try { _pkcNotePutError(key.url, e); } catch (_) {} }));
     return 'put';
   } catch (e) {
@@ -4374,6 +4392,8 @@ export default {
         result.headers.set('x-dc-edge-store', _pkcVerdict);
         const _lastErr = _pkcPutErrors.get(_assetCacheKey(url, _pkcStrip).url);
         if (_lastErr) result.headers.set('x-dc-edge-store-last-error', _lastErr);
+        const _readback = _pkcReadback.get(_assetCacheKey(url, _pkcStrip).url);
+        if (_readback) result.headers.set('x-dc-edge-store-readback', _readback);
       }
       return result;
     }
