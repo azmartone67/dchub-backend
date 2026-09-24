@@ -73,6 +73,18 @@ _STRIPE_PRO_ANNUAL = "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07"
 # idempotency works across reruns/redeploys.
 _CAMPAIGN_NAME = "halfprice_annual_2026_06"
 
+# r-sku-wall (2026-09-24): RETIRED. The email's whole premise — "50% off your
+# current $199/mo rate", "$1,188 = effectively $99/mo", "through end of June
+# only" — has been false since r-price-collapse (2026-09-05) moved Pro Monthly
+# to $99: $1,188 is exactly 12 x $99, so the "half-price" offer would be no
+# discount at all to anyone on today's Pro, and Pro Annual is withdrawn
+# (api_tier_gating PLAN_INFO). /fire now refuses before the kill switch, the
+# fire-key and the admin override, so no path can send it; /preview mints no
+# fire_key. /log and /outcomes stay readable — the 2026-06 sends are history.
+_RETIRED_REASON = ("campaign_retired: Pro is $99/mo since 2026-09-05, so the "
+                   "$1,188 'half-price annual' is no discount; Pro Annual is "
+                   "withdrawn and the offer ended June 2026")
+
 # Safety caps.
 _PER_RUN_CAP = 50
 _FIRE_KEY_TTL_SECONDS = 600  # 10 minutes
@@ -398,6 +410,7 @@ def run_preview() -> dict:
         "fire_key_ttl_s":  _FIRE_KEY_TTL_SECONDS,
         "errors":          [],
     }
+    out["retired"] = _RETIRED_REASON
     c = _db_conn()
     if c is None:
         out["errors"].append("no_database")
@@ -414,8 +427,9 @@ def run_preview() -> dict:
         emails_list = ", ".join(c["email"] for c in cands) or "(none)"
         _log(f"PREVIEW: {len(cands)} eligible — {emails_list}")
 
-        # Mint a fresh fire-key only if there's something to fire.
-        if cands:
+        # Mint a fresh fire-key only if there's something to fire — and never
+        # for a retired campaign.
+        if cands and not _RETIRED_REASON:
             fk = _mint_fire_key()
             out["fire_key"] = fk
             _log(f"PREVIEW: fire_key={fk} (ttl={_FIRE_KEY_TTL_SECONDS}s)")
@@ -442,6 +456,12 @@ def run_fire(fire_key: str) -> dict:
         "skipped":         [],
         "errors":          [],
     }
+
+    # Retired: refuse before every other gate, the admin override included.
+    if _RETIRED_REASON:
+        out["errors"].append("campaign_retired")
+        out["retired"] = _RETIRED_REASON
+        return out
 
     # Kill switch.
     if os.environ.get("CAMPAIGN_DISABLE", "").lower() in ("1", "true", "yes"):
