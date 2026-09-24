@@ -39980,7 +39980,14 @@ def api_site_score():
                 'Challenging site'
             ),
             'source': 'DC Hub Site Intelligence',
-            'upgrade_url': 'https://dchub.cloud/pricing',
+            # Item #2 (2026-09-24): this body is the FULL answer: Pro and above,
+            # a pack paid before the cutover, and X-Internal-Key (the MCP server
+            # relays it verbatim to a caller whose tier removed the gates, as
+            # completeness=unrestricted). Nothing is locked, so there is nothing
+            # to sell: null, never a bare /pricing. Below Pro, lp_gated_view
+            # serves _site_score_preview with its own Pro-only /go/c wall. The
+            # key stays because the response contract names it.
+            'upgrade_url': None,
         })
 
     except Exception as e:
