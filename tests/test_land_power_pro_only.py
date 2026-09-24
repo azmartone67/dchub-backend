@@ -651,6 +651,24 @@ def test_internal_and_admin_are_unchanged(client, ledger, path, hdr):
     assert ledger["burns"] == []
 
 
+@pytest.mark.parametrize("hdrs", [{"key": PRO_KEY}, {"key": OLD_PACK_KEY},
+                                  {"X-Internal-Key": SECRET}, {"X-Admin-Key": ADMIN}],
+                         ids=["pro", "old-pack", "internal", "admin"])
+def test_the_full_site_score_sells_nothing(client, ledger, hdrs):
+    """Item #2 (2026-09-24, Grok re-probe): analyze_site relayed the full body to
+    a Claude session as completeness=unrestricted, still carrying
+    upgrade_url=https://dchub.cloud/pricing. A full answer has nothing locked:
+    the key stays (the response contract names it) and it is null."""
+    hdrs = dict(hdrs)
+    key = hdrs.pop("key", None)
+    r = _get(client, SITE_SCORE, key, **hdrs) if key else _get(client, SITE_SCORE, **hdrs)
+    _assert_full(r, SITE_SCORE)
+    body = r.get_json()
+    assert "upgrade_url" in body and body["upgrade_url"] is None, body.get("upgrade_url")
+    assert "dchub.cloud/pricing" not in r.get_data(as_text=True)
+    assert "buy.stripe.com" not in r.get_data(as_text=True)
+
+
 def test_the_map_allowance_does_not_open_site_score(client):
     """require_plan lets some of the site's own map calls through without
     resolving a caller, and /api/site-score is on that list. Not Pro."""
