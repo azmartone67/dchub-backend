@@ -70,14 +70,25 @@ _MAX_NOTES = 3
 _CACHE_TTL_S = 600
 
 # Outcome vocabulary — every source maps into exactly one of these.
-WORKED, FAILED, REJECTED, REFUSED, NEEDS_HUMAN = (
-    "worked", "failed", "rejected", "refused", "needs_human")
+# ★ REFUSED and DECLINED are different events (split 2026-09-24 after the first
+# live compile). REFUSED = L5's deterministic guards threw the proposal out
+# because it claimed a syntax/SQLite bug the file does not have. DECLINED = the
+# model itself returned an empty edit — L5's documented refusal contract
+# (`return [], "refused"`), meaning "this is not expressible as a code change".
+# Folding them together told 64 inspector_l22_handoff declines that they had
+# hallucinated a bug.
+WORKED, FAILED, REJECTED, REFUSED, DECLINED, NEEDS_HUMAN = (
+    "worked", "failed", "rejected", "refused", "declined", "needs_human")
+_OUTCOMES = (WORKED, FAILED, REJECTED, REFUSED, DECLINED, NEEDS_HUMAN)
 
 #: L5's deterministic guards (brain_v2_layer5._PERMAFAIL). Duplicated as a
 #: literal on purpose: importing layer5 here would pull its whole import graph
 #: into every reader of lessons_for().
 _PERMAFAIL = ("refused", "rejected_false_syntax_claim",
               "rejected_sqlite_hallucination")
+_GUARD_OUTCOME = {"refused": DECLINED,
+                  "rejected_false_syntax_claim": REFUSED,
+                  "rejected_sqlite_hallucination": REFUSED}
 
 _FAMILY_RE = re.compile(r"[a-z0-9][a-z0-9_.\-]*")
 
@@ -86,15 +97,27 @@ def _disabled() -> bool:
     return (os.environ.get("BRAIN_LESSONS_DISABLE") or "").strip() == "1"
 
 
+_FILE_EXT_RE = re.compile(r"\.(py|js|mjs|ts|html?|css|json|ya?ml|md|txt|sql|sh)$")
+
+
 def family_of(label) -> str:
     """The finding FAMILY a label belongs to: its leading token, lowercased.
 
     `iso_metric_count_zero_24h:WACM` and `iso_metric_count_zero_24h:WAUW` are
     one family — the lesson is about the KIND of problem, not the site. ""
     when the label has no usable token, which callers treat as "no lesson".
+
+    ★ Finding families are snake_case. The first live compile also produced
+    `https`, `dchub`, `table` and `ai_interconnection.py` — a URL scheme, bare
+    words and a filename, from proposals whose loop_name is a path or URL.
+    Those are not kinds of problem, so they are dropped: a token with no
+    underscore, or one ending in a file extension, is not a family.
     """
     m = _FAMILY_RE.match((label or "").strip().lower())
-    return m.group(0)[:80] if m else ""
+    fam = m.group(0)[:80] if m else ""
+    if "_" not in fam or _FILE_EXT_RE.search(fam):
+        return ""
+    return fam
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -120,7 +143,7 @@ def _guidance(fam: str, c: dict, files_failed: list, files_worked: list,
     family with nothing to teach produces "" rather than filler — an empty
     hint is better than one the drafter learns to skim past.
     """
-    w, f, r, x, h = (c[k] for k in (WORKED, FAILED, REJECTED, REFUSED, NEEDS_HUMAN))
+    w, f, r, x, d, h = (c[k] for k in _OUTCOMES)
     graded = w + f
     lines = []
     v = verdict_for(w, f)
@@ -154,6 +177,12 @@ def _guidance(fam: str, c: dict, files_failed: list, files_worked: list,
                      f"deterministic guards (claimed a syntax or SQLite bug the "
                      f"file does not have). Quote the exact lines you are "
                      f"changing and confirm they exist.")
+    if d >= 2:
+        lines.append(f"The drafter declined {d} times to propose an edit for "
+                     f"`{fam}` — it could not express it as a code change. "
+                     f"Unless you have new evidence, treat this as a config, "
+                     f"data or product action and name it, rather than "
+                     f"forcing an edit.")
     if h >= 2 and not graded:
         lines.append(f"The agent handed `{fam}` to a human {h} times. If you "
                      f"cannot do better than that, say so immediately.")
@@ -166,17 +195,16 @@ def compile_lessons(events) -> dict:
     """{family: lesson}. PURE — no DB, no clock, no network.
 
     events: [{"family", "outcome", "file"?, "note"?}, ...] with outcome in the
-    module's five-word vocabulary. Unknown outcomes and family-less events are
+    module's outcome vocabulary (_OUTCOMES). Unknown outcomes and family-less events are
     DROPPED, not counted: a row we cannot place must not move a verdict.
     """
     acc: dict = {}
     for e in events or []:
         fam = family_of((e or {}).get("family"))
         oc = (e or {}).get("outcome")
-        if not fam or oc not in (WORKED, FAILED, REJECTED, REFUSED, NEEDS_HUMAN):
+        if not fam or oc not in _OUTCOMES:
             continue
-        a = acc.setdefault(fam, {"counts": dict.fromkeys(
-            (WORKED, FAILED, REJECTED, REFUSED, NEEDS_HUMAN), 0),
+        a = acc.setdefault(fam, {"counts": dict.fromkeys(_OUTCOMES, 0),
             "files_failed": [], "files_worked": [], "notes": []})
         a["counts"][oc] += 1
         fp = (e.get("file") or "").strip()
@@ -286,7 +314,9 @@ def read_events(cur, days: int = WINDOW_DAYS) -> tuple[list, dict]:
     rows = _rows(cur, _L5_REFUSED_SQL, (list(_PERMAFAIL), days))
     seen["l5_guard_refusals"] = None if rows is None else len(rows)
     for label, oc in rows or []:
-        events.append({"family": label, "outcome": REFUSED, "note": oc})
+        mapped = _GUARD_OUTCOME.get(oc)
+        if mapped:
+            events.append({"family": label, "outcome": mapped, "note": oc})
     rows = _rows(cur, _AGENT_SQL, (days,))
     seen["squasher_agent"] = None if rows is None else len(rows)
     for key, state, note in rows or []:
