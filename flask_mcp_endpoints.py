@@ -226,6 +226,100 @@ def _open_track_conn():
     return conn
 
 
+# r-source-path (#3778, 2026-09-23): registry ARRIVAL attribution. The MCP
+# server (dchub-mcp-server#331) resolves which registry path a request came in
+# on (/mcp/glama -> 'glama', /mcp/smithery -> 'smithery', ...) and sends it as
+# `source` in the /track body. It was accepted and silently dropped here: no
+# column to land in. It now lands in mcp_call_log.source.
+#
+# ★ `source` is NOT `platform`. platform = which CLIENT (claude, cursor);
+#   source = who SENT them (glama, smithery). A human copying our Glama URL
+#   into Claude Desktop is platform=claude AND source=glama. This code never
+#   reads source into platform or platform into source.
+# ★ Caller-assertable, not proof. Anyone who finds /mcp/glama can credit Glama
+#   with their own traffic — same trust as the X-MCP-Platform header. Fine for
+#   a growth read; never identity, never a payout basis. Hence the sanitiser:
+#   lower-cased, 1-64 chars of [a-z0-9._-] starting alphanumeric. Anything
+#   else (wrong type, over-long, spaces, quotes, unicode) becomes NULL rather
+#   than being trimmed or truncated, so a hostile value can never collide with
+#   a real registry name. NULL also means "arrived on canonical /mcp".
+_TRACK_SOURCE_MAX_LEN = 64
+_TRACK_SOURCE_RE = _re_mod.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def _sanitize_track_source(raw):
+    """Caller-supplied registry tag -> safe lower-case slug, or None."""
+    if not isinstance(raw, str):
+        return None
+    v = raw.strip().lower()
+    if not v or len(v) > _TRACK_SOURCE_MAX_LEN:
+        return None
+    if not _TRACK_SOURCE_RE.fullmatch(v):
+        return None
+    return v
+
+
+# The column is declared in migrations/2026-09-23_mcp_call_log_source.sql
+# (applied by hand, like its funnel_instrumentation siblings referrer /
+# user_agent / event_type). Until that has run, an INSERT naming `source`
+# would fail and take the WHOLE call row with it — so the column is only
+# named once it is confirmed present, and confirmation is attempted only when
+# a call actually carries a source (canonical /mcp traffic pays nothing).
+# House pattern (routes/checkout_click_tracker._ensure_table): ask the catalog
+# first, because ADD COLUMN IF NOT EXISTS waits for ACCESS EXCLUSIVE even when
+# the column exists; ALTER only when absent, under a 2s lock_timeout inside a
+# REAL transaction (SET LOCAL is a no-op under autocommit), then restore
+# autocommit. Runs on the direct track connection, never a db_utils cursor
+# (whose execute() silently drops DDL under SKIP_DDL).
+_CALL_LOG_SOURCE_STATE = {"ready": False, "next_try": 0.0}
+_CALL_LOG_SOURCE_RETRY_S = 300
+_CALL_LOG_SOURCE_PRESENT_SQL = (
+    "SELECT 1 FROM information_schema.columns"
+    " WHERE table_schema = current_schema()"
+    " AND table_name = 'mcp_call_log' AND column_name = 'source'")
+
+
+def _ensure_call_log_source_column(conn) -> bool:
+    """True once mcp_call_log.source is confirmed present. Never raises."""
+    st = _CALL_LOG_SOURCE_STATE
+    if st["ready"]:
+        return True
+    if conn is None:
+        return False
+    now = time.time()
+    if now < st["next_try"]:
+        return False
+    st["next_try"] = now + _CALL_LOG_SOURCE_RETRY_S
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_CALL_LOG_SOURCE_PRESENT_SQL)
+            if cur.fetchone():
+                st["ready"] = True
+                return True
+        prev = conn.autocommit
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL lock_timeout = '2s'")
+                cur.execute("ALTER TABLE mcp_call_log"
+                            " ADD COLUMN IF NOT EXISTS source TEXT")
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.autocommit = prev
+        with conn.cursor() as cur:
+            cur.execute(_CALL_LOG_SOURCE_PRESENT_SQL)
+            st["ready"] = bool(cur.fetchone())
+    except Exception:
+        pass
+    return st["ready"]
+
+
 _pool = _PoolShim()
 
 
@@ -3713,15 +3807,26 @@ def track_tool_call():
             except Exception:
                 pass  # activation advance is best-effort — never block tracking
 
+    # r-source-path (#3778): registry arrival tag — its own column, never
+    # folded into platform. See _sanitize_track_source for the trust rule.
+    _src = _sanitize_track_source(body.get("source"))
+
     try:
         if _tc_conn is None:
             _tc_conn = _open_track_conn()
+        _src_col = ""
+        _src_val = ()
+        if _src is not None and _ensure_call_log_source_column(_tc_conn):
+            _src_col = ", source"
+            _src_val = (_src,)
         with _tc_conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO mcp_call_log
                      (timestamp, tool, params, platform, api_key, tier,
-                      session_id, status, duration_ms, referrer, user_agent, event_type)
-                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      session_id, status, duration_ms, referrer, user_agent, event_type"""
+                + _src_col + """)
+                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s"""
+                + (", %s" if _src_val else "") + ")",
                 (
                     ts_dt, tool, params,
                     (_r_platform or body.get("platform")),
@@ -3739,7 +3844,7 @@ def track_tool_call():
                      "trial_used":        "trial_preview",
                      "ok":                "tool_call",
                      "error":             "tool_error"}.get(body.get("status")),
-                ),
+                ) + _src_val,
             )
         # Monthly-quota counting rail (see monthly_quota.py): same autocommit
         # connection, separate guard — a rollup miss must never fail the
