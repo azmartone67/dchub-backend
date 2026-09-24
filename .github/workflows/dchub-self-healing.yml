@@ -39,16 +39,24 @@ jobs:
             echo "status=$status" >> $GITHUB_OUTPUT
           fi
 
-      - name: Open issue if RED
-        if: steps.probe.outputs.status == 'red' || steps.probe.outputs.exit_code != '0'
+      # 2026-09-23: this step used to `gh issue create` on EVERY red probe with
+      # an HH:MM title and never close anything — 88 open copies of one
+      # crm_export trip in four days. tools/issue_triage.py keeps ONE tracker:
+      # opens it on red, comments only when the set of red checks changes,
+      # closes it on green. It runs on green too; that is how it closes.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/issue_triage.py
+          sparse-checkout-cone-mode: false
+
+      - name: Keep one watchdog tracker issue (open on red, close on green)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXIT_CODE: ${{ steps.probe.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          BODY="$(cat /tmp/health.json 2>/dev/null || echo 'health endpoint unreachable')"
-          gh issue create -R azmartone67/dchub-backend \
-            --title "[watchdog] DC Hub health check tripped — $(date -u +%H:%M)" \
-            --body "$BODY" \
-            --label watchdog || true
+          python3 tools/issue_triage.py watchdog --health /tmp/health.json \
+            --exit-code "${EXIT_CODE:-1}" --run-url "$RUN_URL"
 
       - name: Per-subsystem deep checks
         run: |
