@@ -738,7 +738,7 @@ def _record_attempt(doc: str, acted: bool, note: str) -> None:
             cur.execute("""
                 INSERT INTO loop_closure_spec_attempts
                        (doc, last_attempt_at, last_acted, last_note, attempts)
-                VALUES (%s, NOW(), %s, %s, 1)
+                VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, %s, 1)
                 ON CONFLICT (doc) DO UPDATE
                    SET last_attempt_at = NOW(),
                        last_acted = EXCLUDED.last_acted,

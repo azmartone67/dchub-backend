@@ -278,7 +278,7 @@ def snapshot() -> dict:
             wk = week_start()
             cur.execute("""
                 INSERT INTO brain_evolution_scorecard (week_start, metrics,
-                    computed_at) VALUES (%s, %s::jsonb, NOW())
+                    computed_at) VALUES (%s, %s::jsonb, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (week_start) DO UPDATE SET
                     metrics = EXCLUDED.metrics, computed_at = NOW()""",
                 (wk, json.dumps(m)))

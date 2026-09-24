@@ -107,7 +107,7 @@ def world():
             INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
                                          request_ua, call_count, notes)
             VALUES ('dch_trial_borngated', {WEEK_TS}, 'realip-gated', 'Cursor/1.0',
-                    10, 'gate_carry:10 (cumulative unbound usage carried ...)')""")
+                    10, 'gate_carry:10 (cumulative unbound usage carried ...) ON CONFLICT DO NOTHING')""")
         # the scan: one pair, 500 born-gated mints in one day
         cur.execute(f"""
             INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,

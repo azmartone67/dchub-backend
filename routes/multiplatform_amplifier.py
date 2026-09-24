@@ -836,7 +836,7 @@ def _record(cur, source_post_id: int, source_platform: str,
             INSERT INTO multiplatform_amplifier_log
               (source_post_id, source_platform, target_platform,
                content_text, target_post_url, status, error)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             -- ★ The WHERE is NOT optional. multiplatform_amplifier_log_src_tgt
             -- is a PARTIAL unique index (WHERE source_post_id > 0), and
             -- Postgres cannot infer a partial index unless the ON CONFLICT

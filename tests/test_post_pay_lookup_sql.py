@@ -60,7 +60,7 @@ def looked_up():
                     " VALUES (%s, %s)", (cs, kind))
     cur.execute("INSERT INTO relay_identify_captures (mcp_session_id, email, source,"
                 " stripe_session_id) VALUES ('s1', 'Captured@Example.org', 'checkout',"
-                " 'cs_test_c1')")
+                " 'cs_test_c1') ON CONFLICT DO NOTHING")
     cur.executemany("INSERT INTO mcp_conversions (caller_id, user_email, stripe_session_id)"
                     " VALUES (%s, %s, %s)", [
                         ("conv-c1@example.org", "conv-c1@example.org", "cs_test_c1"),

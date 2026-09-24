@@ -4121,7 +4121,7 @@ def recompute_all_scores(source: str = "manual",
                    if limit else "")
 
     with _conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) RETURNING id",
+        cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING id",
                     (started, source + chunk_label))
         run_id = cur.fetchone()[0]
         c.commit()
@@ -10085,7 +10085,7 @@ def lite_recompute():
                         (market_slug, market_name, latitude, longitude,
                          constraint_score, excess_power_score, time_to_power_months,
                          verdict, tier_required, computed_at)
-                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW())
+                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW() ON CONFLICT DO NOTHING)
                         ON CONFLICT (market_slug) DO UPDATE SET
                           constraint_score = EXCLUDED.constraint_score,
                           excess_power_score = EXCLUDED.excess_power_score,

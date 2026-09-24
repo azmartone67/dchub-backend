@@ -207,26 +207,26 @@ def test_refresh_compiles_all_four_sources_on_postgres(pg):
         for i, broken in enumerate((True, True, True, False)):
             cur.execute("INSERT INTO brain_proposed_code_fixes (loop_name,"
                         " file_path, finding_class) VALUES ('l', %s,"
-                        " 'shadowed_route') RETURNING id", (f"routes/r{i}.py",))
+                        " 'shadowed_route') ON CONFLICT DO NOTHING RETURNING id", (f"routes/r{i}.py",))
             pid = cur.fetchone()[0]
             cur.execute("INSERT INTO brain_fix_outcomes (proposal_id,"
                         " proposal_kind, checked_at, still_broken) VALUES"
                         " (%s, 'code', NOW(), %s)", (pid, broken))
         # a PR-ledger row with the same id must NOT join (kind != code)
         cur.execute("INSERT INTO brain_fix_outcomes (proposal_id, proposal_kind,"
-                    " checked_at, still_broken) VALUES (1, 'pr', NOW(), TRUE)")
+                    " checked_at, still_broken) VALUES (1, 'pr', NOW() ON CONFLICT DO NOTHING, TRUE)")
         # autopilot outcomes: proposal_id is brain_autopilot_actions.id — the
         # id space the code-only join never reached (173 of 189 live rows).
         for held in (True, True, True, False):
             cur.execute("INSERT INTO brain_autopilot_actions (finding_issue,"
                         " pattern_name) VALUES ('competitor_announcement:dchawk',"
-                        " 'flag_for_review') RETURNING id")
+                        " 'flag_for_review') ON CONFLICT DO NOTHING RETURNING id")
             aid = cur.fetchone()[0]
             cur.execute("INSERT INTO brain_fix_outcomes (proposal_id,"
                         " proposal_kind, checked_at, still_broken) VALUES"
                         " (%s, 'autopilot', NOW(), %s)", (aid, not held))
         cur.execute("INSERT INTO brain_issue_persistence (issue_label,"
-                    " last_outcome) VALUES ('boot_syntax:x', 'refused'),"
+                    " last_outcome) VALUES ('boot_syntax:x', 'refused') ON CONFLICT DO NOTHING,"
                     " ('boot_syntax:y', 'rejected_false_syntax_claim'),"
                     " ('boot_syntax:z', 'pr_opened')")
         cur.execute("INSERT INTO squasher_work_queue (finding_key, agent_state,"

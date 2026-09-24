@@ -263,7 +263,7 @@ def db():
         # ── the v1 lanes ────────────────────────────────────────────────────
         # Fix E writes this row inline in main.py's webhook; by hand here.
         cur.execute("INSERT INTO mcp_session_upgrades (mcp_session_id, plan,"
-                    " stripe_session_id, amount_cents) VALUES (%s, 'pro', 'cs_test_p4', 9900)",
+                    " stripe_session_id, amount_cents) VALUES (%s, 'pro', 'cs_test_p4', 9900) ON CONFLICT DO NOTHING",
                     (S5,))
         out["grant"] = mcp.grant_credit_pack(
             "test-key-paid-attributed-v1", S15, 1000,
@@ -272,7 +272,7 @@ def db():
             "test-key-paid-attributed-v2", S20, 1000,
             stripe_session_id="cs_test_v2", source="pack10", price_cents=1000)
         cur.executemany("INSERT INTO mcp_conversions (stripe_session_id, user_email,"
-                        " caller_id) VALUES (%s, %s, %s)", _CONVERSIONS)
+                        " caller_id) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", _CONVERSIONS)
 
         # normalize_email vs normalized_email_sql, row by row.
         cases = [_OP_EMAIL, _OP_DISGUISED, "  A.B+x@GoogleMail.com ", "a.b@gmail.com",

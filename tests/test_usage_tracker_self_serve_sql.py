@@ -461,7 +461,7 @@ def test_partner_refs_and_what_they_led_to(partner_client):
             ("cs_5", "ref_" + other + "__tool_x__ts_2", True)]
     for sid, cref, live in pays:
         _pexec("INSERT INTO mcp_checkout_payments (stripe_session_id, client_reference_id, "
-               "livemode) VALUES (%s, %s, %s)", (sid, cref, live))
+               "livemode) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", (sid, cref, live))
     for ref, known in (("ref_" + code + "__tool_pipeline__ts_3", True),
                        ("ref_" + code + "__tool_pipeline__ts_4", False),
                        ("ref_" + other + "__tool_x__ts_5", True)):

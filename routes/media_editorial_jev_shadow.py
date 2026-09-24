@@ -344,7 +344,7 @@ def _record(row: dict) -> bool:
                      incumbent_model, shadow_verdict, shadow_confidence,
                      shadow_model, outcome, latency_ms, input_tokens,
                      raw_keys, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) ON CONFLICT DO NOTHING
             """, (
                 str(row.get("press_slug") or "")[:200],
                 str(row.get("category") or "")[:80] or None,
