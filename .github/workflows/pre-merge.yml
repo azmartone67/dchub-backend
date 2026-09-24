@@ -1068,6 +1068,20 @@ jobs:
             echo "::error::the paid_attributed SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── /upgrade/h/done's paid-session lookup (r-post-pay-identify) ───────
+      # routes/human_relay._paid_checkout reads the email the post-pay page
+      # masks and the opt-in is sent to. Own schema, same Postgres.
+      - name: post-pay page lookup SQL against a real Postgres
+        env:
+          POST_PAY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_post_pay_lookup_sql.py \
+            -q -rs --tb=short > pp.txt 2>&1 || { cat pp.txt; exit 1; }
+          cat pp.txt
+          if grep -qi "skipped" pp.txt; then
+            echo "::error::the post-pay lookup SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── click→pay per plan and per path (frontend#1534 (c)), same Postgres ─
       # routes/handoff_definition credits a paid Checkout Session to the latest
       # qualifying click on its ref, per plan, on two click paths (/go/c and

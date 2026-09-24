@@ -332,6 +332,160 @@ def _relay_identify(token: str, info: dict | None):
     return redirect(dest, code=302)
 
 
+# ── the POST-PAY page (r-post-pay-identify, 2026-09-24) ────────────────────
+# Owner decision 2026-09-21: /upgrade/h never stands in front of checkout; it
+# moves AFTER payment. Measured 2026-09-24: the checkout webhook already binds
+# the buyer's Stripe email to the paying session (relay_identify
+# capture_from_checkout, 2 of 2 MCP-link payments), while the pre-checkout
+# form caught one address in 241 sessions — ours. So this page asks nothing
+# the webhook already knows. It confirms where receipts go and offers ONE
+# thing only the buyer can give: explicit marketing consent.
+#
+# Stripe Payment Links redirect here via their dashboard setting
+# (?cs={CHECKOUT_SESSION_ID}); no code path owns that redirect.
+#
+# ★ THE EMAIL NEVER COMES FROM THE REQUEST. It is read server-side from the
+# paid Checkout Session the cs id names, and shown masked. Knowing a cs id
+# lets a visitor at most trigger the double opt-in email to that buyer, which
+# request_opt_in rate-limits and which does nothing until the buyer clicks it.
+#
+# ★ ROUTE ORDER. '/upgrade/h/done' also matches '/upgrade/h/<token>'. Werkzeug
+# ranks a static rule above a converter rule whatever the registration order;
+# tests/test_post_pay_page.py pins that 'done' reaches this handler.
+_CS_OK = re.compile(r"cs_(live|test)_[A-Za-z0-9]{8,250}")
+_PENDING_RETRIES = 3
+
+
+def _mask_email(email: str) -> str:
+    local, _, dom = (email or "").partition("@")
+    if not local or not dom:
+        return ""
+    return local[0] + "***@" + dom
+
+
+def _paid_checkout(cs: str) -> dict | None:
+    """{'ref_kind', 'email'} for a recorded paid Checkout Session, else None.
+
+    Email: the webhook's capture first (what identify stamped), else the
+    conversion row's payer. Never raises.
+    """
+    url = (os.environ.get("DATABASE_URL")
+           or os.environ.get("NEON_DATABASE_URL") or "").strip()
+    if not url:
+        return None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=4)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT p.ref_kind,"
+                    " (SELECT r.email FROM relay_identify_captures r"
+                    "   WHERE r.stripe_session_id = p.stripe_session_id"
+                    "   ORDER BY r.captured_at DESC LIMIT 1),"
+                    " (SELECT COALESCE(NULLIF(c.user_email, ''), c.caller_id)"
+                    "   FROM mcp_conversions c"
+                    "   WHERE c.stripe_session_id = p.stripe_session_id"
+                    "   ORDER BY c.id DESC LIMIT 1)"
+                    " FROM mcp_checkout_payments p"
+                    " WHERE p.stripe_session_id = %s", (cs,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("post-pay lookup swallowed: %s", e)
+        return None
+    if not row:
+        return None
+    email = next((str(x).strip().lower() for x in row[1:]
+                  if x and "@" in str(x)), "")
+    return {"ref_kind": row[0] or "", "email": email}
+
+
+def _post_pay_html(body: str, refresh: str = "") -> str:
+    return ("<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<meta name='robots' content='noindex'>" + refresh +
+            "<title>Payment received — DC Hub</title>"
+            "<style>body{font-family:system-ui;max-width:560px;margin:48px auto;"
+            "padding:0 20px;line-height:1.55;color:#111}h1{font-size:26px}"
+            "form.cap{margin:22px 0 4px}"
+            "form.cap label.optin{display:block;font-size:15px;margin-bottom:10px}"
+            "form.cap button{width:100%;background:#3478f6;color:#fff;border:0;"
+            "padding:13px 18px;border-radius:10px;font-weight:600;font-size:16px;"
+            "cursor:pointer}small{color:#888}</style></head><body>"
+            + body +
+            "<p><small>DC Hub · dchub.cloud · questions: reply to your receipt."
+            "</small></p></body></html>")
+
+
+def _post_pay_response(html: str):
+    from flask import make_response
+    resp = make_response(html, 200)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@human_relay_bp.route("/upgrade/h/done", methods=["GET", "POST"])
+def post_pay_page():
+    src = request.form if request.method == "POST" else request.args
+    cs = (src.get("cs") or "").strip()
+    paid = _paid_checkout(cs) if _CS_OK.fullmatch(cs) else None
+    kind = (paid or {}).get("ref_kind") or ""
+    where = ("The credits are on the API key your agent already uses — its "
+             "next call returns full data, no reconnect needed."
+             if kind in ("pack_key", "sub_key") else
+             "Your agent's next call returns full data.")
+
+    if request.method == "POST":
+        # Consent only on an explicit tick, only through the double opt-in,
+        # only to the address the paid session carries. The reply is the same
+        # whether a confirmation went out or was refused (suppressed, cooling
+        # down), so the page reveals nothing about the address.
+        if paid and paid.get("email") and request.form.get("marketing_opt_in") == "1":
+            try:
+                from routes.marketing_opt_in import request_opt_in
+                request_opt_in(paid["email"], source="post_pay_page")
+            except Exception:  # noqa: BLE001
+                logger.warning("post-pay opt-in request failed", exc_info=True)
+            msg = ("If that address can receive it, one confirmation email is "
+                   "on its way. Nothing else is sent unless you confirm.")
+        else:
+            msg = "No problem — you will only get receipts and key emails."
+        return _post_pay_response(_post_pay_html(
+            "<h1>Thanks — you're all set</h1><p>%s</p><p>%s</p>"
+            % (_esc(msg), _esc(where))))
+
+    if not paid:
+        # The redirect can beat the webhook by a few seconds. Retry briefly,
+        # then stop: a thank-you that never resolves is still a thank-you.
+        try:
+            tries = int(request.args.get("r") or 0)
+        except ValueError:
+            tries = _PENDING_RETRIES
+        refresh = ""
+        if _CS_OK.fullmatch(cs) and tries < _PENDING_RETRIES:
+            refresh = ("<meta http-equiv='refresh' content='3;url=/upgrade/h/done"
+                       "?cs=%s&r=%d'>" % (_esc(cs), tries + 1))
+        return _post_pay_response(_post_pay_html(
+            "<h1>Payment received</h1><p>Thanks. We are finishing setup; your "
+            "receipt comes from Stripe by email.</p>", refresh))
+
+    email = paid.get("email") or ""
+    to_line = ("Receipts and key details go to <b>%s</b>." % _esc(_mask_email(email))
+               if email else "Your receipt comes from Stripe by email.")
+    form = ("" if not email else
+            "<form method='post' action='/upgrade/h/done' class='cap'>"
+            "<input type='hidden' name='cs' value='%s'>"
+            "<label class='optin'><input type='checkbox' name='marketing_opt_in' "
+            "value='1'> Also email me DC Hub product updates. I will get one email "
+            "to confirm first, and can unsubscribe anytime.</label>"
+            "<button type='submit'>Done</button></form>" % _esc(cs))
+    return _post_pay_response(_post_pay_html(
+        "<h1>Thanks — payment received</h1><p>%s</p><p>%s</p>%s"
+        % (_esc(where), to_line, form)))
+
+
 @human_relay_bp.route("/upgrade/h/<token>", methods=["GET", "POST"])
 def relay_page(token):
     info = parse_relay_token(token)
