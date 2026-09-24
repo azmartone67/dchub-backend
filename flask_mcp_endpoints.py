@@ -52,6 +52,7 @@ from routes.handoff_definition import (
     biggest_leak_detail as _biggest_leak_detail,
     human_acted_count_sql as _human_acted_count_sql,
     relay_minted_acted_count_sql as _relay_minted_acted_count_sql,
+    high_intent_stage_count_sql as _high_intent_stage_count_sql,
     human_acted_definition as _human_acted_definition,
     redeem_stage_basis as _redeem_stage_basis,
 )
@@ -101,6 +102,7 @@ from mcp_calls_deloop import (
     external_platform_predicate as _deloop_external_platform_predicate,
     external_session_predicate as _deloop_external_session_predicate,
     self_traffic_session_prefixes as _deloop_self_traffic_prefixes,
+    CRAWLER_UA_PATTERN as _CRAWLER_UA_PATTERN,
     SELF_TRAFFIC_SESSION_SEED_V4 as _DELOOP_SELF_SEED_V4,
     normalize_write_platform as _normalize_write_platform,
     canonical_external_activity_sql as _canonical_activity_sql,
@@ -566,12 +568,18 @@ def handoff_funnel():
                       "where created_at > now() - interval '%s' "
                       "and signal_type in ('trial_preview','paid_tool_blocked') "
                       "and session_id is not null" % iv)
-        high    = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
-                      "where first_hit_at > now() - interval '%s'" % iv)
-        minted  = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
-                      "where claim_minted_at is not null and first_hit_at > now() - interval '%s'" % iv)
-        used    = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
-                      "where claim_used_at is not null and first_hit_at > now() - interval '%s'" % iv)
+        # r-funnel-crawler-read (2026-09-24): these three are counted straight
+        # from the table, so they carry its read-side crawler filter; the
+        # unfiltered figure is published beside each (see `excluded`).
+        high    = one(_high_intent_stage_count_sql("high_intent", iv))
+        minted  = one(_high_intent_stage_count_sql("relay_minted", iv))
+        used    = one(_high_intent_stage_count_sql("redeemed", iv))
+        high_incl_crawl   = one(_high_intent_stage_count_sql(
+            "high_intent", iv, include_crawlers=True))
+        minted_incl_crawl = one(_high_intent_stage_count_sql(
+            "relay_minted", iv, include_crawlers=True))
+        used_incl_crawl   = one(_high_intent_stage_count_sql(
+            "redeemed", iv, include_crawlers=True))
         # r-funnel-honest (2026-06-25): 'human_acted' previously read claim_used_at,
         # but that is dominated by the SERVER-SIDE auto-redeem (server.mjs
         # _autoRedeemClaim stamps it ~1s after mint — no human, no browser; the real
@@ -1025,6 +1033,8 @@ def handoff_funnel():
                         " h.mcp_session_id = ro.session_id)") % iv)
         def pct(n, d):
             return round(100.0 * n / d, 2) if (n is not None and d) else None
+        def _removed(incl, filt):
+            return (incl - filt) if (incl is not None and filt is not None) else None
         steps = {"paywall_hit": paywall, "high_intent": high, "relay_minted": minted,
                  "human_acted": opened, "redeemed": used,
                  "identified": emailed, "paid_attributed": paid}
@@ -1217,6 +1227,33 @@ def handoff_funnel():
             # was us.
             "excluded": {
                 "self_traffic_sessions": _deloop_self_traffic_prefixes(),
+                # r-funnel-crawler-read (2026-09-24): declared like the
+                # self-traffic exclusion above — the unfiltered figure and the
+                # difference, never a silent subtraction.
+                "crawler_ua": {
+                    "pattern": _CRAWLER_UA_PATTERN,
+                    "high_intent_including_crawlers": high_incl_crawl,
+                    "relay_minted_including_crawlers": minted_incl_crawl,
+                    "redeemed_including_crawlers": used_incl_crawl,
+                    "high_intent_removed": _removed(high_incl_crawl, high),
+                    "relay_minted_removed": _removed(minted_incl_crawl, minted),
+                    "redeemed_removed": _removed(used_incl_crawl, used),
+                    "basis": (
+                        "high_intent, relay_minted and redeemed are counted "
+                        "straight from mcp_high_intent_sessions and drop rows "
+                        "whose user_agent is a self-declared crawler: a product "
+                        "token ending in bot/crawler/spider followed by a "
+                        "version (robots.txt convention). BrickBlueBot/0.1 "
+                        "('agentic-web registry|indexer') wrote 15 claim-minted "
+                        "sessions on 2026-09-17..21 with 0 opens "
+                        "before the write gate refused it; this removes those "
+                        "at read time. relay_minted_acted applies the same "
+                        "filter so it stays a subset of relay_minted. "
+                        "human_acted and identified are not re-defined: they "
+                        "need a real-UA human artifact a crawler never "
+                        "produces. The *_including_crawlers figures are "
+                        "unfiltered."),
+                },
                 "human_acted_removed": (
                     (opened_incl_self - opened)
                     if (opened_incl_self is not None and opened is not None)

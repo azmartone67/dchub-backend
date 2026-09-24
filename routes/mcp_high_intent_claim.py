@@ -63,6 +63,7 @@ from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, redirect, request
 from mcp_calls_deloop import real_ua_predicate
+from mcp_calls_deloop import CRAWLER_UA_PATTERN
 from routes._swallowed_writes import note_swallowed_write
 
 
@@ -153,7 +154,9 @@ _SCRIPT_UA_SQL = "(" + "|".join(_SCRIPT_UA_TOKENS) + ")"   # POSIX ~* alternatio
 # Perplexity-User carry no such token either. Checked on mcp_tool_calls 30d
 # (2026-09-24): the only UAs this shape matches are BrickBlueBot, HubGrokBot (ours)
 # and Baiduspider-render — no human-bearing agent.
-_CRAWLER_UA_PATTERN = r"[a-z0-9](bot|crawler|spider)(-[a-z]+)?/[0-9]"
+# The pattern itself is single-sourced in mcp_calls_deloop.CRAWLER_UA_PATTERN, which
+# the handoff funnel's read-side filter renders too.
+_CRAWLER_UA_PATTERN = CRAWLER_UA_PATTERN
 _CRAWLER_UA_RE = re.compile(_CRAWLER_UA_PATTERN, re.I)
 _CRAWLER_UA_SQL = _CRAWLER_UA_PATTERN   # same text is valid POSIX ~* (no \b, no lookaround)
 
