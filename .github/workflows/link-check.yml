@@ -32,6 +32,19 @@ permissions:
   contents: read
   issues: write   # so we can auto-open issues on red
 
+# ★ 2026-09-24 — one crawl at a time. Every push to main starts a ~430-URL
+# crawl, and with no concurrency group two merges minutes apart crawled
+# side by side: runs 35959723991 + 35959847523 both crawled 05:25-05:36Z,
+# ~580 /dcpi/<slug> fetches from two runner IPs, the origin's busiest
+# 5-minute bucket that morning (1,944 req vs ~1,150). The older crawl was
+# also probing a deploy the newer push had already replaced. Cancelling the
+# older run keeps the verification of the newest deploy; a cancelled run is
+# not red, so it files no issue. The 6-hourly schedule still runs when
+# merges stop.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   link-check:
     runs-on: ubuntu-latest
