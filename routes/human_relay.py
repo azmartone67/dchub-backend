@@ -543,6 +543,19 @@ def relay_page(token):
         "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
         "pays for full data on every call — your agent's very next call "
         "returns complete data, no reconnect needed.")
+    # r-relay-teaser (2026-09-24): ONE withheld number, free, looked up by the
+    # token (routes/relay_teaser: stored server-side so the agent never sees it).
+    teaser_html = ""
+    if info is not None:
+        try:
+            from routes.relay_teaser import get_teaser
+            _t = get_teaser(token)
+        except Exception:  # noqa: BLE001
+            _t = None
+        if _t:
+            teaser_html = ("<p class='teaser'>One number your agent's preview held back: "
+                           "<b>%s: %s</b>. The full answer has the rest.</p>"
+                           % (_esc(_t[0]), _esc(_t[1])))
     html = ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<meta name='robots' content='noindex'>"
@@ -573,6 +586,7 @@ def relay_page(token):
             "small{color:#888}</style></head><body>"
             "<h1>Your AI agent found data worth the full answer</h1>"
             "<p>%s</p>"
+            "%s"
             "<p>%s</p>"
             "%s"
             "<a class='btn' href='%s'>Get full data — $10 one-time</a>"
@@ -581,12 +595,30 @@ def relay_page(token):
             "<p><small>DC Hub · dchub.cloud · data licensed CC-BY-4.0 · this "
             "link was generated for your agent's session%s</small></p>"
             "</body></html>"
-            % (tool_line, pack_line, form, _esc(upgrade), _esc(playground),
+            % (tool_line, teaser_html, pack_line, form, _esc(upgrade), _esc(playground),
                "" if info else " (link expired — the button still works)"))
     from flask import make_response
     resp = make_response(html, 200)
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@human_relay_bp.route("/api/v1/relay/teaser", methods=["POST"])
+def relay_teaser_store():
+    """r-relay-teaser: the MCP server stores ONE withheld number for a relay token
+    it minted, so the page can show it free without the agent ever seeing it.
+    Internal key only; the token must verify (routes/relay_teaser.store_teaser)."""
+    from routes.mcp_high_intent_claim import _internal_ok
+    if not _internal_ok(request):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    from routes.relay_teaser import store_teaser
+    body = request.get_json(silent=True) or {}
+    out = store_teaser(str(body.get("token") or ""), str(body.get("label") or ""),
+                       str(body.get("value") or ""))
+    if out.get("ok"):
+        return jsonify(out), 200
+    code = 400 if out.get("error") in ("invalid_token", "invalid_teaser") else 503
+    return jsonify(out), code
 
 
 @human_relay_bp.route("/api/v1/admin/relay/stats", methods=["GET"])

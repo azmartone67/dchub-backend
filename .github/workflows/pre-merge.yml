@@ -1031,14 +1031,14 @@ jobs:
       - name: Relayed-checkout lane SQL against a real Postgres
         env:
           RELAYED_CHECKOUT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
-        run: python3 -m pytest tests/test_human_acted_relayed_checkout_sql.py tests/test_relay_minted_acted_sql.py -v --tb=short
+        run: python3 -m pytest tests/test_human_acted_relayed_checkout_sql.py tests/test_relay_minted_acted_sql.py tests/test_relay_teaser_sql.py -v --tb=short
 
       - name: Prove the relayed-checkout SQL test actually RAN
         env:
           RELAYED_CHECKOUT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
         run: |
           python3 -m pytest tests/test_human_acted_relayed_checkout_sql.py \
-            tests/test_relay_minted_acted_sql.py \
+            tests/test_relay_minted_acted_sql.py tests/test_relay_teaser_sql.py \
             -q -rs --tb=no > rc.txt 2>&1 || { cat rc.txt; exit 1; }
           cat rc.txt
           if grep -qi "skipped" rc.txt; then
