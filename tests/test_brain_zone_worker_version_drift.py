@@ -72,6 +72,33 @@ def test_probe_is_cache_busted(monkeypatch, tmp_path):
     assert seen and "?_=" in seen[0], seen
 
 
+@pytest.mark.parametrize("source,deployed", [
+    (_SRC, None),                                               # header missing
+    (_SRC, "4.9.71-other-label"),                               # suffix mismatch
+    ("const WORKER_VERSION = '4.9.68-x';\n", "4.9.70-y"),       # deployed ahead
+    ("const WORKER_VERSION = '4.9.72-x';\n", "4.9.70-y"),       # commit not pasted
+])
+def test_finding_key_is_stable_across_runs(monkeypatch, tmp_path, source, deployed):
+    """`url` is the squasher's finding_key. It carried the cache-busted probe
+    URL until 2026-09-24, so ONE drift filed a new row per heal-cache refresh
+    (486, 488, 489 — 3h apart). Two runs at different seconds must produce the
+    same key, and it must be the bare probe URL; the REQUEST stays busted."""
+    # a response WITHOUT the version header (an empty dict reads as a transient
+    # probe failure, which files nothing by design)
+    headers = ({"content-type": "application/json"} if deployed is None
+               else {"x-dc-worker-version": deployed})
+    keys, requested = [], []
+    for t in (1_790_189_730, 1_790_211_575):
+        monkeypatch.setattr("time.time", lambda t=t: float(t))
+        seen = _install(monkeypatch, tmp_path, source=source, headers=headers)
+        keys.append(_only(R.check_zone_worker_version_drift())["url"])
+        requested += seen
+    assert keys[0] == keys[1] == R._ZONE_WORKER_PROBE_URL, keys
+    assert "?" not in keys[0]
+    assert len(set(requested)) == 2 and all("?_=" in u for u in requested), (
+        "the probe request itself must still be cache-busted, per run")
+
+
 def test_source_is_the_worker_this_repo_owns():
     """Local file, not raw.githubusercontent.com: no token, and no 404 that
     could mean four different things."""
