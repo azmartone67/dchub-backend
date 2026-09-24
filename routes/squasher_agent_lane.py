@@ -572,17 +572,24 @@ def feed_qa(cur, qa: dict) -> dict:
         try:
             if guarded:
                 cur.execute("SAVEPOINT sq_agent_qa")
+            # Bare DO NOTHING (no target) honours the partial open-row unique
+            # index without naming it; a lost race files nothing. One string,
+            # status as a parameter: regression_lint reads an INSERT only up
+            # to its first quote character.
             cur.execute(
-                "INSERT INTO squasher_work_queue (finding_key, title, source,"
-                " status, reason, analysis, decision, confidence, last_seen)"
-                " VALUES (%s, %s, %s, 'awaiting_decision', %s, %s, %s, %s, NOW())",
+                """INSERT INTO squasher_work_queue (finding_key, title, source,
+                       status, reason, analysis, decision, confidence, last_seen)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                   ON CONFLICT DO NOTHING RETURNING id""",
                 (key, qa_item(key, f)["issue"][:200], QA_SOURCE,
+                 "awaiting_decision",
                  ("QA lane handed off: " + str(why))[:600],
                  str(inv.get("recommendation") or "")[:4000] or None,
                  str(why)[:1500] or None, inv.get("confidence")))
+            filed = cur.fetchone() is not None
             if guarded:
                 cur.execute("RELEASE SAVEPOINT sq_agent_qa")
-            out["filed"] += 1
+            out["filed"] += 1 if filed else 0
         except Exception:  # noqa: BLE001
             if guarded:
                 cur.execute("ROLLBACK TO SAVEPOINT sq_agent_qa")
