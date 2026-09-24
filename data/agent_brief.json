@@ -1,0 +1,188 @@
+{
+  "schema": "dchub.agent_brief/v1",
+  "status": "published",
+  "as_of": "2026-09-24T22:00:00Z",
+  "public_path": "https://dchub.cloud/api/v1/ops/brief",
+  "purpose": "Read this before proposing any change to DC Hub. It lists what has been measured, what has been refuted, which surfaces are frozen, what has been decided, and what is open. Cite the entry id when a proposal relies on or disagrees with one.",
+  "how_it_changes": "This brief is the file data/agent_brief.json in the dchub-backend repo. It changes only by pull request, so every edit is reviewed and dated. `as_of` is when it was last reviewed, not when it was served.",
+  "rules_of_engagement": [
+    {
+      "id": "roe-1",
+      "rule": "No live edit of a registry listing, description or config without a PR, or a same-day heads-up so it can be mirrored into the repo.",
+      "why": "Registry copy has one origin in the repo (scripts/smithery_description.txt). An automated writer pushes it to Smithery, so an unmirrored live paste gets reverted.",
+      "enforced_by": "smithery-freshness drift guard (mcp#544): a live edit the writer did not make is held and raised as an issue, never overwritten"
+    },
+    {
+      "id": "roe-2",
+      "rule": "Before proposing a fix, check `refuted` and `decided`. If a proposal contradicts an entry, say so and bring new evidence.",
+      "why": "2026-09-24: a ranking theory already tested and refuted on 09-03 came back, and a timeout raise was proposed for a probe already at 25s."
+    },
+    {
+      "id": "roe-3",
+      "rule": "Separate what you observed from what you concluded. Give the measurement: command, time and n.",
+      "why": "Several past 'bugs' were single observations of a flapping edge or a cached copy."
+    },
+    {
+      "id": "roe-4",
+      "rule": "Leave operator/probe traffic out of every metric. Count per person, not per session.",
+      "why": "Self-traffic and registry scanners have been most of the apparent demand more than once."
+    }
+  ],
+  "frozen": [
+    {
+      "id": "frz-claude-relay-wording",
+      "surface": "The relay wording Claude sees ('→ For your human:' line and its /go/c links)",
+      "until": "2026-10-01",
+      "reason": "challenge-disable experiment; the readout is a scheduled task. Change link parameters and landing pages only, never the wording."
+    },
+    {
+      "id": "frz-smithery-description",
+      "surface": "Smithery description (site-selection lead, mirrored in mcp#537)",
+      "until": "2026-09-27",
+      "reason": "3-day rank measurement at pageSize=100. displayName changes wait for the readout."
+    }
+  ],
+  "decided": [
+    {
+      "id": "dec-claude-go-c",
+      "decision": "Claude's visible text carries /go/c. /upgrade/h rides in structuredContent.for_your_human.",
+      "by": "owner",
+      "date": "2026-09-21"
+    },
+    {
+      "id": "dec-price-canon",
+      "decision": "Canon offers are the $10 pack (API capacity only, never described as an unlock), Developer $49 and Pro $99. Enterprise pricing comes from the tier registry. Starter $9 is retired from every offer. No $299.",
+      "by": "owner",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "dec-pjm-dom-restore",
+      "decision": "Restoring PJM-DOM data (raise the gridstatus budget, or set PJM_API_KEY) is the owner's call.",
+      "by": "owner",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "dec-brief-path",
+      "decision": "The public agent brief lives at https://dchub.cloud/api/v1/ops/brief.",
+      "by": "owner",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "dec-plans-page",
+      "decision": "/plans is an informational page only: plan names, inclusions, limits and prices as text. No buy buttons, no /go/p/ links, no Stripe redirects; one plain link to dchub.cloud to sign in and subscribe. /pricing stays as-is for the web funnel. The 'needs a plan' line on /mcp/chatgpt points to /plans only.",
+      "by": "owner",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "dec-chatgpt-keyless-tier",
+      "decision": "No full keyless tier. /mcp/chatgpt serves the same trimmed anonymous previews as today's policy, with all commerce removed: no checkout, relay, price, key or session-ID output. If OpenAI rejects for limited functionality, revisit specific read-only tools then.",
+      "by": "owner",
+      "date": "2026-09-24"
+    }
+  ],
+  "measured": [
+    {
+      "id": "m-smithery-rrf",
+      "fact": "Smithery server-search score = reciprocal rank fusion over TWO lists, k=30 (231/240 observations fit). A 1-tuple score means we appear in only one list.",
+      "date": "2026-09-03"
+    },
+    {
+      "id": "m-smithery-baseline-0924",
+      "fact": "pageSize=100: 'site selection', 'site-selection' and 'site analysis' absent. #1 on data center, data centers, power, electricity, grid, capacity. energy #2 behind commodities-sh.",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "m-smithery-no-tool-text",
+      "fact": "Smithery server search does not index tool names or descriptions. Only the server description and displayName affect it.",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "m-grid-unknown-region",
+      "fact": "The backend answers 400 {error:'unknown region'} for a code outside its EIA map. Any other failure (5xx, timeout, empty 200) on a known region is transient.",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "m-pricing-checkout",
+      "fact": "/pricing buttons route through /go/p/<plan>, which 302s to buy.stripe.com checkout. /plans returns 404.",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "m-registry-probe-timeout",
+      "fact": "The official MCP registry probe already uses timeout=25s. The API answers in <0.5s from outside Railway.",
+      "date": "2026-09-24"
+    }
+  ],
+  "refuted": [
+    {
+      "id": "r-presence-fixes-rank",
+      "claim": "Putting the term in the Smithery description fixes rank.",
+      "evidence": "A byte-identical paste did not move 'site selection'. The winning servers contain zero occurrences of the term.",
+      "date": "2026-09-03",
+      "status": "refuted; 'topic mix' is an open hypothesis, tested by decoding the fused score before and after the change"
+    },
+    {
+      "id": "r-timeout-fixes-registry-probe",
+      "claim": "Raising the registry probe timeout to 15-20s fixes fetch_error.",
+      "evidence": "The timeout is already 25s. Status 0 is an exception or a parse failure. The cause is now recorded in results.<id>.error (be#5492).",
+      "date": "2026-09-24"
+    },
+    {
+      "id": "r-auto-write-cannot-write",
+      "claim": "The Smithery auto-writer lacks write permission, so live edits are safe from it.",
+      "evidence": "smithery-freshness.yml PATCHes api.smithery.ai from the repo file (white-glove step).",
+      "date": "2026-09-24"
+    }
+  ],
+  "invariants": [
+    {
+      "id": "inv-no-sell-on-no-data",
+      "rule": "A response whose own answer carries no data (failure envelope or top-level source_unavailable) carries no trial, pack, plan, relay or for_your_human copy.",
+      "enforced_by": "server.mjs _noDataGuard (mcp#539); suite-wide test test/no-sell-on-no-data-invariant.test.mjs (mcp#543)",
+      "scope": "free / preview / trial paths; paid paths deliberately excluded"
+    },
+    {
+      "id": "inv-one-human-ask",
+      "rule": "At most one human-facing ask per response.",
+      "enforced_by": "relay tests (#535)"
+    }
+  ],
+  "open": [
+    {
+      "id": "o-smithery-readout",
+      "item": "Smithery site-selection readout after the 09-27 check. Roll back if a core term loses #1 on 2 checks in a row.",
+      "owner": "DC Hub",
+      "due": "2026-09-27"
+    },
+    {
+      "id": "o-heavy-user-trial",
+      "item": "Heavy-user Pro trial (5th analyze_site in 7d, 50/50 holdout). The 5th-call count includes only calls that returned data.",
+      "owner": "DC Hub",
+      "blocked_until": "~2026-09-27 (3 clean days after #530/#535)"
+    },
+    {
+      "id": "o-chatgpt-profile",
+      "item": "Directory-compliant /mcp/chatgpt profile, and the /plans page it links to. Report the tool count and a sample no-key response for owner verification before resubmitting.",
+      "owner": "DC Hub",
+      "conflicts": [],
+      "resolved_by": [
+        "dec-plans-page",
+        "dec-chatgpt-keyless-tier"
+      ]
+    },
+    {
+      "id": "o-registry-probe-cause",
+      "item": "be#5492 is live: results.<id>.error and .attempts are recorded. The first probe after deploy (2026-09-24T21:31:30Z) read present / 200 / 1 attempt. Read .error the next time it shows fetch_error.",
+      "owner": "DC Hub"
+    },
+    {
+      "id": "o-trial-path-side-effects",
+      "item": "A no-data call on the trial path still counts a paid hit and mints a trial key (they run concurrently with the handler).",
+      "owner": "DC Hub"
+    },
+    {
+      "id": "o-docker-registry",
+      "item": "Docker MCP registry listing returns http_404, waiting on docker/mcp-registry#4644.",
+      "owner": "external"
+    }
+  ]
+}

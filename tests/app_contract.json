@@ -3,6 +3,7 @@
   "contract_routes": [
     "/api/v1/ops/deadman",
     "/api/v1/ops/claims",
+    "/api/v1/ops/brief",
     "/api/v1/health",
     "/llms.txt",
     "/api/v1/ai-agents.json",
