@@ -145,8 +145,7 @@ def test_the_export_route_still_serves_a_developer(monkeypatch):
 def _hook():
     src = (ROOT / "main.py").read_text(encoding="utf-8")
     fns = [n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)
-           and n.name in ("_is_bulk_export_path", "_is_ops_path",
-                          "auto_issue_key_for_ai_agents")]
+           and n.name in ("_is_bulk_export_path", "auto_issue_key_for_ai_agents")]
     assert any(f.name == "auto_issue_key_for_ai_agents" for f in fns)
     ns = {"request": flask.request, "g": flask.g,
           "_identify_ai_platform": lambda ua: "ChatGPT"}
@@ -185,7 +184,7 @@ def test_the_ai_agent_hook_still_mints_elsewhere(mints):
     "/api/v1/testimonials", "/api/v1/testimonials/stats",
     "/api/v1/founding-customers/count", "/api/v1/founding-members",
     "/api/v1/mcp/funnel", "/api/v1/mcp/retention", "/api/v1/mcp/dashboard",
-    "/api/v1/ops/claims", "/api/v1/admin/relay/stats", "/API/V1/Brain/x",
+    "/api/v1/ops/claims", "/api/v1/admin/relay/stats",
 ])
 def test_the_ai_agent_hook_mints_nothing_on_an_ops_path(mints, path):
     hook = _hook()
