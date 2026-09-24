@@ -365,8 +365,10 @@ def human_acted_count_sql(interval_sql: str, *,
 # publish. BrickBlueBot/0.1 ("agentic-web registry|indexer") got past that gate
 # for 09-17..09-21 and left 15 claim-minted sessions (19 rows, 17 tools, 0
 # opens) that relay_minted counted as prospects. dchub-backend#5435 closed the
-# gate for new rows; this removes the rows it already let in, at READ time, so
-# the correction does not wait for them to age out of the window.
+# gate for new rows; this filter removes whatever a gate lets past it, at READ
+# time, so a correction never waits for rows to age out of the window. (The
+# BrickBlueBot rows themselves were deleted on 2026-09-24 after an off-DB
+# backup, so on prod this filter currently removes 0.)
 #
 # ★ DECLARED, NEVER SILENT. The endpoint publishes each stage's unfiltered figure
 # beside the filtered one and the difference under `excluded`, the same way the
