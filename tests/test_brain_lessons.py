@@ -163,6 +163,7 @@ def pg(monkeypatch):
     c = psycopg2.connect(DSN)
     c.autocommit = True
     tables = ("brain_lessons", "brain_fix_outcomes", "brain_proposed_code_fixes",
+              "brain_autopilot_actions",
               "brain_issue_persistence", "squasher_work_queue",
               "brain_review_decisions")
     with c.cursor() as cur:
@@ -177,6 +178,9 @@ def pg(monkeypatch):
             proposal_kind TEXT NOT NULL,
             applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             checked_at TIMESTAMPTZ, still_broken BOOLEAN, evidence_note TEXT)""")
+        cur.execute("""CREATE TABLE brain_autopilot_actions (
+            id BIGSERIAL PRIMARY KEY, finding_issue TEXT NOT NULL,
+            pattern_name TEXT NOT NULL)""")
         cur.execute("""CREATE TABLE brain_issue_persistence (
             id BIGSERIAL PRIMARY KEY, issue_label TEXT NOT NULL,
             url TEXT NOT NULL DEFAULT '', last_seen_at TIMESTAMPTZ NOT NULL
@@ -211,6 +215,16 @@ def test_refresh_compiles_all_four_sources_on_postgres(pg):
         # a PR-ledger row with the same id must NOT join (kind != code)
         cur.execute("INSERT INTO brain_fix_outcomes (proposal_id, proposal_kind,"
                     " checked_at, still_broken) VALUES (1, 'pr', NOW(), TRUE)")
+        # autopilot outcomes: proposal_id is brain_autopilot_actions.id — the
+        # id space the code-only join never reached (173 of 189 live rows).
+        for held in (True, True, True, False):
+            cur.execute("INSERT INTO brain_autopilot_actions (finding_issue,"
+                        " pattern_name) VALUES ('competitor_announcement:dchawk',"
+                        " 'flag_for_review') RETURNING id")
+            aid = cur.fetchone()[0]
+            cur.execute("INSERT INTO brain_fix_outcomes (proposal_id,"
+                        " proposal_kind, checked_at, still_broken) VALUES"
+                        " (%s, 'autopilot', NOW(), %s)", (aid, not held))
         cur.execute("INSERT INTO brain_issue_persistence (issue_label,"
                     " last_outcome) VALUES ('boot_syntax:x', 'refused'),"
                     " ('boot_syntax:y', 'rejected_false_syntax_claim'),"
@@ -225,13 +239,20 @@ def test_refresh_compiles_all_four_sources_on_postgres(pg):
                     " ('code', 'h', 'js_field_fallback_missing:/c', 'approve', '')")
     out = bl.refresh()
     assert out["ok"], out
-    assert out["sources"] == {"l5_fix_outcomes": 4, "l5_guard_refusals": 2,
-                              "squasher_agent": 2, "human_rejections": 1}
+    assert out["sources"] == {"l5_fix_outcomes": 4, "autopilot_fix_outcomes": 4,
+                              "l5_guard_refusals": 2, "squasher_agent": 2,
+                              "human_rejections": 1}
+    cov = out["outcome_coverage"]
+    # 4 code + 4 autopilot joined; the 'pr' row is graded but no source reads it
+    assert (cov["joined"], cov["graded_total"]) == (8, 9), cov
+    assert cov["unjoined_kinds"] == ["pr"]
     with pg.cursor() as cur:
         cur.execute("SELECT family, verdict, graded, counts FROM brain_lessons"
                     " ORDER BY family")
         rows = {r[0]: r[1:] for r in cur.fetchall()}
     assert rows["shadowed_route"][:2] == ("fails", 4)
+    # MUTATION: drop the autopilot source → this family never appears
+    assert rows["competitor_announcement"][:2] == ("works", 4)
     bs = rows["boot_syntax"][2]
     assert (bs["refused"], bs["declined"]) == (1, 1)
     js = rows["js_field_fallback_missing"][2]
@@ -259,3 +280,24 @@ def test_refresh_keeps_last_pages_when_every_source_is_unreadable(pg):
     with pg.cursor() as cur:
         cur.execute("SELECT family FROM brain_lessons")
         assert cur.fetchall() == [("keep",)]
+
+
+# ── coverage: an unjoined id space must be visible ───────────────────
+def test_coverage_counts_what_the_joins_reached():
+    cov = bl.outcome_coverage({"code": 16, "autopilot": 173},
+                              {"l5_fix_outcomes": 16, "autopilot_fix_outcomes": 170})
+    assert (cov["joined"], cov["graded_total"], cov["pct"]) == (186, 189, 98.4)
+    assert cov["unjoined_kinds"] == []
+
+
+def test_coverage_names_a_kind_no_source_reads():
+    """The 2026-09-24 shape: 'autopilot' graded, nothing joining it.
+    MUTATION: drop 'autopilot' from joined_by → it must be named here."""
+    cov = bl.outcome_coverage({"code": 16, "autopilot": 173, "text": 2},
+                              {"l5_fix_outcomes": 16, "autopilot_fix_outcomes": None})
+    assert cov["joined"] == 16 and cov["unjoined_kinds"] == ["text"]
+
+
+def test_coverage_is_none_when_unreadable():
+    assert bl.outcome_coverage(None, {}) is None
+    assert bl.outcome_coverage({}, {})["pct"] is None

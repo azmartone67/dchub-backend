@@ -4009,6 +4009,63 @@ def check_brain_lessons_families_are_findings() -> list[dict]:
     return junk_lesson_family_findings(fams)
 
 
+# 2026-09-24: the lessons compiler joined only proposal_kind='code' outcomes,
+# while 173 of the latest 189 graded rows were proposal_kind='autopilot' — it
+# learned from about a third of what the brain had verified, and nothing said
+# so. This flags any GRADED outcome kind that no lessons source reads.
+_LESSONS_UNJOINED_MIN = 5
+
+
+def unjoined_outcome_findings(by_kind) -> list[dict]:
+    """PURE. by_kind: {proposal_kind: graded rows in 30d} or None."""
+    if not by_kind:
+        return []
+    try:
+        from routes.brain_lessons import outcome_coverage
+    except Exception:
+        return []
+    cov = outcome_coverage(by_kind, {}) or {}
+    lost = {k: by_kind[k] for k in cov.get("unjoined_kinds") or []
+            if by_kind[k] >= _LESSONS_UNJOINED_MIN}
+    if not lost:
+        return []
+    n = sum(lost.values())
+    return [{
+        "issue": "brain_lessons_outcomes_unjoined",
+        "url": "brain_fix_outcomes.proposal_kind",
+        "count_kind": "item_count",
+        "count": n,
+        "detail": (f"{n} graded fix outcome(s) in 30d are of kind(s) "
+                   f"{', '.join(sorted(lost))}, which no brain_lessons source "
+                   f"joins — agents never learn from them. Add a source in "
+                   f"routes/brain_lessons.read_events for that id space."),
+    }]
+
+
+def check_brain_lessons_see_every_outcome_kind() -> list[dict]:
+    conn = _db()
+    if conn is None:
+        return []
+    by_kind = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.brain_fix_outcomes')")
+            if (cur.fetchone() or [None])[0]:
+                cur.execute("SELECT proposal_kind, COUNT(*) FROM brain_fix_outcomes"
+                            " WHERE still_broken IS NOT NULL"
+                            "   AND COALESCE(checked_at, applied_at)"
+                            "       >= NOW() - INTERVAL '30 days' GROUP BY 1")
+                by_kind = {k: n for k, n in cur.fetchall()}
+    except Exception:
+        by_kind = None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return unjoined_outcome_findings(by_kind)
+
+
 def _dchub_share_of_voice_pct() -> Optional[float]:
     """r64-d (2026-05-31): DC Hub's real AI-citation share-of-voice over
     the last 30 days, as a %. Mirrors the math behind
@@ -13359,6 +13416,8 @@ def scan_all() -> list[dict]:
                check_brain_evolution_jobs_alive,
                # 2026-09-24: lessons pages keyed on URLs / filenames.
                check_brain_lessons_families_are_findings,
+               # 2026-09-24: graded outcome kinds the lessons never read.
+               check_brain_lessons_see_every_outcome_kind,
                # 2026-09-12: the brain's own review gate had returned 0
                # rejections across 293 decisions while the grade scored that
                # 4/4 — a can't-fail signature nothing was watching.
