@@ -751,3 +751,11 @@ def test_claim_next_hands_the_live_detector_items_to_the_exclusion(monkeypatch):
     d2 = al.claim_next(live={"ok": True, "items": {"/operators/equinix": {
         "url": "/operators/equinix", "issue": "site_sentinel_unhealthy"}}})
     assert d2.get("brief", {}).get("queue_id") == 7, d2
+
+
+def test_the_agent_checkout_has_full_history():
+    """A shallow clone makes every `git log` claim false: run 35955586236
+    reported 1 commit in 21 days (real: 1,209) as evidence of no regression."""
+    co = [st for st in JOBS["agent"]["steps"]
+          if str(st.get("uses", "")).startswith("actions/checkout")]
+    assert len(co) == 1 and co[0]["with"].get("fetch-depth") == 0

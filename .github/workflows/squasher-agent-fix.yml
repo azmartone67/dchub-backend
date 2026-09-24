@@ -101,9 +101,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # FULL history (fetch-depth: 0, ~135 MB). The default shallow clone has
+      # ONE commit, so run 35955586236 told the queue "only 1 commit in 21 days
+      # across the whole repo" (real: 1,209) and used it as evidence of "no
+      # regression". Any git log / blame / "what changed" claim needs history.
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
