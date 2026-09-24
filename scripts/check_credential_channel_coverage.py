@@ -100,17 +100,23 @@ PROBE_PATHS = ("/api/v1/stats", "/api/v1/facilities",
                "/markets/dallas/brief", "/markets/dallas/brief.pdf",
                "/dcpi/dallas", "/facility/example", "/grid/pjm", "/")
 
-# ── ORACLE: dispositions MEASURED at the live edge on 2026-09-07 ─────────────
-# Two consecutive un-cache-busted GETs of https://dchub.cloud/api/v1/stats.
+# ── ORACLE: dispositions MEASURED at the live edge ───────────────────────────
+# Two consecutive un-cache-busted GETs of ORACLE_PATH per row. First measured
+# on /api/v1/stats 2026-09-07. ★ 2026-09-24: /api/v1/stats joined bypass rule 19
+# (its boot-degraded no-store body was being held by rule 2), so it can no longer
+# be the anonymous POSITIVE CONTROL. Re-measured on /api/v1/facilities that day:
+# anon MISS->HIT, x-api-key / x-admin-token / dchub_session / ?admin_key= all
+# DYNAMIC twice, x-definitely-not-a-credential HIT age=14->16, ?limit=7 MISS->HIT.
 # If the evaluator stops reproducing these, it has stopped modelling the edge
 # and this checker reports nothing.
+ORACLE_PATH = "/api/v1/facilities"
 ORACLE = [
     # (kind, name, expected disposition against the CURRENT canon)
     ("header", "x-api-key", "bypass"),          # DYNAMIC before and after
     ("header", "x-admin-token", "bypass"),      # was HIT age=3044, now DYNAMIC
     ("cookie", "dchub_session", "bypass"),      # was HIT age=3044, now DYNAMIC
     ("arg", "admin_key", "bypass"),             # was MISS->HIT, now DYNAMIC
-    ("anon", None, "cached"),                   # /api/v1/stats HIT — POSITIVE CONTROL
+    ("anon", None, "cached"),                   # ORACLE_PATH HIT — POSITIVE CONTROL
 ]
 # ★ NEGATIVE CONTROL. A channel nobody authenticates with must still be CACHED.
 # Without it, a rule 24 degraded to a bare path match ("/api/" with no credential
@@ -201,7 +207,7 @@ def _request_for(cx, kind: str, name: str, path: str):
 def self_check(cx, rules) -> list[str]:
     """Reproduce the measured edge, or report nothing at all."""
     failures = []
-    checks = [(k, n, e, "/api/v1/stats") for k, n, e in [*ORACLE, NEGATIVE_CONTROL]]
+    checks = [(k, n, e, ORACLE_PATH) for k, n, e in [*ORACLE, NEGATIVE_CONTROL]]
     checks += [(k, n, e, HTML_ORACLE_PATH) for k, n, e in HTML_ORACLE]
     for kind, name, expected, path in checks:
         req = _request_for(cx, kind, name, path)

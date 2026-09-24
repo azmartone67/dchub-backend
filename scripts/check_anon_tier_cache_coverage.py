@@ -83,8 +83,11 @@ EXIT_OK, EXIT_NEW_GAP, EXIT_SELF = 0, 1, 2
 # ★ MEASURED at the edge on 2026-09-07 with two consecutive un-cache-busted
 # GETs each. /api/v1/stats returned `HIT age=1148` with a frozen
 # x-dc-response-time; the other three returned DYNAMIC twice.
+# ★ 2026-09-24: /api/v1/stats moved to bypass rule 19, so the cached control is
+# now /api/v1/facilities, measured MISS->HIT that day. (Stats is deliberately
+# NOT re-added as 'bypass' until that is measured at the edge after the apply.)
 ORACLE = {
-    "/api/v1/stats": "cached",
+    "/api/v1/facilities": "cached",
     "/api/v1/health": "bypass",
     "/grid": "bypass",
     "/api/v1/mcp/tools/export_facility_csv": "bypass",
