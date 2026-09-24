@@ -76,6 +76,9 @@
     "test_capacity_tracking_dead_lane.py": {
       "walk": 70
     },
+    "test_cf_purge_body.py": {
+      "pglob": 150
+    },
     "test_client_config_transport_matches_canon.py": {
       "pglob": 670
     },

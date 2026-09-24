@@ -59,7 +59,9 @@ WF_DIR = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
 #   141 -> 140 on 2026-09-13: data-sync.yml's "Fire async loaders" piped each
 #   POST into `json.tool || echo` and never read a status; it now captures
 #   %{http_code} and fails on a refused fire or a loader that failed.
-MAX_UNGUARDED_STEPS = 140
+#   140 -> 139 on 2026-09-24: cf-purge.yml's purge step read the response but never
+#   its HTTP status; it now captures %{http_code} and requires 200 AND success.
+MAX_UNGUARDED_STEPS = 139
 
 _CURL = re.compile(r"\bcurl\b")
 _GUARDS = (
