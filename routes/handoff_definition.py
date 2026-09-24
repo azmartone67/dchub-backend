@@ -48,6 +48,10 @@ from __future__ import annotations
 
 from datetime import date
 
+from routes._audience_identity import (
+    normalized_email_sql as _normalized_email_sql,
+    operator_emails_sql_list as _operator_emails_sql_list,
+)
 from mcp_calls_deloop import (
     external_session_predicate as _external_session_predicate,
     real_ua_predicate as _real_ua_predicate,
@@ -680,15 +684,11 @@ def relayed_checkout_session_filters() -> str:
 # keeps reading RELAYED_CHECKOUT_SESSION_ID / relayed_checkout_session_filters()
 # unchanged, exactly as before this change.
 #
-# ★ THE SAME VACUOUS-EXCLUSION RISK THE v6 LESSON NAMES STILL APPLIES HERE,
-# UNRESOLVED. _external_session_predicate matches SESSION-ID prefixes; a
-# pack_key/sub_key ref with no session_id will never match one, so an
-# operator's own key-bound test purchase (this is what proved the bug: a
-# real $10.88 charge on the owner's own key, no session on the click) cannot
-# be excluded as self-traffic through this lane the way an operator SESSION
-# already can. Known, accepted gap — not fixed here; flagged instead of
-# silently claimed. include_self_traffic=True vs the default keeps this
-# honest: neither number pretends to exclude a session-less keyed purchase.
+# ★ _external_session_predicate matches SESSION-ID prefixes, so on its own it
+# is vacuous against a pack_key/sub_key ref with no session. That gap was open
+# from v3 until 2026-09-24 (paid_attributed v4): not_operator_payer_predicate
+# now also drops a payment whose Checkout Session was paid by an operator
+# mailbox, keyed on who paid rather than on any session or ref.
 PAID_ATTRIBUTED_REF_KINDS = (RELAYED_CHECKOUT_DELOOPABLE_REF_KIND, "pack_key", "sub_key")
 
 PAID_ATTRIBUTED_CLICK_IDENTITY = (
@@ -971,7 +971,7 @@ def identified_definition() -> dict:
     }
 
 
-PAID_ATTRIBUTED_DEFINITION_VERSION = 3
+PAID_ATTRIBUTED_DEFINITION_VERSION = 4
 PAID_RELAYED_CHECKOUT_LOOKBACK = "7 days"
 PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
     1: ("COUNT(DISTINCT mcp_session_id) FROM mcp_session_upgrades plus "
@@ -1009,6 +1009,19 @@ PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
         "bug) cannot yet be excluded as self-traffic the way an operator "
         "session already can. paid_attributed_including_self_traffic makes "
         "no stronger claim than the headline for this subset."),
+    4: ("2026-09-24 (r-paid-operator-payer). Closes v3's known gap. Measured "
+        "live: BOTH payments paid_attributed counted (7d=2) were the "
+        "operator's own $10.88 packs: one on a pk- ref no session prefix can "
+        "match, one on a session ref the hand-kept prefix list never named. "
+        "The exclusion now also drops a payment whose Checkout Session "
+        "(stripe_session_id) has an mcp_conversions row whose payer "
+        "(user_email, else caller_id), normalised as "
+        "routes/_audience_identity.normalize_email does, is an "
+        "operator_emails() mailbox. Applied to all three lanes, since the "
+        "same purchase also lands in mcp_topups and mcp_session_upgrades. "
+        "Keyed on WHO PAID, not on a session id, so it holds when a session "
+        "rotates or is absent. A payment with no conversion row is kept: "
+        "not knowably ours."),
 }
 
 def _paid_payments_sql(interval_sql: str) -> str:
@@ -1076,20 +1089,43 @@ def relayed_click_session_for_ref_sql() -> str:
     return _relayed_click_session_for("%s", "now()")
 
 
-def _paid_session_row_lanes(interval_sql: str) -> list:
+def not_operator_payer_predicate(stripe_session_col: str) -> str:
+    """TRUE unless the Checkout Session in `stripe_session_col` was paid by an
+    operator mailbox, per its mcp_conversions row (user_email, else
+    caller_id), normalised exactly as routes/_audience_identity does.
+
+    Self-traffic keyed on WHO PAID. The session-prefix exclusion cannot see a
+    pk-/k- ref, nor a session nobody added to the list; this can. No row, or
+    no email on it, is kept (not knowably ours).
+    """
+    payer = _normalized_email_sql(
+        "coalesce(nullif(oc.user_email,''), oc.caller_id)")
+    return ("not exists (select 1 from mcp_conversions oc"
+            " where oc.stripe_session_id = " + stripe_session_col
+            + " and " + payer + " in (" + _operator_emails_sql_list() + "))")
+
+
+def _paid_session_row_lanes(interval_sql: str,
+                            exclude_operator_payers: bool = False) -> list:
     """The two v1 tables, as union lanes."""
-    return [
-        ("select su.mcp_session_id as sid from mcp_session_upgrades su"
-         " where su.upgraded_at > now() - interval '" + interval_sql + "'"),
-        ("select tp.mcp_session_id as sid from mcp_topups tp"
-         " where tp.mcp_session_id is not null"
-         " and tp.created_at > now() - interval '" + interval_sql + "'"),
-    ]
+    su = ("select su.mcp_session_id as sid from mcp_session_upgrades su"
+          " where su.upgraded_at > now() - interval '" + interval_sql + "'")
+    tp = ("select tp.mcp_session_id as sid from mcp_topups tp"
+          " where tp.mcp_session_id is not null"
+          " and tp.created_at > now() - interval '" + interval_sql + "'")
+    if exclude_operator_payers:
+        su += " and " + not_operator_payer_predicate("su.stripe_session_id")
+        tp += " and " + not_operator_payer_predicate("tp.stripe_session_id")
+    return [su, tp]
 
 
-def _paid_relayed_checkout_lane(interval_sql: str) -> str:
-    return ("select " + paid_relayed_click_session_sql() + " as sid from "
-            + _paid_payments_sql(interval_sql))
+def _paid_relayed_checkout_lane(interval_sql: str,
+                                exclude_operator_payers: bool = False) -> str:
+    sql = ("select " + paid_relayed_click_session_sql() + " as sid from "
+           + _paid_payments_sql(interval_sql))
+    if exclude_operator_payers:
+        sql += " where " + not_operator_payer_predicate("pay.stripe_session_id")
+    return sql
 
 
 def _paid_count(lanes: list, include_self_traffic: bool) -> str:
@@ -1106,15 +1142,17 @@ def paid_attributed_count_sql(interval_sql: str, *,
     relayed-checkout lane, DISTINCT sessions, operator exclusion once.
     `include_self_traffic=True` drops the exclusion, so the difference is
     exactly what it removed."""
-    return _paid_count(_paid_session_row_lanes(interval_sql)
-                       + [_paid_relayed_checkout_lane(interval_sql)],
+    ex = not include_self_traffic
+    return _paid_count(_paid_session_row_lanes(interval_sql, ex)
+                       + [_paid_relayed_checkout_lane(interval_sql, ex)],
                        include_self_traffic)
 
 
 def paid_relayed_checkout_count_sql(interval_sql: str, *,
                                     include_self_traffic: bool = False) -> str:
     """The relayed-checkout lane alone, published beside the headline."""
-    return _paid_count([_paid_relayed_checkout_lane(interval_sql)],
+    return _paid_count([_paid_relayed_checkout_lane(
+                           interval_sql, not include_self_traffic)],
                        include_self_traffic)
 
 
@@ -1233,11 +1271,11 @@ PAID_ATTRIBUTED_BASIS = (
     "The click that sold it usually carries the session too (the /go/c/ "
     "token's third field since 2026-09-13); when it does not, the durable key "
     "ref itself stands in, since it is already an unambiguous payer identity. "
-    "The operator self-traffic exclusion applies to the union, but is VACUOUS "
-    "on a key-ref-only identity (it matches session-id prefixes, not key "
-    "hashes) — paid_attributed_including_self_traffic makes no stronger claim "
-    "than the headline for that subset, and "
-    "excluded.paid_attributed_removed is the difference for the rest. A "
+    "The operator self-traffic exclusion has two halves: session-id prefixes "
+    "over the union, and (since v4) a payer check on every lane that drops a "
+    "Checkout Session whose mcp_conversions payer email is an operator "
+    "mailbox, which is what reaches a key-ref-only identity. "
+    "excluded.paid_attributed_removed is the difference both make. A "
     "payment recorded before 2026-09-14 has no stored client_reference_id "
     "and can reach only the v1 lanes.")
 
@@ -1444,8 +1482,8 @@ def chatgpt_relay_stages_sql(interval_sql: str) -> str:
              " WHERE ro.ts > now() - interval '" + interval_sql + "'"
              " AND ro.valid IS TRUE AND " + _real_ua_predicate("ro.user_agent"))
     identified = " UNION ".join(_identified_lanes(interval_sql))
-    paid = " UNION ".join(_paid_session_row_lanes(interval_sql)
-                          + [_paid_relayed_checkout_lane(interval_sql)])
+    paid = " UNION ".join(_paid_session_row_lanes(interval_sql, True)
+                          + [_paid_relayed_checkout_lane(interval_sql, True)])
     return ("WITH chat AS (" + chat + ")"
             " SELECT (SELECT count(*) FROM chat),"
             " (SELECT count(DISTINCT v.sid) FROM (" + views + ") v JOIN chat USING (sid)),"

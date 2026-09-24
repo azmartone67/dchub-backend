@@ -31,6 +31,11 @@ cannot produce are written or aged by hand.
   P16  unsigned click (by hand); paid                  out: sig_ok
   P17  k- sub_key click with no session; paid          counts, as the ref itself (2026-09-23)
   V1   pack granted to session S15 (mcp_topups)        counts (v1 lane)
+  P18  pk- click, stranger session; OPERATOR paid      excluded (v4 payer); in incl_self
+       (email written Az.Martone+qa@GoogleMail.com: normalisation, not the literal)
+  P19  pk- click, no session; operator in caller_id    excluded (v4 payer); in incl_self
+  V2   pack granted to S20; operator paid              excluded from the v1 lane too
+  P21  pk- click, stranger session; stranger paid      counts
 
 Set PAID_ATTRIBUTED_SQL_DSN to run it. CI passes the db-parity service DSN
 and then asserts this file did not skip.
@@ -45,6 +50,11 @@ import pytest
 psycopg2 = pytest.importorskip("psycopg2")
 flask = pytest.importorskip("flask")
 
+from routes._audience_identity import (  # noqa: E402
+    normalize_email,
+    normalized_email_sql,
+    operator_emails,
+)
 from mcp_calls_deloop import (  # noqa: E402
     real_ua_predicate,
     self_traffic_session_prefixes,
@@ -67,20 +77,30 @@ def _hex(label):
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16 = (
+S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16, S18, S20, S21 = (
     "5a1d%04x-0000-4000-8000-%012x" % (i, i)
-    for i in (1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16))
+    for i in (1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21))
 # The operator session is BUILT from the declared prefixes, never typed.
 _OPS = self_traffic_session_prefixes()
 OP = _OPS[0] + "-0000-4000-8000-0000000000aa"
-PK1, PK3, PK5 = ("pk-" + _hex(x) for x in ("pk1", "pk3", "pk5"))
+PK1, PK3, PK5, PK18, PK19, PK21 = (
+    "pk-" + _hex(x) for x in ("pk1", "pk3", "pk5", "pk18", "pk19", "pk21"))
 K2, K7, K8, K9, K10, K12, K14, K16, K17 = (
     "k-" + _hex(x) for x in ("k2", "k7", "k8", "k9", "k10", "k12", "k14", "k16", "k17"))
 AE6 = "a-" + _hex("ae6")[:24]
 
 DDL = """
 DROP TABLE IF EXISTS mcp_checkout_clicks, mcp_checkout_payments,
-                     mcp_session_upgrades, mcp_topups, mcp_trial_emails CASCADE;
+                     mcp_session_upgrades, mcp_topups, mcp_trial_emails,
+                     mcp_conversions CASCADE;
+-- The payer columns v4's operator check reads; the live names (2026-09-24).
+CREATE TABLE mcp_conversions (
+    id                 BIGSERIAL PRIMARY KEY,
+    caller_id          TEXT,
+    user_email         TEXT,
+    stripe_session_id  TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 -- main.py creates this inline in the webhook (Fix E); the live shape.
 CREATE TABLE mcp_session_upgrades (
     mcp_session_id     TEXT PRIMARY KEY,
@@ -111,6 +131,23 @@ _CLICKS = [
     ("P12", "pro", K12, S12, PROBE_UA),
     ("P14", "pro", K14, S14, REAL_UA),
     ("P17", "pro", K17, "", REAL_UA),
+    ("P18", "metered", PK18, S18, REAL_UA),
+    ("P19", "metered", PK19, "", REAL_UA),
+    ("P21", "metered", PK21, S21, REAL_UA),
+]
+
+# The OPERATOR address is built from operator_emails(), never typed, then
+# disguised the ways normalize_email undoes (case, dots, plus-tag, alias).
+_OP_EMAIL = sorted(operator_emails())[0]
+_OP_LOCAL, _OP_DOMAIN = _OP_EMAIL.split("@")
+_OP_DISGUISED = ((_OP_LOCAL[:2] + "." + _OP_LOCAL[2:]).title() + "+qa@"
+                 + ("GoogleMail.com" if _OP_DOMAIN == "gmail.com" else _OP_DOMAIN.upper()))
+# (stripe session, user_email, caller_id)
+_CONVERSIONS = [
+    ("cs_test_p18", _OP_DISGUISED, "5a1d-anon-hash"),
+    ("cs_test_p19", None, _OP_EMAIL),
+    ("cs_test_v2", _OP_EMAIL, None),
+    ("cs_test_p21", "buyer@example.org", "buyer@example.org"),
 ]
 
 
@@ -138,6 +175,9 @@ _PAYMENTS = [
     ("P14", _checkout("cs_test_p14", K14, mode="subscription", amount=9900)),
     ("P16", _checkout("cs_test_p16", K16, mode="subscription", amount=9900)),
     ("P17", _checkout("cs_test_p17", K17, mode="subscription", amount=9900)),
+    ("P18", _checkout("cs_test_p18", PK18)),
+    ("P19", _checkout("cs_test_p19", PK19)),
+    ("P21", _checkout("cs_test_p21", PK21)),
 ]
 
 
@@ -166,7 +206,7 @@ def db():
     from routes import checkout_payment_refs as CPR
     import routes.mcp_conversion_plays as mcp
 
-    for sid in (S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16):
+    for sid in (S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16, S18, S20, S21):
         assert not sid.lower().startswith(tuple(p.lower() for p in _OPS)), sid
 
     mp = pytest.MonkeyPatch()
@@ -220,6 +260,20 @@ def db():
         out["grant"] = mcp.grant_credit_pack(
             "test-key-paid-attributed-v1", S15, 1000,
             stripe_session_id="cs_test_v1", source="pack10", price_cents=1000)
+        out["grant_v2"] = mcp.grant_credit_pack(
+            "test-key-paid-attributed-v2", S20, 1000,
+            stripe_session_id="cs_test_v2", source="pack10", price_cents=1000)
+        cur.executemany("INSERT INTO mcp_conversions (stripe_session_id, user_email,"
+                        " caller_id) VALUES (%s, %s, %s)", _CONVERSIONS)
+
+        # normalize_email vs normalized_email_sql, row by row.
+        cases = [_OP_EMAIL, _OP_DISGUISED, "  A.B+x@GoogleMail.com ", "a.b@gmail.com",
+                 "A.B+tag@Example.org", "a.b@example.org", "x@y@gmail.com",
+                 "no-at-sign", "", None, "Foo+@gmail.com", "f.o.o@googlemail.com"]
+        cur.execute("SELECT v.e, " + normalized_email_sql("v.e")
+                    + " FROM unnest(%s::text[]) WITH ORDINALITY v(e, n) ORDER BY n",
+                    (cases,))
+        out["normalized"] = [(e, got, normalize_email(e)) for e, got in cur.fetchall()]
 
         cur.execute("SELECT " + real_ua_predicate("v.ua")
                     + " FROM (VALUES (%s), (%s)) v(ua)", (REAL_UA, PROBE_UA))
@@ -264,6 +318,14 @@ def test_the_schemas_the_lanes_read_exist(db):
     assert db["payments_schema"] is True and db["payments_schema_again"] is True
     assert db["topups_schema"] is True
     assert db["grant"]["ok"] is True
+    assert db["grant_v2"]["ok"] is True
+
+
+def test_sql_email_normalisation_matches_python(db):
+    bad = [(e, got, want) for e, got, want in db["normalized"] if got != want]
+    assert not bad, bad
+    assert db["normalized"][1][1] == _OP_EMAIL, (
+        "the disguised operator address must normalise to the operator's")
 
 
 def test_every_click_went_through_the_endpoint_to_stripe(db):
@@ -278,7 +340,7 @@ def test_the_writer_records_paid_sessions_once(db):
     assert rec["P1"]["ok"] and rec["P1"]["idempotent"] is False
     assert rec["P13"]["ok"] and rec["P13"]["idempotent"] is True
     assert "cs_test_p11" not in db["stored"]
-    assert len(db["stored"]) == 14
+    assert len(db["stored"]) == 17
     assert db["stored"]["cs_test_p1"] == (PK1, "pack_key", "payment", 1000, True)
     assert db["stored"]["cs_test_p2"][:2] == (K2, "sub_key")
     assert db["stored"]["cs_test_p4"][:2] == (S5, "session")
@@ -297,6 +359,10 @@ def test_each_payment_is_attributed_to_the_latest_qualifying_click(db):
     # NO session now attributes to the ref itself, not None.
     assert got["cs_test_p5"] == PK5
     assert got["cs_test_p17"] == K17
+    # v4: attribution is unchanged; the operator exclusion is the headline's job.
+    assert got["cs_test_p18"] == S18
+    assert got["cs_test_p19"] == PK19
+    assert got["cs_test_p21"] == S21
     for cs in ("cs_test_p6",                # anon ref: still deliberately out
                "cs_test_p8",                # click after payment
                "cs_test_p9",                # click outside the lookback
@@ -310,23 +376,27 @@ def test_the_headline_counts_each_paying_session_once(db):
     # S15 from the pack grant, plus PK5 and K17 since 2026-09-23 (session-less
     # pack_key/sub_key refs now attribute to the ref itself). OP is excluded;
     # P10 is not live; P14 is old.
-    assert db["headline"] == 7
-    assert db["headline_incl"] == 8
-    assert db["relayed"] == 6
-    assert db["relayed_incl"] == 7
+    # v4 (2026-09-24): P18, P19 and V2 were paid by an operator mailbox and
+    # leave the headline (no session prefix could have caught P19 or S18/S20);
+    # the stranger P21 counts.
+    assert db["headline"] == 8
+    assert db["headline_incl"] == 12
+    assert db["relayed"] == 7
+    assert db["relayed_incl"] == 10
 
 
 def test_v1_could_not_see_a_keyed_purchase(db):
     """The figure v1 published over the same rows: S5's upgrade row plus S15's
-    pack. None of the key-bound purchases (P1, P2, P3) reaches it."""
-    assert db["v1"] == 2
+    pack, plus S20's (V2) — v1 had no exclusion, so the operator's pack counts
+    there. None of the key-bound purchases (P1, P2, P3) reaches it."""
+    assert db["v1"] == 3
 
 
 def test_the_ceiling_and_the_attributable_subset(db):
     assert db["payments_raw"] == {
-        "payments": 12,                    # P10 not live, P11 unrecorded, P13 dup, P14 old
-        "matched_a_relayed_click": 9,      # not P8 (after), P12 (probe), P16 (unsigned)
-        "attributable_to_a_session": 7,    # P1 P2 P3 P4 P5 P7 P17
+        "payments": 15,                    # P10 not live, P11 unrecorded, P13 dup, P14 old
+        "matched_a_relayed_click": 12,     # not P8 (after), P12 (probe), P16 (unsigned)
+        "attributable_to_a_session": 10,   # P1 P2 P3 P4 P5 P7 P17 P18 P19 P21
     }
 
 

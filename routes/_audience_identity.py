@@ -84,6 +84,34 @@ def operator_emails() -> frozenset:
     )
 
 
+def normalized_email_sql(expr: str) -> str:
+    """`normalize_email`, as a Postgres expression over `expr`.
+
+    Built from the SAME constants, so a domain added above reaches both. No
+    literal `%` (callers %-format their SQL). Parity with the Python function
+    is executed in tests/test_paid_attributed_relayed_checkout_sql.py.
+    """
+    e = r"lower(regexp_replace(coalesce(%s,''), '^\s+|\s+$', '', 'g'))" % expr
+    local = "split_part(regexp_replace(%s, '@[^@]*$', ''), '+', 1)" % e
+    dom = "regexp_replace(%s, '^.*@', '')" % e
+    dots = ",".join("'%s'" % d for d in sorted(_DOT_INSENSITIVE_DOMAINS))
+    alias = " ".join("when %s = '%s' then '%s'" % (dom, a, b)
+                     for a, b in sorted(_DOMAIN_ALIASES.items()))
+    return ("(case when position('@' in %s) = 0 then %s else"
+            " (case when %s in (%s) then replace(%s, '.', '') else %s end)"
+            " || '@' || (case %s else %s end) end)"
+            % (e, e, dom, dots, local, local, alias, dom))
+
+
+def operator_emails_sql_list() -> str:
+    """operator_emails() as a SQL IN-list body. Alnum/@/./+/-/_ only, so an
+    env-supplied address cannot close the quote."""
+    import re as _re
+    safe = sorted(e for e in operator_emails()
+                  if _re.fullmatch(r"[a-z0-9@._+-]+", e))
+    return ",".join("'%s'" % e for e in safe)
+
+
 def is_operator_email(email) -> bool:
     """True when this address reaches an operator mailbox. Never a prospect."""
     return normalize_email(email) in operator_emails()
