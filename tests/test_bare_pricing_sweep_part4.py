@@ -10,7 +10,7 @@ developer response.
 _canonical_link(tier_key, ref='') is the single shared root: it used to be
 a raw STRIPE_LINKS.get(tier_key) lookup, and now signs through
 routes.checkout_click_tracker.checkout_url() instead — fixing every caller
-(_starter_cta, _pack5_cta, _cta_gated's stripe_direct, _STRIPE_BUY_NOW) in
+(_developer_cta, _pack5_cta, _cta_gated's stripe_direct, _STRIPE_BUY_NOW) in
 one change. A few call sites bypassed _canonical_link entirely with their
 own hardcoded literal (usage_url) or a bare PRICING_URL+utm string
 (_cta_truncated, _cta_redacted, _value_unlock_block, the two _gate()
@@ -101,12 +101,12 @@ def test_no_signing_secret_fails_open_to_bare_pricing_never_raises(monkeypatch):
 
 
 # ── rate-limiter CTAs: real functional tests ────────────────────────────────
-def test_starter_and_pack_ctas_carry_signed_links_not_raw_stripe():
-    from mcp_gatekeeper import _starter_cta, _pack5_cta
-    starter, pack = _starter_cta(), _pack5_cta()
-    assert "buy.stripe.com" not in starter
+def test_developer_and_pack_ctas_carry_signed_links_not_raw_stripe():
+    from mcp_gatekeeper import _developer_cta, _pack5_cta
+    dev, pack = _developer_cta(), _pack5_cta()
+    assert "buy.stripe.com" not in dev
     assert "buy.stripe.com" not in pack
-    assert "https://dchub.cloud/go/c/" in starter
+    assert "https://dchub.cloud/go/c/" in dev
     assert "https://dchub.cloud/go/c/" in pack
 
 

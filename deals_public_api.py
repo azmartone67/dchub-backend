@@ -409,13 +409,15 @@ def get_public_deals():
         }
         if gated:
             out["gated"] = True
-            out["tier_required"] = "starter"
+            # r-sku-wall (2026-09-24): the gate above resolves at IDENTIFIED —
+            # any free key — so this said "Starter ($9/mo)" for something that
+            # costs nothing. Name what actually lifts it; quote no price.
+            out["tier_required"] = "identified"
             out["message"] = (
-                "Preview: 3 newest deals with $ value and MW masked. The full "
-                "M&A tracker (1,400+ deals with values + capacity) is Starter "
-                "($9/mo); a free dev key unlocks the basics — "
-                "https://dchub.cloud/pricing")
-            out["upgrade_url"] = "https://dchub.cloud/pricing?utm_source=deals_public"
+                "Preview: 3 newest deals with $ value and MW masked. A free "
+                "developer key unlocks the full M&A tracker with values and "
+                "capacity — https://dchub.cloud/signup")
+            out["upgrade_url"] = "https://dchub.cloud/signup?utm_source=deals_public"
         return jsonify(out)
     except Exception as e:
         return jsonify({

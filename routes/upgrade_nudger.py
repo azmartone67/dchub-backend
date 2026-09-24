@@ -41,7 +41,13 @@ _FROM_EMAIL = os.environ.get("DCHUB_FROM_EMAIL", "alerts@dchub.cloud")
 # default upgrade path. The Round 9 audit found 7,101 weekly upgrade
 # signals / 0 conversions on the $0→$49 jump. $9 cuts the friction 5×.
 # DEVELOPER stays as the secondary option for power users.
-_STRIPE_STARTER = "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"  # $9/mo
+# r-sku-wall (2026-09-24): the cheap card sells the $10 pack (Starter is
+# retired from every offer). Canon link, literal only as import fallback.
+try:
+    from routes._stripe_links import STRIPE_LINKS as _SL
+    _STRIPE_PACK = _SL["metered"]
+except Exception:  # pragma: no cover
+    _STRIPE_PACK = "https://dchub.cloud/pricing"
 _STRIPE_DEV     = "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"  # $49/mo
 _IDENTIFIED_DAILY_CAP = 200
 _NUDGE_THRESHOLD_PCT  = 0.80   # 80% of cap
@@ -118,15 +124,15 @@ margin:0 auto;padding:1.5rem;color:#1f2937;line-height:1.55">
 
 <div style="display:flex;gap:1rem;margin:1.5rem 0;flex-wrap:wrap">
  <div style="flex:1;min-width:240px;padding:1rem;border:1px solid #10b981;border-radius:8px;background:#f0fdf4">
-  <div style="font-size:.7rem;color:#065f46;font-weight:700;letter-spacing:.05em;margin-bottom:.25rem">💚 STARTER · MOST POPULAR</div>
-  <div style="font-size:1.5rem;font-weight:800;color:#065f46">$9<span style="font-size:.85rem;color:#6b7280;font-weight:400">/month</span></div>
+  <div style="font-size:.7rem;color:#065f46;font-weight:700;letter-spacing:.05em;margin-bottom:.25rem">💚 CREDIT PACK · NO SUBSCRIPTION</div>
+  <div style="font-size:1.5rem;font-weight:800;color:#065f46">$10<span style="font-size:.85rem;color:#6b7280;font-weight:400"> one-time</span></div>
   <ul style="line-height:1.6;font-size:.88rem;margin:.5rem 0;padding-left:1.1rem">
-   <li><strong>500 calls/day</strong> (2.5× your cap)</li>
-   <li>Same data as Developer, cheaper</li>
-   <li>Cancel in 1 click</li>
+   <li><strong>1,000 API credits</strong> past your daily cap</li>
+   <li>More API capacity, no monthly bill</li>
+   <li>Use them at your own pace</li>
   </ul>
-  <a href="{_STRIPE_STARTER}?prefilled_email={email}" style="display:inline-block;background:#10b981;color:white;padding:.55rem 1rem;border-radius:6px;font-weight:700;text-decoration:none;width:calc(100% - 2rem);text-align:center">
-    Start Starter — $9/mo →
+  <a href="{_STRIPE_PACK}?prefilled_email={email}" style="display:inline-block;background:#10b981;color:white;padding:.55rem 1rem;border-radius:6px;font-weight:700;text-decoration:none;width:calc(100% - 2rem);text-align:center">
+    Get the credit pack — $10 →
   </a>
  </div>
  <div style="flex:1;min-width:240px;padding:1rem;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa">
@@ -144,7 +150,7 @@ margin:0 auto;padding:1.5rem;color:#1f2937;line-height:1.55">
 </div>
 
 <p style="color:#6b7280;font-size:.85rem;margin-top:1rem">
- Both plans: cancel anytime · no long-term contract · your existing key keeps working.<br>
+ The pack is one-time; Developer cancels anytime. Your existing key keeps working either way.<br>
  Questions? <a href="mailto:api@dchub.cloud" style="color:#1e40af">api@dchub.cloud</a>
 </p>
 </body></html>"""
@@ -247,12 +253,11 @@ def send_pending_nudges(dry_run: bool = False) -> dict:
                         continue
                 except Exception:
                     pass
-                # Phase HHH (2026-05-17) — lead with Starter $9 (lower
-                # friction first-jump). The HTML body shows both tiers
-                # side-by-side; the subject line should match the cheap
-                # option for higher open + click rates.
+                # Phase HHH (2026-05-17) — lead with the cheapest rung (lower
+                # friction first-jump); the subject matches it. r-sku-wall
+                # (2026-09-24): that rung is the $10 pack, not Starter $9.
                 subject = (f"You're hitting the DC Hub free cap — "
-                           f"unlock 2.5× more for $9/mo")
+                           f"1,000 more calls for $10, no subscription")
                 body = _render_nudge_html(u["user_email"], u["heavy_days_7d"],
                                             u["peak_day_calls"])
                 if dry_run:

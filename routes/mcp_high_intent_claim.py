@@ -787,7 +787,7 @@ _CLAIM_FORM_HTML = r"""<!DOCTYPE html>
   </form>
 
   <p class="note">Trial includes the get_grid_intelligence + get_fiber_intel tools that triggered this offer,
-  plus the full free-tier toolset. To go permanent: $9/mo Starter (200 calls/day) or $49/mo Developer
+  plus the full free-tier toolset. To go further: the $10 one-time credit pack (1,000 calls) or $49/mo Developer
   (500 calls/day) at <a href="https://dchub.cloud/pricing" style="color:#22d3ee">dchub.cloud/pricing</a>.</p>
 </body>
 </html>
@@ -839,7 +839,7 @@ _CLAIM_SUCCESS_HTML = r"""<!DOCTYPE html>
 
   <pre>{"mcpServers":{"dchub":{"command":"npx","args":["-y","mcp-remote","https://dchub.cloud/mcp"],"env":{"DCHUB_API_KEY":"__KEY__"}}}}</pre>
 
-  <p class="note">Need more? <strong>$9/mo Starter</strong> (200 calls/day) or <strong>$49/mo Developer</strong>
+  <p class="note">Need more? The <strong>$10 one-time credit pack</strong> (1,000 calls) or <strong>$49/mo Developer</strong>
   (500 calls/day) at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
   50% off the first 3 months with code <code>DCMCP50_LAUNCH</code>.</p>
 </body>

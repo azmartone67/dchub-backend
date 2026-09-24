@@ -736,6 +736,20 @@ def _rate_limit_text(tier):
         return ""
 
 
+def _ent_from_usd_year():
+    """The Enterprise "from" anchor (tier_registry.ENTERPRISE_FROM_USD_YEAR).
+
+    r-sku-wall (2026-09-24): walls in this file and the /mcp/manifest quoted
+    Enterprise figures /pricing does not sell. 12000 is the
+    registry value at the time of writing, used only if it cannot be read.
+    """
+    try:
+        import tier_registry as _tr
+        return int(_tr.ENTERPRISE_FROM_USD_YEAR)
+    except Exception:
+        return 12000
+
+
 def _wk_canon_version():
     """Canonical MCP server version for the /.well-known/mcp.json manifest.
 
@@ -5821,7 +5835,8 @@ def phase19b_grid_intelligence(region):
                 "Full 24h series + generation mix + headroom requires a "
                 "free dev key (email-only signup, no credit card). For "
                 "fund-grade access — daily DCPI exports, interconnect "
-                "queues, M&A tracker — see /enterprise ($25K+/yr)."
+                f"queues, M&A tracker — see /enterprise (from "
+                f"${_ent_from_usd_year():,}/yr)."
             ),
             'agent_action': {
                 'type':    'claim_free_key',
@@ -5850,7 +5865,7 @@ def phase19b_grid_intelligence(region):
             # the user appropriately.
             'enterprise_url': 'https://dchub.cloud/enterprise',
             'enterprise_note': ('Hedge fund / REIT / broker / infra GP? '
-                                 'Enterprise data licensing from $25K/yr '
+                                 f'Enterprise data licensing from ${_ent_from_usd_year():,}/yr '
                                  'unlocks raw exports + monthly briefings + '
                                  'custom DCPI weights. https://dchub.cloud/enterprise'),
             'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',
@@ -12982,7 +12997,7 @@ def mcp_manifest():
                 "signup": "https://dchub.cloud/pricing"
             },
             "enterprise": {
-                "price": "$699/mo",
+                "price": f"from ${_ent_from_usd_year():,}/yr",
                 "limits": "Full data, 100,000 calls/day. Priority support.",
                 "signup": "https://dchub.cloud/pricing"
             }
@@ -30698,7 +30713,7 @@ def _fiber_teaser_response():
                 f"across {total:,} segments) needs a Pro key "
                 f"at $99/mo — https://dchub.cloud/pricing. For fund-grade "
                 f"access (raw exports, custom DCPI weights, monthly briefings), "
-                f"see Enterprise at $25K+/yr — https://dchub.cloud/enterprise."),
+                f"see Enterprise from ${_ent_from_usd_year():,}/yr — https://dchub.cloud/enterprise."),
             'starter_url':     'https://dchub.cloud/pricing',
             'enterprise_url':  'https://dchub.cloud/enterprise',
             'preview_count':   len(feats),

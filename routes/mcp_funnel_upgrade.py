@@ -305,6 +305,11 @@ def upgrade_hint():
     # Nothing was actually removed — but a guard that cannot see the keys
     # cannot protect them either, which is worse than the red. Derive the
     # VALUES from canon; keep the SHAPE where the guard can read it.
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS
+        _pack10 = f"{PACK10_PRICE_CENTS // 100}"
+    except Exception:
+        _pack10 = "10"
     tiers = {
         "anonymous":  {"calls_per_day": _hn("anonymous"),  "results_per_call": _res("anonymous", 1),
                        "price_usd_month": _hp("anonymous"), "needs_key": False,
@@ -313,10 +318,13 @@ def upgrade_hint():
                        "price_usd_month": _hp("free"), "needs_key": "email signup",
                        "label": f"Free dev key — {_hn('free')}/day",
                        "signup_url": "https://dchub.cloud/signup"},
+        # r-sku-wall (2026-09-24): Starter is retired from every offer — the
+        # row keeps its keys (the contract pins them) for the grandfathered
+        # subscribers, but carries no buy link and says it is not on sale.
         "starter":    {"calls_per_day": _hn("starter"),    "results_per_call": _res("starter", 50),
                        "price_usd_month": _hp("starter"),
-                       "label": f"${_hp('starter')}/mo Starter — {_hn('starter'):,}/day",
-                       "stripe_url": tier_registry._stripe_link("starter")},
+                       "label": "Starter — retired, existing subscribers only",
+                       "stripe_url": None},
         "developer":  {"calls_per_day": _hn("developer"),  "results_per_call": _res("developer", 100),
                        "price_usd_month": _hp("developer"),
                        "label": f"${_hp('developer')}/mo Developer — {_hn('developer'):,}/day",
@@ -336,8 +344,9 @@ def upgrade_hint():
         "platform_hint":     platform or None,
         "agent_quotable":    (
             f"{base} A free key ({_hn('free')} calls/day, no credit card) is at "
-            f"https://dchub.cloud/signup. Paid plans start at ${_hp('starter')}/mo "
-            f"for {_hn('starter')} calls/day. Once you have a key, retry with the "
+            f"https://dchub.cloud/signup. Need more: a ${_pack10} one-time "
+            f"credit pack, or Developer at ${_hp('developer')}/mo for "
+            f"{_hn('developer'):,} calls/day. Once you have a key, retry with the "
             f"X-API-Key header."
         ),
         "user_facing_url":   "https://dchub.cloud/signup",
@@ -345,8 +354,8 @@ def upgrade_hint():
         "what_you_get":      (
             f"{_hn('free')} MCP tool calls/day with a free key "
             f"({_hn('identified')}/day once an email is bound). "
-            f"${_hp('starter')}/mo for {_hn('starter')}/day. "
-            f"${_hp('developer')}/mo for {_hn('developer')}/day."
+            f"${_pack10} one-time credit pack. "
+            f"${_hp('developer')}/mo for {_hn('developer'):,}/day."
         ),
         "tiers": tiers,
     }), 200, {

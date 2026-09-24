@@ -193,9 +193,7 @@ _CAPTURE_HTML = """<!DOCTYPE html>
 
 <a class="skip" href="__STRIPE_URL__">Skip email — go straight to Stripe →</a>
 
-<div class="pane" style="background:#fef3c7;border-color:#fbbf24;margin-top:14px;font-size:.85rem">
-  💡 <b>Not ready for __TIER_LABEL__?</b> Start with <b>Starter — $9/mo</b>: same data sample as Developer, lighter cap. <a href="https://api.dchub.cloud/pricing/checkout/start?tier=starter&tool=__TOOL__" style="color:#92400e;font-weight:600">Switch to Starter →</a>
-</div>
+__DOWNSELL__
 </body></html>"""
 
 
@@ -203,6 +201,21 @@ def _esc_attr(v):
     """Minimal HTML-attribute escape for values we inject into the form."""
     from html import escape
     return escape(str(v or ""), quote=True)
+
+
+def _downsell_html(tier, tool):
+    """The 'not ready?' box. r-sku-wall (2026-09-24): offered the Starter plan,
+    which is retired from every offer; the rung below a subscription is now
+    the one-time credit pack. Nothing below the pack, so no box on it."""
+    if tier in ("metered", "pack5"):
+        return ""
+    return ('<div class="pane" style="background:#fef3c7;border-color:#fbbf24;'
+            'margin-top:14px;font-size:.85rem">\n'
+            f'  💡 <b>Not ready for {_esc_attr(tier.title())}?</b> Start with the '
+            f'<b>{_price_label("metered")}</b>: a one-time credit pack, no subscription. '
+            '<a href="https://api.dchub.cloud/pricing/checkout/start?tier=metered&amp;tool='
+            f'{_esc_attr(tool) or "MCP"}" style="color:#92400e;font-weight:600">'
+            'Switch to the credit pack →</a>\n</div>')
 
 
 @checkout_email_bp.route("/pricing/checkout/start", methods=["GET"], strict_slashes=False)
@@ -224,7 +237,8 @@ def start():
             .replace("__PRICE_LABEL__", price)
             .replace("__SURFACE__", _esc_attr(surface))
             .replace("__REF__", _esc_attr(ref))
-            .replace("__STRIPE_URL__", stripe_url))
+            .replace("__STRIPE_URL__", stripe_url)
+            .replace("__DOWNSELL__", _downsell_html(tier, tool)))
     return html, 200, {"Content-Type": "text/html; charset=utf-8",
                         "Cache-Control": "no-store"}
 

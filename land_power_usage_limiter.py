@@ -54,6 +54,22 @@ DATABASE_URL = os.environ.get('NEON_DATABASE_URL', '') or os.environ.get('DATABA
 # paying developer customer fell through to free defaults (1 search,
 # 5 filters) — broken UX + churn driver. Each tier now matches what
 # /gating-matrix advertises and what the user pays for.
+# r-sku-wall (2026-09-24): Land & Power is Pro-only (owner 2026-09-22) —
+# Free, Starter and Developer see the preview, so every wall here sells Pro.
+# Was "Upgrade to Developer ($49/mo) for 50 searches", which sold a plan that
+# does not open the product.
+def _pro_upgrade_text():
+    try:
+        from tier_registry import price_display
+        p = price_display("pro") or "$99/mo"
+    except Exception:
+        p = "$99/mo"
+    return (f"Land & Power is a Pro product — upgrade to Pro ({p}) for full "
+            f"access: unlimited searches with every filter.")
+
+
+_PRO_UPGRADE_TEXT = _pro_upgrade_text()
+
 LAND_POWER_LIMITS = {
     'anonymous': {
         # No login = can view the map UI + layer list, but cannot
@@ -71,7 +87,7 @@ LAND_POWER_LIMITS = {
         'searches_per_month': 3,
         'max_filters': 5,
         'label': 'Free',
-        'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
+        'upgrade_text': _PRO_UPGRADE_TEXT,
     },
     'identified': {
         # Email-only signup, no card. Three free searches per month —
@@ -81,7 +97,7 @@ LAND_POWER_LIMITS = {
         'searches_per_month': 3,
         'max_filters': 5,
         'label': 'Identified',
-        'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
+        'upgrade_text': _PRO_UPGRADE_TEXT,
     },
     'starter': {
         # r-starter-sweep (2026-07-30): $9/mo Starter — between
@@ -91,7 +107,7 @@ LAND_POWER_LIMITS = {
         'searches_per_month': 15,
         'max_filters': 10,
         'label': 'Starter',
-        'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
+        'upgrade_text': _PRO_UPGRADE_TEXT,
     },
     'developer': {
         # $49/mo paid tier. Generous limits — 50 searches/month
@@ -101,7 +117,7 @@ LAND_POWER_LIMITS = {
         'searches_per_month': 50,
         'max_filters': 15,
         'label': 'Developer',
-        'upgrade_text': 'Upgrade to Pro ($99/mo) for unlimited Land & Power searches with all filters.',
+        'upgrade_text': _PRO_UPGRADE_TEXT,
     },
     'pro': {
         'searches_per_month': -1,  # unlimited
@@ -656,7 +672,9 @@ def register_usage_routes(app):
                 'founding': {
                     'searches_per_month': 'Unlimited',
                     'max_filters': 'Unlimited',
-                    'price': 'Founding cohort',
+                    # r-sku-wall: Founding is retired as an offer; the row
+                    # stays (existing members) at what they are charged.
+                    'price': '$99/mo (legacy Pro)',
                 },
             },
             'api_limits': {
