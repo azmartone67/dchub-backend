@@ -625,6 +625,25 @@ def external_session_predicate(col: str = "mcp_session_id", prefixes=None) -> st
     return "(COALESCE(%s,'') !~* '^(%s)')" % (col, "|".join(prefixes))
 
 
+# r-hi-crawler-ua (2026-09-24): a SELF-DECLARED CRAWLER, by the robots.txt
+# convention — a product token ending in bot/crawler/spider, then a version
+# ("BrickBlueBot/0.1", "GPTBot/1.1", "Baiduspider-render/2.0"). Single source for
+# the track-paid-hit write gate (routes/mcp_high_intent_claim._is_non_human_client
+# and its _hi_real_sql twin) AND the handoff funnel's read-side filter
+# (routes/handoff_definition). Lives in this leaf so handoff_definition can use it
+# without importing Flask.
+#
+# ★ A token shape, never the word "bot": ChatGPT-User's UA ends
+# '+https://openai.com/bot' and is a human's request. The same text is valid as a
+# Python regex and a POSIX ~* regex (no \b, no lookaround, no quote, no %).
+CRAWLER_UA_PATTERN = r"[a-z0-9](bot|crawler|spider)(-[a-z]+)?/[0-9]"
+
+
+def crawler_ua_predicate(col: str = "user_agent") -> str:
+    """TRUE when `col` is NOT a self-declared crawler UA. NULL/empty is KEPT."""
+    return f"(COALESCE({col},'') !~* '{CRAWLER_UA_PATTERN}')"
+
+
 def real_ua_predicate(col: str = "user_agent") -> str:
     """TRUE when user_agent is NOT a raw-scripting client or an internal/self UA.
     Fires regardless of client_name (the gap PLATFORM_CASE leaves). Inlined SQL

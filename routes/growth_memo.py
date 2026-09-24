@@ -155,9 +155,15 @@ def _build_memo(c, platform: str | None = None) -> dict:
         pay = _one(c, "SELECT count(DISTINCT session_id) FROM mcp_upgrade_signals "
                       "WHERE signal_type IN ('trial_preview','paid_tool_blocked') AND session_id IS NOT NULL "
                       "AND " + win.replace("first_hit_at", "created_at"))
-        high = _one(c, "SELECT count(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions WHERE " + win)
+        # r-funnel-crawler-read (2026-09-24): the same read-side crawler filter
+        # the handoff funnel applies to these two stages, in BOTH windows, so the
+        # week-over-week delta compares like with like.
+        from mcp_calls_deloop import crawler_ua_predicate
+        not_crawler = crawler_ua_predicate("user_agent")
+        high = _one(c, "SELECT count(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions WHERE "
+                       + win + " AND " + not_crawler)
         mint = _one(c, "SELECT count(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions "
-                       "WHERE claim_minted_at IS NOT NULL AND " + win)
+                       "WHERE claim_minted_at IS NOT NULL AND " + win + " AND " + not_crawler)
         email = _one(c, "SELECT count(DISTINCT lower(email)) FROM mcp_dev_keys "
                         "WHERE email IS NOT NULL AND email <> '' AND "
                         + win.replace("first_hit_at", "created_at"))

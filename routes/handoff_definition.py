@@ -53,6 +53,7 @@ from routes._audience_identity import (
     operator_emails_sql_list as _operator_emails_sql_list,
 )
 from mcp_calls_deloop import (
+    crawler_ua_predicate as _crawler_ua_predicate,
     external_session_predicate as _external_session_predicate,
     real_ua_predicate as _real_ua_predicate,
 )
@@ -358,11 +359,59 @@ def human_acted_count_sql(interval_sql: str, *,
             + ") u")
 
 
+# ── read-side crawler filter for the stages counted FROM the table ──────────
+# r-funnel-crawler-read (2026-09-24). high_intent, relay_minted and redeemed are
+# raw counts over mcp_high_intent_sessions: whatever the write gate let in, they
+# publish. BrickBlueBot/0.1 ("agentic-web registry|indexer") got past that gate
+# for 09-17..09-21 and left 15 claim-minted sessions (19 rows, 17 tools, 0
+# opens) that relay_minted counted as prospects. dchub-backend#5435 closed the
+# gate for new rows; this filter removes whatever a gate lets past it, at READ
+# time, so a correction never waits for rows to age out of the window. (The
+# BrickBlueBot rows themselves were deleted on 2026-09-24 after an off-DB
+# backup, so on prod this filter currently removes 0.)
+#
+# ★ DECLARED, NEVER SILENT. The endpoint publishes each stage's unfiltered figure
+# beside the filtered one and the difference under `excluded`, the same way the
+# operator self-traffic exclusion is published. Nothing is deleted from the table.
+#
+# ★ SCOPE. Only the stages counted straight from this table's rows, plus
+# relay_minted_acted, whose denominator is relay_minted by definition. human_acted
+# and identified have versioned definitions and need a real-UA human artifact
+# that a crawler session never produces (the 15 have 0 opens), so they are not
+# re-defined here.
+HIGH_INTENT_STAGE_COLUMNS = {
+    "high_intent": None,
+    "relay_minted": "claim_minted_at",
+    "redeemed": "claim_used_at",
+}
+
+
+def high_intent_not_crawler_predicate(alias: str = "s") -> str:
+    """TRUE when the session row's user_agent is not a self-declared crawler."""
+    return _crawler_ua_predicate("%s.user_agent" % alias)
+
+
+def high_intent_stage_count_sql(stage: str, interval_sql: str, *,
+                                include_crawlers: bool = False) -> str:
+    """DISTINCT sessions in `stage` (a HIGH_INTENT_STAGE_COLUMNS key) whose
+    first_hit_at is inside `interval_sql`. `include_crawlers=True` renders the
+    unfiltered figure that must stay published beside it."""
+    col = HIGH_INTENT_STAGE_COLUMNS[stage]
+    sql = ("select count(distinct s.mcp_session_id) "
+           "from mcp_high_intent_sessions s "
+           "where s.first_hit_at > now() - interval '" + interval_sql + "'")
+    if col:
+        sql += " and s." + col + " is not null"
+    if not include_crawlers:
+        sql += " and " + high_intent_not_crawler_predicate("s")
+    return sql
+
+
 def relay_minted_acted_count_sql(interval_sql: str) -> str:
     """relay_minted sessions that THEMSELVES acted — the same-population rung.
 
     The denominator is exactly the relay_minted step (mcp_high_intent_sessions,
-    claim minted, first_hit_at in the window). The numerator is the subset of
+    claim minted, first_hit_at in the window, not a self-declared crawler). The numerator is the subset of
     those sessions that pass human_acted_session_predicate (a real-UA relay
     open OR a signed /go/c click bound to the session) and are not declared
     operator traffic. Divide this by relay_minted, never human_acted.
@@ -372,7 +421,9 @@ def relay_minted_acted_count_sql(interval_sql: str) -> str:
             "where s.claim_minted_at is not null "
             "and s.first_hit_at > now() - interval '" + interval_sql + "' "
             "and " + human_acted_session_predicate("s")
-            + " and " + human_acted_not_self_predicate("s"))
+            + " and " + human_acted_not_self_predicate("s")
+            # relay_minted's own read-side filter, so this stays its subset.
+            + " and " + high_intent_not_crawler_predicate("s"))
 
 
 # ── the redeem stage: a MACHINE diagnostic, never funnel progress ───────────
