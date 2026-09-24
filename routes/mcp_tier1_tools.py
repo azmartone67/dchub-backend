@@ -66,6 +66,36 @@ _FLEET_FILTER = "COALESCE(is_duplicate, 0) = 0"
 # any error_version:1 suggested_params must validate against.
 RANK_MARKETS_PARAMS = ("criteria", "region", "limit", "min_capacity_mw")
 
+# best_overall composite weights: (per MW, per distinct operator, per facility).
+# ONE source for both the SQL ORDER BY and the published per-row `score`, so the
+# value a caller reads is the value the rows were sorted by (#3765).
+_BEST_OVERALL_WEIGHTS = (0.4, 50, 20)
+
+
+def _rank_markets_score(criteria: str, row) -> float:
+    """The published `score` for one rank_markets row: the market metric the
+    ranking is sorted by for `criteria`, exactly as `methodology` names it.
+
+    #3765: this used to be 100 x (N - rank + 1) / N with N = rows returned — a
+    position ladder that moved with the caller's `limit` (Dallas, rank 2, was
+    66.7 at limit=3 and 98 at limit=50 on identical data) while `methodology`
+    promised a composite. `rank` already carries position; `score` now carries
+    a property of the market, stable across `limit`.
+    """
+    mw  = float(row["total_mw"] or 0)
+    ops = int(row["operator_count"] or 0)
+    fac = int(row["facility_count"] or 0)
+    if criteria == "best_overall":
+        w_mw, w_ops, w_fac = _BEST_OVERALL_WEIGHTS
+        return round(mw * w_mw + ops * w_ops + fac * w_fac, 1)
+    if criteria in ("most_capacity", "cheapest_power"):
+        return round(mw, 1)          # both ORDER BY total_mw
+    if criteria == "most_operators":
+        return float(ops)
+    if criteria == "fastest_growing":
+        return float(fac)
+    return round(mw, 1)
+
 # ═════════════════════════════════════════════════════════════════════
 # find_alternatives spec gate — provider / power_mw
 # ═════════════════════════════════════════════════════════════════════
@@ -328,7 +358,9 @@ def rank_markets():
             "most_capacity":    "ORDER BY total_mw DESC NULLS LAST",
             "most_operators":   "ORDER BY operator_count DESC, total_mw DESC",
             "fastest_growing":  "ORDER BY facility_count DESC",
-            "best_overall":     f"ORDER BY ({_SUM_MW} * 0.4 + {_CNT_OPS} * 50 + {_CNT_FAC} * 20) DESC",
+            "best_overall":     (f"ORDER BY ({_SUM_MW} * {_BEST_OVERALL_WEIGHTS[0]} "
+                                 f"+ {_CNT_OPS} * {_BEST_OVERALL_WEIGHTS[1]} "
+                                 f"+ {_CNT_FAC} * {_BEST_OVERALL_WEIGHTS[2]}) DESC"),
         }[criteria]
         query += " " + order_clause + " LIMIT %s"
         params.append(limit)
@@ -355,8 +387,8 @@ def rank_markets():
         else:
             value_str = f"{r['facility_count']} fac / {r['total_mw']:.0f} MW / {r['operator_count']} ops"
 
-        # Score 0-100 normalized to rank
-        score = round(100 - (i * 100 / max(1, len(rows))), 1)
+        # #3765: the sort-key metric named in `methodology`, not a rank ladder.
+        score = _rank_markets_score(criteria, r)
 
         _slug = r["slug"]
         # r-slugfix (2026-07-15): echo a DCPI-resolvable slug so agents can chain
@@ -406,6 +438,11 @@ def rank_markets():
             "best_overall":    "Composite: 0.4×total_mw + 50×operators + 20×facilities.",
             "ai_ready":        "DCPI buildability composite (excess-power 60% + inverse-constraint 30% + time-to-power 10%, verdict-gated).",
         }.get(criteria, ""),
+        # #3765: say what `score` is, so nobody reads 8887.2 as out-of-100 or
+        # (as before) reads a position ladder as a market property.
+        "score_basis":    ("score is the value the results are sorted by, as "
+                           "described in methodology (not a 0-100 scale, not "
+                           "rank-derived); it does not change with limit."),
         # r-status-canon (2026-07-31): this string said "status='active'" — the
         # one status the query has NEVER matched. It now names the two filters
         # actually applied, so the published basis survives the canon backfill.
