@@ -42,7 +42,9 @@ worker.js some commit contains:
 
 The "in no commit" test compares git BLOB IDS: every blob id worker.js has
 ever had is readable from tree objects alone (`git log --raw`), so a blobless
-clone answers it without downloading 50 copies of a 430 KB file.
+clone answers it without downloading 61 copies of a 430 KB file (the full
+clone's count on 2026-09-23). It needs FULL history: the workflow checks out
+with fetch-depth: 0, and a shallow clone says so in its refusal.
 
 ★ AFTER A WRITE it verifies, and fails loudly (exit 5) on any miss:
   1. the script Cloudflare now holds is byte-identical to the repo's worker.js
@@ -362,6 +364,15 @@ def git_history_blobs(repo_dir: str, path: str = MAIN_MODULE) -> set[str]:
     return blobs
 
 
+def git_is_shallow(repo_dir: str) -> bool:
+    """A shallow clone lacks old worker.js blobs, so "live bytes in no commit"
+    there may mean "in no commit THIS CLONE HAS". Measured 2026-09-23: a
+    shallow local clone listed 50 blob ids, the workflow's full clone 61."""
+    out = subprocess.run(["git", "-C", repo_dir, "rev-parse", "--is-shallow-repository"],
+                         capture_output=True, text=True).stdout.strip()
+    return out == "true"
+
+
 def _cf_errors(body: bytes) -> str:
     try:
         d = json.loads(body or b"{}")
@@ -529,12 +540,21 @@ def run(mode: str, *, repo_dir: str, out: str, http: Http, token: str,
     live_bytes = modules[0]["data"] if len(modules) == 1 else b""
     live_version = extract_version(live_bytes) if live_bytes else None
     live_blobs = live_blob_candidates(live_bytes) if live_bytes else set()
+    shallow = False
     if history_blobs is None:
         history_blobs = git_history_blobs(repo_dir)
+        shallow = git_is_shallow(repo_dir)
     decision = decide(repo_version=repo_version, repo_blob=repo_blob,
                       live_version=live_version, live_blobs=live_blobs,
                       history_blobs=history_blobs, live_module_count=len(modules),
                       live_entrypoint=script_headers.get("cf-entrypoint"))
+    if shallow and decision.code == "live_content_not_in_any_commit":
+        # Still a refusal (fail safe), but do not send anyone hunting for a
+        # dashboard paste that may never have happened.
+        decision.reason += (" ⚠ This checkout is SHALLOW, so the live bytes may "
+                            "be in history it does not have. Re-run from a full "
+                            "clone (`git fetch --unshallow`) before concluding "
+                            "anything was pasted.")
 
     prev_versions = (deployments[0].get("versions") or []) if deployments else []
     before = settings_shape(settings, schedules)

@@ -482,6 +482,39 @@ def test_history_blobs_lists_every_version_the_file_had(tmp_path):
     assert D.git_history_blobs(str(tmp_path)) == {D.git_blob_id(v) for v in versions}
 
 
+def test_shallow_clone_refusal_names_the_clone_not_a_paste(tmp_path):
+    """Same refusal (never a deploy), but the reason must not accuse a paste
+    when the clone simply lacks the history to find the live blob."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    src = tmp_path / "src"
+    src.mkdir()
+    g = lambda d, *a: subprocess.run(["git", "-C", str(d), *a], check=True,
+                                     capture_output=True, env=env)
+    g(src, "init", "-q")
+    for content in (LIVE, REPO):
+        (src / "worker.js").write_bytes(content)
+        g(src, "add", "worker.js")
+        g(src, "commit", "-qm", "w")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{src}", str(shallow)],
+                   check=True, capture_output=True, env=env)
+    net = FakeNet()
+    clock = Clock()
+    logs = []
+    rc = D.run("plan", repo_dir=str(shallow), out=str(tmp_path / "o"), http=net,
+               token="t", account="ACCT", sleep=clock.sleep, clock=clock.time,
+               log=logs.append)
+    log = "\n".join(logs)
+    assert rc == D.EXIT_REFUSED and net.writes() == []
+    assert "live_content_not_in_any_commit" in log and "SHALLOW" in log
+    # control: the full clone finds LIVE in its history and plans a deploy
+    logs.clear()
+    assert D.run("plan", repo_dir=str(src), out=str(tmp_path / "o2"), http=FakeNet(),
+                 token="t", account="ACCT", log=logs.append) == D.EXIT_OK
+    assert "repo_ahead" in "\n".join(logs)
+
+
 def test_parse_multipart_strips_only_the_delimiter_crlf():
     b = "abc123"
     file = b"line\r\n"  # a file that itself ends in CRLF keeps it
