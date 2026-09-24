@@ -36,6 +36,8 @@ cannot produce are written or aged by hand.
   P19  pk- click, no session; operator in caller_id    excluded (v4 payer); in incl_self
   V2   pack granted to S20; operator paid              excluded from the v1 lane too
   P21  pk- click, stranger session; stranger paid      counts
+  P22  pk- click on a dchub.cloud page; paid           out: a website sale, not a relay
+                                                       (r-site-gate-clicks, 2026-09-24)
 
 Set PAID_ATTRIBUTED_SQL_DSN to run it. CI passes the db-parity service DSN
 and then asserts this file did not skip.
@@ -77,14 +79,14 @@ def _hex(label):
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16, S18, S20, S21 = (
+S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16, S18, S20, S21, S22 = (
     "5a1d%04x-0000-4000-8000-%012x" % (i, i)
-    for i in (1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21))
+    for i in (1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21, 22))
 # The operator session is BUILT from the declared prefixes, never typed.
 _OPS = self_traffic_session_prefixes()
 OP = _OPS[0] + "-0000-4000-8000-0000000000aa"
-PK1, PK3, PK5, PK18, PK19, PK21 = (
-    "pk-" + _hex(x) for x in ("pk1", "pk3", "pk5", "pk18", "pk19", "pk21"))
+PK1, PK3, PK5, PK18, PK19, PK21, PK22 = (
+    "pk-" + _hex(x) for x in ("pk1", "pk3", "pk5", "pk18", "pk19", "pk21", "pk22"))
 K2, K7, K8, K9, K10, K12, K14, K16, K17 = (
     "k-" + _hex(x) for x in ("k2", "k7", "k8", "k9", "k10", "k12", "k14", "k16", "k17"))
 AE6 = "a-" + _hex("ae6")[:24]
@@ -134,6 +136,7 @@ _CLICKS = [
     ("P18", "metered", PK18, S18, REAL_UA),
     ("P19", "metered", PK19, "", REAL_UA),
     ("P21", "metered", PK21, S21, REAL_UA),
+    ("P22", "metered", PK22, S22, REAL_UA, "https://dchub.cloud/land-power-map"),
 ]
 
 # The OPERATOR address is built from operator_emails(), never typed, then
@@ -148,6 +151,7 @@ _CONVERSIONS = [
     ("cs_test_p19", None, _OP_EMAIL),
     ("cs_test_v2", _OP_EMAIL, None),
     ("cs_test_p21", "buyer@example.org", "buyer@example.org"),
+    ("cs_test_p22", "site-buyer@example.org", "site-buyer@example.org"),
 ]
 
 
@@ -178,6 +182,7 @@ _PAYMENTS = [
     ("P18", _checkout("cs_test_p18", PK18)),
     ("P19", _checkout("cs_test_p19", PK19)),
     ("P21", _checkout("cs_test_p21", PK21)),
+    ("P22", _checkout("cs_test_p22", PK22)),
 ]
 
 
@@ -206,7 +211,7 @@ def db():
     from routes import checkout_payment_refs as CPR
     import routes.mcp_conversion_plays as mcp
 
-    for sid in (S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16, S18, S20, S21):
+    for sid in (S1, S2, S3, S4, S5, S8, S9, S10, S12, S14, S15, S16, S18, S20, S21, S22):
         assert not sid.lower().startswith(tuple(p.lower() for p in _OPS)), sid
 
     mp = pytest.MonkeyPatch()
@@ -230,10 +235,13 @@ def db():
         app.register_blueprint(T.checkout_click_bp)
         client = app.test_client()
         out["location"] = {}
-        for label, plan, ref, sid, ua in _CLICKS:
+        for label, plan, ref, sid, ua, *referer in _CLICKS:
             token = T.mint_checkout_token(plan, ref, sid)
             assert token, (label, ref, sid)
-            r = client.get("/go/c/" + token, headers={"User-Agent": ua})
+            headers = {"User-Agent": ua}
+            if referer:
+                headers["Referer"] = referer[0]
+            r = client.get("/go/c/" + token, headers=headers)
             out["location"][label] = (r.status_code, r.headers.get("Location"))
         # States the endpoint cannot produce: an unsigned click, and ages.
         cur.execute("INSERT INTO mcp_checkout_clicks"
@@ -340,7 +348,7 @@ def test_the_writer_records_paid_sessions_once(db):
     assert rec["P1"]["ok"] and rec["P1"]["idempotent"] is False
     assert rec["P13"]["ok"] and rec["P13"]["idempotent"] is True
     assert "cs_test_p11" not in db["stored"]
-    assert len(db["stored"]) == 17
+    assert len(db["stored"]) == 18
     assert db["stored"]["cs_test_p1"] == (PK1, "pack_key", "payment", 1000, True)
     assert db["stored"]["cs_test_p2"][:2] == (K2, "sub_key")
     assert db["stored"]["cs_test_p4"][:2] == (S5, "session")
@@ -367,7 +375,8 @@ def test_each_payment_is_attributed_to_the_latest_qualifying_click(db):
                "cs_test_p8",                # click after payment
                "cs_test_p9",                # click outside the lookback
                "cs_test_p12",               # probe UA
-               "cs_test_p16"):              # unsigned
+               "cs_test_p16",               # unsigned
+               "cs_test_p22"):              # pressed on dchub.cloud: a website sale
         assert got[cs] is None, cs
 
 
@@ -394,8 +403,9 @@ def test_v1_could_not_see_a_keyed_purchase(db):
 
 def test_the_ceiling_and_the_attributable_subset(db):
     assert db["payments_raw"] == {
-        "payments": 15,                    # P10 not live, P11 unrecorded, P13 dup, P14 old
-        "matched_a_relayed_click": 12,     # not P8 (after), P12 (probe), P16 (unsigned)
+        "payments": 16,                    # P10 not live, P11 unrecorded, P13 dup, P14 old
+        "matched_a_relayed_click": 12,     # not P8 (after), P12 (probe), P16 (unsigned),
+                                           # P22 (pressed on dchub.cloud)
         "attributable_to_a_session": 10,   # P1 P2 P3 P4 P5 P7 P17 P18 P19 P21
     }
 

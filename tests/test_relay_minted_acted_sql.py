@@ -68,7 +68,8 @@ CREATE TABLE mcp_checkout_clicks (
     ref_kind    TEXT,
     sig_ok      BOOLEAN DEFAULT TRUE,
     user_agent  TEXT,
-    session_id  TEXT
+    session_id  TEXT,
+    referrer    TEXT
 );
 """
 
