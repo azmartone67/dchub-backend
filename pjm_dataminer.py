@@ -183,6 +183,33 @@ def _gridstatus_dom(base, errs: dict | None = None):
     return out
 
 
+def _budget_outage_fields(src_errors: dict, now=None) -> dict:
+    """When EVERY gridstatus source failed on the monthly budget, say it is
+    TEMPORARY, when it clears, and where PJM-wide data lives meanwhile.
+
+    2026-09-24 (Grok unlock prove-out): PJM-DOM answered with only
+    source_errors ("budget_exhausted: … owner directive 2026-07-26"), which is
+    ops text. An agent could not tell a monthly cap that resets on the 1st from
+    a dead feed, and had no next call. Any other error (403, missing key)
+    returns {} so the marker is exactly as before."""
+    errs = [str(v) for v in (src_errors or {}).values()]
+    if not errs or not all(e.startswith("budget_exhausted") for e in errs):
+        return {}
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    nxt = (datetime(now.year + 1, 1, 1, tzinfo=timezone.utc) if now.month == 12
+           else datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc))
+    return {
+        "temporary": True,
+        "retry_after_utc": nxt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "message": ("Temporarily unavailable: live Dominion-zone load and LMP come "
+                    "from a metered upstream feed whose monthly allowance is used "
+                    f"up. It resets {nxt.strftime('%Y-%m-%d')} (UTC). For live "
+                    "PJM-wide demand and fuel mix now, call get_grid_intelligence "
+                    "with region_id=PJM."),
+    }
+
+
 def pjm_dom_zone():
     """Dominion (DOM) zone brief: current load + RT LMP. Fail-closed.
 
@@ -223,6 +250,7 @@ def pjm_dom_zone():
         })
         if _src_errors:
             base["source_errors"] = _src_errors
+            base.update(_budget_outage_fields(_src_errors))
         return base
 
     cache_hit = _PJM_CACHE.get("dom")
