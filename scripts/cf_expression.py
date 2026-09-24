@@ -54,6 +54,10 @@ _FUNCS = {"starts_with", "ends_with", "lower", "any", "concat"}
 _INFIX = {"contains", "eq", "ne", "in", "wildcard", "matches"}
 _PATH_FIELD = "http.request.uri.path"
 _COOKIE_FIELD = "http.cookie"
+# The host the REQUEST is addressed to. For a Worker subrequest that is the
+# fetched origin (e.g. dchub-backend-production.up.railway.app), not the
+# visitor-facing hostname — zone Cache Rules are evaluated on subrequests too.
+_HOST_FIELD = "http.host"
 _HEADERS_FIELD = "http.request.headers"
 _ARGS_FIELD = "http.request.uri.args"
 
@@ -198,9 +202,9 @@ class Request:
     substring behaviour is real and is modelled rather than idealised away.
     """
 
-    __slots__ = ("path", "headers", "args", "cookies")
+    __slots__ = ("path", "headers", "args", "cookies", "host")
 
-    def __init__(self, path, headers=(), args=(), cookies=()):
+    def __init__(self, path, headers=(), args=(), cookies=(), host=""):
         # a plain class, NOT a dataclass: the guard's test harness loads this
         # module by file path without registering it in sys.modules, and
         # @dataclass resolves cls.__module__ through sys.modules to do its
@@ -209,10 +213,14 @@ class Request:
         object.__setattr__(self, "headers", frozenset(headers))
         object.__setattr__(self, "args", frozenset(args))
         object.__setattr__(self, "cookies", tuple(cookies))
+        # "" = a request to one of the zone's own hostnames, unspecified — the
+        # contract every caller had before http.host was modelled.
+        object.__setattr__(self, "host", host)
 
     def __repr__(self) -> str:
         return (f"Request(path={self.path!r}, headers={sorted(self.headers)}, "
-                f"args={sorted(self.args)}, cookies={list(self.cookies)})")
+                f"args={sorted(self.args)}, cookies={list(self.cookies)}, "
+                f"host={self.host!r})")
 
     @property
     def cookie_header(self) -> str:
@@ -272,6 +280,8 @@ def _eval(node, req: Request):
             return req.path
         if node[1] == _COOKIE_FIELD:
             return req.cookie_header
+        if node[1] == _HOST_FIELD:
+            return req.host
         return ""
     if kind == "lit":
         return node[1]
