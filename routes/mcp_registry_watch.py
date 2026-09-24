@@ -120,8 +120,11 @@ def _probe_official_registry(timeout: int = 25) -> tuple[int, str]:
             (s.get("server") or {}).get("name") == _OFFICIAL_SERVER_NAME
             for s in servers)
         return 200, ("dchub.cloud listed" if listed else "")
-    except Exception:
-        return 0, ""
+    except Exception as e:
+        # r-probe-error-visible (2026-09-24): say WHY. A bare (0, "") here was
+        # indistinguishable from a network failure in _fetch. The body length is
+        # kept because a truncated page is one of the live suspects.
+        return 0, f"_parse_error: {type(e).__name__}: {str(e)[:100]} (body {len(body or '')} B)"
 
 
 def _present_in_body(body: str) -> bool:
@@ -363,12 +366,25 @@ def _probe_all() -> Dict[str, dict]:
     canon, pro_usd = _copy_canon()
     for r in _REGISTRIES:
         redirected_to = None
-        if r.get("probe") == "official_registry":
-            status, body = _probe_official_registry()
-        else:
-            status, body, final = _fetch(r["url"])
-            if status == 200 and not _same_resource(r["url"], final):
-                redirected_to = final
+        attempts = 0
+        # r-probe-error-visible (2026-09-24): one retry on status 0. The official
+        # registry read fetch_error/http_status=0 from Railway while it answered
+        # 200 in 0.35-0.49s (3 of 3) from a Mac, and the /ai Registry Standing
+        # score dropped 5/8 -> 4/8 on it. A single transient connect or read
+        # failure should not flip a registry for the whole 1h cache.
+        while True:
+            attempts += 1
+            if r.get("probe") == "official_registry":
+                status, body = _probe_official_registry()
+                final = r["url"]
+            else:
+                status, body, final = _fetch(r["url"])
+            if status != 0 or attempts >= 2:
+                break
+            time.sleep(1.0)
+        if status == 200 and r.get("probe") != "official_registry" \
+                and not _same_resource(r["url"], final):
+            redirected_to = final
         if redirected_to:
             # A moved listing is UNKNOWN, never "present". Scoring the landing
             # page is how a dead slug reads green for weeks.
@@ -393,6 +409,12 @@ def _probe_all() -> Dict[str, dict]:
             "actionable":     r.get("actionable", True),
             "redirected_to":  redirected_to,
             "copy":           copy,
+            # r-probe-error-visible: the exception text behind a status-0
+            # verdict (it used to be dropped here, so fetch_error had no cause).
+            "error":          (body[:200] if status == 0 and isinstance(body, str)
+                               and body.startswith(("_fetch_error", "_parse_error"))
+                               else None),
+            "attempts":       attempts,
         }
     return out
 
