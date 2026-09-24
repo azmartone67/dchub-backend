@@ -456,8 +456,7 @@ def _form_page(source: str) -> str:
 
 
 # ── routes ───────────────────────────────────────────────────────────────
-@marketing_opt_in_bp.get("/api/v1/opt-in/request")
-def opt_in_request_page():
+def _opt_in_request_page():
     """The page behind the paywall opt-in link. Renders a form; sends nothing."""
     resp = Response(_form_page(_clean_source(request.args.get("source"))),
                     status=200, mimetype="text/html")
@@ -465,9 +464,13 @@ def opt_in_request_page():
     return resp
 
 
-@marketing_opt_in_bp.post("/api/v1/opt-in/request")
+# ONE rule for both methods: regression-lint's duplicate-route check keys on
+# the path alone, so a separate GET rule on this path reads as a duplicate.
+@marketing_opt_in_bp.route("/api/v1/opt-in/request", methods=["GET", "POST"])
 def opt_in_request():
-    """Express interest → send a tokenized confirm email. Does NOT set opt-in.
+    """GET: the human form page (sends nothing).
+
+    POST: express interest → send a tokenized confirm email. Does NOT set opt-in.
 
     Body: {"email": "...", "source": "..."}. Suppressed / recently-asked /
     already-opted-in addresses are a polite {ok:true, sent:false}. Always 200
@@ -476,6 +479,8 @@ def opt_in_request():
 
     A form post from the page above gets an HTML page back, not JSON; the
     wording is the same whether or not an email went out."""
+    if request.method == "GET":
+        return _opt_in_request_page()
     if request.form and not request.is_json:
         email = (request.form.get("email") or "").strip().lower()
         if email:

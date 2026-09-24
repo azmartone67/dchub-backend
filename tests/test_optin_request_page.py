@@ -46,7 +46,7 @@ def test_the_cta_link_resolves_to_a_get_route_that_renders_the_form(env, monkeyp
     u = urlparse(url)
     assert u.netloc == "dchub.cloud"
     endpoint, _ = env["app"].url_map.bind("dchub.cloud").match(u.path, method="GET")
-    assert endpoint == "marketing_opt_in.opt_in_request_page"
+    assert endpoint == "marketing_opt_in.opt_in_request"
     r = env["client"].get(u.path + "?" + u.query)
     html = r.get_data(as_text=True)
     assert r.status_code == 200 and "<form" in html and "name=\"email\"" in html
