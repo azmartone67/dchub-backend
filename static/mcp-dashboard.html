@@ -180,15 +180,28 @@ async function load() {
     // over DIFFERENT populations (packs have no Stripe customer, so they can
     // never be "of these"). Print both, each with its own population; never
     // present one as the other. null = not measured, printed as such.
+    // ★★★ r-operator-tests-labelled (2026-09-24): paid_attributed v4
+    // excludes operator payers by email, so it read 0 while the operator's
+    // own test packs were still in the table, and the old copy put
+    // "0 of these trace end-to-end to an MCP signal" first. Ops read two
+    // zeros as "the money path is broken". Order is now: (1) the MCP-attributed
+    // headline, operator excluded; (2) the same count with operator tests
+    // left in, labelled as such; then the honest-paid basis of the big number,
+    // and signal_bridged named as what it measures — a signal raised on the
+    // session before the sale — never as whether MCP sales happen.
     const paFmt = v => (v == null) ? '<b style="color:#d29922">n/a</b>' : `<b>${v}</b>`;
     const paidSub = recOK
-      ? `honest paid — Stripe customer present, seed/comp/NLR excluded`
-        + ` · <b>${rec.signal_bridged_30d ?? 0}</b> of these trace end-to-end to an MCP signal`
-        + ` (signal-bridged; subscriptions only, credit packs are never in this count)`
-        + ` · separately, ${paFmt(rec.paid_attributed_7d)} 7d / ${paFmt(rec.paid_attributed_30d)} 30d`
-        + ` paid checkouts attributed to a relayed MCP /go/c click`
-        + ` (paid_attributed v${rec.paid_attributed_definition_version ?? '?'}, packs included —`
-        + ` a different population, not a subset of the honest-paid count)`
+      ? `<b>MCP-attributed paid:</b> ${paFmt(rec.paid_attributed_7d)} 7d / ${paFmt(rec.paid_attributed_30d)} 30d`
+        + ` <span style="color:#888">(paid_attributed v${rec.paid_attributed_definition_version ?? '?'}, operator excluded —`
+        + ` paid checkouts sold through a relayed MCP /go/c click, packs included;`
+        + ` a different population from the number above, not a subset of it)</span>`
+        + `<br><span style="color:#888">incl. operator tests: ${paFmt(rec.paid_attributed_including_self_7d)} 7d`
+        + ` / ${paFmt(rec.paid_attributed_including_self_30d)} 30d — the difference is the operator's own`
+        + ` test purchases, excluded by design, not lost attribution</span>`
+        + `<br>big number = honest paid — Stripe customer present, seed/comp/NLR excluded, all channels`
+        + ` · signal raised before the sale: <b>${rec.signal_bridged_30d ?? 0}</b> of those`
+        + ` <span style="color:#888">(an mcp_upgrade_signal on the buyer's session before paying;`
+        + ` subscriptions only — a 0 here does not mean MCP sales failed, read MCP-attributed paid for that)</span>`
         + ` · <span style="color:#888">${rec.conversions_30d ?? 0} raw 30d rows after refunds;`
         + ` the ${rec.excluded_by_honest_filter ?? 0} difference is seed/comp/no-Stripe, not missing data</span>`
       // Fail-open: the bridge query is in its own try/except server-side. If it
