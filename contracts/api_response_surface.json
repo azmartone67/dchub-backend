@@ -17210,7 +17210,7 @@
    ]
   },
   "GET /api/v1/mcp/high-intent/stats": {
-   "source": "routes/mcp_high_intent_claim.py:1642",
+   "source": "routes/mcp_high_intent_claim.py:1645",
    "handler": "high_intent_stats",
    "resolution": "resolved",
    "open_at": [
@@ -17571,7 +17571,7 @@
    ]
   },
   "GET /api/v1/mcp/should-mint-claim": {
-   "source": "routes/mcp_high_intent_claim.py:596",
+   "source": "routes/mcp_high_intent_claim.py:599",
    "handler": "should_mint_claim",
    "resolution": "resolved",
    "open_at": [
@@ -30494,7 +30494,7 @@
    ]
   },
   "POST /api/v1/mcp/high-intent/redeem": {
-   "source": "routes/mcp_high_intent_claim.py:1483",
+   "source": "routes/mcp_high_intent_claim.py:1486",
    "handler": "claim_redeem_agent",
    "resolution": "resolved",
    "open_at": [
@@ -30548,7 +30548,7 @@
    ]
   },
   "POST /api/v1/mcp/track-paid-hit": {
-   "source": "routes/mcp_high_intent_claim.py:492",
+   "source": "routes/mcp_high_intent_claim.py:495",
    "handler": "track_paid_hit",
    "resolution": "resolved",
    "open_at": [
