@@ -166,3 +166,39 @@ def test_every_cause_keeps_the_same_finding_identity(monkeypatch, setup):
     f = _only(R.check_worker_version_drift())
     assert f["issue"] == "worker_source_unreachable"
     assert f["url"] == R._WORKER_SOURCE_URL
+
+
+# ── r-drift-text (2026-09-24): the finding names the worker an agent must fix ──
+# The detail is the instruction an agent acts on. It said "Touch _worker.js to
+# force a redeploy" without naming the worker, and the brain turned a
+# 5.8.11 → 5.8.12 deploy-window read into "paste worker.js 4.9.76 into the
+# dchubapiproxy Cloudflare dashboard" — the OTHER worker, already current.
+def test_pages_drift_detail_names_the_pages_worker_and_its_ci_deploy(monkeypatch):
+    _install(monkeypatch,
+             source=("const WORKER_VERSION = '5.8.12-handoff-funnel';\n", None),
+             probe_headers={"x-dc-worker-version": "5.8.11-mcp-manifest-no-199"})
+    f = _only(R.check_worker_version_drift())
+    assert f["issue"] == "worker_version_drift"
+    d = f["detail"]
+    assert "dchub-frontend/_worker.js" in d
+    assert "deploy-pages.yml" in d
+    assert "NOT the dchubapiproxy zone worker" in d
+    assert "Touch _worker.js" not in d
+
+
+def test_zone_worker_drift_monitor_prescribes_ci_not_the_dashboard(monkeypatch):
+    from flask import Flask
+    import routes.worker_drift_monitor as W
+    versions = {"https://dchub.cloud/mcp": "2.12.19",
+                "https://api.dchub.cloud/api/v1/mcp/manifest": "2.12.19",
+                "https://dchub.cloud/mcp/manifest": "2.1.5"}
+    monkeypatch.setattr(W, "_fetch_version",
+                        lambda s: {"version": versions[s["url"]], "ok": True, "error": None})
+    app = Flask(__name__)
+    app.register_blueprint(W.worker_drift_bp)
+    body = app.test_client().get("/api/v1/admin/drift-check").get_json()
+    assert body["drift_detected"] is True
+    action = body["action_required"]
+    assert "deploy-zone-worker.yml" in action
+    assert "dchub-backend/worker.js" in action
+    assert "CF Dashboard → Workers" not in action

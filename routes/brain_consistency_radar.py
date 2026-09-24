@@ -85,6 +85,7 @@ _WORKER_REPO_RAW = "https://raw.githubusercontent.com/azmartone67/dchub-frontend
 _WORKER_SOURCE_URL = f"{_WORKER_REPO_RAW}/_worker.js"
 _WORKER_REPO_MARKER_URL = f"{_WORKER_REPO_RAW}/_routes.json"
 _WORKER_PROBE_URL  = "https://dchub.cloud/api/v1/dcpi/scores?limit=1"
+_PAGES_DEPLOY_WORKFLOW = ".github/workflows/deploy-pages.yml"   # in dchub-frontend
 
 
 # Mutable holder for the last fetch error so detector messages can echo
@@ -487,11 +488,25 @@ def check_worker_version_drift() -> list[dict]:
                 "issue": "worker_version_drift",
                 "url": _WORKER_PROBE_URL,
                 "count": 1,
-                "detail": (f"_worker.js source declares WORKER_VERSION="
-                           f"'{expected}' but production header reports an "
-                           f"OLDER '{deployed}'. Cloudflare Pages auto-deploy "
-                           f"may have skipped this file. Touch _worker.js to "
-                           f"force a redeploy."),
+                # r-drift-text (2026-09-24): this detail is what an agent acts
+                # on. It said "Touch _worker.js" and never named the worker, and
+                # the brain turned a 5.8.11→5.8.12 deploy-window read into "paste
+                # worker.js 4.9.76 into the dchubapiproxy dashboard" — the OTHER
+                # worker, already current, on a path this probe never reads.
+                "detail": (f"PAGES worker drift: dchub-frontend/_worker.js "
+                           f"declares WORKER_VERSION='{expected}' but "
+                           f"{_WORKER_PROBE_URL} reports an OLDER '{deployed}'. "
+                           f"This is NOT the dchubapiproxy zone worker "
+                           f"(dchub-backend/worker.js, probed on /mcp by the "
+                           f"zone_worker_* findings): do not touch the "
+                           f"Cloudflare dashboard or dchubapiproxy. A read "
+                           f"within minutes of a merge that bumped "
+                           f"WORKER_VERSION is the deploy window — re-check "
+                           f"once dchub-frontend {_PAGES_DEPLOY_WORKFLOW} has "
+                           f"finished for that commit. If it persists, read "
+                           f"that workflow's latest run (a failed or skipped "
+                           f"deploy says why) and re-run it "
+                           f"(workflow_dispatch)."),
                 "expected": expected,
                 "deployed": deployed,
             })
