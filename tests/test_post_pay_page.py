@@ -31,6 +31,14 @@ def env(monkeypatch):
         return state["optin_result"]
 
     monkeypatch.setattr(human_relay, "_paid_checkout", fake_paid)
+    state["trial"] = None
+    state["trial_lookups"] = []
+
+    def fake_trial(cs):
+        state["trial_lookups"].append(cs)
+        return state["trial"]
+
+    monkeypatch.setattr(human_relay, "_trial_checkout", fake_trial)
     import routes.marketing_opt_in as moi
     monkeypatch.setattr(moi, "request_opt_in", fake_optin)
     app = flask.Flask("post-pay-test")
@@ -107,3 +115,104 @@ def test_mask_email():
     assert human_relay._mask_email("azmartone@gmail.com") == "a***@gmail.com"
     assert human_relay._mask_email("noatsign") == ""
     assert human_relay._mask_email("") == ""
+
+
+# ── r-pro-trial7: a $0 free-trial checkout is never "paid" ────────────────
+
+TRIAL = {"email": BUYER, "trial_end": 1759363200, "price": "$99/mo"}  # 2025-10-02 UTC
+
+
+def test_trial_checkout_shows_trial_started_not_payment_received(env):
+    env["paid"] = None
+    env["trial"] = dict(TRIAL)
+    r = env["client"].get("/upgrade/h/done?cs=" + CS)
+    html = r.get_data(as_text=True)
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "no-store"
+    assert "Your Pro trial has started" in html
+    assert "Nothing was charged today" in html
+    assert "$99/mo on October 2, 2025" in html
+    assert "Payment received" not in html and "payment received" not in html
+    assert "http-equiv='refresh'" not in html
+    assert "b***@example.org" in html and BUYER not in html
+    assert "name='marketing_opt_in'" in html and "checked" not in html
+    assert env["trial_lookups"] == [CS]
+
+
+def test_trial_opt_in_uses_the_stripe_side_email(env):
+    env["paid"] = None
+    env["trial"] = dict(TRIAL)
+    env["client"].post("/upgrade/h/done", data={
+        "cs": CS, "marketing_opt_in": "1", "email": "attacker@example.com"})
+    assert env["optins"] == [(BUYER, "post_pay_page")]
+
+
+def test_paid_session_never_asks_stripe(env):
+    env["client"].get("/upgrade/h/done?cs=" + CS)
+    assert env["trial_lookups"] == []
+
+
+def test_malformed_cs_never_asks_stripe(env):
+    env["paid"] = None
+    env["client"].get("/upgrade/h/done?cs=not-a-session")
+    assert env["trial_lookups"] == []
+
+
+class _Obj(dict):
+    pass
+
+
+def _fake_stripe(monkeypatch, sess):
+    import sys
+    import types
+    calls = []
+    mod = types.ModuleType("stripe")
+
+    class _Session:
+        @staticmethod
+        def retrieve(cs, **kw):
+            calls.append((cs, kw))
+            if isinstance(sess, Exception):
+                raise sess
+            return sess
+
+    mod.checkout = types.SimpleNamespace(Session=_Session)
+    monkeypatch.setitem(sys.modules, "stripe", mod)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_dummy")
+    return calls
+
+
+def _trial_sess(**over):
+    sub = _Obj(status="trialing", trial_end=1759363200,
+               items=_Obj(data=[_Obj(price=_Obj(unit_amount=9900,
+                                                recurring=_Obj(interval="month")))]))
+    s = _Obj(status="complete", mode="subscription",
+             payment_status="no_payment_required", subscription=sub,
+             customer_details=_Obj(email="Buyer.Person@Example.org"))
+    s.update(over)
+    return s
+
+
+def test_trial_lookup_reads_a_real_trial_session(monkeypatch):
+    calls = _fake_stripe(monkeypatch, _trial_sess())
+    got = human_relay._trial_checkout(CS)
+    assert got == {"email": BUYER, "trial_end": 1759363200, "price": "$99/mo"}
+    assert calls[0][0] == CS and calls[0][1]["expand"] == ["subscription"]
+
+
+@pytest.mark.parametrize("over", [
+    {"payment_status": "paid"},
+    {"status": "open"},
+    {"mode": "payment"},
+    {"subscription": "sub_unexpanded"},
+    {"subscription": _Obj(status="active", trial_end=None)},
+], ids=["paid", "open", "one_time", "unexpanded", "not_trialing"])
+def test_trial_lookup_refuses_anything_but_a_trialing_trial(monkeypatch, over):
+    _fake_stripe(monkeypatch, _trial_sess(**over))
+    assert human_relay._trial_checkout(CS) is None
+
+
+def test_trial_lookup_never_raises_and_needs_a_key(monkeypatch):
+    _fake_stripe(monkeypatch, RuntimeError("stripe down"))
+    assert human_relay._trial_checkout(CS) is None
+    monkeypatch.delenv("STRIPE_SECRET_KEY")
+    assert human_relay._trial_checkout(CS) is None
