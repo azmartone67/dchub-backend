@@ -6211,8 +6211,15 @@ def dcpi_leaderboard_page():
         og_desc="Top data-center markets ranked by available power. BUILD/CAUTION/AVOID + time-to-power. Live data.")
     resp = Response(page, mimetype="text/html")
     # r-gate-everywhere (2026-06-27): tier-varying body (scores masked for non-paid)
-    # → never shared-cache, or a CDN could serve a paid table to anon.
-    resp.headers["Cache-Control"] = "private, no-store" if not _lbp_paid else "public, max-age=600, must-revalidate"
+    # → the PAID render is never shared-cached, or a CDN could serve a paid table
+    # to anon. (2026-09-23: this line had the branches swapped — the masked render
+    # was private and the paid one public.) The non-paid render is one body for
+    # every non-paid caller (_lbp_paid is the only tier input; anon and free are
+    # identical, unlike /dcpi's index), so it sets nothing and takes the shared
+    # /dcpi HTML policy in main.py. Pinned by test_dcpi_leaderboard_cache_by_tier.
+    if _lbp_paid:
+        resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+        resp.headers["CDN-Cache-Control"] = "no-store"
     return resp, 200
 
 
