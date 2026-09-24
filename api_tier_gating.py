@@ -269,8 +269,11 @@ PLAN_INFO = {
     },
     'enterprise': {
         'name': 'Enterprise',
-        'price_monthly': 699,
-        'price_annual': 5990,
+        # r-sku-wall (2026-09-24): no monthly price — Enterprise is sold by a
+        # human from tier_registry.ENTERPRISE_FROM_USD_YEAR. 699/5990 were the
+        # retired Team figures, still emitted raw by /api/v2/stripe/config.
+        'price_monthly': None,
+        'price_annual': None,
         'rate_limit': 100000,
         'tagline': f"Pro + AI Brain + grid monitoring + land/power ({tier_registry.TIER_LIMITS['enterprise']['rate_limit']:,} calls/day)",
         'show_in_gate': True,

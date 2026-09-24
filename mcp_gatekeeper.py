@@ -575,7 +575,7 @@ class _RateLimiter:
             return (f"Rate limited: {len(win)}/{lim['minute']} calls/min. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
                     f"🤖 Remove the ceiling — {_pack5_cta()} "
-                    f"(or {_starter_cta()})")
+                    f"(or {_developer_cta()})")
 
         # Per-day
         today = self._today()
@@ -596,7 +596,7 @@ class _RateLimiter:
             return (f"Rate limited: {count}/{lim['day']} calls today. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
                     f"🤖 No daily ceiling — {_pack5_cta()} "
-                    f"(or {_starter_cta()})."
+                    f"(or {_developer_cta()})."
                     f"{_streak_note}")
 
         # Record
@@ -645,7 +645,7 @@ def _canonical_link(tier_key, ref=''):
     exactly the "hands the human a DIRECT buy.stripe.com URL with no dchub
     hop" pattern routes/checkout_click_tracker.py was written to end
     elsewhere, just never applied to this file. Every caller of this
-    function (_starter_cta, _pack5_cta, _cta_gated's stripe_direct,
+    function (_developer_cta, _pack5_cta, _cta_gated's stripe_direct,
     _STRIPE_BUY_NOW) now gets a signed, click-observable /go/c link instead
     — same STRIPE_LINKS as the source of truth, so no prices/tiers/link IDs
     drift, just how the link itself is minted.
@@ -688,17 +688,17 @@ def _canonical_price(tier_key, fallback=""):
         return fallback
 
 
-def _starter_cta():
-    """'$9/mo = 6,000 calls/month → <canonical starter link>'.
+def _developer_cta():
+    """'$49/mo = 60,000 calls/month → <canonical developer link>'.
 
-    Was hardcoded as '$9/mo=200/day' behind a non-canonical link. Paid
-    ceilings are MONTHLY now (monthly_quota.py) — the per-day number was
-    never enforced on the /mcp path, so quoting it advertised a limit that
-    did not exist and understated what the buyer gets by 30x.
+    r-sku-wall (2026-09-24): the alternative to the $10 pack on the rate-limit
+    walls. Was _starter_cta (the Starter plan), retired from every offer
+    (tier kept only for grandfathered subscribers), and Developer is the
+    cheapest plan this limiter actually lifts (LIMITS[Tier.DEVELOPER]).
     """
-    n = _canonical_monthly("starter")
-    qty = f"{n:,} calls/month" if n else "the full starter quota"
-    return f"{_canonical_price('starter', '$9/mo')} = {qty} → {_canonical_link('starter')}"
+    n = _canonical_monthly("developer")
+    qty = f"{n:,} calls/month" if n else "the full Developer quota"
+    return f"{_canonical_price('developer', '$49/mo')} Developer = {qty} → {_canonical_link('developer')}"
 
 
 def _pack5_cta():
@@ -1585,7 +1585,7 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "message": msg,
             "current_tier": TIER_NAME[tier],
             # r-bare-pricing-sweep (2026-09-23): `msg` already carries the
-            # signed _pack5_cta()/_starter_cta() text (via the now-fixed
+            # signed _pack5_cta()/_developer_cta() text (via the now-fixed
             # _canonical_link); this structured field gets the same
             # treatment rather than a bare fallback.
             "upgrade_url": _canonical_link('developer'),

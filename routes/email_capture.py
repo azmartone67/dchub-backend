@@ -439,6 +439,16 @@ for _name in ("developer", "starter", "enterprise"):
     if _env: _STRIPE_LINKS[_name] = _env
 
 
+def _ent_from_usd_year():
+    """tier_registry.ENTERPRISE_FROM_USD_YEAR (r-sku-wall 2026-09-24: the
+    enterprise_note quoted a floor /pricing does not sell)."""
+    try:
+        import tier_registry as _tr
+        return int(_tr.ENTERPRISE_FROM_USD_YEAR)
+    except Exception:
+        return 12000
+
+
 _CHECKOUT_START_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -963,7 +973,7 @@ def build_agent_coaching(tool_name: str, retry_request: str,
             },
             'upgrade_url':   'https://dchub.cloud/pricing',
             'enterprise_note': ('Hedge fund / REIT / broker / infra GP? '
-                                 'Enterprise data licensing from $25K/yr '
+                                 f'Enterprise data licensing from ${_ent_from_usd_year():,}/yr '
                                  'unlocks raw exports + monthly briefings + '
                                  'custom DCPI weights. https://dchub.cloud/enterprise'),
             'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',

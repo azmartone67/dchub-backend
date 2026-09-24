@@ -3507,7 +3507,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/mcp_funnel_upgrade.py': {'isos_non_canonical'},
     'routes/mcp_presence_crawler.py': {'tool_count_literal'},
     'routes/mcp_quality_badge.py': {'tool_count_literal'},
-    'routes/mcp_usage_self.py': {'tool_count_literal'},
     'routes/media_claim_verify.py': {'deals_stale_floor', 'markets_232'},
     'routes/media_outreach.py': {'deals_stale_floor', 'isos_non_canonical'},
     'routes/multiplatform_amplifier.py': {'tool_count_literal'},
@@ -3793,9 +3792,13 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # isos_non_canonical token: the dcpi_mover template's typed "Top BUILD
     # markets right now span 3 ISOs (WECC, SPP, ERCOT)" was removed (no data
     # backed it). Owner-approved public-copy change.
-    assert len(outside) >= 70, (
+    # ★2026-09-24: 70 -> 69. routes/mcp_usage_self.py drained its
+    # tool_count_literal: r-sku-wall rewrote the near-converter pitch whose
+    # Starter line typed "all 48 tools" (Starter retired from every offer,
+    # owner 2026-09-24).
+    assert len(outside) >= 69, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 70 did when last measured. If debt was genuinely drained, lower this "
+        "— 69 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

@@ -31,6 +31,16 @@ from contextlib import contextmanager
 from flask import Blueprint, request, jsonify
 from tier_registry import price_display as _canon_price_display
 
+
+def _ent_from():
+    """tier_registry.ENTERPRISE_FROM_USD_YEAR (r-sku-wall 2026-09-24: this
+    draft quoted an enterprise floor /pricing does not sell)."""
+    try:
+        import tier_registry as _tr
+        return int(_tr.ENTERPRISE_FROM_USD_YEAR)
+    except Exception:
+        return 12000
+
 try:
     import psycopg2 as _pg
     import psycopg2.extras
@@ -158,7 +168,7 @@ def _generate_draft(lead: dict) -> dict:
         f"are using it for {'site selection' if 'site' in top_tool else 'market intelligence'}.\n\n"
         f"If you'd rather a custom data feed (DCPI parquet, M&A tracker, "
         f"interconnect queue exports), we also do enterprise tiers from "
-        f"$25K/yr — https://dchub.cloud/enterprise.\n\n"
+        f"${_ent_from():,}/yr — https://dchub.cloud/enterprise.\n\n"
         f"Either way, want a 20-min call this week to scope what'd be most "
         f"useful? I can show you exactly which tools are paywalled vs free "
         f"and what your usage pattern would cost on Pro.\n\n"

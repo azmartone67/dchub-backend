@@ -85,7 +85,9 @@ _HINT_BASE = {
     # alongside the self-serve tiers — heavy due-diligence sessions are
     # enterprise prospects, not self-serve buyers.
     "enterprise_url":  "https://dchub.cloud/enterprise",
-    "enterprise_quick": "For hedge fund / REIT / broker / infra GP use: $25K+/yr data licensing with raw exports, custom DCPI weights, monthly briefings. https://dchub.cloud/enterprise",
+    "enterprise_quick": (f"For hedge fund / REIT / broker / infra GP use: from "
+                         f"${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr data licensing with raw exports, "
+                         f"custom DCPI weights, monthly briefings. https://dchub.cloud/enterprise"),
     # ★ r-noinstruct (2026-09-20): the free dev key needs NO email — one POST
     # to /api/v1/keys/claim, the single property a catalogue partner featured
     # us for.

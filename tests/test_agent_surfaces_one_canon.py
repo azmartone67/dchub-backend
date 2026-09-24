@@ -303,8 +303,14 @@ def test_upgrade_hint_tiers_are_registry_reads():
         assert t[tier]["calls_per_day"] == tr.calls_per_day(tier), tier
     for tier in ("starter", "developer", "pro"):
         assert t[tier]["price_usd_month"] == tr.price(tier), tier
+    for tier in ("developer", "pro"):
         assert f"${tr.price(tier)}/mo" in t[tier]["label"]
         assert f"{tr.calls_per_day(tier):,}/day" in t[tier]["label"]
+    # r-sku-wall (2026-09-24): Starter is off every offer. The row keeps its
+    # keys (contract) for the grandfathered subscribers, but sells nothing.
+    assert "retired" in t["starter"]["label"]
+    assert f"${tr.price('starter')}/mo" not in t["starter"]["label"]
+    assert t["starter"]["stripe_url"] is None
     assert (t["anonymous"]["calls_per_day"] <= t["free"]["calls_per_day"]
             < t["starter"]["calls_per_day"] < t["developer"]["calls_per_day"]
             < t["pro"]["calls_per_day"]), "caps must ascend with price"

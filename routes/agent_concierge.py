@@ -933,9 +933,9 @@ th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacin
 <tr><th>Tier</th><th>Calls/day</th><th>Best for</th><th>Cost</th></tr>
 <tr><td>Anonymous</td><td>5/day</td><td>Discovery probes; one-off queries</td><td>Free</td></tr>
 <tr><td>Free (dev key)</td><td>10/day</td><td>Testing + low-volume agent demos</td><td>Free · email-only signup</td></tr>
-<tr><td>Starter</td><td>200/day</td><td>Personal assistant agents · weekly research</td><td>$9/mo</td></tr>
+<tr><td>Credit pack</td><td>1,000 calls</td><td>Bursty agents · no subscription</td><td>$10 one-time</td></tr>
 <tr><td>Developer</td><td>500/day</td><td>Production agents · daily citation flow</td><td>$49/mo</td></tr>
-<tr><td>Enterprise</td><td>10K+/day</td><td>White-label · raw data exports · custom DCPI weights</td><td>$25K+/yr</td></tr>
+<tr><td>Enterprise</td><td>10K+/day</td><td>White-label · raw data exports · custom DCPI weights</td><td>from $12,000/yr</td></tr>
 </table>
 
 <h2>Citation policy — required for free tier, recommended always</h2>
@@ -1457,10 +1457,15 @@ def agent_upgrade_receipt():
         ),
         "magic_url":      magic_url,
         "pricing_url":    "https://dchub.cloud/pricing",
+        # r-sku-wall (2026-09-24): Starter is off every offer and Enterprise
+        # is sold from ENTERPRISE_FROM_USD_YEAR — this said "$9/mo" and
+        # "$25K+/yr", neither of which is on sale at that price.
         "tier_hint": {
-            "starter":   {"calls":  200, "price": "$9/mo"},
+            # starter kept for the response contract; not on sale.
+            "starter":   {"calls":  200, "price": "retired — existing subscribers only"},
+            "credit_pack": {"calls": 1000, "price": "$10 one-time"},
             "developer": {"calls":  500, "price": "$49/mo"},
-            "enterprise":{"calls": 10000, "price": "$25K+/yr"},
+            "enterprise":{"calls": 10000, "price": "from $12,000/yr"},
         },
         "what_you_get": (
             "Per-call rate increase + full tool envelope (the same tool "

@@ -433,23 +433,27 @@ def _draft_near_converter_pitch(nc: dict) -> str:
         days_active = "30"
 
     # Tier-aware pricing (canonical map 2026-06-09): which plan actually unlocks
-    # `top_tool`? Pro-only ($199/mo): analyze_site, compare_sites — the only tools
-    # above Starter. Everything else (grid/fiber/market/dcpi/tax/gas) unlocks at
-    # $9/mo Starter. Quoting $49 for a grid user oversells; quoting $49 for an
-    # analyze_site user UNDERSELLS (it won't unlock) — both kill the conversion.
-    _PRO_ONLY = {"analyze_site", "compare_sites"}
+    # `top_tool`? Pro-only: analyze_site, compare_sites (Land & Power) and
+    # get_grid_intelligence, get_fiber_intel (the live MCP wall sells Pro for
+    # both, 2026-09-24; paywall_hint_middleware's 403 copy agrees). Everything
+    # else (grid/fiber/market/dcpi/tax/gas) opens at full depth on Developer
+    # (r-sku-wall 2026-09-24; was Starter $9, retired from every offer). The $10
+    # pack is API capacity only, never an unlock (owner wording rule 2026-09-22).
+    # Quoting Developer for an analyze_site user UNDERSELLS (it won't unlock).
+    _PRO_ONLY = {"analyze_site", "compare_sites", "get_grid_intelligence", "get_fiber_intel"}
     if top_tool in _PRO_ONLY:
         price_block = (
             f"`{top_tool}` is a Pro-tier tool. The {_canon_price_display('pro')} Pro plan unlocks it (plus\n"
-            f"compare_sites, PDF reports, CSV export, and Slack alerts) at 2,000\n"
+            f"the other Pro tools, PDF reports, CSV export, and Slack alerts) at 2,000\n"
             f"calls/day — the 403s stop the moment you swap in your X-API-Key header.")
     else:
         price_block = (
-            f"Good news — `{top_tool}` unlocks on the $9/mo Starter plan (200 calls/day,\n"
-            f"all 48 tools, full grid + fiber + market data). At your cadence ({p403}\n"
-            f"blocked calls in {days_active} days) that's plenty, and the 403s stop the\n"
-            f"moment you swap in your X-API-Key header. Running heavier? $49/mo Developer\n"
-            f"is 500 calls/day.")
+            f"Good news — `{top_tool}` opens at full depth on the "
+            f"{_canon_price_display('developer')} Developer plan\n"
+            f"(500 calls/day). At your cadence ({p403} blocked calls in {days_active} days)\n"
+            f"that's plenty, and the 403s stop the moment you swap in your X-API-Key\n"
+            f"header. Only need more calls, not more depth? The $10 one-time credit\n"
+            f"pack adds 1,000 API credits, no subscription.")
 
     return f"""Hi —
 
