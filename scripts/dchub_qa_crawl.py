@@ -155,7 +155,7 @@ _LINK_RE = re.compile(r'<a\b[^>]*href="([^"]+)"', re.I)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[\s\S]*?</\1>", re.I)
 _INLINE_ON_RE = re.compile(r"\son[a-z]+=", re.I)
 _PHASE_MARKER_RE = re.compile(r"phase[\s-]?\d+", re.I)
-_PLACEHOLDER_RE = re.compile(r">[\s ]*—[\s ]*<")
+_PLACEHOLDER_RE = re.compile(r"<([A-Za-z][\w-]*)\b[^>]*>[\s ]*—[\s ]*</\1\s*>", re.I)  # = dchub_self_heal '— placeholder'
 _CANONICAL_RE = re.compile(r'<link\b[^>]*rel="canonical"[^>]*href="([^"]+)"', re.I)
 _OG_RE = re.compile(r'<meta\b[^>]*property="og:[^"]+"', re.I)
 _JSONLD_RE = re.compile(r'<script\b[^>]*type="application/ld\+json"[^>]*>([\s\S]*?)</script>', re.I)
