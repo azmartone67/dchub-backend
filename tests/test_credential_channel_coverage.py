@@ -42,7 +42,9 @@ def _load(name, rel):
 cfx = _load("cf_expression_cc", "scripts/cf_expression.py")
 guard = _load("cred_cov", "scripts/check_credential_channel_coverage.py")
 RULES = json.loads((ROOT / "scripts" / "cf_cache_ruleset_canon.json").read_text())["rules"]
-STATS = "/api/v1/stats"
+# The guard's measured control path (was /api/v1/stats until 2026-09-24, when
+# stats joined bypass rule 19 — see ORACLE_PATH in the guard).
+STATS = guard.ORACLE_PATH
 
 
 # ── 1. the evaluator against the live edge ───────────────────────────────────
@@ -97,7 +99,8 @@ def test_non_credentials_are_still_cached(kind, name):
 
 
 def test_anonymous_public_api_still_caches():
-    """The positive control. Measured HIT age=480 on 2026-09-07."""
+    """The positive control. Measured HIT age=480 on /api/v1/stats 2026-09-07;
+    re-measured MISS->HIT on /api/v1/facilities 2026-09-24."""
     assert cfx.disposition(RULES, STATS)[0] == "cached"
 
 

@@ -90,7 +90,9 @@ def test_evaluator_reproduces_dispositions_measured_at_the_edge(rules):
 
     These four verdicts were OBSERVED with two consecutive un-cache-busted GETs
     on 2026-09-07: /api/v1/stats returned HIT age=1148 with a frozen
-    x-dc-response-time; the other three returned DYNAMIC twice. An evaluator
+    x-dc-response-time; the other three returned DYNAMIC twice. The cached
+    control moved to /api/v1/facilities (MISS->HIT) on 2026-09-24 when stats
+    joined bypass rule 19. An evaluator
     that cannot reproduce real edge behaviour cannot be trusted to find gaps in
     it.
     """
