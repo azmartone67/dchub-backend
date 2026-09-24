@@ -222,7 +222,10 @@ def _result_dict_of(fname, relpath="main.py"):
 
 def test_the_top_level_facility_count_states_its_basis():
     """The headline `facilities` must ship a basis label beside it."""
-    dicts = _result_dict_of("get_stats")
+    # _stats_compute_response builds the published payload; get_stats() only
+    # holds the boot stub since the 2026-09-24 split (boot warmer), and pointing
+    # this at get_stats would find the stub alone.
+    dicts = _result_dict_of("_stats_compute_response")
     labelled = [
         d for d in dicts
         if any(isinstance(k, ast.Constant) and k.value == "facilities_basis"
@@ -243,7 +246,7 @@ def test_that_basis_is_DERIVED_and_not_a_hardcoded_string():
     COUNT(DISTINCT canonical_slug), because the prose was fixed text and the
     number was conditional. The fix then, and the requirement now, is that the
     label be computed from the same source as the number."""
-    for d in _result_dict_of("get_stats"):
+    for d in _result_dict_of("_stats_compute_response"):
         for key, val in zip(d.keys, d.values):
             if isinstance(key, ast.Constant) and key.value == "facilities_basis":
                 assert not isinstance(val, ast.Constant), (
