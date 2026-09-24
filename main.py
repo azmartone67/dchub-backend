@@ -3113,6 +3113,20 @@ try:
     except Exception as _csp:
         import logging
         logging.getLogger(__name__).warning('crawler_split wiring failed: %s', _csp)
+    # 2026-09-24: citation signals — user-triggered assistant fetches,
+    # search/training crawlers and human click-throughs from assistants,
+    # classified SEPARATELY (ai_citation_signals.py). Additive: does not touch
+    # ai_requests or detect_platform.
+    # POST /api/ai/citation-hit (edge beacon)  GET /api/v1/ai/citation-signals
+    try:
+        from routes.citation_signals import citation_signals_bp
+        app.register_blueprint(citation_signals_bp)
+        print("[main] citation_signals_bp registered: "
+              "POST /api/ai/citation-hit, GET /api/v1/ai/citation-signals",
+              flush=True)
+    except Exception as _cit:
+        import logging
+        logging.getLogger(__name__).warning('citation_signals wiring failed: %s', _cit)
     # 2026-08-06: registries are the only channel with measured volume behind
     # them, and nothing watched them for absence-from-install-surfaces, empty
     # tool arrays, duplicate listings, or inverted ledger verdicts.

@@ -60,9 +60,17 @@ HISTORY_WEEKS = 12
 
 
 def _conn():
+    """A TRANSACTIONAL connection. ★ ai_reach._conn() hands back
+    autocommit=True, under which every SAVEPOINT below raises
+    NoActiveSqlTransaction — the first live run read all sources as
+    "unreadable" (2026-09-24). It is a fresh, unpooled connection, so
+    flipping it here affects no one else."""
     try:
         from routes.ai_reach import _conn as _raw
-        return _raw()
+        c = _raw()
+        if c is not None:
+            c.autocommit = False
+        return c
     except Exception:
         return None
 
