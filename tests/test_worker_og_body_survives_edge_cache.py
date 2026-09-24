@@ -104,11 +104,13 @@ WARM_TIER = "{ browserMaxAge: 180, edgeTtl: 300, publicKeyCache: true }"
 def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
          content_type="image/png", cache_control="public, max-age=604800, immutable",
          set_cookie=None, status=200, put_rejects=None, cache_drops=False,
-         seed_readback=None, seed_put_error=None):
+         seed_readback=None, seed_put_error=None, extra_headers=None):
     """Execute the REAL assetCachePut + the REAL STEP-2 ordering on a streaming
     body, and report what the client and the cache each ended up with."""
     src = open(WORKER, encoding="utf-8").read()
     extra_hdr = f", 'set-cookie': {json.dumps(set_cookie)}" if set_cookie else ""
+    for k, v in (extra_headers or {}).items():
+        extra_hdr += f", {json.dumps(k)}: {json.dumps(v)}"
     js = f"""
 {_block(src, "function _assetCacheKey(", "}")}
 {_block(src, "function _pkcStorable(", "}")}
@@ -118,6 +120,7 @@ def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
 {_line(src, "const _pkcReadback = ")}
 {_block(src, "function _pkcNoteReadback(", "}")}
 {_block(src, "function originAllowsSharedStore(", "}")}
+{_line(src, "const PKC_STORE_STRIP_HEADERS = ")}
 {_block(src, "function assetCachePut(", "}")}
 
 // ---- stubs for everything STEP 2 closes over ------------------------------
@@ -128,9 +131,11 @@ const mkOrigin = () => new Response(
                              'cache-control': {json.dumps(cache_control)}{extra_hdr} }} }});
 
 let stored = null;
+let storedHeaders = null;
 globalThis.caches = {{ default: {{
   async put(_req, res) {{
     if ({json.dumps(put_rejects)} !== null) throw new Error({json.dumps(put_rejects or "")});
+    storedHeaders = [...res.headers.keys()];
     stored = new Uint8Array(await res.arrayBuffer());
   }},
   // The fake cache models both outcomes: a real store (match returns what put
@@ -184,6 +189,8 @@ console.log(JSON.stringify({{
   store_verdict: result.headers.get('x-dc-edge-store'),
   put_errors: Object.fromEntries(_pkcPutErrors),
   readback: Object.fromEntries(_pkcReadback),
+  stored_headers: storedHeaders,
+  client_headers: [...result.headers.keys()],
   readback_header: result.headers.get('x-dc-edge-store-readback'),
   last_error_header: result.headers.get('x-dc-edge-store-last-error'),
   expected_bytes: PNG.length,
@@ -227,6 +234,7 @@ def test_a_failing_cache_put_cannot_fail_the_request():
     src = open(WORKER, encoding="utf-8").read()
     js = f"""
 {_block(src, "function _assetCacheKey(", "}")}
+{_line(src, "const PKC_STORE_STRIP_HEADERS = ")}
 {_block(src, "function assetCachePut(", "}")}
 globalThis.caches = {{ default: {{ async put() {{ throw new TypeError('edge cache is angry'); }} }} }};
 const waits = [];
@@ -342,3 +350,28 @@ def test_the_previous_outcome_is_returned_on_the_next_miss():
              seed_put_error="T0 boom")
     assert r["readback_header"] == "T0 readback-miss", r
     assert r["last_error_header"] == "T0 boom", r
+
+
+# ── stored copy drops the origin-memo headers (4.9.79) ─────────────────────
+
+STATS_ONLY = {"x-cache": "HIT", "x-cache-age": "114",
+              "x-deprecated-fields": "main_facilities=>total_facilities; countries=>total_countries"}
+
+
+def test_the_stored_copy_drops_the_stats_only_headers():
+    """/api/v1/stats was accepted by put() and never kept (readback-miss 8/8);
+    these three are the only stored headers unique to it."""
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="public, max-age=300", extra_headers=STATS_ONLY)
+    assert r["stored_bytes"] == r["expected_bytes"], "nothing was stored at all"
+    leaked = sorted(set(STATS_ONLY) & set(r["stored_headers"]))
+    assert not leaked, f"stored copy still carries {leaked}"
+    assert "content-type" in r["stored_headers"], "strip removed more than it should"
+
+
+def test_the_client_response_keeps_them():
+    """Only the edge copy is stripped; the origin-served response is untouched."""
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="public, max-age=300", extra_headers=STATS_ONLY)
+    missing = sorted(set(STATS_ONLY) - set(r["client_headers"]))
+    assert not missing, f"the client response lost {missing}"
