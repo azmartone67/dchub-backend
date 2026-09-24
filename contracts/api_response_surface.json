@@ -21533,7 +21533,7 @@
    ]
   },
   "GET /api/v1/sentinel/findings": {
-   "source": "routes/site_sentinel.py:2401",
+   "source": "routes/site_sentinel.py:2409",
    "handler": "sentinel_findings",
    "resolution": "opaque",
    "open_at": [],
@@ -21574,7 +21574,7 @@
    ]
   },
   "GET /api/v1/sentinel/resolutions": {
-   "source": "routes/site_sentinel.py:1451",
+   "source": "routes/site_sentinel.py:1459",
    "handler": "sentinel_resolutions",
    "resolution": "resolved",
    "open_at": [],
@@ -21585,7 +21585,7 @@
    ]
   },
   "GET /api/v1/sentinel/scan": {
-   "source": "routes/site_sentinel.py:2383",
+   "source": "routes/site_sentinel.py:2391",
    "handler": "sentinel_scan",
    "resolution": "opaque",
    "open_at": [],
@@ -31547,7 +31547,7 @@
    ]
   },
   "POST /api/v1/sentinel/scan-now": {
-   "source": "routes/site_sentinel.py:2415",
+   "source": "routes/site_sentinel.py:2423",
    "handler": "sentinel_scan_now",
    "resolution": "resolved",
    "open_at": [
@@ -31567,14 +31567,14 @@
    ]
   },
   "POST /api/v1/sentinel/track-failures": {
-   "source": "routes/site_sentinel.py:1813",
+   "source": "routes/site_sentinel.py:1821",
    "handler": "sentinel_track_failures",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/sentinel/verify-outcomes": {
-   "source": "routes/site_sentinel.py:1437",
+   "source": "routes/site_sentinel.py:1445",
    "handler": "sentinel_verify_outcomes",
    "resolution": "opaque",
    "open_at": [],
