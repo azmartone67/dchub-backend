@@ -1233,13 +1233,22 @@ def latest_results() -> list[dict]:
 
 def unhealthy_findings() -> list[dict]:
     """Brain-detector entrypoint. Returns one finding per unhealthy page."""
-    findings: list[dict] = []
     rows = latest_results()
     if not rows:
         # First-run: synchronously scan once so the brain has data on the
         # very first heartbeat after deploy. Cheap (~45 GET requests, all
         # cached at CF). Subsequent calls hit the DB.
         rows = scan_all()
+    # Cap at 16 so a mass outage doesn't drown the heartbeat
+    return findings_from_rows(rows)[:16]
+
+
+def findings_from_rows(rows: list[dict]) -> list[dict]:
+    """The finding rule itself, over rows already read — uncapped and never
+    scanning. unhealthy_findings() is this plus the first-run scan and the
+    heartbeat cap; the squasher's edge_purge_path verifier calls it on ONE
+    path's row, where a cap that cut the path off would read as healthy."""
+    findings: list[dict] = []
     for r in rows:
         if r.get("healthy"): continue
         cat    = r.get("category") or "normal"
@@ -1326,8 +1335,7 @@ def unhealthy_findings() -> list[dict]:
                        f"the manifest in routes/site_sentinel.py:_MANIFEST "
                        f"if the expectation is wrong."),
         })
-    # Cap at 16 so a mass outage doesn't drown the heartbeat
-    return findings[:16]
+    return findings
 
 
 # ── HTTP endpoints ────────────────────────────────────────────────

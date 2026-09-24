@@ -8711,150 +8711,164 @@ def check_brand_surface_dormant() -> list[dict]:
 #   • check_autopilot_verifier_backlog  — Phase FFFFF verifier backlogged
 # ═══════════════════════════════════════════════════════════════════
 
+# The per-dataset table-age SLAs check_data_freshness_sla_breach reads —
+# module level (2026-09-23) so ONE row can be evaluated by name
+# (freshness_sla_row) without a second copy of the list: the squasher's
+# freshness_refresh_job verifier reads a job's tables through it.
+# r33-stale-recovery (2026-05-21): expanded SLA list to match what
+# /status page tracks. User caught the gap — `facilities` canonical
+# table was 17d stale (407h vs 336h SLA) but our detector only
+# watched `discovered_facilities` (the queue). Both matter; both
+# now monitored.
+SLAS = [
+    # (table, age_column, max_hours, friendly_label)
+    # DCPI: market_power_scores is the table the recompute writes. The
+    # 12h row for "dcpi_scores" named a table that has never existed in
+    # production, so it was skipped on every scan (removed 2026-09-23).
+    ("market_power_scores",    "computed_at",  48,   "market power scores"),
+    # discovered_facilities.first_seen is timestamptz DEFAULT now(), set
+    # on every insert (production, 2026-09-23: 30,785 of 30,785 rows, and
+    # the same 7d/24h counts as discovered_at, which is TEXT).
+    ("discovered_facilities",  "first_seen",   24,   "facility discovery queue"),
+    # facilities.first_seen is ISO TEXT — read through
+    # _SLA_ISO_TEXT_COLUMNS. Neither discovery table has an autonomous
+    # refresh: a breach escalates (brain_autopilot REFRESH_MAP).
+    ("facilities",             "first_seen",   336,  "canonical facilities"),
+    ("news_articles",          "published_at", 6,    "news ingest"),
+    # r36 (2026-05-31): 36→168. press_releases is EVENT-DRIVEN, not a fixed
+    # cadence: dcpi_auto_press (the writer) only publishes on a >=15pt DCPI
+    # 7-day market shift, so multi-day quiet stretches are normal when the
+    # index is stable (verified: cron fires every 6h + succeeds, but
+    # /api/v1/dcpi/auto-press/recent = 0 — no qualifying event in 5 days, not
+    # a broken cron). A 36h SLA guaranteed a false breach in any quiet week.
+    # 168h matches the weekly-event tier (same as ai_citations below) and
+    # still catches a genuinely-stuck pipeline. NOTE (product lever, not
+    # changed here): the 10-14pt moves become DRAFTS in press_releases_queue
+    # that need review to publish — publishing those, or lowering the
+    # auto-publish threshold, is how you'd make press refresh more often.
+    ("press_releases",         "published_at", 168,  "press releases (event-driven)"),
+    ("ai_citations",           "observed_at",  168,  "AI citations (weekly)"),
+    ("monthly_reports",        "created_at",   744,  "monthly trend snapshot"),
+    # r80c: proactive canary for the MCP telemetry pipeline. mcp_tool_calls
+    # gets rows continuously as long as ANY MCP traffic flows (the self-heal
+    # loop alone keeps it fresh every few min), so a 12h gap means the whole
+    # track pipeline died — exactly the silent-write class we hardened with
+    # logging in r80b, now caught proactively too. 12h is generous enough to
+    # ride out a deploy window without false-breaching.
+    ("mcp_tool_calls",         "created_at",   12,   "MCP tool-call telemetry"),
+    # Phase r33-D (2026-05-21) — infrastructure layer SLAs. HIFLD
+    # publishes annually, EIA quarterly; we refresh aggressively
+    # so the map doesn't go stale. Each pairs with a REFRESH_MAP
+    # entry in brain_autopilot.py (gas-refresh, substations-refresh)
+    # for autonomous recovery. transmission_lines has none since
+    # 2026-09-23 — its refresher TRUNCATEd the table; a breach escalates.
+    # transmission_lines reads last_updated (2026-09-23): it has no
+    # updated_at column, so this row could never breach. Its one writer,
+    # routes/transmission_ingest.py, stamps last_updated = NOW() on every
+    # row of the weekly EIA full-replace.
+    ("transmission_lines",     "last_updated", 720,  "EIA transmission lines"),
+    ("gas_pipelines",          "updated_at",   720,  "EIA gas pipelines"),
+    ("substations",            "updated_at",   720,  "HIFLD substations"),
+    # 2026-07-02 — data-moat feed sentinels. This sweep found
+    # usgs_water_stress 3.5 MONTHS stale (last row 2026-03-18) with no
+    # detector watching it — the water-risk answers were silently aging.
+    # SLAs sized to each feed's real cadence (LMP hourly-ish cron → 48h
+    # rides out a weekend outage; water USGS ~weekly → 21d; LNG terminals
+    # near-static → 45d).
+    ("iso_lmp_snapshots",      "fetched_at",   48,   "ISO LMP price feed"),
+    ("henry_hub_spot",         "ingested_at",  96,   "Henry Hub spot price (EIA)"),
+    ("lng_export_terminals",   "ingested_at",  1080, "LNG export terminals (EIA)"),
+    # 2026-07-16 — usgs_water_stress SLA RETIRED (was 504h). The table was
+    # SUPERSEDED 2026-07-10 by the WRI Aqueduct 4.0 ingest
+    # (routes/water_aqueduct_ingest.py → water_risk rows tagged
+    # source='wri_aqueduct', built from wri_aqueduct_us_states) and its
+    # producing cron is gone, so the detector fired data_freshness_sla_breach
+    # on it 2,800+ times with nothing left to fix. The WRI dataset is NOT
+    # added to this watch on purpose: it refreshes rarely by design
+    # (annual-cadence WRI baseline, crawl-first manual ingest), so any
+    # hours-scale SLA here would just mint a new false-alarm stream.
+    ("competitor_snapshots",   "captured_at",  72,   "competitor gap-crawler inputs"),
+]
+
+
+def freshness_sla_row(cur, tbl: str, col: str, sla_hrs: int, label: str) -> dict | None:
+    """ONE SLAS row on the caller's cursor: its finding — a
+    data_freshness_sla_breach, or sla_column_unmeasurable when the row
+    cannot be measured — or None when the table WAS measured and is inside
+    its SLA. None therefore means "measured fresh", never "not measured"."""
+    try:
+        # An SLA row naming a table or column that is missing,
+        # or a column that is not a timestamp, can never breach.
+        # Report it: silence from this row would otherwise read
+        # as "fresh". (A missing table used to be skipped as
+        # "doesn't exist on this deploy" — that is how the
+        # dcpi_scores row stayed blind.)
+        cur.execute(f"SELECT to_regclass('public.{tbl}')")
+        if not (cur.fetchone() or [None])[0]:
+            return _sla_unmeasurable(
+                tbl, col, sla_hrs, label, f'table "{tbl}" does not exist')
+        cur.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = %s "
+            "AND column_name = %s", (tbl, col))
+        dtype = (cur.fetchone() or [None])[0]
+        age_sql = _sla_age_sql(tbl, col, dtype)
+        if age_sql is None:
+            why = (f'column "{col}" does not exist' if dtype is None
+                   else f'column "{col}" is {dtype}, not a timestamp')
+            return _sla_unmeasurable(tbl, col, sla_hrs, label, why)
+        cur.execute(age_sql)
+        last = (cur.fetchone() or [None])[0]
+        if last is None:
+            return {
+                "issue":  "data_freshness_sla_breach",
+                "url":    f"table:{tbl}",
+                "count":  1,
+                "detail": (f"{label} has NO rows yet. SLA: {sla_hrs}h. "
+                           f"Either the producing cron has never run, "
+                           f"or the table was recently truncated."),
+            }
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc)
+        # last may be tz-naive — coerce
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=_dt.timezone.utc)
+        age_h = (now - last).total_seconds() / 3600.0
+        if age_h > sla_hrs:
+            return {
+                "issue":  "data_freshness_sla_breach",
+                "url":    f"table:{tbl}",
+                "count_kind": "hours",  # magnitude, not a recurrence tally
+                "count":  int(age_h),
+                "detail": (f"{label} last refreshed {age_h:.1f}h ago "
+                           f"(SLA: {sla_hrs}h). The cron that produces "
+                           f"this table has missed at least one window. "
+                           f"Check Railway logs for the cron's name."),
+            }
+    except Exception as e:
+        return _sla_unmeasurable(
+            tbl, col, sla_hrs, label,
+            f"the age query raised {type(e).__name__}: {str(e)[:120]}")
+    return None
+
+
 def check_data_freshness_sla_breach() -> list[dict]:
     """Fires when a tracked dataset hasn't refreshed within its SLA.
     Operationalizes the "is the data fresh" question that ops keeps
-    asking manually. The per-dataset SLAs (in hours) are the SLAS list
-    below. A row the radar cannot measure — missing table, missing or
+    asking manually. The per-dataset SLAs (in hours) are the module-level
+    SLAS list above; freshness_sla_row evaluates one. A row the radar cannot measure — missing table, missing or
     non-timestamp column, a query that raises — is reported as
     sla_column_unmeasurable, never passed as fresh.
     """
     findings: list[dict] = []
-    # r33-stale-recovery (2026-05-21): expanded SLA list to match what
-    # /status page tracks. User caught the gap — `facilities` canonical
-    # table was 17d stale (407h vs 336h SLA) but our detector only
-    # watched `discovered_facilities` (the queue). Both matter; both
-    # now monitored.
-    SLAS = [
-        # (table, age_column, max_hours, friendly_label)
-        # DCPI: market_power_scores is the table the recompute writes. The
-        # 12h row for "dcpi_scores" named a table that has never existed in
-        # production, so it was skipped on every scan (removed 2026-09-23).
-        ("market_power_scores",    "computed_at",  48,   "market power scores"),
-        # discovered_facilities.first_seen is timestamptz DEFAULT now(), set
-        # on every insert (production, 2026-09-23: 30,785 of 30,785 rows, and
-        # the same 7d/24h counts as discovered_at, which is TEXT).
-        ("discovered_facilities",  "first_seen",   24,   "facility discovery queue"),
-        # facilities.first_seen is ISO TEXT — read through
-        # _SLA_ISO_TEXT_COLUMNS. Neither discovery table has an autonomous
-        # refresh: a breach escalates (brain_autopilot REFRESH_MAP).
-        ("facilities",             "first_seen",   336,  "canonical facilities"),
-        ("news_articles",          "published_at", 6,    "news ingest"),
-        # r36 (2026-05-31): 36→168. press_releases is EVENT-DRIVEN, not a fixed
-        # cadence: dcpi_auto_press (the writer) only publishes on a >=15pt DCPI
-        # 7-day market shift, so multi-day quiet stretches are normal when the
-        # index is stable (verified: cron fires every 6h + succeeds, but
-        # /api/v1/dcpi/auto-press/recent = 0 — no qualifying event in 5 days, not
-        # a broken cron). A 36h SLA guaranteed a false breach in any quiet week.
-        # 168h matches the weekly-event tier (same as ai_citations below) and
-        # still catches a genuinely-stuck pipeline. NOTE (product lever, not
-        # changed here): the 10-14pt moves become DRAFTS in press_releases_queue
-        # that need review to publish — publishing those, or lowering the
-        # auto-publish threshold, is how you'd make press refresh more often.
-        ("press_releases",         "published_at", 168,  "press releases (event-driven)"),
-        ("ai_citations",           "observed_at",  168,  "AI citations (weekly)"),
-        ("monthly_reports",        "created_at",   744,  "monthly trend snapshot"),
-        # r80c: proactive canary for the MCP telemetry pipeline. mcp_tool_calls
-        # gets rows continuously as long as ANY MCP traffic flows (the self-heal
-        # loop alone keeps it fresh every few min), so a 12h gap means the whole
-        # track pipeline died — exactly the silent-write class we hardened with
-        # logging in r80b, now caught proactively too. 12h is generous enough to
-        # ride out a deploy window without false-breaching.
-        ("mcp_tool_calls",         "created_at",   12,   "MCP tool-call telemetry"),
-        # Phase r33-D (2026-05-21) — infrastructure layer SLAs. HIFLD
-        # publishes annually, EIA quarterly; we refresh aggressively
-        # so the map doesn't go stale. Each pairs with a REFRESH_MAP
-        # entry in brain_autopilot.py (gas-refresh, substations-refresh)
-        # for autonomous recovery. transmission_lines has none since
-        # 2026-09-23 — its refresher TRUNCATEd the table; a breach escalates.
-        # transmission_lines reads last_updated (2026-09-23): it has no
-        # updated_at column, so this row could never breach. Its one writer,
-        # routes/transmission_ingest.py, stamps last_updated = NOW() on every
-        # row of the weekly EIA full-replace.
-        ("transmission_lines",     "last_updated", 720,  "EIA transmission lines"),
-        ("gas_pipelines",          "updated_at",   720,  "EIA gas pipelines"),
-        ("substations",            "updated_at",   720,  "HIFLD substations"),
-        # 2026-07-02 — data-moat feed sentinels. This sweep found
-        # usgs_water_stress 3.5 MONTHS stale (last row 2026-03-18) with no
-        # detector watching it — the water-risk answers were silently aging.
-        # SLAs sized to each feed's real cadence (LMP hourly-ish cron → 48h
-        # rides out a weekend outage; water USGS ~weekly → 21d; LNG terminals
-        # near-static → 45d).
-        ("iso_lmp_snapshots",      "fetched_at",   48,   "ISO LMP price feed"),
-        ("henry_hub_spot",         "ingested_at",  96,   "Henry Hub spot price (EIA)"),
-        ("lng_export_terminals",   "ingested_at",  1080, "LNG export terminals (EIA)"),
-        # 2026-07-16 — usgs_water_stress SLA RETIRED (was 504h). The table was
-        # SUPERSEDED 2026-07-10 by the WRI Aqueduct 4.0 ingest
-        # (routes/water_aqueduct_ingest.py → water_risk rows tagged
-        # source='wri_aqueduct', built from wri_aqueduct_us_states) and its
-        # producing cron is gone, so the detector fired data_freshness_sla_breach
-        # on it 2,800+ times with nothing left to fix. The WRI dataset is NOT
-        # added to this watch on purpose: it refreshes rarely by design
-        # (annual-cadence WRI baseline, crawl-first manual ingest), so any
-        # hours-scale SLA here would just mint a new false-alarm stream.
-        ("competitor_snapshots",   "captured_at",  72,   "competitor gap-crawler inputs"),
-    ]
     c = _db()
     if c is None: return findings
     try:
         with c.cursor() as cur:
             for tbl, col, sla_hrs, label in SLAS:
-                try:
-                    # An SLA row naming a table or column that is missing,
-                    # or a column that is not a timestamp, can never breach.
-                    # Report it: silence from this row would otherwise read
-                    # as "fresh". (A missing table used to be skipped as
-                    # "doesn't exist on this deploy" — that is how the
-                    # dcpi_scores row stayed blind.)
-                    cur.execute(f"SELECT to_regclass('public.{tbl}')")
-                    if not (cur.fetchone() or [None])[0]:
-                        findings.append(_sla_unmeasurable(
-                            tbl, col, sla_hrs, label, f'table "{tbl}" does not exist'))
-                        continue
-                    cur.execute(
-                        "SELECT data_type FROM information_schema.columns "
-                        "WHERE table_schema = 'public' AND table_name = %s "
-                        "AND column_name = %s", (tbl, col))
-                    dtype = (cur.fetchone() or [None])[0]
-                    age_sql = _sla_age_sql(tbl, col, dtype)
-                    if age_sql is None:
-                        why = (f'column "{col}" does not exist' if dtype is None
-                               else f'column "{col}" is {dtype}, not a timestamp')
-                        findings.append(_sla_unmeasurable(tbl, col, sla_hrs, label, why))
-                        continue
-                    cur.execute(age_sql)
-                    last = (cur.fetchone() or [None])[0]
-                    if last is None:
-                        findings.append({
-                            "issue":  "data_freshness_sla_breach",
-                            "url":    f"table:{tbl}",
-                            "count":  1,
-                            "detail": (f"{label} has NO rows yet. SLA: {sla_hrs}h. "
-                                       f"Either the producing cron has never run, "
-                                       f"or the table was recently truncated."),
-                        })
-                        continue
-                    import datetime as _dt
-                    now = _dt.datetime.now(_dt.timezone.utc)
-                    # last may be tz-naive — coerce
-                    if last.tzinfo is None:
-                        last = last.replace(tzinfo=_dt.timezone.utc)
-                    age_h = (now - last).total_seconds() / 3600.0
-                    if age_h > sla_hrs:
-                        findings.append({
-                            "issue":  "data_freshness_sla_breach",
-                            "url":    f"table:{tbl}",
-                            "count_kind": "hours",  # magnitude, not a recurrence tally
-                            "count":  int(age_h),
-                            "detail": (f"{label} last refreshed {age_h:.1f}h ago "
-                                       f"(SLA: {sla_hrs}h). The cron that produces "
-                                       f"this table has missed at least one window. "
-                                       f"Check Railway logs for the cron's name."),
-                        })
-                except Exception as e:
-                    findings.append(_sla_unmeasurable(
-                        tbl, col, sla_hrs, label,
-                        f"the age query raised {type(e).__name__}: {str(e)[:120]}"))
+                f = freshness_sla_row(cur, tbl, col, sla_hrs, label)
+                if f is not None:
+                    findings.append(f)
     except Exception:
         pass
     finally:

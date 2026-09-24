@@ -110,6 +110,22 @@ and a graduation PROPOSAL that never grants
   Plain functions for the #65 shell (JSON-safe dicts, never raise):
     graduation_report(file=False)  ·  routes.squasher_queue.queue_ages()
     routes.squasher_queue.resolve_class(cls, decision, note, by)
+
+OPS CLASSES (2026-09-23) — two remedies the queue kept filing as "human
+decision required", under every clause above unchanged
+  * edge_purge_path (row param `path`, a Site Sentinel manifest path) and
+    freshness_refresh_job (row param `job`, a _REFRESH_JOBS key). Both are
+    seeded granted=FALSE; both answer their dry run without confirm=1.
+  * Classified by the finding's OWN identity — a per-row `key_rule` over the
+    key and title (see key_rule_params), since no analysis names these
+    wrappers. A row a key_rule classifies is an ops row by construction, so
+    an awaiting_decision settle is promoted to awaiting_ops
+    (promote_decision_row) — the state execute_one and the probes read.
+  Surface added (admin; same bypass; kill switch → 404):
+    POST /api/v1/brain/squasher/ops/edge-purge?path=[&confirm=1]
+    GET  /api/v1/brain/squasher/ops/sentinel-unhealthy?path=   verifier
+    POST /api/v1/brain/squasher/ops/refresh-job?job=[&confirm=1]
+    GET  /api/v1/brain/squasher/ops/freshness-breaches?job=    verifier
 """
 
 from __future__ import annotations
@@ -138,6 +154,60 @@ squasher_action_classes_bp = Blueprint("squasher_action_classes", __name__)
 # consecutive-failure ceiling. Per class in the registry and on the row
 # (track_record_required JSONB); this is the default.
 _TRACK_RECORD_DEFAULT = {"clean_dry_runs": 3, "max_consecutive_failed": 0}
+
+# ── ops classes (2026-09-23): the allowlists come from the code that owns them
+#
+# Two remedies the queue kept handing a human as "decision required" although
+# each is one fixed call: re-run a named refresh job, purge one edge URL.
+# Their single row parameter is a member of a FIXED set, and neither set is
+# restated here — the purge allowlist is the Site Sentinel's own manifest, the
+# job set is _REFRESH_JOBS below (each job names the trigger endpoint that
+# already exists and the SLA tables the radar already checks).
+_PLAIN_PATH_RE = re.compile(r"/[A-Za-z0-9/_.\-]*")
+_PURGE_ORIGIN = "https://dchub.cloud"
+
+
+def _sentinel_purge_paths() -> tuple:
+    """routes/site_sentinel._MANIFEST paths, IMPORTED. A path that cannot
+    round-trip as a bare query value through build_action_url / row_params_of
+    (it carries `?`, `&`, `=` or `#`) is left out rather than encoded — three
+    of 102 on 2026-09-23. Unimportable → () → the class matches NOTHING."""
+    try:
+        from routes.site_sentinel import _MANIFEST
+    except Exception:  # noqa: BLE001
+        return ()
+    return tuple(sorted({e["path"] for e in _MANIFEST
+                         if isinstance(e.get("path"), str)
+                         and _PLAIN_PATH_RE.fullmatch(e["path"])}))
+
+
+# job → the trigger that already exists for it, the cron_last_run name that
+# trigger stamps, and the radar SLA tables it feeds (table:<name> is the
+# data_freshness_sla_breach finding key). A job is added here only with a
+# trigger that RETURNS WHEN THE JOB HAS RUN and writes idempotently — the
+# drain reads the verifier the moment the action answers, so a fire-and-
+# forget 202 would be judged before the job wrote anything. That is why news
+# uses POST /api/jobs/news-refresh (synchronous; what data-sync.yml runs
+# every 3h) and not POST /api/news/refresh (a 202 since r-async, 2026-06-23).
+_REFRESH_JOBS = {
+    "news_refresh": {
+        "trigger": ("POST", "/api/jobs/news-refresh"),
+        "cron_job": "news-refresh",
+        "tables": ("news_articles",),
+    },
+}
+_JOB_IN_FLIGHT_S = 900       # a cron_last_run start this recent with no
+                             # completion after it = the cron's own run is
+                             # still going; a second concurrent run is refused
+
+
+def _one_of(values) -> str:
+    """An anchored allowlist regex. Empty → a pattern that matches nothing."""
+    vals = sorted(set(values))
+    if not vals:
+        return r"^(?!)$"
+    return r"^(?:" + "|".join(re.escape(v) for v in vals) + r")$"
+
 
 # Every class's action endpoint MUST be its own dry run when called without
 # its bound params — /apply without confirm=1 plans and returns would_mark,
@@ -247,6 +317,88 @@ ACTION_CLASSES = {
                   "ledger. Reversible via /rollback-run. Verifier: excess must "
                   "drop."),
     },
+    # ── ops classes (2026-09-23): per-row, classified from the finding's
+    # OWN key and title (key_rule) — the analysis prose never names these
+    # wrappers, so the endpoint rule alone could not reach them.
+    "edge_purge_path": {
+        "path": "/api/v1/brain/squasher/ops/edge-purge",
+        "match_paths": (),
+        # title `site_sentinel_unhealthy:/pricing`, key
+        # `https://dchub.cloud/pricing` (routes/site_sentinel.findings_from_rows).
+        # Both must match and name the SAME path.
+        "key_rule": {"title": r"site_sentinel_unhealthy:(/[A-Za-z0-9/_.\-]*)",
+                     "key": r"https://dchub\.cloud(/[A-Za-z0-9/_.\-]*)"},
+        "method": "POST",
+        "verifier_url": "/api/v1/brain/squasher/ops/sentinel-unhealthy",
+        "metric": "unhealthy",
+        "bound_params": {"confirm": "1"},
+        "row_param": "path",
+        "row_param_re": _one_of(_sentinel_purge_paths()),
+        "reversible": True,
+        "undo": ("none needed — a purge deletes cached COPIES only; the edge "
+                 "re-fills from origin on the next request. No origin state, "
+                 "no database row, no config is changed."),
+        "actuator": None,
+        "candidate_reason": (
+            "site_sentinel_unhealthy rows reach the queue as 'human decision "
+            "required' and self-clear with no fix shipped (row 477, /pricing, "
+            "seen 4x, self-cleared 2026-09-20). The sentinel's primary probe sends "
+            "Cache-Control: no-cache, which the edge does NOT honour (measured "
+            "2026-09-23: /pricing and /news answer cf-cache-status HIT to it), "
+            "so a stale edge copy fails the probe. Purge ONE manifest URL via "
+            "routes/cf_purge._purge_urls, then re-probe it with the sentinel's "
+            "own single-path probe; verifier = the sentinel's finding count for "
+            "that path. A page broken at ORIGIN does not drop, so it fails and "
+            "counts toward the breaker."),
+        "track_record_required": _TRACK_RECORD_DEFAULT,
+        "notes": ("POST .../ops/edge-purge?path=<manifest path>: without "
+                  "confirm=1 a dry run (reports the URL, purges nothing). With "
+                  "it: cf_purge._purge_urls([https://dchub.cloud<path>]), then "
+                  "POST /api/v1/admin/sentinel-inbox/probe?path=<path>. "
+                  "Verifier: the sentinel's site_sentinel_unhealthy count for "
+                  "the path must drop."),
+    },
+    "freshness_refresh_job": {
+        "path": "/api/v1/brain/squasher/ops/refresh-job",
+        "match_paths": (),
+        # title `data_freshness_sla_breach`, key `table:news_articles`
+        # (brain_consistency_radar.freshness_sla_row); the table maps to the
+        # ONE job in _REFRESH_JOBS that feeds it — a table no job feeds maps
+        # to nothing and the row stays unclassified.
+        "key_rule": {"title": r"data_freshness_sla_breach",
+                     "key": r"table:([a-z0-9_]+)",
+                     "map": {t: job for job, j in _REFRESH_JOBS.items()
+                             for t in j["tables"]}},
+        "method": "POST",
+        "verifier_url": "/api/v1/brain/squasher/ops/freshness-breaches",
+        "metric": "breaches",
+        "bound_params": {"confirm": "1"},
+        "row_param": "job",
+        "row_param_re": _one_of(_REFRESH_JOBS),
+        "reversible": True,
+        "undo": ("none needed — it is the job data-sync.yml already runs every "
+                 "3h, run once more: news_articles INSERT ... ON CONFLICT (id) "
+                 "DO NOTHING (id = md5(url)), the same 90-day fetched_at "
+                 "retention DELETE, the same announcements upsert. It writes "
+                 "nothing the next scheduled run would not."),
+        "actuator": None,
+        "candidate_reason": (
+            "data_freshness_sla_breach @ table:news_articles (6h SLA on "
+            "MAX(published_at)) reached the queue as 'operator action "
+            "required: POST /api/news/refresh' (row 483, self-cleared "
+            "2026-09-20, no fix shipped). The remedy is the cron's own job, "
+            "re-run: POST /api/jobs/news-refresh, which returns when "
+            "sync_news has run. Verifier = the radar's own SLA row for the "
+            "job's tables. A refresh that finds nothing published inside the "
+            "SLA does not drop, so it fails and counts toward the breaker."),
+        "track_record_required": _TRACK_RECORD_DEFAULT,
+        "notes": ("POST .../ops/refresh-job?job=<_REFRESH_JOBS key>: without "
+                  "confirm=1 a dry run (names the trigger and tables, runs "
+                  "nothing). With it: refused 409 while cron_last_run shows the "
+                  "cron's own run in flight; else the job's trigger, "
+                  "synchronously. Verifier: data_freshness_sla_breach count "
+                  "over the job's SLA tables must drop."),
+    },
 }
 # Classification: the path a finding names → the class. A class's own path
 # and every match_paths alias map to it; the URL that RUNS is always rebuilt
@@ -269,6 +421,12 @@ for _name, _spec in ACTION_CLASSES.items():
             _KEY_TO_CLASS[_key] = _name
 del _name, _spec
 _KEY_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
+# A PER-ROW class may instead declare a `key_rule` (2026-09-23): one fullmatch
+# regex per field it reads ("title", "key"), every capture naming the SAME raw
+# value, optionally mapped through `map` (a table → the job that feeds it) and
+# then validated by the class's own row_param_re. The token rule above still
+# never carries a parameter; this rule carries exactly one, from the finding's
+# identity, and prose is never read.
 
 # Same shape as squasher_queue._ACTION_RE, with the query split out so the
 # row parameter can be validated on its own. A path with no verb is prose.
@@ -391,7 +549,8 @@ def classify_text(*texts) -> dict | None:
 def classify_key(finding_key: str | None, title: str | None) -> dict | None:
     """(finding_key, title) → the class-scoped class whose registered key
     they name as a WHOLE token (`graph_spine:es_blindspot`,
-    `news_entity_reresolve — defect present`), else None. Prose is never
+    `news_entity_reresolve — defect present`), else the per-row class whose
+    key_rule they satisfy (key_rule_params), else None. Prose is never
     read here: a token in an analysis paragraph is not a finding about it."""
     for text in (finding_key, title):
         if not text:
@@ -403,7 +562,41 @@ def classify_key(finding_key: str | None, title: str | None) -> dict | None:
                         "action_method": ACTION_CLASSES[cls]["method"],
                         "action_url": build_action_url(cls, {}),
                         "params": {}}
+    for cls, spec in ACTION_CLASSES.items():
+        params = key_rule_params(spec, finding_key, title)
+        if params is not None:
+            return {"action_class": cls, "action_method": spec["method"],
+                    "action_url": build_action_url(cls, params),
+                    "params": params}
     return None
+
+
+def key_rule_params(spec: dict, finding_key: str | None,
+                    title: str | None) -> dict | None:
+    """A per-row class's key_rule over (finding_key, title) → {row_param:
+    value}, or None. Every declared pattern must fullmatch its field, every
+    capture must agree, and the (mapped) value must pass row_param_re."""
+    rule = spec.get("key_rule")
+    if not rule or spec.get("row_param") is None:
+        return None
+    pats = [(rule[f], v) for f, v in (("title", title), ("key", finding_key))
+            if rule.get(f)]
+    if not pats:
+        return None
+    caps = []
+    for pat, text in pats:
+        m = re.fullmatch(pat, str(text or "").strip())
+        if not m:
+            return None
+        caps += [g for g in m.groups() if g is not None]
+    if len(set(caps)) != 1:
+        return None
+    val = caps[0]
+    if rule.get("map") is not None:
+        val = rule["map"].get(val)
+    if not val or not re.match(spec["row_param_re"], val):
+        return None
+    return {spec["row_param"]: val}
 
 
 def classify_row(finding_key: str | None, title: str | None, *texts) -> dict | None:
@@ -643,7 +836,7 @@ def classify_open_rows(cur, limit: int = 500) -> dict:
             ORDER BY id DESC LIMIT %s""",
         (_OPEN_STATUSES, int(max(1, min(500, int(limit))))))
     rows = cur.fetchall() or []
-    out = {"scanned": len(rows), "classified": 0, "by_class": {}}
+    out = {"scanned": len(rows), "classified": 0, "by_class": {}, "promoted": 0}
     for rid, fk, title, reason, decision, analysis in rows:
         c = classify_row(fk, title, reason, decision, analysis)
         if not c:
@@ -658,7 +851,32 @@ def classify_open_rows(cur, limit: int = 500) -> dict:
         if n:
             out["by_class"][c["action_class"]] = (
                 out["by_class"].get(c["action_class"], 0) + n)
+            out["promoted"] += promote_decision_row(cur, rid, c)
     return out
+
+
+def promote_decision_row(cur, item_id: int, c: dict) -> int:
+    """A row a per-row KEY RULE classified is an ops row by construction —
+    the registry, not the analysis, names its one remedy — so a settle to
+    awaiting_decision moves to awaiting_ops: the only state execute_one,
+    candidates() and the probes read. It stays inert until a human grants
+    the class. Only from awaiting_decision (never queued/running/closed);
+    classes without a key_rule are untouched. Evidence goes first in the
+    reason, as _note_row does. -> rows promoted."""
+    cls = c.get("action_class")
+    if not (ACTION_CLASSES.get(cls or "") or {}).get("key_rule"):
+        return 0
+    note = (f"action_class {cls}: the registry names this finding's remedy "
+            f"({c.get('action_method')} {c.get('action_url')}) — awaiting_ops; "
+            f"it runs only once a human grants the class")
+    cur.execute(
+        """UPDATE squasher_work_queue
+              SET status = 'awaiting_ops',
+                  reason = LEFT(%s || ' | ' || COALESCE(reason, ''), 600)
+            WHERE id = %s AND status = 'awaiting_decision'
+              AND action_class = %s""",
+        (note[:400], item_id, cls))
+    return max(0, cur.rowcount or 0)
 
 
 def classify_in_tx(cur, item_id: int, *texts, finding_key: str | None = None,
@@ -679,6 +897,7 @@ def classify_in_tx(cur, item_id: int, *texts, finding_key: str | None = None,
                   SET action_class = %s, action_url = %s, action_method = %s
                 WHERE id = %s""",
             (c["action_class"], c["action_url"], c["action_method"], item_id))
+        promote_decision_row(cur, item_id, c)
         cur.execute("RELEASE SAVEPOINT action_class_tag")
         return True
     except Exception:  # noqa: BLE001
@@ -2038,4 +2257,286 @@ def rollback_post():
     b = request.get_json(silent=True) or {}
     rid = b.get("actuator_run_id") or request.args.get("actuator_run_id")
     out, code = rollback_run(rid, by=_by())
+    return _no_store(jsonify(out)), code
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  OPS CLASSES (2026-09-23) — edge_purge_path, freshness_refresh_job.
+#  Per-row wrappers in the /actuate mould: the grant is the first gate, the
+#  call without confirm=1 is the class's own dry run, a tripped breaker is
+#  refused even there. The action, the verifier and the allowlist each come
+#  from the code that owns them (routes/cf_purge, routes/site_sentinel,
+#  routes/brain_consistency_radar, the job's own trigger) — nothing restated.
+# ══════════════════════════════════════════════════════════════════════════
+
+_PURGE_SETTLE_S = 2           # purge → sentinel re-probe
+_REPROBE_PATH = "/api/v1/admin/sentinel-inbox/probe"
+_OPS_DEPENDENCY_FAILED = 424  # the action ran and what it drives failed: the
+                              # drain records failed_http. Never a 5xx — see _gate.
+
+
+def _row_param_ok(cls: str, val) -> bool:
+    spec = ACTION_CLASSES[cls]
+    return bool(val) and bool(re.match(spec["row_param_re"], str(val)))
+
+
+def _ops_gate(cls: str, out: dict, confirm: bool):
+    """-> a refusal (body, 409) or None. The gate /actuate applies, in its
+    order, over the same eligible(): an unreadable registry refuses; a
+    tripped breaker refuses even the dry run; confirm=1 needs the grant and
+    the global switch. Refusals mutate nothing and the drain records them as
+    not-a-failure (refused_by_endpoint)."""
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            cls_row = class_row(cur, cls)
+    except Exception as e:  # noqa: BLE001
+        return _refused(out, f"class registry unreadable ({type(e).__name__}) "
+                             f"— no grant, no fire")
+    may_run, why = eligible(cls_row)
+    out["granted"] = bool((cls_row or {}).get("granted"))
+    out["breaker_tripped"] = bool((cls_row or {}).get("breaker_tripped"))
+    if out["breaker_tripped"]:
+        return _refused(out, "breaker tripped — a human must clear it before "
+                             "this class runs at all")
+    if confirm and not may_run:
+        return _refused(out, f"class is not granted to run: {why} "
+                             f"(brain_action_classes is the grant)")
+    if confirm and not enabled():
+        return _refused(out, "ACTION_CLASSES_ENABLED is not 1")
+    return None
+
+
+def _cf_purge():
+    """-> (routes.cf_purge._purge_urls, configured). routes/cf_purge owns the
+    token, the zone and the API call; this reads only whether both are set."""
+    try:
+        from routes import cf_purge
+    except Exception:  # noqa: BLE001
+        return None, False
+    return cf_purge._purge_urls, bool(cf_purge._CF_API_TOKEN and cf_purge._CF_ZONE_ID)
+
+
+def edge_purge(path: str, *, confirm: bool, by: str = "", fetch=None,
+               purger=None, sleep=None) -> tuple[dict, int]:
+    """POST /ops/edge-purge?path=<manifest path>[&confirm=1].
+
+    Dry run (no confirm): names the ONE url it would purge; calls nothing.
+    confirm=1: routes/cf_purge._purge_urls([https://dchub.cloud<path>]), then
+    the sentinel's own single-path probe, which stores the fresh reading the
+    verifier then reads. A failed purge is NOT re-probed — a probe landing
+    after the copy expired on its own must not credit a purge that failed."""
+    cls = "edge_purge_path"
+    out = {"ok": True, "class": cls, "dry_run": not confirm, "executed": False,
+           "rows_affected": 0, "granted": False, "breaker_tripped": False,
+           "path": path}
+    if not _row_param_ok(cls, path):
+        return {**out, "ok": False,
+                "error": "path must be a plain Site Sentinel manifest path"}, 400
+    url = _PURGE_ORIGIN + path
+    out["url"] = url
+    refusal = _ops_gate(cls, out, confirm)
+    if refusal:
+        return refusal
+    purge_fn, configured = purger if purger is not None else _cf_purge()
+    out["purge_configured"] = configured
+    if not confirm:
+        out.update(would_purge=[url],
+                   note="dry run — add ?confirm=1 to purge this ONE url and re-probe it")
+        return out, 200
+    if not (configured and purge_fn):
+        return _refused(out, "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ZONE_ID not set "
+                             "on this service — nothing was purged")
+    res = purge_fn([url]) or {}
+    out["executed"] = True
+    out["purge"] = {"ok": bool(res.get("ok")), "status": res.get("status"),
+                    "error": res.get("error")}
+    if not res.get("ok"):
+        return {**out, "ok": False,
+                "error": "purge failed — nothing re-probed"}, _OPS_DEPENDENCY_FAILED
+    (sleep or time.sleep)(_PURGE_SETTLE_S)
+    st, body = (fetch or _loopback)("POST", f"{_REPROBE_PATH}?path={path}")
+    scan = (body.get("scan") if isinstance(body, dict) else None) or {}
+    out["reprobe"] = {"status": st, "healthy": scan.get("healthy"),
+                      "reason": scan.get("reason")}
+    out["rows_affected"] = 1
+    return out, 200
+
+
+def read_sentinel_unhealthy(path: str) -> tuple[dict, int]:
+    """GET /ops/sentinel-unhealthy?path=: the Site Sentinel's
+    site_sentinel_unhealthy finding count for ONE path (0 or 1), as a
+    top-level int. The sentinel's own rule (findings_from_rows) over its own
+    stored row — never its 16-capped list (a cut-off path would read 0), and
+    never a scan. No stored row / unreadable → None: UNMEASURED, not zero."""
+    cls, metric = "edge_purge_path", "unhealthy"
+    if not _row_param_ok(cls, path):
+        return {"ok": False, "class": cls, metric: None,
+                "error": "path must be a plain Site Sentinel manifest path"}, 400
+    issue = f"site_sentinel_unhealthy:{path}"
+    out = {"ok": False, "class": cls, "path": path, "issue": issue, metric: None,
+           "as_of": datetime.now(timezone.utc).isoformat()}
+    try:
+        from routes import site_sentinel as ss
+        row = next((r for r in (ss.latest_results() or [])
+                    if r.get("path") == path), None)
+        if row is None:
+            out["error"] = ("the sentinel has no stored row for this path — "
+                            "UNMEASURED, not zero")
+            return out, 200
+        n = sum(1 for f in ss.findings_from_rows([row]) if f.get("issue") == issue)
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {str(e)[:160]} — UNMEASURED, not zero"
+        return out, 200
+    out.update({"ok": True, metric: n, "healthy": row.get("healthy"),
+                "reason": row.get("reason"), "checked_at": row.get("checked_at"),
+                "cf_cache_status": row.get("cf_cache_status")})
+    return out, 200
+
+
+def read_freshness_breaches(job: str) -> tuple[dict, int]:
+    """GET /ops/freshness-breaches?job=: data_freshness_sla_breach count over
+    the job's SLA tables, as a top-level int — each table judged by the
+    radar's own row (brain_consistency_radar.SLAS + freshness_sla_row), so
+    the SLA hours and column are never restated. A table the radar reports
+    sla_column_unmeasurable, or has no SLA row for, makes the whole reading
+    None: UNMEASURED, not zero."""
+    cls, metric = "freshness_refresh_job", "breaches"
+    if not _row_param_ok(cls, job):
+        return {"ok": False, "class": cls, metric: None,
+                "error": f"job must be one of {sorted(_REFRESH_JOBS)}"}, 400
+    tables = _REFRESH_JOBS[job]["tables"]
+    out = {"ok": False, "class": cls, "job": job, metric: None, "tables": {},
+           "as_of": datetime.now(timezone.utc).isoformat()}
+    try:
+        from routes import brain_consistency_radar as radar
+        slas = {row[0]: row for row in radar.SLAS}
+        missing = [t for t in tables if t not in slas]
+        if missing:
+            out["error"] = f"no radar SLA row for {missing} — UNMEASURED, not zero"
+            return out, 200
+        n = 0
+        with _conn() as conn, conn.cursor() as cur:
+            for t in tables:
+                f = radar.freshness_sla_row(cur, *slas[t])
+                if f is None:
+                    out["tables"][t] = {"breach": False}
+                elif f.get("issue") == "data_freshness_sla_breach":
+                    n += 1
+                    out["tables"][t] = {"breach": True, "age_hours": f.get("count"),
+                                        "detail": f.get("detail")}
+                else:
+                    out["tables"][t] = {"unmeasurable": f.get("detail")}
+                    out["error"] = (f"table:{t} is {f.get('issue')} — "
+                                    f"UNMEASURED, not zero")
+                    return out, 200
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {str(e)[:160]} — UNMEASURED, not zero"
+        return out, 200
+    out.update({"ok": True, metric: n})
+    return out, 200
+
+
+def _cron_in_flight(cur, cron_job: str) -> tuple[bool, str]:
+    """cron_last_run (routes/jobs_routes) says the job's own run is going:
+    started inside _JOB_IN_FLIGHT_S with no completion stamped after it."""
+    cur.execute(
+        "SELECT EXTRACT(EPOCH FROM (NOW() - last_started_at)),"
+        "       (last_completed_at IS NULL OR last_completed_at < last_started_at)"
+        "  FROM cron_last_run WHERE job_name = %s", (cron_job,))
+    r = cur.fetchone()
+    if not r or r[0] is None:
+        return False, "no run recorded"
+    age, still_open = float(r[0]), bool(r[1])
+    if still_open and age < _JOB_IN_FLIGHT_S:
+        return True, f"started {age:.0f}s ago, no completion stamped"
+    return False, f"last started {age:.0f}s ago" + (", completed" if not still_open else "")
+
+
+def refresh_job(job: str, *, confirm: bool, by: str = "",
+                fetch=None) -> tuple[dict, int]:
+    """POST /ops/refresh-job?job=<_REFRESH_JOBS key>[&confirm=1].
+
+    Dry run (no confirm): names the trigger and the tables; runs nothing.
+    confirm=1: refused 409 while cron_last_run shows the cron's own run in
+    flight (or cannot be read); otherwise the job's trigger, SYNCHRONOUSLY,
+    through the same loopback the drain uses. This one action can outlast
+    cron_heartbeat._hit's 30s read — the drain then logs dispatch_timeout,
+    which that module documents as 'job continues server-side'; the verdict
+    is still read after the job has run."""
+    cls = "freshness_refresh_job"
+    out = {"ok": True, "class": cls, "dry_run": not confirm, "executed": False,
+           "rows_affected": 0, "granted": False, "breaker_tripped": False,
+           "job": job}
+    if not _row_param_ok(cls, job):
+        return {**out, "ok": False,
+                "error": f"job must be one of {sorted(_REFRESH_JOBS)}"}, 400
+    j = _REFRESH_JOBS[job]
+    method, trigger = j["trigger"]
+    out.update(trigger=f"{method} {trigger}", tables=list(j["tables"]))
+    refusal = _ops_gate(cls, out, confirm)
+    if refusal:
+        return refusal
+    if not confirm:
+        out["note"] = "dry run — add ?confirm=1 to run the job once"
+        return out, 200
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            busy, why = _cron_in_flight(cur, j["cron_job"])
+    except Exception as e:  # noqa: BLE001
+        return _refused(out, f"cron_last_run unreadable ({type(e).__name__}) — "
+                             f"cannot rule out the cron's own run in flight")
+    out["cron"] = why
+    if busy:
+        return _refused(out, f"{j['cron_job']} already in flight ({why}) — "
+                             f"not started a second time")
+    t0 = time.monotonic()
+    status, body = (fetch or _loopback)(method, trigger)
+    body = body if isinstance(body, dict) else {}
+    na = body.get("new_articles")
+    out.update(executed=True, trigger_status=status,
+               elapsed_ms=int((time.monotonic() - t0) * 1000),
+               rows_affected=(na if isinstance(na, int) and not isinstance(na, bool) else 0),
+               trigger_result={k: body.get(k) for k in ("success", "new_articles", "error")
+                               if k in body})
+    if not 200 <= int(status or 0) < 300:
+        return {**out, "ok": False,
+                "error": f"trigger answered HTTP {status}"}, _OPS_DEPENDENCY_FAILED
+    return out, 200
+
+
+@squasher_action_classes_bp.post("/api/v1/brain/squasher/ops/edge-purge")
+def edge_purge_post():
+    early = _gate()
+    if early:
+        return early
+    out, code = edge_purge(request.args.get("path") or "",
+                           confirm=(request.args.get("confirm") == "1"), by=_by())
+    return _no_store(jsonify(out)), code
+
+
+@squasher_action_classes_bp.get("/api/v1/brain/squasher/ops/sentinel-unhealthy")
+def sentinel_unhealthy_get():
+    early = _gate()
+    if early:
+        return early
+    out, code = read_sentinel_unhealthy(request.args.get("path") or "")
+    return _no_store(jsonify(out)), code
+
+
+@squasher_action_classes_bp.post("/api/v1/brain/squasher/ops/refresh-job")
+def refresh_job_post():
+    early = _gate()
+    if early:
+        return early
+    out, code = refresh_job(request.args.get("job") or "",
+                            confirm=(request.args.get("confirm") == "1"), by=_by())
+    return _no_store(jsonify(out)), code
+
+
+@squasher_action_classes_bp.get("/api/v1/brain/squasher/ops/freshness-breaches")
+def freshness_breaches_get():
+    early = _gate()
+    if early:
+        return early
+    out, code = read_freshness_breaches(request.args.get("job") or "")
     return _no_store(jsonify(out)), code

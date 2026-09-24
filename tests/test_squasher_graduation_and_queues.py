@@ -284,7 +284,9 @@ def test_every_class_names_only_endpoints_that_exist():
 
 
 def test_the_expected_candidates_are_seeded_and_gsc_is_not():
-    assert set(sac.ACTION_CLASSES) == {FAC, NEWS, DEALS}
+    # 2026-09-23: + the two ops classes (tests/test_squasher_ops_classes.py).
+    assert set(sac.ACTION_CLASSES) == {FAC, NEWS, DEALS, "edge_purge_path",
+                                       "freshness_refresh_job"}
     assert not any("gsc" in s["path"] for s in sac.ACTION_CLASSES.values()), (
         "a GSC-proven refresh class may only be added once POST .../gsc/proven/"
         "refresh and a count verifier exist — they do not on 2026-08-22")
