@@ -62,6 +62,13 @@ def _block(src, start_line, end_line):
     return block
 
 
+def _line(src, start):
+    """One top-level single-line declaration, failing closed."""
+    hit = [ln for ln in src.splitlines() if ln.startswith(start)]
+    assert len(hit) == 1, f"worker.js: expected one line starting {start!r}, got {len(hit)}"
+    return hit[0]
+
+
 def _step2_sequence(src):
     """Extract the SHIPPED STEP-2 response-assembly statements verbatim.
 
@@ -96,7 +103,7 @@ WARM_TIER = "{ browserMaxAge: 180, edgeTtl: 300, publicKeyCache: true }"
 
 def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
          content_type="image/png", cache_control="public, max-age=604800, immutable",
-         set_cookie=None):
+         set_cookie=None, status=200, put_rejects=None):
     """Execute the REAL assetCachePut + the REAL STEP-2 ordering on a streaming
     body, and report what the client and the cache each ended up with."""
     src = open(WORKER, encoding="utf-8").read()
@@ -104,6 +111,9 @@ def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
     js = f"""
 {_block(src, "function _assetCacheKey(", "}")}
 {_block(src, "function _pkcStorable(", "}")}
+{_block(src, "function _pkcSkipReason(", "}")}
+{_line(src, "const _pkcPutErrors = ")}
+{_block(src, "function _pkcNotePutError(", "}")}
 {_block(src, "function originAllowsSharedStore(", "}")}
 {_block(src, "function assetCachePut(", "}")}
 
@@ -111,12 +121,15 @@ def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
 const mkOrigin = () => new Response(
   new ReadableStream({{ start(c) {{ c.enqueue(PNG); c.close(); }} }}),
-  {{ status: 200, headers: {{ 'content-type': {json.dumps(content_type)},
+  {{ status: {status}, headers: {{ 'content-type': {json.dumps(content_type)},
                              'cache-control': {json.dumps(cache_control)}{extra_hdr} }} }});
 
 let stored = null;
 globalThis.caches = {{ default: {{
-  async put(_req, res) {{ stored = new Uint8Array(await res.arrayBuffer()); }},
+  async put(_req, res) {{
+    if ({json.dumps(put_rejects)} !== null) throw new Error({json.dumps(put_rejects or "")});
+    stored = new Uint8Array(await res.arrayBuffer());
+  }},
   async match() {{ return null; }},
 }} }};
 
@@ -159,6 +172,8 @@ console.log(JSON.stringify({{
   client_error: clientError,
   stored_bytes: stored ? stored.length : null,
   wait_error: waitError,
+  store_verdict: result.headers.get('x-dc-edge-store'),
+  put_errors: Object.fromEntries(_pkcPutErrors),
   expected_bytes: PNG.length,
 }}));
 """
@@ -248,3 +263,36 @@ def test_asset_tier_still_stores_regardless_of_origin_directives():
     """The asset tier's old behaviour is kept on purpose (deterministic PNGs)."""
     r = _run(cache_control="private, max-age=0")
     assert r["stored_bytes"] == r["expected_bytes"]
+
+
+# ── edge-store diagnostics (4.9.77) ────────────────────────────────────────
+
+@pytest.mark.parametrize("kw,verdict", [
+    (dict(cache_control="public, max-age=300"), "put"),
+    (dict(cache_control="private, no-store, max-age=0"), "skip:origin-cache-control"),
+    (dict(cache_control="public, max-age=300", set_cookie="sid=1"), "skip:set-cookie"),
+    (dict(cache_control="public, max-age=300", status=404), "skip:status-404"),
+])
+def test_every_warm_miss_says_what_happened_to_the_store(kw, verdict):
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json", **kw)
+    assert r["store_verdict"] == verdict, (
+        f"x-dc-edge-store said {r['store_verdict']!r}, expected {verdict!r}")
+    assert r["client_error"] is None and r["client_bytes"] == r["expected_bytes"]
+
+
+def test_a_rejected_put_is_recorded_not_swallowed_and_never_fails_the_request():
+    """The whole point: the /stats put() rejection was invisible. It must now
+    land in _pkcPutErrors (-> x-dc-edge-store-last-error on the next miss) and
+    still must not escape into waitUntil."""
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="public, max-age=300", put_rejects="boom: put refused")
+    assert r["wait_error"] is None, f"put() rejection escaped into waitUntil: {r['wait_error']}"
+    assert r["client_error"] is None and r["client_bytes"] == r["expected_bytes"]
+    errs = r["put_errors"]
+    assert list(errs) == ["https://api.dchub.cloud/api/v1/stats?style=editorial&title=X"], errs
+    assert "boom: put refused" in next(iter(errs.values()))
+
+
+def test_the_asset_tier_gets_the_verdict_header_too():
+    r = _run()
+    assert r["store_verdict"] == "put"
