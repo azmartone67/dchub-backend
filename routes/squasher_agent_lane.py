@@ -247,6 +247,28 @@ _QA_CLEAR_MIN_AGE_H = 6     # a qa row must be this old before a clear counts
 _SEV_RANK = {"critical": 0, "major": 1}
 
 
+# ★ 2026-09-24 — ABSENCE IS NOT A PASS. The quota-contradiction check ROTATES the
+# tool it probes every 4h block, and the tool is part of the finding key
+# (stable_key("mcp", "anon", "quota-contradiction", <tool>)). Measured that day:
+# the lane filed one row per tool (492 ai_capacity_index, 493
+# get_grid_intelligence, 494 get_fiber_intel) — two agent PRs for ONE root cause
+# (mcp#533, mcp#536) — and "cleared" rows whenever rotation moved on, which is
+# not evidence of anything. So: rows are deduped by FAMILY (the check, without
+# its variant), and a qa row closes only on a fresh board that shows a PASS in
+# its family and no RED in it. A family the board says nothing about stays open.
+_QA_PASS_MARK = "QA PASS-verified"
+
+
+def qa_family(key: str) -> str:
+    """The check a QA key belongs to, without its variant: the first three
+    `::` parts of the slug (surface::seat::check). Keys come from
+    tools/qa_superuser/finding.stable_key(*parts) = "a::b::c[::variant]#hash"."""
+    k = str(key or "")
+    if k.startswith(QA_PREFIX):
+        k = k[len(QA_PREFIX):]
+    return "::".join(k.split("#", 1)[0].split("::")[:3])
+
+
 def qa_board() -> dict:
     """{ok, reds: {dchub-key: finding}} — the latest QA board's ACTIONABLE
     reds with QA's own investigation/proposal/park state attached — or an
@@ -269,7 +291,16 @@ def qa_board() -> dict:
             return {"ok": False, "reds": {},
                     "reason": "QA investigations unreadable — cannot tell "
                               "what QA's own lane has handed off"}
-        return {"ok": True, "reds": {QA_PREFIX + str(f["key"]): f for f in reds}}
+        allf = [f for f in (latest.get("findings") or [])
+                if isinstance(f, dict) and f.get("key")]
+        return {"ok": True,
+                "reds": {QA_PREFIX + str(f["key"]): f for f in reds},
+                # Positive evidence only: a family with a PASS on THIS board,
+                # and every family with any RED (actionable or not) on it.
+                "passed_families": {qa_family(f["key"]) for f in allf
+                                    if f.get("verdict") == "PASS"},
+                "red_families": {qa_family(f["key"]) for f in allf
+                                 if f.get("verdict") == "RED"}}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "reds": {},
                 "reason": f"QA board unreadable: {type(e).__name__}"}
@@ -315,18 +346,32 @@ def qa_feed_plan(reds: dict, open_keys) -> list[tuple[str, dict]]:
     todo = [(k, f) for k, f in (reds or {}).items()
             if k not in open_keys and qa_handed_off(f)]
     todo.sort(key=lambda kf: (_SEV_RANK.get(str(kf[1].get("severity")), 9), kf[0]))
-    return todo[:_QA_FEED_MAX]
+    # One row per FAMILY: a check that rotates its variant is one defect.
+    seen = {qa_family(k) for k in open_keys if str(k).startswith(QA_PREFIX)}
+    out = []
+    for k, f in todo:
+        fam = qa_family(k)
+        if fam in seen:
+            continue
+        seen.add(fam)
+        out.append((k, f))
+    return out[:_QA_FEED_MAX]
 
 
-def qa_clear_plan(rows: list[dict], red_keys, now: datetime | None = None
-                  ) -> list[int]:
-    """Open source='qa' rows a FRESH board no longer reports, old enough that
-    one missing run is not a flap. Pure; the caller must only pass red_keys
-    from a board qa_board() accepted."""
+def qa_clear_plan(rows: list[dict], passed_families, red_families,
+                  now: datetime | None = None) -> list[int]:
+    """Open source='qa' rows a FRESH board shows PASSING: a PASS in the row's
+    family and no RED in it, and the row old enough that one run is not a
+    flap. A family the board is silent about is NOT cleared — absence is not
+    a pass (a rotating check simply moved on). Pure; the caller must only pass
+    families from a board qa_board() accepted."""
     now = now or _now()
     out = []
     for r in rows:
-        if r.get("source") != QA_SOURCE or r.get("finding_key") in red_keys:
+        if r.get("source") != QA_SOURCE:
+            continue
+        fam = qa_family(r.get("finding_key"))
+        if fam not in passed_families or fam in red_families:
             continue
         at = r.get("requested_at")
         if at is not None and at.tzinfo is None:
@@ -439,7 +484,8 @@ def settle_plan(row: dict, payload: dict) -> tuple[dict | None, str]:
 
 
 def reconcile_plan(row: dict, pr: dict | None, live_keys,
-                   now: datetime | None = None) -> dict | None:
+                   now: datetime | None = None, live_families=None
+                   ) -> dict | None:
     """What a PR's state means for its row, or None for "nothing yet".
 
     pr is {"state": "open"|"closed", "merged_at": iso|None}, or None when
@@ -459,6 +505,15 @@ def reconcile_plan(row: dict, pr: dict | None, live_keys,
         cleared = row.get("finished_at")
         if cleared is not None and cleared.tzinfo is None:
             cleared = cleared.replace(tzinfo=timezone.utc)
+        is_qa = str(row.get("finding_key") or "").startswith(QA_PREFIX)
+        if is_qa and _QA_PASS_MARK not in str(row.get("reason") or ""):
+            # Closed by the old absence rule (or by hand): no PASS was ever
+            # observed, so the merge is not credited as a fix.
+            return {"agent_state": "cleared_unverified",
+                    "note": f"{url} merged, but this QA row was closed because "
+                            f"the board stopped LISTING it (a rotating check "
+                            f"moves on), not because it PASSED — not counted "
+                            f"as a fix"}
         if cleared is not None and cleared > merged_at:
             return {"agent_state": "fixed", "status": "resolved",
                     "agent_verified_at": cleared,
@@ -468,8 +523,11 @@ def reconcile_plan(row: dict, pr: dict | None, live_keys,
         return {"agent_state": "merged_after_clear",
                 "note": f"{url} merged after the finding had already "
                         f"self-cleared — not counted as a fix"}
-    if row.get("finding_key") in live_keys and \
-            now - merged_at > timedelta(hours=_UNVERIFIED_AFTER_H):
+    key = row.get("finding_key")
+    still_red = key in live_keys or (
+        str(key or "").startswith(QA_PREFIX)
+        and qa_family(key) in (live_families or set()))
+    if still_red and now - merged_at > timedelta(hours=_UNVERIFIED_AFTER_H):
         return {"agent_state": "merged_unverified",
                 "note": f"{url} merged {merged_at:%Y-%m-%dT%H:%MZ} but the "
                         f"detector still reports the finding "
@@ -649,10 +707,12 @@ def feed_qa(cur, qa: dict) -> dict:
                 cur.execute("ROLLBACK TO SAVEPOINT sq_agent_qa")
     rows = _rows(cur, "source = %s AND status IN (" + open_sql + ")",
                  (QA_SOURCE,))
-    for rid in qa_clear_plan(rows, set(qa["reds"])):
+    for rid in qa_clear_plan(rows, qa.get("passed_families") or set(),
+                             qa.get("red_families") or set()):
         if _apply(cur, rid, {"status": "self_cleared", "finished_at": _now(),
-                             "note": "self-cleared: a fresh QA board no longer "
-                                     "reports this red (must-fail control "
+                             "note": f"self-cleared ({_QA_PASS_MARK}): a fresh "
+                                     "QA board shows this check PASSING and no "
+                                     "RED in its family (must-fail control "
                                      "fired). No fix is claimed here."}):
             out["cleared"] += 1
     return out
@@ -788,6 +848,8 @@ def reconcile(fetch_pr=None, live: dict | None = None,
     # PR whose QA red is still on the board is reported, not waited on.
     live_keys = (set(merge_qa_items(live.get("items") or {}, qa))
                  if live.get("ok") else set())
+    # A QA family still red on ANY variant means the merged fix did not hold.
+    live_families = {qa_family(k) for k in live_keys if k.startswith(QA_PREFIX)}
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_columns(cur)
@@ -797,7 +859,8 @@ def reconcile(fetch_pr=None, live: dict | None = None,
                 if pr is None:
                     out["unreadable"] += 1
                     continue
-                plan = reconcile_plan(row, pr, live_keys)
+                plan = reconcile_plan(row, pr, live_keys,
+                                      live_families=live_families)
                 if plan and _apply(cur, row["id"], dict(plan),
                                    where_state="pr_open"):
                     s = plan["agent_state"]

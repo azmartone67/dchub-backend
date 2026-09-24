@@ -783,7 +783,13 @@ def _red(key="web::public-pages#21d6c8", sev="critical", **kw):
     return f
 
 
-QA_OK = lambda reds: {"ok": True, "reds": {al.QA_PREFIX + f["key"]: f for f in reds}}
+def QA_OK(reds, passed=(), red=None):
+    """A board qa_board() accepted: its reds, the families it shows PASSING,
+    and every family with a RED (defaults to the reds' own families)."""
+    return {"ok": True, "reds": {al.QA_PREFIX + f["key"]: f for f in reds},
+            "passed_families": set(passed),
+            "red_families": set(red) if red is not None
+            else {al.qa_family(f["key"]) for f in reds}}
 
 
 @pytest.mark.parametrize("f, handed_off", [
@@ -811,17 +817,52 @@ def test_qa_feed_plan_files_only_new_handed_off_reds_critical_first_capped():
     assert len(plan) == 5
 
 
-def test_qa_clear_plan_closes_only_old_qa_rows_the_board_dropped():
-    old = NOW - timedelta(hours=7)
-    rows = [_row(id=1, source="qa", finding_key=al.QA_PREFIX + "gone", requested_at=old),
-            _row(id=2, source="qa", finding_key=al.QA_PREFIX + "still", requested_at=old),
-            _row(id=3, source="qa", finding_key=al.QA_PREFIX + "new",
-                 requested_at=NOW - timedelta(hours=1)),
-            _row(id=4, source="heal", finding_key="gone-heal", requested_at=old),
-            _row(id=5, source="qa", finding_key=al.QA_PREFIX + "naive",
-                 requested_at=old.replace(tzinfo=None))]
-    assert al.qa_clear_plan(rows, {al.QA_PREFIX + "still"}, NOW) == [1, 5]
+def test_qa_family_drops_the_variant_and_hash():
+    q = al.QA_PREFIX
+    assert al.qa_family(q + "mcp::anon::quota-contradiction::get_fiber_intel#a8a568") == \
+        "mcp::anon::quota-contradiction"
+    assert al.qa_family(q + "mcp::anon::quota-contradiction::ai_capacity_index#787a53") == \
+        "mcp::anon::quota-contradiction"
+    assert al.qa_family(q + "web::public-pages#21d6c8") == "web::public-pages"
+    assert al.qa_family("mcp::anon::continuation#abc123") == "mcp::anon::continuation"
 
+
+FAM = "mcp::anon::quota-contradiction"
+
+
+def _qrow(i, variant, hours=7, **kw):
+    return _row(id=i, source="qa", requested_at=NOW - timedelta(hours=hours),
+                finding_key=f"{al.QA_PREFIX}{FAM}::{variant}#{i:06d}", **kw)
+
+
+def test_qa_clear_needs_a_pass_in_the_family_absence_is_not_a_pass():
+    rows = [_qrow(1, "get_grid_intelligence")]
+    # rotation moved on: the board says nothing about this family → stays open
+    assert al.qa_clear_plan(rows, set(), set(), NOW) == []
+    # a DIFFERENT tool in the same family passed, none red → the check holds
+    assert al.qa_clear_plan(rows, {FAM}, set(), NOW) == [1]
+    # passed on one tool but red on another → not cleared
+    assert al.qa_clear_plan(rows, {FAM}, {FAM}, NOW) == []
+
+
+def test_qa_clear_still_needs_age_and_a_qa_source():
+    assert al.qa_clear_plan([_qrow(1, "x", hours=1)], {FAM}, set(), NOW) == []
+    heal = _row(id=2, source="heal", finding_key=f"{al.QA_PREFIX}{FAM}::x#000002",
+                requested_at=NOW - timedelta(hours=9))
+    assert al.qa_clear_plan([heal], {FAM}, set(), NOW) == []
+    naive = _qrow(3, "y")
+    naive["requested_at"] = naive["requested_at"].replace(tzinfo=None)
+    assert al.qa_clear_plan([naive], {FAM}, set(), NOW) == [3]
+
+
+def test_qa_feed_files_one_row_per_family():
+    reds = {al.QA_PREFIX + f"{FAM}::{t}#{i}": _red(f"{FAM}::{t}#{i}", "major", parked={"why": "x"})
+            for i, t in enumerate(("get_fiber_intel", "get_grid_intelligence", "ai_capacity_index"))}
+    plan = al.qa_feed_plan(reds, open_keys=set())
+    assert len(plan) == 1
+    # and none at all while the family already has an open row
+    open_key = al.QA_PREFIX + f"{FAM}::get_water_risk#999999"
+    assert al.qa_feed_plan(reds, open_keys={open_key}) == []
 
 def test_merge_qa_items_uses_the_full_board_and_refuses_a_refused_one():
     reds = [_red(f"k{i}", "major") for i in range(7)]           # > the 4/h intake cap
@@ -919,7 +960,10 @@ def test_lifecycle_qa_feed_and_clear_on_postgres(pg, monkeypatch):
     with pg.cursor() as cur:
         cur.execute("UPDATE squasher_work_queue SET requested_at = NOW() - INTERVAL"
                     " '7 hours' WHERE finding_key = %s", (al.QA_PREFIX + "a",))
-        out = al.feed_qa(cur, QA_OK(reds[1:]))
+        # absence alone (the board just stops listing "a") closes nothing …
+        assert al.feed_qa(cur, QA_OK(reds[1:]))["cleared"] == 0
+        # … a PASS in its family does
+        out = al.feed_qa(cur, QA_OK(reds[1:], passed={"a"}))
     assert out["cleared"] == 1
     assert _state(pg, _id_of(pg, al.QA_PREFIX + "a"))[0] == "self_cleared"
 
@@ -1240,3 +1284,65 @@ def test_verify_adds_the_every_test_file_runs_guard_for_mcp_fixes():
 def test_prompt_tells_the_agent_about_hard_gate_txt():
     t = (TOOLS / "prompt.md").read_text()
     assert "mcp/test/hard-gate.txt" in t and "every-test-file-runs" in t
+
+
+
+# ══ 17 · reconcile never credits a QA fix it did not see pass ══════════════
+
+def test_reconcile_qa_row_cleared_by_absence_is_not_a_fix():
+    row = _pr_row(finding_key=f"{al.QA_PREFIX}{FAM}::get_grid_intelligence#000493",
+                  status="self_cleared", reason="self-cleared: a fresh QA board no longer reports this red",
+                  finished_at=datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc))
+    p = al.reconcile_plan(row, MERGED, set(), NOW)
+    assert p["agent_state"] == "cleared_unverified" and "status" not in p
+
+
+def test_reconcile_qa_row_cleared_on_a_pass_is_a_fix():
+    row = _pr_row(finding_key=f"{al.QA_PREFIX}{FAM}::get_grid_intelligence#000493",
+                  status="self_cleared", reason=f"self-cleared ({al._QA_PASS_MARK}): …",
+                  finished_at=datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc))
+    assert al.reconcile_plan(row, MERGED, set(), NOW)["agent_state"] == "fixed"
+
+
+def test_reconcile_a_family_still_red_on_another_tool_means_not_fixed():
+    row = _pr_row(finding_key=f"{al.QA_PREFIX}{FAM}::get_grid_intelligence#000493")
+    p = al.reconcile_plan(row, MERGED, set(), NOW + timedelta(hours=1),
+                          live_families={FAM})
+    assert p["agent_state"] == "merged_unverified"
+    # the exact key is not live and the family is not red → wait, claim nothing
+    assert al.reconcile_plan(row, MERGED, set(), NOW + timedelta(hours=1),
+                             live_families=set()) is None
+
+
+def test_a_heal_row_is_unaffected_by_the_pass_rule():
+    row = _pr_row(status="self_cleared", reason="self-cleared by the sweep",
+                  finished_at=datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc))
+    assert al.reconcile_plan(row, MERGED, set(), NOW)["agent_state"] == "fixed"
+
+
+def test_cleared_unverified_rows_are_not_reclaimed():
+    assert al.pick_candidate([_row(agent_state="cleared_unverified", agent_attempts=1)],
+                             {"k1"}, NOW) is None
+
+
+def test_qa_board_reports_passed_and_red_families(monkeypatch):
+    b = _qa_board_with(monkeypatch, _fresh())
+    # _fresh: r1 RED critical, g1 GAUGE, p1 PASS
+    assert b["passed_families"] == {"p1"} and b["red_families"] == {"r1"}
+
+
+def test_the_note_a_pass_clear_writes_is_what_reconcile_credits(monkeypatch):
+    """End to end across the two halves: feed_qa's clear note must carry the
+    mark reconcile_plan looks for, or every PASS-verified fix reads as an
+    absence clear and is never counted."""
+    applied = []
+    row = _qrow(5, "get_grid_intelligence")
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [row])
+    monkeypatch.setattr(al, "_apply", lambda cur, rid, upd, where_state=None:
+                        applied.append(dict(upd)) or True)
+    out = al.feed_qa(_FakeCur(), QA_OK([], passed={FAM}))
+    assert out["cleared"] == 1 and applied
+    cleared = dict(row, status="self_cleared", reason=applied[0]["note"],
+                   agent_state="pr_open", agent_pr_url=PR,
+                   finished_at=datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc))
+    assert al.reconcile_plan(cleared, MERGED, set(), NOW)["agent_state"] == "fixed"
