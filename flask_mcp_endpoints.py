@@ -51,6 +51,7 @@ from routes.handoff_definition import (
     biggest_leak as _biggest_leak,
     biggest_leak_detail as _biggest_leak_detail,
     human_acted_count_sql as _human_acted_count_sql,
+    relay_minted_acted_count_sql as _relay_minted_acted_count_sql,
     human_acted_definition as _human_acted_definition,
     redeem_stage_basis as _redeem_stage_basis,
 )
@@ -652,6 +653,12 @@ def handoff_funnel():
         # time a click lands that v3 cannot see.
         opened = one(_human_acted_count_sql(iv))
         opened_incl_self = one(_human_acted_count_sql(iv, include_self_traffic=True))
+        # r-acted-outside-minted (2026-09-24): the same-population rung.
+        # relay_minted sessions that themselves acted. `opened` is NOT a
+        # subset of `minted` (its /go/c lane never joins the table), so
+        # opened/minted is not a conversion rate — this is. See
+        # handoff_definition._HUMAN_ACTED_BOUNDARY.
+        minted_acted = one(_relay_minted_acted_count_sql(iv))
         # r-seed-rotation (2026-09-03) — human_acted DEFINITION v5. v4 named
         # ONE operator session and the operator's client rotated its id on
         # 2026-08-20 (8c8e1d0d, first call 10.1s after 88e20dac's last, same
@@ -1171,6 +1178,24 @@ def handoff_funnel():
                     "statement about delivery, not about human appetite."),
             },
             # ★ The stage cannot see most of what it is supposed to measure.
+            # ★ r-acted-outside-minted (2026-09-24). The relay_minted→
+            # human_acted rung divides two populations (see its
+            # population_basis). This is the same-population figure.
+            "relay_minted_acted": minted_acted,
+            "relay_minted_acted_basis": (
+                "Sessions counted in relay_minted (mcp_high_intent_sessions, "
+                "claim minted, first hit in this window) that THEMSELVES "
+                "acted: a real-UA relay open or a signed /go/c click bound to "
+                "the session, operator self-traffic excluded. Divide by "
+                "steps.relay_minted (rates.relay_minted_acted_pct). "
+                "steps.human_acted is not a subset of relay_minted, so "
+                "rates.relay_to_human_pct is not a conversion rate. "
+                "relay_minted is counted in sessions, and some clients open "
+                "one session per tool call, so the denominator overstates "
+                "the number of people. Measured 2026-09-24, 7d: 37 "
+                "human_acted, 3 of them relay_minted sessions; relay_minted "
+                "267 = 132 grok-connectors-manager + 111 smithery (no UA) + "
+                "15 BrickBlueBot + 6 Claude + 3 other."),
             "human_acted_denominator_gap": {
                 "countable_sessions": prov_real_sids,
                 "sessions_not_in_high_intent_table": gap_sids,
@@ -1332,6 +1357,7 @@ def handoff_funnel():
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
                 "relay_to_human_pct": pct(opened, minted),
+                "relay_minted_acted_pct": pct(minted_acted, minted),
                 "relay_to_redeemed_pct": pct(used, minted),
                 "paywall_to_paid_pct": pct(paid, paywall),
             },
