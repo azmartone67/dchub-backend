@@ -331,6 +331,7 @@ class ISOService:
     """
     
     SUPPORTED_ISOS = ["CAISO", "ERCOT", "ISONE", "MISO", "NYISO", "PJM", "SPP"]
+    GRIDSTATUS_ISOS = frozenset({"PJM"})   # the only ISO allowed to spend the gridstatus budget
     
     def __init__(self, gridstatus_key: Optional[str] = None, pjm_key: Optional[str] = None):
         self.gridstatus = GridStatusClient(gridstatus_key)
@@ -365,7 +366,16 @@ class ISOService:
             if time.time() - timestamp < self._cache_ttl:
                 return cached
         
-        result = self.gridstatus.get_fuel_mix(iso)
+        # 2026-09-24 (owner): gridstatus.io is budgeted for PJM ONLY — its free
+        # tier (GRIDSTATUS_MONTHLY_BUDGET, 200/mo) is what keeps PJM-DOM live.
+        # This service asked gridstatus FIRST for every ISO, so /api/grid/fuel-mix
+        # and /api/grid/all-isos (all 7 ISOs per call) spent the PJM budget on
+        # ERCOT/CAISO/MISO/SPP/NYISO/ISONE. Non-PJM ISOs now skip it and take
+        # the path they already took whenever gridstatus failed.
+        if iso in self.GRIDSTATUS_ISOS:
+            result = self.gridstatus.get_fuel_mix(iso)
+        else:
+            result = {"error": "gridstatus_reserved_for_pjm"}
         
         if "error" in result:
             if iso == "ERCOT":
