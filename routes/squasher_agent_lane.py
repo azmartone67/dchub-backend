@@ -119,7 +119,9 @@ _BUSY_STATES = ("running", "pr_open")
 _STALE_RUNNING_MIN = 90       # the workflow's own timeout is 60 min
 _UNVERIFIED_AFTER_H = 6       # merge → Railway deploy → next detector pass
 _MAX_ATTEMPTS = 2             # 1 real attempt + 1 retry after an infra failure
-_PR_URL_RE = re.compile(r"^https://github\.com/azmartone67/dchub-backend/pull/(\d+)$")
+# 2026-09-24: the agent may fix dchub-mcp-server too, so its PR can live there.
+_PR_URL_RE = re.compile(
+    r"^https://github\.com/azmartone67/(dchub-backend|dchub-mcp-server)/pull/(\d+)$")
 _TEXT_CAP = 4000
 
 
@@ -417,7 +419,7 @@ def settle_plan(row: dict, payload: dict) -> tuple[dict | None, str]:
     if outcome == "pr_opened":
         pr = _clip(payload.get("pr_url"), 200)
         if not _PR_URL_RE.match(pr):
-            return None, "pr_opened needs a dchub-backend pull URL"
+            return None, "pr_opened needs a dchub-backend or dchub-mcp-server pull URL"
         upd.update(agent_pr_url=pr, pr_url=pr, status="awaiting_decision",
                    note=f"agent opened {pr} — {summary[:300]}")
     elif outcome == "needs_human":
@@ -763,7 +765,7 @@ def _fetch_pr(url: str) -> dict | None:
     try:
         import requests
         r = requests.get(
-            f"https://api.github.com/repos/azmartone67/dchub-backend/pulls/{m.group(1)}",
+            f"https://api.github.com/repos/azmartone67/{m.group(1)}/pulls/{m.group(2)}",
             headers={"Authorization": f"Bearer {token}",
                      "Accept": "application/vnd.github+json"}, timeout=8)
         if r.status_code != 200:

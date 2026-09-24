@@ -53,11 +53,27 @@ def decide(r: dict, env: dict, guard_reasons: list[str] | None = None) -> dict:
             "summary": base["summary"] or f"no usable result from row {qid}'s agent run"}
 
 
-def _guard_reasons(patch: str) -> list[str]:
+def guard_reasons_for(r: dict, env: dict, src_dir: str, guard_fn=None
+                      ) -> list[str] | None:
+    """Why the guard refused, read from the RIGHT repo's patch. None unless
+    the agent said fixed and the guard did not pass."""
+    if r.get("outcome") != "fixed" or env.get("GUARD_OK") == "1":
+        return None
+    target = env.get("TARGET") or "backend"
+    if target == "both":
+        return ["the patch touches both dchub-backend and dchub-mcp-server "
+                "— one repo per fix"]
+    if target == "none":
+        return ["empty diff — the agent reported a fix but changed nothing"]
+    name = "mcp.patch" if target == "mcp" else "agent.patch"
+    return (guard_fn or _guard_reasons)(os.path.join(src_dir, name), target)
+
+
+def _guard_reasons(patch: str, repo: str = "backend") -> list[str]:
     try:
         p = subprocess.run([sys.executable, "-I", os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "guard.py"), "--patch", patch],
-            capture_output=True, text=True, timeout=60)
+            os.path.dirname(os.path.abspath(__file__)), "guard.py"), "--patch", patch,
+            "--repo", repo], capture_output=True, text=True, timeout=60)
         return json.loads(p.stdout or "{}").get("reasons") or []
     except Exception:  # noqa: BLE001
         return []
@@ -70,9 +86,7 @@ if __name__ == "__main__":
     except Exception:  # noqa: BLE001
         r = {}
     env = dict(os.environ, QID=qid, RUN=run)
-    reasons = None
-    if r.get("outcome") == "fixed" and env.get("GUARD_OK") != "1":
-        reasons = _guard_reasons(os.path.join(os.path.dirname(src), "agent.patch"))
+    reasons = guard_reasons_for(r, env, os.path.dirname(src))
     out = decide(r, env, reasons)
     out.update(queue_id=int(qid), run_url=run)
     print(json.dumps(out))
