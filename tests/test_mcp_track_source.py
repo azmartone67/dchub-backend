@@ -27,8 +27,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _NAMES = (
     "_TRACK_SOURCE_MAX_LEN", "_TRACK_SOURCE_RE", "_sanitize_track_source",
-    "_CALL_LOG_SOURCE_STATE", "_CALL_LOG_SOURCE_RETRY_S",
-    "_CALL_LOG_SOURCE_PRESENT_SQL", "_ensure_call_log_source_column",
+    "_SOURCE_COLUMN_STATE", "_SOURCE_COLUMN_RETRY_S",
+    "_SOURCE_COLUMN_PRESENT_SQL", "_ensure_source_column",
     "track_tool_call",
 )
 
@@ -49,11 +49,17 @@ class _Cursor:
         c.log.append(("execute", sql, params, c.autocommit))
         s = " ".join(sql.split())
         if s.startswith("SELECT 1 FROM information_schema.columns"):
-            self._next = (1,) if c.has_source else None
+            table = (params or ("mcp_call_log",))[0]
+            present = c.has_source if table == "mcp_call_log" else c.tc_has_source
+            self._next = (1,) if present else None
         elif s.startswith("ALTER TABLE mcp_call_log"):
             if c.alter_fails:
                 raise RuntimeError("canceling statement due to lock timeout")
             c.pending_source = True
+        elif s.startswith("ALTER TABLE mcp_tool_calls"):
+            if c.alter_fails:
+                raise RuntimeError("canceling statement due to lock timeout")
+            c.pending_tc_source = True
         elif s.startswith("INSERT INTO mcp_call_log"):
             if "source" in s.split("VALUES")[0] and not c.has_source:
                 raise RuntimeError('column "source" of relation "mcp_call_log" does not exist')
@@ -66,9 +72,11 @@ class _Cursor:
 
 
 class _Conn:
-    def __init__(self, has_source=True, alter_fails=False):
+    def __init__(self, has_source=True, alter_fails=False, tc_has_source=None):
         self.autocommit = True
         self.has_source = has_source
+        self.tc_has_source = has_source if tc_has_source is None else tc_has_source
+        self.pending_tc_source = False
         self.alter_fails = alter_fails
         self.pending_source = False
         self.log = []
@@ -81,10 +89,13 @@ class _Conn:
         self.log.append(("commit", None, None, self.autocommit))
         if self.pending_source:
             self.has_source = True
+        if self.pending_tc_source:
+            self.tc_has_source = True
 
     def rollback(self):
         self.log.append(("rollback", None, None, self.autocommit))
         self.pending_source = False
+        self.pending_tc_source = False
 
     def close(self):
         pass
@@ -95,7 +106,7 @@ class _Headers(dict):
         return super().get(k, default)
 
 
-def _load(conn, body, monkeypatch):
+def _load(conn, body, monkeypatch, pooled=None):
     src = open(os.path.join(ROOT, "flask_mcp_endpoints.py"), encoding="utf-8").read()
     tree = ast.parse(src)
     wanted = set(_NAMES)
@@ -108,13 +119,14 @@ def _load(conn, body, monkeypatch):
         "request": req,
         "jsonify": lambda *a, **k: (a[0] if a else k),
         "_open_track_conn": lambda: conn,
-        # skip the legacy mcp_tool_calls dual-write + quota side-channels
-        "_is_selfheal_synthetic": lambda *a: True,
+        # skip the legacy mcp_tool_calls dual-write + quota side-channels,
+        # unless a pooled fake is passed to exercise that write
+        "_is_selfheal_synthetic": lambda *a: pooled is None,
         "_normalize_write_platform": lambda p: p,
         "_resolve_session_claimed_key": lambda c, s: None,
     }
     fake_db = types.ModuleType("db_utils")
-    fake_db.try_get_db = lambda: None
+    fake_db.try_get_db = lambda: pooled
     monkeypatch.setitem(sys.modules, "db_utils", fake_db)
     for node in tree.body:
         hit = False
@@ -132,9 +144,9 @@ def _load(conn, body, monkeypatch):
     return ns
 
 
-def _track(monkeypatch, body, **conn_kw):
+def _track(monkeypatch, body, pooled=None, **conn_kw):
     conn = _Conn(**conn_kw)
-    ns = _load(conn, body, monkeypatch)
+    ns = _load(conn, body, monkeypatch, pooled=pooled)
     resp, code = ns["track_tool_call"]()
     return conn, resp, code
 
@@ -238,4 +250,113 @@ def test_migration_declares_the_column():
     sql = open(path, encoding="utf-8").read()
     assert re.search(r"ALTER TABLE mcp_call_log ADD COLUMN IF NOT EXISTS source text;", sql)
     # psycopg2 treats % as a placeholder even inside -- comments
+    assert "%" not in sql
+
+
+# ── r-reach-source: the SAME tag on mcp_tool_calls, the table reach reads ───
+# /api/v1/reach reads mcp_calls_identity, a view over mcp_tool_calls — not
+# mcp_call_log. Without the tag on mcp_tool_calls reach cannot split by
+# source at all.
+
+class _Pooled:
+    """db_utils pooled connection: records the mcp_tool_calls INSERT. DDL
+    here is a failure — db_utils may silently drop it (SKIP_DDL)."""
+    def __init__(self, direct):
+        self.direct = direct
+        self.inserts = []
+        self.ddl = []
+
+    def cursor(self):
+        pooled = self
+
+        class _C:
+            def execute(self, sql, params=None):
+                s = " ".join(sql.split())
+                if s.startswith(("ALTER", "SET LOCAL", "SELECT 1 FROM information_schema")):
+                    pooled.ddl.append(s)
+                elif s.startswith("INSERT INTO mcp_tool_calls"):
+                    if "source" in s.split("VALUES")[0] and not pooled.direct.tc_has_source:
+                        raise RuntimeError('column "source" of relation "mcp_tool_calls" does not exist')
+                    pooled.inserts.append((s, params))
+        return _C()
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _tool_calls_row(pooled):
+    assert len(pooled.inserts) == 1, pooled.inserts
+    sql, params = pooled.inserts[0]
+    assert sql.count("%s") == len(params), (sql, params)
+    cols = [c.strip() for c in sql.split("(", 1)[1].split(")", 1)[0].split(",")]
+    return dict(zip(cols, params))
+
+
+def _track_both(monkeypatch, body, **conn_kw):
+    direct = _Conn(**conn_kw)
+    pooled = _Pooled(direct)
+    ns = _load(direct, body, monkeypatch, pooled=pooled)
+    resp, code = ns["track_tool_call"]()
+    return direct, pooled, resp, code
+
+
+def test_source_also_lands_in_mcp_tool_calls(monkeypatch):
+    direct, pooled, resp, _ = _track_both(monkeypatch, dict(BASE, source="glama"))
+    assert resp == {"ok": True}
+    assert _tool_calls_row(pooled)["source"] == "glama"
+    assert _only_insert(direct)["source"] == "glama"
+
+
+def test_tool_calls_source_is_the_sanitised_value(monkeypatch):
+    _, pooled, _, _ = _track_both(monkeypatch, dict(BASE, source=" Smithery "))
+    row = _tool_calls_row(pooled)
+    assert row["source"] == "smithery" and row["platform"] == "claude"
+    _, pooled, _, _ = _track_both(monkeypatch, dict(BASE, source="gla ma"))
+    assert "source" not in _tool_calls_row(pooled)
+
+
+def test_tool_calls_no_source_pays_nothing(monkeypatch):
+    direct, pooled, _, _ = _track_both(monkeypatch, dict(BASE),
+                                       has_source=False, tc_has_source=False)
+    assert "source" not in _tool_calls_row(pooled)
+    sqls = [e[1] for e in direct.log if e[0] == "execute"]
+    assert not any("information_schema" in s or "ALTER" in s for s in sqls), sqls
+
+
+def test_tool_calls_column_converged_on_direct_conn_not_pooled(monkeypatch):
+    direct, pooled, _, _ = _track_both(monkeypatch, dict(BASE, source="glama"),
+                                       tc_has_source=False)
+    assert _tool_calls_row(pooled)["source"] == "glama"
+    assert pooled.ddl == []
+    alters = [e for e in direct.log
+              if e[0] == "execute" and e[1].startswith("ALTER TABLE mcp_tool_calls")]
+    assert len(alters) == 1 and alters[0][3] is False   # in a real txn
+    assert direct.autocommit is True
+
+
+def test_tool_calls_failed_convergence_still_writes_the_row(monkeypatch):
+    direct, pooled, resp, _ = _track_both(monkeypatch, dict(BASE, source="glama"),
+                                          tc_has_source=False, alter_fails=True,
+                                          has_source=True)
+    assert resp == {"ok": True}
+    row = _tool_calls_row(pooled)
+    assert "source" not in row and row["tool_name"] == "rank_markets"
+    # the call_log column was already present: its tag still lands
+    assert _only_insert(direct)["source"] == "glama"
+
+
+def test_ensure_rejects_unlisted_tables(monkeypatch):
+    ns = _load(_Conn(), {}, monkeypatch)
+    conn = _Conn(has_source=False)
+    assert ns["_ensure_source_column"](conn, "users; drop table x") is False
+    assert conn.log == []
+
+
+def test_tool_calls_migration_declares_the_column():
+    path = os.path.join(ROOT, "migrations", "2026-09-24_mcp_tool_calls_source.sql")
+    sql = open(path, encoding="utf-8").read()
+    assert re.search(r"ALTER TABLE mcp_tool_calls ADD COLUMN IF NOT EXISTS source text;", sql)
     assert "%" not in sql
