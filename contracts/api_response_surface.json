@@ -12319,7 +12319,7 @@
    ]
   },
   "GET /api/v1/email-capture/stats": {
-   "source": "routes/email_capture.py:728",
+   "source": "routes/email_capture.py:790",
    "handler": "stats",
    "resolution": "resolved",
    "open_at": [
@@ -12344,7 +12344,7 @@
    ]
   },
   "GET /api/v1/email-capture/test-send": {
-   "source": "routes/email_capture.py:678",
+   "source": "routes/email_capture.py:740",
    "handler": "test_send",
    "resolution": "resolved",
    "open_at": [
@@ -29346,7 +29346,7 @@
    ]
   },
   "POST /api/v1/email-capture": {
-   "source": "routes/email_capture.py:833",
+   "source": "routes/email_capture.py:895",
    "handler": "email_capture_generic",
    "resolution": "resolved",
    "open_at": [
