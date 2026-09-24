@@ -8717,7 +8717,7 @@
    ]
   },
   "GET /api/v1/brain/mcp-registries": {
-   "source": "routes/mcp_registry_watch.py:700",
+   "source": "routes/mcp_registry_watch.py:722",
    "handler": "mcp_registries_status",
    "resolution": "resolved",
    "open_at": [
@@ -8745,7 +8745,7 @@
    ]
   },
   "GET /api/v1/brain/mcp-registries/discover": {
-   "source": "routes/mcp_registry_watch.py:894",
+   "source": "routes/mcp_registry_watch.py:916",
    "handler": "mcp_registries_discover",
    "resolution": "resolved",
    "open_at": [
