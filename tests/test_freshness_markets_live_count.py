@@ -55,7 +55,7 @@ def test_a_measured_count_is_published_as_live(monkeypatch):
     feed, seen = _run(monkeypatch, 312, live=True)
     assert feed["record_count"] == 312
     assert feed["record_count_source"] == "live_table"
-    assert "300+" in feed["record_count_basis"]
+    assert "markets_phrase" in feed["record_count_basis"]
     assert seen == {"table": "market_power_scores", "count": 312,
                     "interval": "6 hours (DCPI recompute, 4x daily)"}
     assert feed["last_updated"] == "2026-09-24T04:52:00"

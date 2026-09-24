@@ -31379,7 +31379,7 @@ def data_freshness():
             'record_count_source': 'live_table' if _mk_live else 'unmeasured',
             'record_count_basis': ('COUNT(DISTINCT market_name) FROM market_power_scores '
                                    'WHERE published, excluding 3 aggregate slugs; the figure '
-                                   'the "300+ markets" canon floors (canonical_stats)'),
+                                   'canonical_stats.markets_phrase() floors for the canon'),
             'scheduler': 'dcpi-daily.yml',
             'refresh_interval': _iv_mk,
             'freshness_source': _fr_mk['freshness_source'],
