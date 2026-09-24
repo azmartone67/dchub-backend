@@ -120,10 +120,13 @@ jobs:
         run: |
           python3 scripts/check_no_leaked_credentials.py --self-test
           python3 scripts/check_no_leaked_credentials.py
-      # worker.js is the CF ZONE worker (dchubapiproxy), deployed only by manual
-      # dashboard paste — live-vs-repo drift detection depends on WORKER_VERSION
-      # changing with the content (2026-07-30: #1902/#1978 shipped without bumps
-      # and drift had to be proven by fingerprinting). PR-only: HEAD here is the
+      # worker.js is the CF ZONE worker (dchubapiproxy). Since 2026-09-23 a merge
+      # ships it (deploy-zone-worker.yml, while vars.ZONE_WORKER_AUTO_DEPLOY is
+      # 1; before that only a dashboard paste did). That deploy refuses a
+      # same-version upload and verifies itself by X-DC-Worker-Version, and
+      # live-vs-repo drift detection reads the same header — so WORKER_VERSION
+      # must change with the content (2026-07-30: #1902/#1978 shipped without
+      # bumps and drift had to be proven by fingerprinting). PR-only: HEAD here is the
       # merge ref, so HEAD^1 is the exact base tip this PR would land on (that's
       # what the fetch-depth: 2 above is for). Push runs to main skip it — the
       # commit already landed, there is nothing left to gate.

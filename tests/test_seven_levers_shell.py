@@ -95,16 +95,22 @@ def test_repo_worker_is_canon_clean_and_current():
     artifact-vs-reality failure). Now repo == deployed v4.9.33 canon-sync:
     no retired floors, no stale tool counts, version marker present."""
     src = _read("worker.js")
-    # ★ This literal is PINNED on purpose, not lazily hardcoded. worker.js
-    # deploys only by manual Cloudflare dashboard paste, so the version string
-    # is the only live-vs-repo drift signal we have. Pinning it here means a
-    # bump cannot land without a human consciously updating this line — which
-    # is the moment they are reminded the paste still has to happen.
+    # ★ This literal is PINNED on purpose, not lazily hardcoded. The version
+    # string is the live-vs-repo drift signal (X-DC-Worker-Version), and since
+    # 2026-09-23 a merge that changes worker.js DEPLOYS it:
+    # .github/workflows/deploy-zone-worker.yml ships main's worker.js while the
+    # repo variable ZONE_WORKER_AUTO_DEPLOY is 1 (before that, only a dashboard
+    # paste did). Pinning it here means a bump cannot land without a human
+    # consciously updating this line — which is now the moment they decide it
+    # is ready to go LIVE. If it must wait (e.g. for an mcp-server release),
+    # clear ZONE_WORKER_AUTO_DEPLOY before merging.
     #
     # It is deliberately COUPLED to scripts/check_worker_version_bump.sh: that
     # guard REQUIRES a bump on any worker.js edit, this test FORBIDS one until
-    # acknowledged here. Every worker change must therefore touch both. If you
-    # are updating this line, the paste is still outstanding.
+    # acknowledged here. Every worker change must therefore touch both. After
+    # the merge, read that workflow's run for VERIFIED instead of adding a
+    # "PASTE OUTSTANDING" note — the dated notes below are the paste era's
+    # history, and they lagged reality five times.
     #
     # 4.9.38-canon-floors-card -> 4.9.41-html-links-counts-no-tdz (2026-08-06):
     # GET /mcp gained product/not/api_base/keyless fields. It previously
@@ -602,6 +608,9 @@ def test_repo_worker_is_canon_clean_and_current():
     # (derived from dchub-mcp-server's toolspec.json). 4.9.73 was live at this
     # commit. ⚠ PASTE OUTSTANDING: paste after the MCP tool is live. Verify
     # with the curl above (want 4.9.74-…).
+    # ✓ SHIPPED 2026-09-24 01:20Z by deploy-zone-worker.yml (run 35942411420),
+    # the first CI deploy of this worker — VERIFIED on api.dchub.cloud/api/v1/stats
+    # and dchub.cloud/mcp. No paste.
     assert "WORKER_VERSION = '4.9.74-infra-projects'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
