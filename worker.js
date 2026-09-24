@@ -640,7 +640,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.74-infra-projects';
+const WORKER_VERSION = '4.9.75-public-key-cache-warm';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -1193,7 +1193,15 @@ function isRetryable(method, pathname) {
 // ============================================================
 const CACHE_TIERS = {
   hot:       { kvFreshTtl: 120,  kvStaleTtl: 86400, browserMaxAge: 60,   edgeTtl: 120  },
-  warm:      { kvFreshTtl: 300,  kvStaleTtl: 86400, browserMaxAge: 180,  edgeTtl: 300  },
+  // publicKeyCache (2026-09-24): warm is also the DEFAULT tier (getRouteTier's
+  // fallthrough), so this covers most anonymous API GETs. Before it, their edge
+  // copy lived under the Railway URL: after the 4.9.74 deploy /api/v1/stats kept
+  // serving a boot-degraded body (cf-cache-status HIT, age climbing past 300s
+  // on the origin's stale-while-revalidate=86400) and purge-by-URL of BOTH the
+  // public and the Railway URL answered success:true and evicted nothing —
+  // only purge_everything cleared it. API semantics differ from the asset tier:
+  // see _pkcStorable and _assetCacheKey.
+  warm:      { kvFreshTtl: 300,  kvStaleTtl: 86400, browserMaxAge: 180,  edgeTtl: 300, publicKeyCache: true },
   cold:      { kvFreshTtl: 900,  kvStaleTtl: 86400, browserMaxAge: 600,  edgeTtl: 900  },
   emergency: { kvFreshTtl: 0,    kvStaleTtl: 86400, browserMaxAge: 0,    edgeTtl: 0    },
   none:      { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 0,    edgeTtl: 0    },
@@ -1206,7 +1214,9 @@ const CACHE_TIERS = {
   // publicKeyCache (2026-09-06): cache under the PUBLIC request URL via the
   // Cache API instead of `cf.cacheEverything` on the origin subrequest, so
   // purge-by-URL can actually address these objects. See assetCacheMatch.
-  asset:     { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 604800, edgeTtl: 604800, publicKeyCache: true },
+  // pkcAsset: the card semantics — ?_= stripped from the key, stored whatever
+  // the origin's directives say, hits labelled edge-asset-cache.
+  asset:     { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 604800, edgeTtl: 604800, publicKeyCache: true, pkcAsset: true },
 };
 
 const ROUTE_CACHE_MAP = [
@@ -2199,17 +2209,30 @@ function json(data, status = 200) {
 //
 // `caches.default.put()` refuses anything but a cacheable GET 200, so the
 // guards below are the contract, not defensiveness.
-function _assetCacheKey(url) {
-  // Strip cache-busting noise so a ?_=<ms> probe cannot fill the cache with
-  // one-shot entries that purge-by-URL would then never be able to name.
+function _assetCacheKey(url, stripBust = true) {
+  // Asset tier: strip cache-busting noise so a ?_=<ms> probe cannot fill the
+  // cache with one-shot entries that purge-by-URL would then never be able to
+  // name. API tiers pass stripBust=false: `?_=$(date +%s)` is how every monitor
+  // and runbook reads FRESH API data, and stripping it would quietly turn each
+  // of those probes into a cache hit. A one-shot API entry expires in edgeTtl
+  // (300s on warm), so it does not need a purge to go away.
   const u = new URL(url.toString());
-  u.searchParams.delete('_');
+  if (stripBust) u.searchParams.delete('_');
   return new Request(u.toString(), { method: 'GET' });
 }
 
-async function assetCacheMatch(url) {
+// API tiers store only what the origin lets a shared cache keep. cf.cacheEverything
+// (the path this replaces) never cached a Set-Cookie response; caches.default.put
+// would, after assetCachePut drops the header — pinning one visitor's response
+// for everyone. The asset tier keeps its old behaviour (deterministic PNGs).
+function _pkcStorable(tier, resp) {
+  if (tier.pkcAsset) return true;
+  return originAllowsSharedStore(resp) && !resp.headers.has('Set-Cookie');
+}
+
+async function assetCacheMatch(url, stripBust = true) {
   try {
-    return await caches.default.match(_assetCacheKey(url));
+    return await caches.default.match(_assetCacheKey(url, stripBust));
   } catch (e) { return null; }
 }
 
@@ -2219,7 +2242,7 @@ async function assetCacheMatch(url) {
 // every anonymous GET of an OG card answered 500 (CF 1101, "Body has already been
 // used"), so every card on the site rendered blank while API-key callers — and so
 // every monitor — still saw 200.
-function assetCachePut(ctx, url, resp, ttl) {
+function assetCachePut(ctx, url, resp, ttl, stripBust = true) {
   try {
     if (!ctx || !resp || resp.status !== 200 || !resp.body || resp.bodyUsed) return;
     const store = new Response(resp.body, resp);
@@ -2227,11 +2250,14 @@ function assetCachePut(ctx, url, resp, ttl) {
     // separately by cacheControlFor().
     store.headers.set('Cache-Control', `public, max-age=${ttl}`);
     store.headers.delete('Set-Cookie');
+    // Read back on a hit as x-dc-edge-cache-age: a Cache API hit carries no
+    // cf-cache-status/age of its own, so without this a stale copy is invisible.
+    store.headers.set('x-dc-edge-stored-at', String(Date.now()));
     // ★ `.catch` is load-bearing, not defensiveness: the try/catch cannot see a
     // REJECTED promise handed to waitUntil, and an unhandled waitUntil rejection
     // fails the whole request. That is why a function documented "never fail the
     // request" took the route down for three days.
-    ctx.waitUntil(Promise.resolve(caches.default.put(_assetCacheKey(url), store)).catch(() => {}));
+    ctx.waitUntil(Promise.resolve(caches.default.put(_assetCacheKey(url, stripBust), store)).catch(() => {}));
   } catch (e) { /* caching is best-effort; never fail the request for it */ }
 }
 
@@ -4253,13 +4279,16 @@ export default {
       }
     }
 
-    // STEP 1.5: public-key edge cache (asset tier only — see assetCacheMatch).
+    // STEP 1.5: public-key edge cache (asset + warm tiers — see assetCacheMatch).
     const _pkc = !!(tier.publicKeyCache && isGet && !hasCredential);
+    const _pkcStrip = !!tier.pkcAsset;
     if (_pkc) {
-      const hit = await assetCacheMatch(url);
+      const hit = await assetCacheMatch(url, _pkcStrip);
       if (hit) {
         const cached = addCORS(new Response(hit.body, hit), request);
-        cached.headers.set('x-dc-hub-backend', 'edge-asset-cache');
+        cached.headers.set('x-dc-hub-backend', tier.pkcAsset ? 'edge-asset-cache' : 'edge-public-cache');
+        const _storedAt = Number(hit.headers.get('x-dc-edge-stored-at'));
+        if (_storedAt > 0) cached.headers.set('x-dc-edge-cache-age', String(Math.max(0, Math.round((Date.now() - _storedAt) / 1000))));
         cached.headers.set('X-DC-Worker-Version', WORKER_VERSION);
         cached.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
         const _cc0 = cacheControlFor(hit.headers.get('Cache-Control'), tier.browserMaxAge);
@@ -4283,7 +4312,7 @@ export default {
       // to give. Cloning here (like cacheClone above) is what makes the asset-cache
       // copy independent. Doing it after cost every anonymous OG card a 1101 — see
       // assetCachePut.
-      const assetClone = (_pkc && resp.status === 200) ? resp.clone() : null;
+      const assetClone = (_pkc && resp.status === 200 && _pkcStorable(tier, resp)) ? resp.clone() : null;
       const result = addCORS(new Response(resp.body, resp), request);
       result.headers.set('x-dc-hub-backend', 'railway');
       result.headers.set('X-DC-Worker-Version', WORKER_VERSION);
@@ -4294,7 +4323,7 @@ export default {
         if (_cc) result.headers.set('Cache-Control', _cc);
       }
       if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
-      if (assetClone) assetCachePut(ctx, url, assetClone, tier.edgeTtl);
+      if (assetClone) assetCachePut(ctx, url, assetClone, tier.edgeTtl, _pkcStrip);
       return result;
     }
 

@@ -605,7 +605,11 @@ def test_repo_worker_is_canon_clean_and_current():
     # (derived from dchub-mcp-server's toolspec.json). 4.9.73 was live at this
     # commit. ✓ SHIPPED 2026-09-24 01:20Z by deploy-zone-worker.yml (manual
     # dispatch, run 35942411420) — the first version not pasted by hand.
-    assert "WORKER_VERSION = '4.9.74-infra-projects'" in src
+    # ★2026-09-24 4.9.75: the warm tier (also the default tier) caches through
+    # the Cache API under the PUBLIC URL instead of cf.cacheEverything under the
+    # Railway URL, so purge-by-URL can evict it. Ships on merge via
+    # deploy-zone-worker.yml (auto-deploy armed) — the first push-triggered run.
+    assert "WORKER_VERSION = '4.9.75-public-key-cache-warm'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
