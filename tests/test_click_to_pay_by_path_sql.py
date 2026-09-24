@@ -47,6 +47,7 @@ psycopg2 = pytest.importorskip("psycopg2")
 
 from mcp_calls_deloop import self_traffic_session_prefixes  # noqa: E402
 from routes import handoff_definition as H  # noqa: E402
+from routes._audience_identity import operator_emails  # noqa: E402
 
 DSN = os.environ.get("CLICK_TO_PAY_SQL_DSN", "").strip()
 pytestmark = pytest.mark.skipif(
@@ -81,8 +82,12 @@ CREATE TABLE relay_identify_captures (id BIGSERIAL PRIMARY KEY, mcp_session_id T
   email TEXT, captured_at TIMESTAMPTZ);
 CREATE TABLE mcp_high_intent_sessions (mcp_session_id TEXT, claim_email TEXT,
   first_hit_at TIMESTAMPTZ);
-CREATE TABLE mcp_session_upgrades (mcp_session_id TEXT, upgraded_at TIMESTAMPTZ);
-CREATE TABLE mcp_topups (mcp_session_id TEXT, created_at TIMESTAMPTZ);
+CREATE TABLE mcp_session_upgrades (mcp_session_id TEXT, upgraded_at TIMESTAMPTZ,
+  stripe_session_id TEXT);
+CREATE TABLE mcp_topups (mcp_session_id TEXT, created_at TIMESTAMPTZ, stripe_session_id TEXT);
+-- paid_attributed v4 reads the payer from here (live column names, 2026-09-24).
+CREATE TABLE mcp_conversions (id BIGSERIAL PRIMARY KEY, caller_id TEXT, user_email TEXT,
+  stripe_session_id TEXT);
 """
 
 
@@ -136,6 +141,12 @@ def _seed(cur):
                 " VALUES (%s, 'g4@example.com', now() - interval '3 days')", (G4,))
     cur.execute("INSERT INTO mcp_topups (mcp_session_id, created_at)"
                 " VALUES (%s, now() - interval '1 day')", (G1,))
+    # v4: a pack on ChatGPT session G2 paid by an OPERATOR mailbox. G2 is not
+    # an operator session, so only the payer check can keep it out of `paid`.
+    cur.execute("INSERT INTO mcp_topups (mcp_session_id, created_at, stripe_session_id)"
+                " VALUES (%s, now() - interval '1 day', 'cs_op_g2')", (G2,))
+    cur.execute("INSERT INTO mcp_conversions (user_email, stripe_session_id)"
+                " VALUES (%s, 'cs_op_g2')", (sorted(operator_emails())[0].upper(),))
 
 
 @pytest.fixture(scope="module")
@@ -176,6 +187,7 @@ def test_without_the_cold_table_the_mcp_column_still_reads(cur):
 
 def test_chatgpt_stages_count_distinct_sessions(cur):
     cur.execute(H.chatgpt_relay_stages_sql(IV))
+    # paid: G1 (topup) and S7 (P7). G2's operator-paid pack is out (v4).
     assert tuple(int(x) for x in cur.fetchone()) == (5, 1, 2, 2)
 
 
