@@ -649,7 +649,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.78-edge-store-readback';
+const WORKER_VERSION = '4.9.79-edge-store-strip-memo-headers';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2290,6 +2290,17 @@ async function assetCacheMatch(url, stripBust = true) {
 // every monitor — still saw 200.
 // Returns the verdict for x-dc-edge-store: 'put' means put() was ISSUED; whether
 // it was accepted is only known later (see _pkcNotePutError).
+// ★2026-09-24 (4.9.79) — Cloudflare ACCEPTS put() of /api/v1/stats and keeps
+// nothing: 4.9.78's readback logged readback-miss on 8/8 /stats writes while
+// /news, /stats/canonical and /site/stats read back readback-hit in the same
+// second, same colo, same code. The only stored headers unique to /stats are
+// these three (CDN-Cache-Control is ruled out — /site/stats carries it and
+// reads back). x-cache / x-cache-age describe the ORIGIN's memo at store time,
+// so they are wrong on an edge hit anyway; x-deprecated-fields is dropped from
+// edge HITS only until the trigger is bisected (origin-served responses keep it).
+// If /stats still reads back readback-miss with these gone, it is not a header.
+const PKC_STORE_STRIP_HEADERS = ['x-cache', 'x-cache-age', 'x-deprecated-fields'];
+
 function assetCachePut(ctx, url, resp, ttl, stripBust = true) {
   try {
     if (!ctx || !resp) return 'skip:no-response';
@@ -2301,6 +2312,7 @@ function assetCachePut(ctx, url, resp, ttl, stripBust = true) {
     // separately by cacheControlFor().
     store.headers.set('Cache-Control', `public, max-age=${ttl}`);
     store.headers.delete('Set-Cookie');
+    for (const h of PKC_STORE_STRIP_HEADERS) store.headers.delete(h);
     // Read back on a hit as x-dc-edge-cache-age: a Cache API hit carries no
     // cf-cache-status/age of its own, so without this a stale copy is invisible.
     store.headers.set('x-dc-edge-stored-at', String(Date.now()));

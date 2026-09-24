@@ -617,7 +617,9 @@ def test_repo_worker_is_canon_clean_and_current():
     # stored after 4.9.75 and the swallowed rejection could not say why.
     # ★2026-09-24 4.9.78: after put() resolves, match() the same key and record
     # readback-hit / readback-miss (x-dc-edge-store-readback + wrangler tail).
-    assert "WORKER_VERSION = '4.9.78-edge-store-readback'" in src
+    # ★2026-09-24 4.9.79: the public-key-cache copy drops x-cache, x-cache-age and
+    # x-deprecated-fields — /api/v1/stats read back readback-miss on every put.
+    assert "WORKER_VERSION = '4.9.79-edge-store-strip-memo-headers'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
