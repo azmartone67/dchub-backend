@@ -323,8 +323,8 @@
     {
       "position": 19,
       "id": "9cb5cd920d354148aba03329c3cfc7de",
-      "description": "Bypass cache - no-store dashboard aggregates (retention/leadership/utilization/trend/ownership/funnel) 2026-07-27; + /api/v1/seo/ 2026-09-19 (origin sends no-store, Rule 2 override_origin ignored it and served a 33-min-old body)",
-      "expression": "(http.request.uri.path eq \"/api/v1/mcp/retention\") or (http.request.uri.path eq \"/api/v1/mcp/leadership\") or (http.request.uri.path eq \"/api/v1/agents/utilization\") or (http.request.uri.path eq \"/api/v1/engines/trend\") or (http.request.uri.path eq \"/api/v1/brain/ownership\") or (http.request.uri.path eq \"/api/v1/mcp/funnel\") or (starts_with(http.request.uri.path, \"/api/v1/seo/\"))",
+      "description": "Bypass cache - no-store dashboard aggregates (retention/leadership/utilization/trend/ownership/funnel) 2026-07-27; + /api/v1/seo/ 2026-09-19 (origin sends no-store, Rule 2 override_origin ignored it and served a 33-min-old body); + /api/v1/stats 2026-09-24 (a boot-degraded body the origin marked no-store was held at the edge from 01:12Z until a zone-wide purge)",
+      "expression": "(http.request.uri.path eq \"/api/v1/mcp/retention\") or (http.request.uri.path eq \"/api/v1/mcp/leadership\") or (http.request.uri.path eq \"/api/v1/agents/utilization\") or (http.request.uri.path eq \"/api/v1/engines/trend\") or (http.request.uri.path eq \"/api/v1/brain/ownership\") or (http.request.uri.path eq \"/api/v1/mcp/funnel\") or (starts_with(http.request.uri.path, \"/api/v1/seo/\")) or (http.request.uri.path eq \"/api/v1/stats\")",
       "action": "set_cache_settings",
       "action_parameters": {
         "cache": false

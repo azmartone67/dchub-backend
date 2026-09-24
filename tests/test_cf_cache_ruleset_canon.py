@@ -386,3 +386,34 @@ def test_seo_performance_bypasses_and_outranks_the_public_api_cache_rule(canon):
         "last-match-wins means the caching rule wins and stale analytics are "
         "served again"
     )
+
+
+def test_stats_bypasses_and_outranks_the_public_api_cache_rule(canon):
+    """2026-09-24. get_stats() answers its boot window with a boot-degraded 200
+    marked no-store. Rule 2's `override_origin` 3600 discarded that, and
+    api.dchub.cloud/api/v1/stats served the 01:12:24Z boot body (HIT, age
+    climbing) until a zone-wide purge at 01:31Z. A healthy body polled the same
+    night was still HIT at age 923 on one origin request id — past both the
+    worker's cacheTtl 300 and the origin's s-maxage 600, i.e. rule 2's TTL.
+
+    Exact path only: /api/v1/stats/<x> is not this route. Last-match-wins, so
+    the bypass must sit after the caching rule.
+    """
+    rules = canon["rules"]
+    public_api = next(
+        r for r in rules
+        if "/api/v1/" in r["expression"] and r["action_parameters"].get("cache") is True
+    )
+    stats = [
+        r for r in rules
+        if 'http.request.uri.path eq "/api/v1/stats"' in r["expression"]
+        and r["action_parameters"].get("cache") is False
+    ]
+    assert stats, (
+        "no bypass rule covers /api/v1/stats — Rule 2 caches it for 3600s with "
+        "override_origin and the boot-degraded no-store is discarded"
+    )
+    assert max(r["position"] for r in stats) > public_api["position"], (
+        "the /api/v1/stats bypass sits BEFORE the public-API caching rule; "
+        "last-match-wins means the caching rule wins"
+    )
