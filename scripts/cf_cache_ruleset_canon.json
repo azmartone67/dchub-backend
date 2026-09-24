@@ -21,8 +21,8 @@
     {
       "position": 2,
       "id": "ef1b5109ef354d28b31d8b977daae0a1",
-      "description": "Cache Public API (errors no-store, browser respects origin \u2014 2026-07-03 fix-pack) + 2026-09-24: not on Railway origin subrequests. Rules run on Worker subrequests too, and without a host condition this pinned both workers' fetches to dchub-backend-production.up.railway.app for 3600s, over their own 120-300s TTLs; a boot-degraded /api/v1/stats stuck for 17 min and only purge_everything evicted it. Zone hostnames are unchanged.",
-      "expression": "((http.request.uri.path contains \"/api/v1/\") or (http.request.uri.path contains \"/api/rankings/\") or (http.request.uri.path contains \"/api/news/\")) and not ends_with(http.host, \".up.railway.app\")",
+      "description": "Cache Public API (errors no-store, browser respects origin \u2014 2026-07-03 fix-pack) + 2026-09-24: not on Railway origin subrequests. Rules run on Worker subrequests too, and without a host condition this pinned both workers' fetches to dchub-backend-production.up.railway.app for 3600s, over their own 120-300s TTLs; a boot-degraded /api/v1/stats stuck for 17 min and only purge_everything evicted it. Zone hostnames are unchanged. + 2026-09-24: not the three force-public stats paths (/api/v1/stats, /api/v1/site/stats, /api/v1/discovery/last-7d). Cache Rules govern the zone worker's Cache API put() too: override_origin held site/stats' worker entry ~3550s against the worker's own 300s, and a bypass rule makes put() resolve and store nothing (stats and ops/claims: readback-miss / never HIT). With no rule, the worker's public-key cache keeps its own TTL and already skips a no-store body.",
+      "expression": "((http.request.uri.path contains \"/api/v1/\") or (http.request.uri.path contains \"/api/rankings/\") or (http.request.uri.path contains \"/api/news/\")) and not ends_with(http.host, \".up.railway.app\") and not (http.request.uri.path in {\"/api/v1/stats\" \"/api/v1/site/stats\" \"/api/v1/discovery/last-7d\"})",
       "action": "set_cache_settings",
       "action_parameters": {
         "browser_ttl": {
