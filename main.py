@@ -16411,6 +16411,32 @@ def stripe_webhook():
         try:
             handle_checkout_completed(data)
 
+            # r-one-trial (2026-09-24, owner): one Pro trial per person. A
+            # repeat (same email, Stripe customer or key ref) has its new trial
+            # ended now, so Stripe charges the first $99 instead of another free
+            # week. Only the offer=pro_trial_7d checkout; fail-safe inside (an
+            # unreadable ledger ends nothing). See routes/pro_trial_guard.py.
+            try:
+                from routes.pro_trial_guard import enforce_one_trial
+                _ot = enforce_one_trial(data)
+                if _ot.get("repeat"):
+                    print(f"🔁 Repeat Pro trial: {_ot}")
+                    try:
+                        _oti = _ot.get("identity") or {}
+                        send_admin_alert_email(
+                            subject="Repeat Pro trial: trial ended now (" + str(_ot.get("action")) + ")",
+                            body_text=("A second Pro trial was started by an identity that already had one.\n"
+                                       "subscription: " + str(_oti.get("sub")) + "\n"
+                                       "email: " + str(_oti.get("email")) + "\n"
+                                       "previous trial subscription: " + str(_ot.get("repeat_of")) + "\n"
+                                       "action: " + str(_ot.get("action")) + "\n"))
+                    except Exception:
+                        pass
+                elif _ot.get("error"):
+                    print(f"⚠️ one-trial guard: {_ot}")
+            except Exception as _ote:
+                print(f"⚠️ one-trial guard failed (non-fatal): {_ote}")
+
             # Phase DD (2026-05-12): pair-code + top-up redemption path.
             # The /redeem/<code> page (pair-code) and /topup/<token> page
             # (Phase DD+ play 3) both forward their identifier via
