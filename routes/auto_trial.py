@@ -195,6 +195,16 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     ip = (req.headers.get("CF-Connecting-IP")
           or req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
           or req.remote_addr or "?")
+    # r-mint-gateway-id (2026-09-24): a gateway mint carries the caller's own IP
+    # in X-DCHub-Client-IP (honoured only with the internal key). Without it
+    # the IP here is the gateway's egress, shared by every MCP caller.
+    try:
+        from routes.mint_guard import gateway_caller_ip
+        _fwd_ip = gateway_caller_ip(req)
+    except Exception:
+        _fwd_ip = ""
+    if _fwd_ip:
+        ip = _fwd_ip
     ua = (req.headers.get("User-Agent") or "")[:200]
     # r88h P2: don't mint throwaway trial keys to crawlers/bots (Googlebot,
     # meta-externalagent, etc.) — they never reuse the key and inflated the
@@ -386,15 +396,17 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
             # handed a credential to a caller that never presented it), so a
             # limited caller gets a refusal — never someone's existing key.
             #
-            # Scope: the MCP gateway (internal key) reaches us from ITS egress,
-            # so the IP is not the agent's — count only the forwarded UA there.
-            # FAIL-OPEN inside check_mint_rate. Thresholds: routes/mint_guard.py.
+            # Scope (r-mint-gateway-id): mint_guard.trial_mint_scopes. A gateway
+            # mint counts the caller IP it forwarded (not a shared-egress
+            # platform) and the UA only when it names a client; "node" pools
+            # every Node-based MCP client. FAIL-OPEN inside check_mint_rate.
             try:
                 from routes.mint_guard import (mint_rate_decision,
-                                               is_internal_request,
+                                               trial_mint_scopes,
                                                rate_limited_body)
+                _cip, _cua = trial_mint_scopes(req, ua, _fwd_ip)
                 _hit = mint_rate_decision(cur, "trial", ip_key=ip_hash, ua=ua,
-                                       count_ip=not is_internal_request(req))
+                                          count_ip=_cip, count_ua=_cua)
             except Exception:
                 _hit = None
             if _hit:

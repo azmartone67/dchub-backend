@@ -347,3 +347,90 @@ def test_both_doors_go_through_the_mode_switch():
         src = (root / f).read_text(encoding="utf-8")
         assert "mint_rate_decision(" in src, f
         assert "check_mint_rate(" not in src, f
+
+
+# ── r-mint-gateway-id (2026-09-24): the gateway forwards its caller ─────────
+# Measured: the UA over the 500/day ceiling was "node" (546 mints, 12 tools),
+# the real UA of Node-based MCP clients and Smithery's proxy — many callers in
+# one string — and request_ip_hash was the gateway's egress (17 hashes).
+
+import hashlib as _hl
+
+GW = {"X-Internal-Key": "k-int"}
+GW_ENV = {"DCHUB_INTERNAL_KEY": "k-int"}
+
+
+def _h(ip):
+    return _hl.sha256(ip.encode()).hexdigest()[:16]
+
+
+def _count_params(cur):
+    q = [p for q, p in cur.queries if "count(*) filter" in q]
+    return q[0] if q else None
+
+
+def test_gateway_forwarded_ip_is_the_callers_ip_for_the_limit_and_the_row():
+    out, cur = _mint(_row(), headers={**GW, "X-DCHub-Client-IP": "198.51.100.7",
+                                       "X-MCP-Platform": "claude"}, env=GW_ENV)
+    assert out["ok"] is True, out
+    assert _count_params(cur)["ip"] == _h("198.51.100.7")
+    assert cur.inserted and cur.inserted[0][2] == _h("198.51.100.7"), cur.inserted
+
+
+def test_the_forwarded_ip_is_ignored_without_the_internal_key():
+    out, cur = _mint(_row(), headers={"X-DCHub-Client-IP": "198.51.100.7"})
+    assert out["ok"] is True
+    assert cur.inserted[0][2] == _h("203.0.113.9")          # CF-Connecting-IP, not the header
+    out, cur = _mint(_row(), headers={"X-Internal-Key": "guess", "X-DCHub-Client-IP": "198.51.100.7"},
+                     env=GW_ENV)
+    assert cur.inserted[0][2] == _h("203.0.113.9")
+
+
+@pytest.mark.parametrize("bad", ["not-an-ip", "1.2.3", "x" * 80, "198.51.100.7, 10.0.0.1"])
+def test_a_forwarded_value_that_is_not_an_ip_is_ignored(bad):
+    out, cur = _mint(_row(), headers={**GW, "X-DCHub-Client-IP": bad}, env=GW_ENV)
+    assert out["ok"] is True
+    assert cur.inserted[0][2] == _h("203.0.113.9")
+    assert _count_params(cur)["ip"] is None                 # no forwarded IP: gateway IP never counted
+
+
+def test_a_gateway_caller_over_its_ip_ceiling_is_refused_when_enforcing():
+    out, cur = _mint(_row(ip_h=10, ip_d=10),
+                     headers={**GW, "X-DCHub-Client-IP": "198.51.100.7", "X-MCP-Platform": "cursor"},
+                     env=GW_ENV)
+    assert out["reason"] == "rate_limited" and out["scope"] == "ip", out
+    assert not cur.inserted
+
+
+@pytest.mark.parametrize("platform", ["smithery", "grok", "connectors-manager", "SMITHERY"])
+def test_a_shared_egress_platform_is_never_ip_limited(platform):
+    out, cur = _mint(_row(ip_h=10**6, ip_d=10**6),
+                     headers={**GW, "X-DCHub-Client-IP": "198.51.100.7", "X-MCP-Platform": platform},
+                     env=GW_ENV)
+    assert out["ok"] is True, out
+    assert _count_params(cur)["ip"] is None
+
+
+@pytest.mark.parametrize("ua", ["node", "", "undici", "node-fetch/1.0", "Node"])
+def test_a_pooled_runtime_ua_is_never_ua_limited_on_the_gateway(ua):
+    out, cur = _mint(_row(ua_h=10**6, ua_d=10**6),
+                     headers={**GW, "User-Agent": ua, "X-DCHub-Client-IP": "198.51.100.7",
+                              "X-MCP-Platform": "claude"}, env=GW_ENV)
+    assert out["ok"] is True, out
+    assert _count_params(cur)["ua"] is None
+
+
+def test_a_named_client_ua_is_still_ua_limited_on_the_gateway():
+    out, _ = _mint(_row(ua_h=10**6, ua_d=10**6),
+                   headers={**GW, "User-Agent": "Claude-User/1.0", "X-MCP-Platform": "claude"},
+                   env=GW_ENV)
+    assert out["reason"] == "rate_limited" and out["scope"] == "ua", out
+
+
+def test_a_direct_caller_is_limited_exactly_as_before():
+    """No internal key: IP and UA both count, the header changes nothing."""
+    from routes.mint_guard import trial_mint_scopes
+
+    class R:
+        headers = {"User-Agent": "node"}
+    assert trial_mint_scopes(R(), "node", "") == (True, True)
