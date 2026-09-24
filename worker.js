@@ -649,7 +649,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.76-sku-wall-no-starter';
+const WORKER_VERSION = '4.9.77-edge-store-verdict';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2235,8 +2235,31 @@ function _assetCacheKey(url, stripBust = true) {
 // would, after assetCachePut drops the header — pinning one visitor's response
 // for everyone. The asset tier keeps its old behaviour (deterministic PNGs).
 function _pkcStorable(tier, resp) {
-  if (tier.pkcAsset) return true;
-  return originAllowsSharedStore(resp) && !resp.headers.has('Set-Cookie');
+  return _pkcSkipReason(tier, resp) === null;
+}
+
+// null = storable; otherwise the reason, sent as x-dc-edge-store: skip:<reason>.
+function _pkcSkipReason(tier, resp) {
+  if (tier.pkcAsset) return null;
+  if (!originAllowsSharedStore(resp)) return 'origin-cache-control';
+  if (resp.headers.has('Set-Cookie')) return 'set-cookie';
+  return null;
+}
+
+// ── EDGE-STORE DIAGNOSTICS (2026-09-24, 4.9.77) ────────────────────────────
+// After 4.9.75, /api/v1/stats was NEVER stored in the public-key cache while
+// /api/v1/news, /stats/canonical, /site/stats and /discovery/last-7d were. Its
+// headers are storable, and a put() rejection was swallowed by `.catch(() => {})`,
+// so nothing could say why. The verdict is now a header on every public-key-cache
+// miss, and a rejected put() is logged (wrangler tail) and remembered per isolate,
+// surfaced on the NEXT miss for that key as x-dc-edge-store-last-error.
+// Bounded; diagnostics only — never read to decide anything.
+const _pkcPutErrors = new Map();
+function _pkcNotePutError(key, e) {
+  const msg = String((e && e.message) || e).slice(0, 200);
+  if (_pkcPutErrors.size >= 200) _pkcPutErrors.delete(_pkcPutErrors.keys().next().value);
+  _pkcPutErrors.set(key, `${new Date().toISOString()} ${msg}`);
+  console.warn(`[edge-store] put rejected ${key}: ${msg}`);
 }
 
 async function assetCacheMatch(url, stripBust = true) {
@@ -2251,9 +2274,14 @@ async function assetCacheMatch(url, stripBust = true) {
 // every anonymous GET of an OG card answered 500 (CF 1101, "Body has already been
 // used"), so every card on the site rendered blank while API-key callers — and so
 // every monitor — still saw 200.
+// Returns the verdict for x-dc-edge-store: 'put' means put() was ISSUED; whether
+// it was accepted is only known later (see _pkcNotePutError).
 function assetCachePut(ctx, url, resp, ttl, stripBust = true) {
   try {
-    if (!ctx || !resp || resp.status !== 200 || !resp.body || resp.bodyUsed) return;
+    if (!ctx || !resp) return 'skip:no-response';
+    if (resp.status !== 200) return `skip:status-${resp.status}`;
+    if (!resp.body) return 'skip:no-body';
+    if (resp.bodyUsed) return 'skip:body-used';
     const store = new Response(resp.body, resp);
     // The stored copy carries its OWN lifetime; the client-facing header is set
     // separately by cacheControlFor().
@@ -2266,8 +2294,15 @@ function assetCachePut(ctx, url, resp, ttl, stripBust = true) {
     // REJECTED promise handed to waitUntil, and an unhandled waitUntil rejection
     // fails the whole request. That is why a function documented "never fail the
     // request" took the route down for three days.
-    ctx.waitUntil(Promise.resolve(caches.default.put(_assetCacheKey(url, stripBust), store)).catch(() => {}));
-  } catch (e) { /* caching is best-effort; never fail the request for it */ }
+    const key = _assetCacheKey(url, stripBust);
+    ctx.waitUntil(Promise.resolve(caches.default.put(key, store))
+      .then(() => { _pkcPutErrors.delete(key.url); })
+      .catch((e) => { try { _pkcNotePutError(key.url, e); } catch (_) {} }));
+    return 'put';
+  } catch (e) {
+    /* caching is best-effort; never fail the request for it */
+    return `error:${String((e && e.message) || e).slice(0, 120)}`;
+  }
 }
 
 
@@ -4318,7 +4353,12 @@ export default {
       // to give. Cloning here (like cacheClone above) is what makes the asset-cache
       // copy independent. Doing it after cost every anonymous OG card a 1101 — see
       // assetCachePut.
-      const assetClone = (_pkc && resp.status === 200 && _pkcStorable(tier, resp)) ? resp.clone() : null;
+      let _pkcVerdict = null;
+      if (_pkc) {
+        const _why = resp.status !== 200 ? `status-${resp.status}` : _pkcSkipReason(tier, resp);
+        if (_why) _pkcVerdict = `skip:${_why}`;
+      }
+      const assetClone = (_pkc && !_pkcVerdict) ? resp.clone() : null;
       const result = addCORS(new Response(resp.body, resp), request);
       result.headers.set('x-dc-hub-backend', 'railway');
       result.headers.set('X-DC-Worker-Version', WORKER_VERSION);
@@ -4329,7 +4369,12 @@ export default {
         if (_cc) result.headers.set('Cache-Control', _cc);
       }
       if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
-      if (assetClone) assetCachePut(ctx, url, assetClone, tier.edgeTtl, _pkcStrip);
+      if (assetClone) _pkcVerdict = assetCachePut(ctx, url, assetClone, tier.edgeTtl, _pkcStrip);
+      if (_pkcVerdict) {
+        result.headers.set('x-dc-edge-store', _pkcVerdict);
+        const _lastErr = _pkcPutErrors.get(_assetCacheKey(url, _pkcStrip).url);
+        if (_lastErr) result.headers.set('x-dc-edge-store-last-error', _lastErr);
+      }
       return result;
     }
 
