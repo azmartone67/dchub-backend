@@ -402,11 +402,84 @@ def _paid_checkout(cs: str) -> dict | None:
     return {"ref_kind": row[0] or "", "email": email}
 
 
-def _post_pay_html(body: str, refresh: str = "") -> str:
+# r-pro-trial7 (2026-09-24): a free-trial checkout is never "paid".
+# checkout.session.completed arrives with payment_status 'no_payment_required',
+# and record_checkout_payment deliberately records paid sessions only (every
+# reader of mcp_checkout_payments counts it as money). So _paid_checkout misses
+# every trial and the buyer got "Payment received … finishing setup" for a $0
+# checkout. On that miss, ask Stripe about the one session the cs id names.
+def _trial_checkout(cs: str) -> dict | None:
+    """{'email', 'trial_end', 'price'} for a completed free-trial Checkout
+    Session whose subscription is trialing, else None. Never raises."""
+    key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+    if not key:
+        return None
+    try:
+        import stripe
+        sess = stripe.checkout.Session.retrieve(
+            cs, api_key=key, expand=["subscription"])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("post-pay trial lookup swallowed: %s", e)
+        return None
+
+    def g(obj, k):
+        try:
+            return obj.get(k) if obj is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    sub = g(sess, "subscription")
+    if (g(sess, "status") != "complete" or g(sess, "mode") != "subscription"
+            or g(sess, "payment_status") != "no_payment_required"
+            or not hasattr(sub, "get") or g(sub, "status") != "trialing"):
+        return None
+    price = ""
+    items = g(g(sub, "items"), "data") or []
+    if items:
+        unit = g(g(items[0], "price"), "unit_amount")
+        interval = g(g(g(items[0], "price"), "recurring"), "interval")
+        if isinstance(unit, int) and unit > 0:
+            price = "$%s" % (("%.2f" % (unit / 100)).removesuffix(".00"))
+            if interval:
+                price += "/" + ("mo" if interval == "month" else str(interval))
+    email = str(g(g(sess, "customer_details"), "email")
+                or g(sess, "customer_email") or "").strip().lower()
+    trial_end = g(sub, "trial_end")
+    return {"email": email if "@" in email else "",
+            "trial_end": trial_end if isinstance(trial_end, int) else None,
+            "price": price}
+
+
+def _trial_started_body(trial: dict, cs: str) -> str:
+    import datetime as _dt
+    when = ""
+    if trial.get("trial_end"):
+        when = _dt.datetime.fromtimestamp(
+            trial["trial_end"], _dt.timezone.utc).strftime("%B %d, %Y").replace(" 0", " ")
+    charge = ("Your card is charged %s on %s unless you cancel before then."
+              % (trial["price"] or "the Pro price", when) if when else
+              "Your card is charged when the trial ends unless you cancel before then.")
+    email = trial.get("email") or ""
+    to_line = ("Receipts and key details go to <b>%s</b>." % _esc(_mask_email(email))
+               if email else "Stripe emails you before the trial converts.")
+    form = ("" if not email else
+            "<form method='post' action='/upgrade/h/done' class='cap'>"
+            "<input type='hidden' name='cs' value='%s'>"
+            "<label class='optin'><input type='checkbox' name='marketing_opt_in' "
+            "value='1'> Also email me DC Hub product updates. I will get one email "
+            "to confirm first, and can unsubscribe anytime.</label>"
+            "<button type='submit'>Done</button></form>" % _esc(cs))
+    return ("<h1>Your Pro trial has started</h1><p>Nothing was charged today. "
+            "%s</p><p>Your agent's next call returns full data.</p><p>%s</p>%s"
+            % (_esc(charge), to_line, form))
+
+
+def _post_pay_html(body: str, refresh: str = "",
+                   title: str = "Payment received") -> str:
     return ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<meta name='robots' content='noindex'>" + refresh +
-            "<title>Payment received — DC Hub</title>"
+            "<title>" + _esc(title) + " — DC Hub</title>"
             "<style>body{font-family:system-ui;max-width:560px;margin:48px auto;"
             "padding:0 20px;line-height:1.55;color:#111}h1{font-size:26px}"
             "form.cap{margin:22px 0 4px}"
@@ -431,6 +504,8 @@ def post_pay_page():
     src = request.form if request.method == "POST" else request.args
     cs = (src.get("cs") or "").strip()
     paid = _paid_checkout(cs) if _CS_OK.fullmatch(cs) else None
+    trial = (_trial_checkout(cs) if not paid and _CS_OK.fullmatch(cs)
+             else None)
     kind = (paid or {}).get("ref_kind") or ""
     where = ("The credits are on the API key your agent already uses — its "
              "next call returns full data, no reconnect needed."
@@ -442,10 +517,11 @@ def post_pay_page():
         # only to the address the paid session carries. The reply is the same
         # whether a confirmation went out or was refused (suppressed, cooling
         # down), so the page reveals nothing about the address.
-        if paid and paid.get("email") and request.form.get("marketing_opt_in") == "1":
+        buyer = paid or trial or {}
+        if buyer.get("email") and request.form.get("marketing_opt_in") == "1":
             try:
                 from routes.marketing_opt_in import request_opt_in
-                request_opt_in(paid["email"], source="post_pay_page")
+                request_opt_in(buyer["email"], source="post_pay_page")
             except Exception:  # noqa: BLE001
                 logger.warning("post-pay opt-in request failed", exc_info=True)
             msg = ("If that address can receive it, one confirmation email is "
@@ -455,6 +531,10 @@ def post_pay_page():
         return _post_pay_response(_post_pay_html(
             "<h1>Thanks — you're all set</h1><p>%s</p><p>%s</p>"
             % (_esc(msg), _esc(where))))
+
+    if not paid and trial:
+        return _post_pay_response(_post_pay_html(
+            _trial_started_body(trial, cs), title="Pro trial started"))
 
     if not paid:
         # The redirect can beat the webhook by a few seconds. Retry briefly,
