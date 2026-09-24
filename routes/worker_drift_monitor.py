@@ -5,8 +5,9 @@ Phase ZZZZZ-round47.19 (2026-05-26). Three MCP manifest surfaces, three
 versions:
   POST /mcp initialize           2.1.10  (live server, correct)
   /api/v1/mcp/manifest (Flask)   2.1.10  (r47.12 dynamic mirror, fixed)
-  /mcp/manifest (zone worker)    2.1.5   (stuck — dchubapiproxy needs CF
-                                          dashboard update)
+  /mcp/manifest (zone worker)    2.1.5   (stuck at the time; the zone
+                                          worker is now dchub-backend/worker.js,
+                                          shipped by deploy-zone-worker.yml)
 
 This blueprint polls all three surfaces + reports the gap so the user
 can see at-a-glance "yes, still stuck" or "fixed!" without manually
@@ -48,7 +49,7 @@ _SURFACES = [
         "name":  "Zone worker manifest",
         "method": "GET",
         "url":   "https://dchub.cloud/mcp/manifest",
-        "owner": "dchubapiproxy worker (out-of-repo, CF dashboard)",
+        "owner": "dchubapiproxy zone worker (dchub-backend/worker.js, deploys via deploy-zone-worker.yml)",
     },
 ]
 
@@ -128,10 +129,16 @@ def drift_check():
         actions = []
         for d in drift_items:
             if "dchubapiproxy" in (d.get("owner") or ""):
+                # r-drift-text (2026-09-24): worker.js is in this repo and
+                # ships through CI; the dashboard edit this used to prescribe
+                # leaves prod ahead of every commit (zone_worker_deployed_ahead_of_repo).
                 actions.append(
-                    "CF Dashboard → Workers & Pages → dchubapiproxy → edit "
-                    "source → bump version field to '{}' (or add /mcp/manifest "
-                    "to the proxied paths list so it falls through to Flask)."
+                    "dchubapiproxy is dchub-backend/worker.js: bump the version "
+                    "field to '{}' there (or add /mcp/manifest to the proxied "
+                    "paths list so it falls through to Flask), bump "
+                    "WORKER_VERSION, merge, and let "
+                    ".github/workflows/deploy-zone-worker.yml ship it. Do not "
+                    "edit the script in the Cloudflare dashboard."
                     .format(expected or "current")
                 )
             else:

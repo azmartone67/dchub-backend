@@ -233,7 +233,11 @@ def _action_social_publish_token_dead(finding: dict) -> tuple[str | None, dict |
 
 
 def _action_worker_version_drift(finding: dict) -> tuple[str | None, dict | None]:
-    """CF Pages worker stale. Requires CF dashboard action — escalate."""
+    """CF PAGES worker (dchub-frontend/_worker.js) reports an older version
+    than its source. Escalate — the fix is dchub-frontend's deploy-pages.yml
+    (usually just finishing its run for the merge), never the Cloudflare
+    dashboard and never the dchubapiproxy zone worker, which is a different
+    worker with its own zone_worker_* findings and deploy-zone-worker.yml."""
     return None, None
 
 
