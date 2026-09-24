@@ -1574,6 +1574,7 @@ jobs:
             abp.txt
             pp.txt
             wk.txt
+            msg.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
