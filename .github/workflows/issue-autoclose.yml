@@ -153,10 +153,13 @@ jobs:
             // completed runs on the default branch, every one successful and
             // newer than that failure.
             const REUSED_PASSES = 3;
+            // kill-switch-probe.yml reuses one issue the same way under its own
+            // label; #5270 (a lone edge 502 on its beat) sat open with no closer.
+            const REUSED_LABELS = new Set(['workflow-failure', 'kill-switch-probe']);
             const reused = all.filter(i => {
               if (i.pull_request) return false;
               const labels = (i.labels || []).map(l => (typeof l === 'string' ? l : l.name));
-              if (labels.some(l => NEVER.has(l)) || !labels.includes('workflow-failure')) return false;
+              if (labels.some(l => NEVER.has(l)) || !labels.some(l => REUSED_LABELS.has(l))) return false;
               return !(i.title.startsWith('[workflow-failed] ') || i.title.startsWith('[STATUS]'));
             });
             for (const i of reused) {

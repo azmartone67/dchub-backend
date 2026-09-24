@@ -199,3 +199,42 @@ def test_a_titled_failure_issue_is_still_handled_once_by_the_original_arm():
     calls = _run(fixture)
     assert [c["issue_number"] for c in calls if c["op"] == "update"] == [500]
     assert not [c for c in calls if c["op"] == "getWorkflowRun"]
+
+
+# The body kill-switch-probe.yml writes (issue #5270, verbatim). That filer
+# labels `kill-switch-probe`, not `workflow-failure`, so the reused arm skipped
+# it and a single transient edge 502 on the beat sat open with nothing to close it.
+PROBE_BODY = (
+    "kill-switch-probe FAILED: a switch is SET but NOT IN EFFECT, the beat was refused, "
+    "or the probe could observe nothing. The per-switch table is in the run log: "
+    f"{BASE}35793512081")
+
+
+def _probe(since, *, labels=("kill-switch-probe",)):
+    return {
+        "issues": [{"number": 5270, "title": "[kill-switch-probe] set ≠ in effect at 2026-09-22T22:39Z",
+                    "body": PROBE_BODY, "labels": [{"name": l} for l in labels],
+                    "created_at": "2026-09-22T22:39:30Z"}],
+        "comments": {},
+        "runs": {"35793512081": _run_obj(35793512081, "failure", "2026-09-22T22:39:13Z", wf=93,
+                                         name="kill-switch-probe")},
+        "byWorkflow": {"93": [_run_obj(6, "success", "2026-09-24T02:47:21Z", wf=93),
+                              _run_obj(5, "success", "2026-09-24T00:47:00Z", wf=93),
+                              _run_obj(4, "success", "2026-09-23T22:47:00Z", wf=93)]},
+    }
+
+
+def test_a_kill_switch_probe_issue_closes_after_three_passes():
+    calls = _run(_probe(None))
+    assert [c for c in calls if c["op"] == "update"] == [
+        {"op": "update", "issue_number": 5270, "state": "closed", "state_reason": "completed"}]
+
+
+def test_a_kill_switch_probe_issue_stays_open_while_the_probe_is_red():
+    fixture = _probe(None)
+    fixture["byWorkflow"]["93"][1]["conclusion"] = "failure"
+    assert _writes(_run(fixture)) == []
+
+
+def test_a_kill_switch_probe_issue_with_a_never_label_is_left_alone():
+    assert _writes(_run(_probe(None, labels=("kill-switch-probe", "keep")))) == []
