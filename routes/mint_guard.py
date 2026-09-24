@@ -37,8 +37,11 @@ Every threshold is env-tunable and read per call (no redeploy to retune).
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import statistics
+
+log = logging.getLogger("mint_guard")
 
 # ── scan definition (KPI exclusion) ──────────────────────────────────────
 # Probe / self-traffic UA markers. Mirrors mcp_retention._INTERNAL plus the
@@ -242,6 +245,33 @@ def check_mint_rate(cur, source: str, *, ip_key: str, ua: str,
     scope, window, limit, count, retry, _ = max(hit, key=lambda c: c[4])
     return {"scope": scope, "window": window, "limit": limit,
             "count": count, "retry_after": retry}
+
+
+# ── log-only first (owner decision, 2026-09-24) ──────────────────────────
+# #5468 shipped the ceilings ENFORCING. The thresholds rest on public weekly
+# aggregates only (nobody could read the top IPs/UAs behind the 09-14 spike),
+# and this is the free-tier on-ramp, so the owner chose to watch before
+# refusing: unless DCHUB_MINT_RL_MODE is exactly "enforce", a caller over a
+# ceiling is LOGGED ("mint_rate_would_refuse ...") and minted as usual. Read
+# those lines, tune DCHUB_MINT_RL_*, then set DCHUB_MINT_RL_MODE=enforce.
+def mint_rate_enforced() -> bool:
+    return (os.environ.get("DCHUB_MINT_RL_MODE") or "").strip().lower() == "enforce"
+
+
+def mint_rate_decision(cur, source: str, **kw) -> dict | None:
+    """What a mint door acts on: check_mint_rate's hit when enforcing, else
+    None after logging the refusal it WOULD have made. Never raises."""
+    hit = check_mint_rate(cur, source, **kw)
+    if hit and not mint_rate_enforced():
+        try:
+            log.warning(
+                "mint_rate_would_refuse source=%s scope=%s window=%s count=%s "
+                "limit=%s mode=log", source, hit["scope"], hit["window"],
+                hit["count"], hit["limit"])
+        except Exception:
+            pass
+        return None
+    return hit
 
 
 def rate_limited_body(hit: dict) -> dict:

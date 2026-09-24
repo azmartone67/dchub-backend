@@ -29,6 +29,14 @@ from routes import mint_guard
 from routes.mint_guard import check_mint_rate, weekly_mint_spike
 
 
+@pytest.fixture(autouse=True)
+def _enforcing(monkeypatch):
+    """The door tests below pin what ENFORCEMENT does. Enforcement is opt-in
+    (DCHUB_MINT_RL_MODE=enforce, owner decision 2026-09-24: log-only first);
+    the log-only default is pinned at the end of this file."""
+    monkeypatch.setenv("DCHUB_MINT_RL_MODE", "enforce")
+
+
 # ── the spike decision ──────────────────────────────────────────────────────
 
 def test_the_measured_week_is_a_spike():
@@ -282,3 +290,60 @@ def test_claim_under_its_ceiling_still_mints():
     j, status, cur = _claim_run(body={"client_name": "agent"}, cur=cur)
     assert status == 200 and j["api_key"].startswith("dch_live_")
     assert cur.inserted
+
+
+# ── log-only first (owner decision 2026-09-24) ──────────────────────────────
+# Unless DCHUB_MINT_RL_MODE is exactly "enforce", a caller over a ceiling is
+# logged and minted as usual. The ceilings' arithmetic is unchanged.
+
+@pytest.mark.parametrize("mode", ["", "log", "1", "true", "ENFORCED", "off"])
+def test_not_enforce_means_log_only(monkeypatch, mode):
+    monkeypatch.setenv("DCHUB_MINT_RL_MODE", mode)
+    assert mint_guard.mint_rate_enforced() is False
+
+
+def test_unset_mode_is_log_only(monkeypatch):
+    monkeypatch.delenv("DCHUB_MINT_RL_MODE", raising=False)
+    assert mint_guard.mint_rate_enforced() is False
+
+
+@pytest.mark.parametrize("mode", ["enforce", " Enforce "])
+def test_enforce_enforces(monkeypatch, mode):
+    monkeypatch.setenv("DCHUB_MINT_RL_MODE", mode)
+    assert mint_guard.mint_rate_enforced() is True
+
+
+def test_log_only_trial_door_mints_and_logs_the_refusal_it_would_make(caplog):
+    with caplog.at_level("WARNING", logger="mint_guard"):
+        out, cur = _mint(_row(ip_h=10, ip_d=10), env={"DCHUB_MINT_RL_MODE": ""})
+    assert out.get("ok") is True and out.get("api_key"), out
+    assert cur.inserted, "log-only must mint as usual"
+    lines = [r.getMessage() for r in caplog.records if "mint_rate_would_refuse" in r.getMessage()]
+    assert len(lines) == 1, caplog.text
+    assert "source=trial" in lines[0] and "scope=ip" in lines[0] and "mode=log" in lines[0]
+    assert "203.0.113.9" not in lines[0] and "Grok" not in lines[0], "no raw IP/UA in the log line"
+
+
+def test_log_only_under_the_ceiling_logs_nothing(caplog):
+    with caplog.at_level("WARNING", logger="mint_guard"):
+        out, _ = _mint(_row(ip_h=1, ip_d=1), env={"DCHUB_MINT_RL_MODE": ""})
+    assert out.get("ok") is True
+    assert "mint_rate_would_refuse" not in caplog.text
+
+
+def test_log_only_claim_door_mints(monkeypatch):
+    monkeypatch.setenv("DCHUB_MINT_RL_MODE", "")
+    cur = _LimitedClaimCur(_row(ip_h=10, ip_d=10))
+    j, status, cur = _claim_run(body={"client_name": "agent"}, cur=cur)
+    assert status == 200 and j["api_key"].startswith("dch_live_"), j
+    assert cur.inserted
+
+
+def test_both_doors_go_through_the_mode_switch():
+    """A door calling check_mint_rate directly would ignore the mode."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for f in ("routes/auto_trial.py", "flask_mcp_endpoints.py"):
+        src = (root / f).read_text(encoding="utf-8")
+        assert "mint_rate_decision(" in src, f
+        assert "check_mint_rate(" not in src, f
