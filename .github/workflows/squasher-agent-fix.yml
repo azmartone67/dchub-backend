@@ -1,0 +1,302 @@
+# squasher-agent-fix — the bug squasher's HANDS (routes/squasher_agent_lane.py).
+#
+# The one-shot squasher lane investigates without tools, so for most findings
+# it hands a human its own next step ("run curl ...", "grep for ...") as a
+# "decision". This job claims one of those rows, runs Claude Code on a real
+# checkout with a live probe, grep/read/edit and pytest, and turns the row into
+# either a PR or a human action the agent genuinely could not perform — with
+# the evidence it gathered.
+#
+# FOUR JOBS, because the agent's output is untrusted:
+#   claim   (admin key)        reconcile old PRs, claim one row, emit its brief
+#   agent   (ANTHROPIC key)    Claude Code edits a checkout; emits a PATCH file
+#   verify  (no secrets)       pristine main + static guard + apply + its tests
+#   publish (PR token, admin)  pristine main + static guard + apply + PR/report
+# Nothing the agent wrote ever executes on a runner that holds the admin key
+# or the push token: a planted .git/hooks file, a .git/config fsmonitor, a
+# json.py shadowing the stdlib or a line appended to $GITHUB_ENV all die with
+# the agent's runner. Only the patch crosses, and it is re-guarded from main's
+# copy of guard.py (which the patch may not touch) before it is applied.
+#
+# Safety, in the order it applies:
+#   * The agent job holds ONE secret (ANTHROPIC_API_KEY). Its checkout keeps
+#     no git credentials.
+#   * Its only network tool is tools/squasher_agent/probe.sh (our own hosts);
+#     its tests run under env -i with the repo's no-network harness.
+#   * tools/squasher_agent/guard.py re-checks the diff deterministically:
+#     denied paths, size, tests-only, credential shapes, compile. A refusal
+#     goes back to the row as needs_human with the patch as an artifact.
+#   * The PR opens as a DRAFT unless the repo variable SQUASHER_AGENT_AUTOMERGE
+#     is exactly "1". auto-enable-automerge.yml arms auto-merge on every
+#     NON-draft PR, so that variable is the switch between "hands you a PR"
+#     and "merges on green". It is off by default.
+#   * The row is counted as a FIX only when its PR merged and the detector
+#     then stopped reporting the finding (reconcile, next run) — never on merge.
+# Budgets: SQUASHER_AGENT_MAX_PER_DAY on the backend (default 4) and
+# vars.SQUASHER_AGENT_BUDGET_USD per run (default 4).
+
+name: squasher-agent-fix
+
+on:
+  schedule:
+    - cron: "41 */3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: squasher-agent-fix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  API: https://api.dchub.cloud
+
+jobs:
+  claim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      queue_id: ${{ steps.claim.outputs.queue_id }}
+      brief_b64: ${{ steps.claim.outputs.brief_b64 }}
+    steps:
+      - name: Reconcile open agent PRs (merged + detector cleared -> fixed)
+        env:
+          ADMIN: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 90 -X POST -H "X-Admin-Key: $ADMIN" \
+            "$API/api/v1/brain/squasher/agent/reconcile" -o reconcile.json -w 'reconcile HTTP %{http_code}\n' || true
+          cat reconcile.json 2>/dev/null; echo
+
+      - name: Claim one finding
+        id: claim
+        env:
+          ADMIN: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          code=$(curl -sS --max-time 90 -X POST -H "X-Admin-Key: $ADMIN" \
+            "$API/api/v1/brain/squasher/agent/next" -o next.json -w '%{http_code}') || code=000
+          echo "next HTTP $code"
+          python3 -I - <<'PY'
+          import base64, json, os
+          try:
+              d = json.load(open("next.json"))
+          except Exception as e:
+              d = {"ok": False, "error": f"unparseable: {type(e).__name__}"}
+          b = d.get("brief")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              if b:
+                  out.write(f"queue_id={int(b['queue_id'])}\n")
+                  out.write("brief_b64=" + base64.b64encode(json.dumps(b).encode()).decode() + "\n")
+                  print(f"claimed row {b['queue_id']}: {b.get('finding_key')}")
+              else:
+                  print("::notice::nothing claimed:", d.get("idle") or d.get("error"))
+                  if not d.get("ok"):
+                      print("::error::/agent/next did not answer ok -- the lane is BLIND this run, not idle")
+                      raise SystemExit(1)
+          PY
+
+  agent:
+    needs: claim
+    if: needs.claim.outputs.queue_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install test deps (same pins as pre-merge unit-tests)
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12" protego "PyJWT==2.12.0" "beautifulsoup4==4.14.3"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code (pinned)
+        run: npm install -g @anthropic-ai/claude-code@2.1.281
+
+      - name: Run the agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BRIEF_B64: ${{ needs.claim.outputs.brief_b64 }}
+          MODEL: ${{ vars.SQUASHER_AGENT_MODEL || 'claude-sonnet-5' }}
+          BUDGET: ${{ vars.SQUASHER_AGENT_BUDGET_USD || '4' }}
+        run: |
+          mkdir -p .squasher "$RUNNER_TEMP/agent-home" "$RUNNER_TEMP/out"
+          printf '%s' "$BRIEF_B64" | base64 -d > "$RUNNER_TEMP/brief.json"
+          python3 -I tools/squasher_agent/render_prompt.py "$RUNNER_TEMP/brief.json" > "$RUNNER_TEMP/prompt.md"
+          set +e
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --model "$MODEL" \
+            --max-budget-usd "$BUDGET" \
+            --permission-mode dontAsk \
+            --setting-sources user \
+            --output-format json \
+            --allowedTools "Read" "Grep" "Glob" "Edit" "Write" \
+              "Bash(tools/squasher_agent/probe.sh:*)" \
+              "Bash(tools/squasher_agent/run_tests.sh:*)" \
+              "Bash(git diff:*)" "Bash(git status:*)" "Bash(git log:*)" "Bash(git show:*)" \
+            --disallowedTools "WebFetch" "WebSearch" "Bash(git push:*)" "Bash(git commit:*)" \
+            > "$RUNNER_TEMP/out/agent.json" 2> "$RUNNER_TEMP/agent.err"
+          echo "claude exit $?"
+          tail -c 2000 "$RUNNER_TEMP/agent.err"
+
+      - name: Package the result and the patch (untrusted from here on)
+        if: always()
+        run: |
+          set +e
+          O="$RUNNER_TEMP/out"; mkdir -p "$O"
+          cp .squasher/result.json "$O/result.json" 2>/dev/null || echo '{}' > "$O/result.json"
+          git add -N -- . ':(exclude).squasher' 2>/dev/null
+          git diff HEAD --binary -- . ':(exclude).squasher' > "$O/agent.patch"
+          wc -c "$O/agent.patch"; head -c 3000 "$O/result.json"; echo
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-out
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  verify:
+    needs: [claim, agent]
+    if: needs.claim.outputs.queue_id != '' && needs.agent.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      outcome: ${{ steps.read.outputs.outcome }}
+      guard_ok: ${{ steps.guard.outputs.ok }}
+      tests_ok: ${{ steps.tests.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-out
+          path: ${{ runner.temp }}/in
+      - name: Read the agent's outcome
+        id: read
+        run: |
+          python3 -I - <<'PY'
+          import json, os
+          try:
+              r = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "in", "result.json")))
+          except Exception:
+              r = {}
+          o = r.get("outcome") if r.get("outcome") in ("fixed", "needs_human", "not_reproducible") else "failed"
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"outcome={o}\n")
+          print("outcome", o)
+          PY
+      - name: Static guard, from main's guard.py, before the patch touches anything
+        id: guard
+        if: steps.read.outputs.outcome == 'fixed'
+        run: |
+          set +e
+          python3 -I tools/squasher_agent/guard.py --patch "$RUNNER_TEMP/in/agent.patch" | tee "$RUNNER_TEMP/guard.json"
+          if [ "${PIPESTATUS[0]}" = "0" ]; then echo "ok=1" >> "$GITHUB_OUTPUT"; else echo "ok=0" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-python@v6
+        if: steps.guard.outputs.ok == '1'
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Apply the patch and re-run the tests the agent listed
+        id: tests
+        if: steps.guard.outputs.ok == '1'
+        run: |
+          set +e
+          python3 -m pip install -q pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12" protego "PyJWT==2.12.0" "beautifulsoup4==4.14.3"
+          git apply --index "$RUNNER_TEMP/in/agent.patch" || { echo "::error::patch does not apply to main"; echo "ok=0" >> "$GITHUB_OUTPUT"; exit 0; }
+          mapfile -t TESTS < <(python3 -I - <<'PY'
+          import json, os, re
+          r = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "in", "result.json")))
+          ids = {re.split(r"\s", str(t).strip())[0] for t in (r.get("tests") or [])}
+          for i in sorted(ids):
+              if re.fullmatch(r"tests/[\w/.\-]+\.py(::[\w\[\]\-.,]+)*", i):
+                  print(i)
+          PY
+          )
+          if [ "${#TESTS[@]}" = "0" ]; then
+            echo "::warning::the agent listed no runnable tests/ ids -- a fix needs a test"
+            echo "ok=0" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/agent-home"
+          if tools/squasher_agent/run_tests.sh "${TESTS[@]}" > "$RUNNER_TEMP/tests.log" 2>&1; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+          fi
+          tail -40 "$RUNNER_TEMP/tests.log"
+
+  publish:
+    needs: [claim, agent, verify]
+    if: always() && needs.claim.outputs.queue_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      QID: ${{ needs.claim.outputs.queue_id }}
+      AGENT_RESULT: ${{ needs.agent.result }}
+      OUTCOME: ${{ needs.verify.outputs.outcome }}
+      GUARD_OK: ${{ needs.verify.outputs.guard_ok }}
+      TESTS_OK: ${{ needs.verify.outputs.tests_ok }}
+      AUTOMERGE: ${{ vars.SQUASHER_AGENT_AUTOMERGE }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: agent-out
+          path: ${{ runner.temp }}/in
+
+      - name: Open the PR (pristine main + re-guarded patch)
+        id: pr
+        if: needs.verify.outputs.outcome == 'fixed' && needs.verify.outputs.guard_ok == '1' && needs.verify.outputs.tests_ok == '1'
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN || secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/in/agent.patch"
+          python3 -I tools/squasher_agent/guard.py --patch "$P"
+          git apply --index "$P"
+          mapfile -t PY_FILES < <(git diff --cached --name-only --diff-filter=AM -- '*.py')
+          if [ "${#PY_FILES[@]}" -gt 0 ]; then python3 -I -m py_compile "${PY_FILES[@]}"; fi
+          if [ -z "$GH_TOKEN" ]; then echo "::error::no PR_SUBMIT_TOKEN/GH_PAT -- cannot push a branch CI will run on"; exit 1; fi
+          BR="squasher/agent-${QID}-${GITHUB_RUN_ID}"
+          RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          python3 -I tools/squasher_agent/pr_text.py "$RUNNER_TEMP/in/result.json" "$QID" "$RUN" "$RUNNER_TEMP"
+          git -c core.hooksPath=/dev/null -c user.name="DC Hub Squasher Agent" -c user.email="azmartone@gmail.com" \
+            commit -q -F "$RUNNER_TEMP/msg.txt"
+          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BR"
+          DRAFT="--draft"
+          if [ "${AUTOMERGE:-}" = "1" ]; then DRAFT=""; fi
+          URL=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BR" $DRAFT \
+                  --title "$(cat "$RUNNER_TEMP/title.txt")" --body-file "$RUNNER_TEMP/body.md" | tail -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "PR: $URL"
+          gh pr edit "$URL" --repo "$GITHUB_REPOSITORY" --add-label squasher-agent >/dev/null 2>&1 || true
+
+      - name: Report back to the queue row
+        if: always()
+        env:
+          ADMIN: ${{ secrets.DCHUB_ADMIN_KEY }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_STEP: ${{ steps.pr.outcome }}
+        run: |
+          RUN="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          python3 -I tools/squasher_agent/report.py "$RUNNER_TEMP/in/result.json" "$QID" "$RUN" > report.json
+          cat report.json; echo
+          code=$(curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN" -H "Content-Type: application/json" \
+            --data @report.json "$API/api/v1/brain/squasher/agent/result" -o settle.json -w '%{http_code}') || code=000
+          echo "settle HTTP $code"; cat settle.json 2>/dev/null; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::the row was not settled -- it is reclaimed as failed after 90 min"
+            exit 1
+          fi

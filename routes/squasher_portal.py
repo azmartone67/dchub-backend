@@ -213,6 +213,15 @@ def collect() -> dict:
         out["action_classes"] = {"known": False}
     out["act"] = fold_class_runs(out["act"], out["action_classes"])
 
+    # AGENT LANE ─ routes/squasher_agent_lane.py. Direct import for the same
+    # reason; UNKNOWN when unreadable.
+    try:
+        from routes.squasher_agent_lane import summary as _agent_summary
+        out["agent_lane"] = _agent_summary()
+    except Exception:
+        out["agent_lane"] = {"known": False}
+    out["act"] = fold_agent_fixes(out["act"], out["agent_lane"])
+
     # QUEUE AGES (#65 B): per status × class, how long the human queue has
     # waited. Direct import; UNKNOWN when unreadable — never "nothing waits".
     try:
@@ -259,6 +268,36 @@ def fold_class_runs(act: dict, classes: dict) -> dict:
         except (TypeError, ValueError):
             v7 = None
     act["class_runs_verified_7d"] = v7
+    if v7:
+        act["landed_7d"] = int(act.get("landed_7d") or 0) + v7
+    return act
+
+
+def _agent_state(d: dict, state: str):
+    """Count of agent-lane rows in `state`, or None when the lane is
+    unreadable — so the tile shows a dash, never a zero."""
+    a = (d or {}).get("agent_lane") or {}
+    if not a.get("known"):
+        return None
+    return int((a.get("by_state") or {}).get(state) or 0)
+
+
+def fold_agent_fixes(act: dict, agent: dict) -> dict:
+    """Agent-lane rows marked `fixed` in 7d count as fixes LANDED.
+
+    `fixed` is stamped by squasher_agent_lane.reconcile_plan only when the
+    agent's PR MERGED and the detector then STOPPED reporting the finding —
+    so this is the same bar as a verified class run, not a merge count. An
+    unreadable lane adds nothing (None, never a zero that reads as measured).
+    """
+    act = dict(act or {})
+    v7 = None
+    if (agent or {}).get("known"):
+        try:
+            v7 = int(agent.get("verified_fixes_7d") or 0)
+        except (TypeError, ValueError):
+            v7 = None
+    act["agent_fixes_verified_7d"] = v7
     if v7:
         act["landed_7d"] = int(act.get("landed_7d") or 0) + v7
     return act
@@ -490,6 +529,8 @@ def render(d: dict) -> str:
              "bad" if ac.get("breaker_tripped") else "ok"),
             ("last merge", ("%s d ago" % _n(ac.get("last_merge_days")))
              if ac.get("last_merge_days") is not None else "never", "muted"),
+            ("agent PRs open", _n(_agent_state(d, "pr_open")), ""),
+            ("agent → human", _n(_agent_state(d, "needs_human")), "muted"),
         ], ac.get("known")),
         stage("5 · Verify", "%s%%" % _n(vf.get("closure_pct")), "audit closure", [
             ("of findings", _n(vf.get("registry_total")), "muted"),
