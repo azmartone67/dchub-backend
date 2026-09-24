@@ -32,6 +32,12 @@ claim to. Only states that endpoint cannot produce are written or aged by hand.
   C14  a third k- key, token session S2          counts once with C2
   D1   bare session ref S5, sig_ok false         unsigned (by hand)
   D2   k- key, session S8, sig_ok NULL           unsigned: NULL groups with false
+  C15  bare session ref S9, Referer dchub.cloud  site gate: out (r-site-gate-clicks)
+  C16  k- key, token session S10, Referer        site gate: out, on a subdomain
+       api.dchub.cloud
+  C17  bare session ref S11, Referer             counts: a lookalike host is not ours
+       dchub.cloud.evil.example
+  C18  bare session ref S12, Referer claude.ai   counts: a link opened from a chat
 
 Beside it, the relay lane: R1, S2 and C8's operator session opened /upgrade/h/
 on a real UA; S3 and S5 sit in the high-intent table having opened nothing.
@@ -75,14 +81,14 @@ def _hex(label):
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-S1, S2, S3, S4, S5, S6, S7, S8, R1 = (
-    "5e55%04x-0000-4000-8000-%012x" % (i, i) for i in range(1, 10))
+S1, S2, S3, S4, S5, S6, S7, S8, R1, S9, S10, S11, S12 = (
+    "5e55%04x-0000-4000-8000-%012x" % (i, i) for i in range(1, 14))
 # Operator sessions are BUILT from the declared prefixes, never typed, so the
 # fixture follows the seed and cannot test an exclusion the code does not make.
 _OPS = self_traffic_session_prefixes()
 OP_A = _OPS[0] + "-0000-4000-8000-00000000000a"
 OP_B = (_OPS[1] if len(_OPS) > 1 else _OPS[0]) + "-0000-4000-8000-00000000000b"
-KA, KB, KF, KG, KH = ("k-" + _hex(x) for x in ("ka", "kb", "kf", "kg", "kh"))
+KA, KB, KF, KG, KH, KI = ("k-" + _hex(x) for x in ("ka", "kb", "kf", "kg", "kh", "ki"))
 PKC, PKD = ("pk-" + _hex(x) for x in ("pkc", "pkd"))
 AE = "a-" + _hex("ae")[:24]
 
@@ -138,6 +144,10 @@ _ROUTED = [
     ("C11", "", "", REAL_UA),
     ("C12", S7, "", REAL_UA),
     ("C14", KH, S2, REAL_UA),
+    ("C15", S9, "", REAL_UA, "https://dchub.cloud/land-power-map"),
+    ("C16", KI, S10, REAL_UA, "https://api.dchub.cloud/pricing/upgrade"),
+    ("C17", S11, "", REAL_UA, "https://dchub.cloud.evil.example/"),
+    ("C18", S12, "", REAL_UA, "https://claude.ai/chat/abc"),
 ]
 
 
@@ -187,7 +197,7 @@ def _hold_access_share(ready, seconds):
 def db():
     from routes import checkout_click_tracker as T
 
-    for sid in (S1, S2, S3, S4, S5, S6, S7, S8, R1):
+    for sid in (S1, S2, S3, S4, S5, S6, S7, S8, R1, S9, S10, S11, S12):
         assert not sid.lower().startswith(tuple(p.lower() for p in _OPS)), sid
 
     mp = pytest.MonkeyPatch()
@@ -224,10 +234,13 @@ def db():
         app.register_blueprint(T.checkout_click_bp)
         client = app.test_client()
         out["location"] = {}
-        for label, ref, sid, ua in _ROUTED:
+        for label, ref, sid, ua, *referer in _ROUTED:
             token = T.mint_checkout_token("metered", ref, sid)
             assert token, (label, ref, sid)
-            r = client.get("/go/c/" + token, headers={"User-Agent": ua})
+            headers = {"User-Agent": ua}
+            if referer:
+                headers["Referer"] = referer[0]
+            r = client.get("/go/c/" + token, headers=headers)
             out["location"][label] = (r.status_code, r.headers.get("Location"))
         r = client.get("/go/c/not-a-token", headers={"User-Agent": REAL_UA})
         out["location"]["C13"] = (r.status_code, r.headers.get("Location"))
@@ -246,7 +259,7 @@ def db():
             (S5, REAL_UA, KG, REAL_UA, S8))
 
         # ── the relay lane ──────────────────────────────────────────────────
-        for sid in (R1, S2, S3, S5, OP_A):
+        for sid in (R1, S2, S3, S5, OP_A, S9, S11):
             cur.execute("INSERT INTO mcp_high_intent_sessions"
                         " (mcp_session_id, first_hit_at)"
                         " VALUES (%s, now() - interval '2 hours')", (sid,))
@@ -258,6 +271,9 @@ def db():
                     + " FROM (VALUES (%s), (%s)) v(ua)", (REAL_UA, PROBE_UA))
         out["ua_verdicts"] = [r[0] for r in cur.fetchall()]
 
+        cur.execute("SELECT ref, referrer FROM mcp_checkout_clicks WHERE ref IN (%s, %s)",
+                    (S9, S12))
+        out["referrers"] = dict(cur.fetchall())
         cur.execute("SELECT ref, ref_kind, session_id, sig_ok FROM mcp_checkout_clicks")
         out["stored"] = {}
         for ref, kind, sid, ok in cur.fetchall():
@@ -340,19 +356,21 @@ def test_v7_counts_each_session_once_and_only_where_the_exclusion_can_bind(db):
     # S1 (C1, C3) · S2 (C2, C14) · S3 (C4) · S4 (C5). Operator sessions OP_A
     # (bare ref) and OP_B (token session) are excluded; C6/C7/C11 have no
     # session identity; C10 is a probe; C12 is outside the window; C13, D1 and
-    # D2 are unsigned.
-    assert db["v7"] == 4
+    # D2 are unsigned. S11 and S12 (C17, C18) count: off-site referrers. S9
+    # and S10 (C15, C16) were pressed on dchub.cloud: website, not a relay.
+    assert db["v7"] == 6
 
 
 def test_the_links_ceiling_still_counts_distinct_refs(db):
-    # S1 KA KB PKC PKD AE OP_A KF KH: one PKC across two sessions is one link.
-    assert db["links"] == 9
+    # S1 KA KB PKC PKD AE OP_A KF KH S11 S12: one PKC across two sessions is
+    # one link; S9 and KI were pressed on dchub.cloud.
+    assert db["links"] == 11
 
 
 def test_the_headline_unions_both_lanes_on_the_session(db):
     assert (db["v5"], db["v5_incl"]) == (2, 3)                 # {R1,S2} (+OP_A)
-    assert db["headline"] == 5                                 # {R1,S1,S2,S3,S4}
-    assert db["headline_incl"] == 7                            # + OP_A, OP_B
+    assert db["headline"] == 7                       # {R1,S1,S2,S3,S4,S11,S12}
+    assert db["headline_incl"] == 9                            # + OP_A, OP_B
     assert db["headline_incl"] - db["headline"] == 2
 
 
@@ -364,20 +382,30 @@ def test_the_endpoint_publishes_exactly_what_the_builders_count(db):
 def test_the_provenance_block_partitions_and_publishes_every_subset(db):
     p = db["provenance"]
     assert p == {
-        "total": 15,
+        "total": 19,
         "probe_ua": 1,                                   # C10
         "unsigned_clicks": 3,                            # C13, D1, D2
-        "minted_link_clicks": 11,                        # C1-C9, C11, C14
-        "minted_link_clicks_deloopable": 8,              # C1-C5, C8, C9, C14
+        "site_gate_clicks": 2,                           # C15, C16
+        "minted_link_clicks": 13,                        # C1-C9, C11, C14, C17, C18
+        "minted_link_clicks_deloopable": 10,             # C1-C5, C8, C9, C14, C17, C18
         "minted_link_clicks_no_ref": 1,                  # C11
         "minted_link_clicks_session_from_token": 6,      # C2-C5, C9, C14
     }, p
-    assert p["probe_ua"] + p["unsigned_clicks"] + p["minted_link_clicks"] == p["total"]
+    assert (p["probe_ua"] + p["unsigned_clicks"] + p["site_gate_clicks"]
+            + p["minted_link_clicks"]) == p["total"]
     assert (p["minted_link_clicks_session_from_token"]
             <= p["minted_link_clicks_deloopable"] <= p["minted_link_clicks"])
 
 
 def test_a_session_bound_only_by_its_token_did_not_abandon(db):
     """S3's only act is C4, a key click carrying S3 as its token session. S5's
-    only click is unsigned."""
-    assert db["acted"] == {R1, S2, S3, OP_A}
+    only click is unsigned. S9's only click was pressed on dchub.cloud (C15),
+    so it did not act on a relay; S11's came from a lookalike host and did."""
+    assert db["acted"] == {R1, S2, S3, OP_A, S11}
+
+
+def test_the_endpoint_stores_the_referer_the_site_split_reads(db):
+    """The split reads mcp_checkout_clicks.referrer; it is only as good as the
+    endpoint's capture of the Referer header."""
+    assert db["referrers"] == {S9: "https://dchub.cloud/land-power-map",
+                               S12: "https://claude.ai/chat/abc"}

@@ -1468,12 +1468,13 @@ def _click_to_pay(c, cur, days: int) -> dict:
     plans = H.CLICK_TO_PAY_PLANS
     out = {"window_days": int(days), "basis": H.click_to_pay_basis(),
            "mcp_go_c": None, "cold_go_p": None, "rest_wall_go_c": None,
+           "site_go_c": None,
            "chatgpt_upgrade_h": None}
     try:
         cur.execute("SELECT to_regclass('pricing_checkout_clicks') IS NOT NULL")
         has_cold = bool((cur.fetchone() or [False])[0])
         cur.execute(H.click_to_pay_by_plan_sql(iv, include_cold=has_cold))
-        paths = {"mcp_go_c": {}, "rest_wall_go_c": {},
+        paths = {"mcp_go_c": {}, "rest_wall_go_c": {}, "site_go_c": {},
                  **({"cold_go_p": {}} if has_cold else {})}
         for path, plan, clicks, paid in cur.fetchall():
             row = paths.setdefault(path, {})

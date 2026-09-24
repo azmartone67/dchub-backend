@@ -60,7 +60,7 @@ from mcp_calls_deloop import (
 # ── the published definition ────────────────────────────────────────────────
 # Bump BOTH together. The guard in tests/test_handoff_truth_shell.py asserts
 # every version 1..N carries an entry, so a bump with no explanation fails.
-HUMAN_ACTED_DEFINITION_VERSION = 9
+HUMAN_ACTED_DEFINITION_VERSION = 10
 
 HUMAN_ACTED_DEFINITION_CHANGELOG = {
     1: (
@@ -199,6 +199,30 @@ HUMAN_ACTED_DEFINITION_CHANGELOG = {
         'identity. relayed_checkout_provenance.'
         'minted_link_clicks_session_from_token shows when token-bound sessions '
         'start arriving.'
+    ),
+    10: (
+        '2026-09-24 (r-site-gate-clicks). v9 with the /go/c/ lane restricted '
+        'to clicks NOT pressed on a dchub.cloud page. Measured live over 7d: '
+        'all 117 signed, real-UA /go/c/ clicks carried a dchub.cloud Referer, '
+        'and they were the whole of the v7 lane (36). Those are website '
+        'visitors on the Land & Power walls, the access gate and the static '
+        'links in ai-agents.html / llms.txt, not humans opening a link an '
+        'agent relayed: a link opened from a chat carries the chat\'s origin '
+        'or none, and the relay page /upgrade/h/ does not route through '
+        '/go/c/ at all. Keyed on mcp_checkout_clicks.referrer '
+        '(handoff_definition.SITE_REFERRER_RE, any dchub.cloud host); an empty '
+        'Referer is kept. The removed clicks are published, not dropped: '
+        'relayed_checkout_provenance.site_gate_clicks and the site_go_c column '
+        'of click_to_pay. Everything else is v9: DISTINCT sessions over the '
+        'UNION of the relay lane (sessions in mcp_high_intent_sessions that '
+        'opened /relay/<token> or /upgrade/h/ on a real UA, still published as '
+        'human_acted_v5_before_relayed_checkout) and the /go/c/ lane keyed on '
+        'handoff_definition.RELAYED_CHECKOUT_SESSION_ID; both apply the operator '
+        'self-traffic exclusion declared in '
+        'mcp_calls_deloop.self_traffic_session_prefixes, and pk-/k-/a- clicks '
+        'with no session stay in human_acted_v7_links_clicked, which now '
+        'carries the same site exclusion. ★ This LOWERS the published number: '
+        'the 7d headline read 37 on v9, of which 36 came from the /go/c/ lane.'
     ),
 }
 
@@ -697,6 +721,30 @@ def relayed_checkout_signed() -> str:
     return "cc.sig_ok is true"
 
 
+# ★ r-site-gate-clicks (2026-09-24). A /go/c click whose Referer is our own
+# site was pressed on a dchub.cloud page (the Land & Power walls, the access
+# gate, the static links in ai-agents.html / llms.txt), not on a link an agent
+# relayed: a link opened from a chat carries the chat's origin or none, and the
+# relay page /upgrade/h does not route through /go/c at all (its $10 button is
+# api.dchub.cloud/pricing/upgrade). Measured 2026-09-24, 7d: 117 of 117 signed
+# real-UA clicks carried a dchub.cloud referrer, and they were the whole of
+# human_acted_v7 (36). So the relayed lane now requires an off-site click, and
+# the site clicks are published on their own (site_gate_clicks, site_go_c)
+# rather than dropped. A regex with no '?' and no '%': both are rewritten or
+# eaten on the bound-params path.
+SITE_REFERRER_RE = "^https{0,1}://([a-z0-9-]+[.])*dchub[.]cloud([:/#]|$)"
+
+
+def relayed_checkout_site_referred() -> str:
+    """TRUE when the click was pressed on a dchub.cloud page."""
+    return "coalesce(cc.referrer,'') ~* '" + SITE_REFERRER_RE + "'"
+
+
+def relayed_checkout_off_site() -> str:
+    """TRUE when the click did NOT come from a dchub.cloud page (NULL referrer included)."""
+    return "not (" + relayed_checkout_site_referred() + ")"
+
+
 def relayed_checkout_session_filters() -> str:
     """The relayed-checkout lane's row filters: signed, real UA, a session identity.
 
@@ -705,6 +753,7 @@ def relayed_checkout_session_filters() -> str:
     """
     return (relayed_checkout_signed()
             + " and " + relayed_checkout_real_ua()
+            + " and " + relayed_checkout_off_site()
             + " and " + RELAYED_CHECKOUT_SESSION_ID + " is not null")
 
 
@@ -742,6 +791,7 @@ def paid_attributed_click_filters() -> str:
     Only _relayed_click_session_for reads this; human_acted_v7 does not."""
     return (relayed_checkout_signed()
             + " and " + relayed_checkout_real_ua()
+            + " and " + relayed_checkout_off_site()
             + " and " + PAID_ATTRIBUTED_CLICK_IDENTITY + " is not null")
 
 
@@ -780,6 +830,7 @@ def human_acted_v7_links_sql(interval_sql: str) -> str:
             + _relayed_checkout_window(interval_sql)
             + " and " + relayed_checkout_signed()
             + " and " + relayed_checkout_real_ua()
+            + " and " + relayed_checkout_off_site()
             + " and coalesce(cc.ref,'') <> ''")
 
 
@@ -793,10 +844,13 @@ def relayed_checkout_provenance_branches() -> tuple:
     is asserted in prose and wrong in SQL is how a zero gets misread.
     """
     ua, sig = relayed_checkout_real_ua(), relayed_checkout_signed()
+    site = relayed_checkout_site_referred()
     return (
         ("probe_ua", "not (" + ua + ")"),
         ("unsigned_clicks", "(" + ua + ") and not (" + sig + ")"),
-        ("minted_link_clicks", "(" + ua + ") and (" + sig + ")"),
+        # r-site-gate-clicks: signed and real UA, but pressed on our own site.
+        ("site_gate_clicks", "(" + ua + ") and (" + sig + ") and (" + site + ")"),
+        ("minted_link_clicks", "(" + ua + ") and (" + sig + ") and not (" + site + ")"),
     )
 
 
@@ -809,7 +863,7 @@ def relayed_checkout_provenance_subsets() -> tuple:
     basis says so and test_provenance_names_the_subset_as_a_subset holds it.
     """
     minted = "(" + relayed_checkout_real_ua() + ") and (" + \
-        relayed_checkout_signed() + ")"
+        relayed_checkout_signed() + ") and " + relayed_checkout_off_site()
     return (
         ("minted_link_clicks_deloopable",
          minted + " and " + RELAYED_CHECKOUT_SESSION_ID + " is not null"),
@@ -835,7 +889,7 @@ def relayed_checkout_provenance_subsets() -> tuple:
 
 
 def relayed_checkout_provenance_sql(interval_sql: str) -> str:
-    """total + the three-way split + the named subsets, in one pass.
+    """total + the four-way split + the named subsets, in one pass.
 
     ★ `minted_link_clicks_deloopable` is a SUBSET of minted_link_clicks, not a
     fourth branch — it partitions by whether the self-traffic exclusion can
@@ -1009,7 +1063,7 @@ def identified_definition() -> dict:
     }
 
 
-PAID_ATTRIBUTED_DEFINITION_VERSION = 4
+PAID_ATTRIBUTED_DEFINITION_VERSION = 5
 PAID_RELAYED_CHECKOUT_LOOKBACK = "7 days"
 PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
     1: ("COUNT(DISTINCT mcp_session_id) FROM mcp_session_upgrades plus "
@@ -1060,6 +1114,15 @@ PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
         "Keyed on WHO PAID, not on a session id, so it holds when a session "
         "rotates or is absent. A payment with no conversion row is kept: "
         "not knowably ours."),
+    5: ("2026-09-24 (r-site-gate-clicks). The relayed-checkout lane no longer "
+        "credits a payment to a /go/c click pressed on a dchub.cloud page "
+        "(the Land & Power walls, the access gate, the static links in "
+        "ai-agents.html / llms.txt): that is a website sale, not one an agent "
+        "relayed. Measured 2026-09-24 over 7d: all 117 signed real-UA clicks "
+        "carried a dchub.cloud Referer. The same exclusion applies to "
+        "relayed_checkout_payments.matched_a_relayed_click; website sales are "
+        "published in click_to_pay's site_go_c column. Moved no published "
+        "number: paid_attributed read 0 on v4."),
 }
 
 def _paid_payments_sql(interval_sql: str) -> str:
@@ -1215,6 +1278,7 @@ def relayed_checkout_payments_sql(interval_sql: str) -> str:
                + " where cc.ref = pay.client_reference_id"
                + " and " + relayed_checkout_signed()
                + " and " + relayed_checkout_real_ua()
+               + " and " + relayed_checkout_off_site()
                + " and cc.clicked_at <= pay.paid_at)")
     return ("select count(*) as payments,"
             " count(*) filter (where x.matched) as matched_a_relayed_click,"
@@ -1392,10 +1456,13 @@ RELAYED_CHECKOUT_PROVENANCE_BASIS = (
     "the stage at all. probe_ua = fails the real-UA predicate. "
     "unsigned_clicks = real UA, but the token's HMAC did not verify — a "
     "scanner walking /go/c/<junk>, which can never be a relayed link. "
-    "minted_link_clicks = real UA on a link we signed, the only rows that can "
-    "count. The three partition `total` exhaustively and are mutually "
-    "exclusive. ★ minted_link_clicks_deloopable is a SUBSET of "
-    "minted_link_clicks, NOT a fourth branch: it partitions by whether the "
+    "site_gate_clicks = real UA on a link we signed, but pressed ON a "
+    "dchub.cloud page (Referer is dchub.cloud): website traffic, not an agent "
+    "relay, measured 2026-09-24 at 117 of 117 of what minted_link_clicks used "
+    "to hold. minted_link_clicks = real UA on a link we signed, pressed "
+    "anywhere else, the only rows that can count. The four partition `total` "
+    "exhaustively and are mutually exclusive. ★ minted_link_clicks_deloopable "
+    "is a SUBSET of minted_link_clicks, NOT a fifth branch: it partitions by whether the "
     "self-traffic exclusion can bind (the click carries a session identity: the "
     "session its token named, or a bare session ref), which is ORTHOGONAL "
     "to the split above — do not add a field from each. READ minted_link_clicks "
@@ -1450,7 +1517,7 @@ def chatgpt_session_predicate(sid_expr: str) -> str:
 
 def _click_rows_sql(interval_sql: str, include_cold: bool) -> str:
     """Every qualifying click in the window, as (path, plan, ref, clicked_at, id).
-    mcp_go_c: signed, real UA, carries a ref (every link the MCP server mints
+    mcp_go_c: signed, real UA, not pressed on a dchub.cloud page, carries a ref (every link the MCP server mints
     does: a session, a key hash or an anon offer id), not operator traffic, not
     a ChatGPT session.
     rest_wall_go_c: signed, real UA, no ref: in practice the caller-independent
@@ -1464,6 +1531,7 @@ def _click_rows_sql(interval_sql: str, include_cold: bool) -> str:
          " FROM mcp_checkout_clicks cc WHERE cc.clicked_at > now() - interval '"
          + interval_sql + "' AND " + relayed_checkout_signed()
          + " AND " + relayed_checkout_real_ua()
+         + " AND " + relayed_checkout_off_site()
          + " AND coalesce(cc.ref,'') <> ''"
          + " AND " + _external_session_predicate(RELAYED_CHECKOUT_SESSION_ID)
          + " AND NOT " + chatgpt_session_predicate(RELAYED_CHECKOUT_SESSION_ID)),
@@ -1471,7 +1539,15 @@ def _click_rows_sql(interval_sql: str, include_cold: bool) -> str:
          " FROM mcp_checkout_clicks cc WHERE cc.clicked_at > now() - interval '"
          + interval_sql + "' AND " + relayed_checkout_signed()
          + " AND " + relayed_checkout_real_ua()
+         + " AND " + relayed_checkout_off_site()
          + " AND coalesce(cc.ref,'') = ''"),
+        # r-site-gate-clicks: pressed on a dchub.cloud page, any ref. Taken out of
+        # both lanes above, so every signed real-UA click is still in exactly one.
+        ("SELECT 'site_go_c'::text AS path, cc.plan, cc.ref, cc.clicked_at, cc.id"
+         " FROM mcp_checkout_clicks cc WHERE cc.clicked_at > now() - interval '"
+         + interval_sql + "' AND " + relayed_checkout_signed()
+         + " AND " + relayed_checkout_real_ua()
+         + " AND " + relayed_checkout_site_referred()),
     ]
     if include_cold:
         rows.append(
@@ -1547,6 +1623,11 @@ def click_to_pay_basis() -> dict:
                               "additions are not mirrored) at each stage, operator "
                               "sessions excluded: walls, views (relay_opens, valid, "
                               "real UA), identified and paid (their canonical lanes)"),
+        "site_go_c": ("signed, real-UA /go/c clicks pressed ON a dchub.cloud page "
+                      "(Referer is dchub.cloud: Land & Power walls, the access gate, "
+                      "the static links in ai-agents.html / llms.txt). Website "
+                      "traffic, not an agent relay, so it is kept out of mcp_go_c "
+                      "and human_acted; paid as for mcp_go_c, on the click's ref"),
         "rest_wall_go_c": ("signed, real-UA /go/c clicks with no ref: in practice "
                            "the caller-independent link rest_wall_ladder puts on a "
                            "cached REST payload. No ref reaches Stripe, so a payment "

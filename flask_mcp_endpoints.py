@@ -765,7 +765,8 @@ def handoff_funnel():
         # writer) so it is importable, and testable, without a database.
         #
         # ★ ONE QUERY, NOT FOUR. The split's identity — probe_ua +
-        # unsigned_clicks + minted_link_clicks == total — is only true of a
+        # unsigned_clicks + site_gate_clicks + minted_link_clicks == total
+        # (site_gate_clicks since r-site-gate-clicks, 2026-09-24) — is only true of a
         # single snapshot. mcp_checkout_clicks is append-only and a row landing
         # between two sibling `one()` calls would publish a partition that does
         # not add up, which reads as a bug in the definition rather than as a

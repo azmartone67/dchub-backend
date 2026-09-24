@@ -209,35 +209,41 @@ def test_the_deloopable_ref_kind_is_one_the_writer_actually_mints():
 
 
 def test_provenance_branches_partition_exhaustively():
-    """Every row lands in exactly one branch, for all four (UA, signed) states.
+    """Every row lands in exactly one branch, for all eight (UA, signed, site) states.
 
-    EVALUATED, not read. The two atoms are substituted with Python booleans and
+    EVALUATED, not read. The three atoms are substituted with Python booleans and
     the branch conditions — the real strings the SQL is built from — are then
     evaluated as written: `and`, `not` and parentheses mean the same thing in
     both languages, so nothing is re-implemented here. A dropped `not`, a
-    swapped operator or an overlapping pair fails.
+    swapped operator or an overlapping pair fails. The site atom is
+    r-site-gate-clicks (2026-09-24): a signed click pressed on a dchub.cloud page.
     """
     branches = H.relayed_checkout_provenance_branches()
-    assert len(branches) == 3, branches
+    assert len(branches) == 4, branches
 
     ua_atom = H.relayed_checkout_real_ua()
     sig_atom = H.relayed_checkout_signed()
+    site_atom = H.relayed_checkout_site_referred()
 
     for real_ua in (True, False):
         for signed in (True, False):
-            hits = []
-            for name, cond in branches:
-                expr = cond.replace(ua_atom, "U").replace(sig_atom, "S")
-                assert re.fullmatch(r"[USandnot()\s]+", expr), (
-                    "branch %r did not reduce to the two atoms: %r"
-                    % (name, expr))
-                if eval(expr, {"__builtins__": {}},  # noqa: S307
-                        {"U": real_ua, "S": signed}):
-                    hits.append(name)
-            assert len(hits) == 1, (
-                "real_ua=%s signed=%s matched %r — the split must be "
-                "exhaustive and mutually exclusive or the published total "
-                "does not add up" % (real_ua, signed, hits))
+            for site in (True, False):
+                hits = []
+                for name, cond in branches:
+                    expr = (cond.replace(ua_atom, "U").replace(sig_atom, "S")
+                            .replace(site_atom, "W"))
+                    assert re.fullmatch(r"[USWandnot()\s]+", expr), (
+                        "branch %r did not reduce to the three atoms: %r"
+                        % (name, expr))
+                    if eval(expr, {"__builtins__": {}},  # noqa: S307
+                            {"U": real_ua, "S": signed, "W": site}):
+                        hits.append(name)
+                assert len(hits) == 1, (
+                    "real_ua=%s signed=%s site=%s matched %r — the split must be "
+                    "exhaustive and mutually exclusive or the published total "
+                    "does not add up" % (real_ua, signed, site, hits))
+                if real_ua and signed:
+                    assert hits == ["site_gate_clicks" if site else "minted_link_clicks"], hits
 
 
 def test_provenance_names_every_subset_as_a_subset():

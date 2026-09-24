@@ -24,6 +24,8 @@ tables other db-parity lanes own are never touched.
              P10 livemode=false on pk-A               not a payment
   rest_wall  W1 pro, no ref, no session (a REST wall)  its own column, paid null
              W2 the same, probe UA                    out
+  site_go_c  X1 pro pk-SITE, Referer dchub.cloud      paid P12: website, not mcp_go_c
+             X2 metered, no ref, Referer dchub.cloud  a site press, not a REST wall
   cold_go_p  C1 pro, page ref                         paid P11
              C2 metered, no ref                       a press, never joinable
              C3 starter, known_plan=false             out (not a /pricing plan)
@@ -69,7 +71,8 @@ PAGE_REF = "ref_pricing-page__tool_none__ts_1789990000"
 
 DDL = """
 CREATE TABLE mcp_checkout_clicks (id SERIAL PRIMARY KEY, clicked_at TIMESTAMPTZ,
-  plan TEXT, ref TEXT, ref_kind TEXT, sig_ok BOOLEAN, user_agent TEXT, session_id TEXT);
+  plan TEXT, ref TEXT, ref_kind TEXT, sig_ok BOOLEAN, user_agent TEXT, session_id TEXT,
+  referrer TEXT);
 CREATE TABLE pricing_checkout_clicks (id SERIAL PRIMARY KEY, clicked_at TIMESTAMPTZ,
   plan TEXT, ref TEXT, known_plan BOOLEAN, user_agent TEXT);
 CREATE TABLE mcp_checkout_payments (id BIGSERIAL PRIMARY KEY, stripe_session_id TEXT UNIQUE,
@@ -106,11 +109,16 @@ def _seed(cur):
         ("40 days", "metered", "pk-OLD", "pack_key", True, REAL_UA, S1),       # M10
         ("1 day", "pro", "", "none", True, REAL_UA, None),                     # W1 REST wall
         ("1 day", "pro", "", "none", True, PROBE_UA, None),                    # W2 probe UA
+        ("1 day", "pro", "pk-SITE", "pack_key", True, REAL_UA, None,
+         "https://dchub.cloud/land-power-map"),                                # X1
+        ("1 day", "metered", "", "none", True, REAL_UA, None,
+         "https://dchub.cloud/ai-agents"),                                     # X2
     ]
-    for age, plan, ref, kind, ok, ua, sid in clicks:
+    for age, plan, ref, kind, ok, ua, sid, *rf in clicks:
         cur.execute("INSERT INTO mcp_checkout_clicks (clicked_at, plan, ref, ref_kind, sig_ok,"
-                    " user_agent, session_id) VALUES (" + ago(age) + ", %s, %s, %s, %s, %s, %s)",
-                    (plan, ref, kind, ok, ua, sid))
+                    " user_agent, session_id, referrer)"
+                    " VALUES (" + ago(age) + ", %s, %s, %s, %s, %s, %s, %s)",
+                    (plan, ref, kind, ok, ua, sid, rf[0] if rf else None))
     for age, plan, ref, known, ua in [
             ("1 day", "pro", PAGE_REF, True, REAL_UA),                          # C1
             ("1 day", "metered", None, True, REAL_UA),                          # C2
@@ -124,7 +132,8 @@ def _seed(cur):
             ("P7", "k-C", True, "1 day"),
             ("P8", "k-D", True, "1 day 23 hours"),     # 8 days 1 hour after M8
             ("P10", "pk-A", False, "1 day"),
-            ("P11", PAGE_REF, True, "12 hours")]:
+            ("P11", PAGE_REF, True, "12 hours"),
+            ("P12", "pk-SITE", True, "12 hours")]:
         cur.execute("INSERT INTO mcp_checkout_payments (stripe_session_id, client_reference_id,"
                     " livemode, paid_at) VALUES (%s, %s, %s, " + ago(age) + ")", (sess, cref, live))
     for sid, client in [(G1, "chatgpt"), (G2, "chatgpt"), (G3, "chatgpt"), (G4, "openai-mcp"),
@@ -177,12 +186,14 @@ def test_every_path_and_plan_counts_what_the_seed_says(cur):
         ("cold_go_p", "pro"): (1, 1),        # C1+P11
         ("cold_go_p", "metered"): (1, 0),    # C2, no ref
         ("rest_wall_go_c", "pro"): (1, 0),   # W1; W2 is a probe; never in mcp_go_c
+        ("site_go_c", "pro"): (1, 1),        # X1+P12: a website sale, not an MCP one
+        ("site_go_c", "metered"): (1, 0),    # X2: pressed on the site, not a REST wall
     }
 
 
 def test_without_the_cold_table_the_mcp_column_still_reads(cur):
     cur.execute(H.click_to_pay_by_plan_sql(IV, include_cold=False))
-    assert {r[0] for r in cur.fetchall()} == {"mcp_go_c", "rest_wall_go_c"}
+    assert {r[0] for r in cur.fetchall()} == {"mcp_go_c", "rest_wall_go_c", "site_go_c"}
 
 
 def test_chatgpt_stages_count_distinct_sessions(cur):
@@ -211,6 +222,8 @@ def test_the_endpoint_block_fills_every_plan_and_names_the_rest_other(cur):
     assert cold["developer"] == {"clicks": 0, "paid": 0, "click_to_pay_pct": None}
     # A REST-wall click can never join a payment: unmeasurable, never a 0% rate.
     assert out["rest_wall_go_c"]["pro"] == {"clicks": 1, "paid": None, "click_to_pay_pct": None}
+    assert out["site_go_c"]["pro"] == {"clicks": 1, "paid": 1, "click_to_pay_pct": 100.0}
+    assert out["site_go_c"]["metered"] == {"clicks": 1, "paid": 0, "click_to_pay_pct": 0.0}
     assert out["chatgpt_upgrade_h"] == {"plan": "metered", "walls": 5, "views": 1,
                                         "identified": 2, "paid": 2}
     assert "cold_go_p_note" not in out
