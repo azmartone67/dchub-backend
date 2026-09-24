@@ -76,7 +76,7 @@ def env(monkeypatch):
 
     # A mutating admin route guarded the way the repo's routes are guarded
     # today: the shared internal_auth check on the admin/internal slots.
-    @app.post("/api/v1/admin/facility-dedup/apply")
+    @app.post("/api/v1/admin/test-only-guarded-write")
     def mutate():
         from internal_auth import require_internal_or_admin
         if not require_internal_or_admin(request):
@@ -215,12 +215,12 @@ def test_viewer_key_is_refused_by_route_level_admin_check_in_every_mode(env, mod
     mp.setenv(ovg.MODE_ENV, mode)
     for hdr in ({"X-Admin-Key": VIEWER}, {"X-Internal-Key": VIEWER},
                 {"Authorization": "Bearer " + VIEWER}):
-        r = client.post("/api/v1/admin/facility-dedup/apply", headers=hdr,
+        r = client.post("/api/v1/admin/test-only-guarded-write", headers=hdr,
                         environ_base=EXT)
         assert r.status_code in (401, 403), (mode, hdr, r.status_code)
         assert r.get_json() != {"applied": True}
     # Control: the same seat with the real admin key does reach the write.
-    r = client.post("/api/v1/admin/facility-dedup/apply",
+    r = client.post("/api/v1/admin/test-only-guarded-write",
                     headers={"X-Admin-Key": ADMIN}, environ_base=EXT)
     assert r.status_code == 200 and r.get_json() == {"applied": True}
 

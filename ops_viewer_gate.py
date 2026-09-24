@@ -497,9 +497,10 @@ class DbRecorder:
             cur = conn.cursor()
             for (ip, ua, method, path, reason, mode, status), (f, l, n) in pending.items():
                 cur.execute(
-                    "INSERT INTO ops_gate_denials (first_at, last_at, hits, ip,"
-                    " user_agent, method, path, reason, mode, status)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    """INSERT INTO ops_gate_denials (first_at, last_at, hits, ip,
+                           user_agent, method, path, reason, mode, status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT DO NOTHING""",
                     (f, l, n, ip, ua, method, path, reason, mode, status))
             if used:
                 cur.execute(
@@ -740,15 +741,17 @@ def ops_gate_mint():
         conn = _connect()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT 1 FROM ops_viewer_keys"
-                        " WHERE name = %s AND revoked_at IS NULL", (name,))
-            if cur.fetchone():
-                conn.rollback()
+            # Bare DO NOTHING covers both unique indexes: the partial one
+            # (one ACTIVE key per name) and key_sha256. rowcount 0 = refused,
+            # including when two mints of the same name race.
+            cur.execute("""INSERT INTO ops_viewer_keys (name, key_sha256, note)
+                           VALUES (%s, %s, %s) ON CONFLICT DO NOTHING""",
+                        (name, hash_key(raw), note))
+            inserted = cur.rowcount
+            conn.commit()
+            if inserted != 1:
                 return _no_store(jsonify(error="active key exists for this name;"
                                                " revoke it first")), 409
-            cur.execute("INSERT INTO ops_viewer_keys (name, key_sha256, note)"
-                        " VALUES (%s, %s, %s)", (name, hash_key(raw), note))
-            conn.commit()
         finally:
             conn.close()
     except Exception as e:

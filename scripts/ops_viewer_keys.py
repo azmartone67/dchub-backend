@@ -23,8 +23,6 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 
 DEFAULT_BASE = "https://dchub-backend-production.up.railway.app"
 UA = "dchub-ops-viewer-keys/1.0"
@@ -44,20 +42,14 @@ def _admin_key() -> str:
 
 
 def _call(method: str, path: str, key: str, body=None):
+    import requests
     base = (os.environ.get("DCHUB_API_BASE") or DEFAULT_BASE).rstrip("/")
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(base + path, data=data, method=method, headers={
-        "X-Admin-Key": key, "User-Agent": UA, "Accept": "application/json",
-        **({"Content-Type": "application/json"} if data else {}),
-    })
+    r = requests.request(method, base + path, json=body, timeout=30, headers={
+        "X-Admin-Key": key, "User-Agent": UA, "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read() or b"{}")
-        except ValueError:
-            return e.code, {}
+        return r.status_code, r.json()
+    except ValueError:
+        return r.status_code, {}
 
 
 def main(argv=None) -> int:
@@ -95,11 +87,11 @@ def main(argv=None) -> int:
         print(out["key"])
         return 0
     if args.cmd == "revoke":
-        st, out = _call("POST", "/api/v1/admin/ops-gate/keys/%s/revoke" % args.name, key)
+        st, out = _call("POST", f"/api/v1/admin/ops-gate/keys/{args.name}/revoke", key)
         print(json.dumps(out), file=sys.stderr)
         return 0 if st == 200 else 1
     path = ("/api/v1/admin/ops-gate/status" if args.cmd == "status"
-            else "/api/v1/admin/ops-gate/denials?days=%d" % args.days)
+            else f"/api/v1/admin/ops-gate/denials?days={args.days}")
     st, out = _call("GET", path, key)
     print(json.dumps(out, indent=1))
     return 0 if st == 200 else 1
