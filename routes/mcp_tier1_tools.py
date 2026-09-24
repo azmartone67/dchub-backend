@@ -977,12 +977,29 @@ def find_alternatives():
             "else on this response is complete.")
         try:
             from map_tier_gating import _upgrade_cta
-            out["_upgrade_cta"] = _upgrade_cta(_tier, "operator and capacity data")
+            # r-bare-pricing-sweep (2026-09-23): _upgrade_cta's tier switch
+            # only knows 'anonymous'/'free'/'developer' (map_tier_gating's
+            # OWN normalized vocabulary) — this module's _tier comes from
+            # _end_user_tier()/_SPEC_TIER_RANK instead, deliberately wider
+            # ('identified', 'starter', ...), so a caller on 'identified' or
+            # 'starter' silently got _upgrade_cta's fall-through None: gated
+            # with NO CTA at all, worse than the bare-URL bug this sweep
+            # fixes elsewhere. Only ranks 0-1 ever reach this call
+            # (_specs_visible already filtered out anything at or above
+            # _SPECS_MIN_TIER), so the only gap is 'identified'/'starter'
+            # not being spelled 'free' — same rank, same CTA.
+            _cta_tier = "free" if _tier in ("identified", "starter") else _tier
+            out["_upgrade_cta"] = _upgrade_cta(_cta_tier, "operator and capacity data")
         except Exception:
+            try:
+                from routes.checkout_click_tracker import checkout_url
+                _fallback_url = checkout_url("developer")
+            except Exception:
+                _fallback_url = "https://dchub.cloud/pricing#developer"
             out["_upgrade_cta"] = {
                 "action": "upgrade",
                 "message": "Developer ($49/mo) unlocks operator and capacity.",
-                "url": "https://dchub.cloud/pricing#developer",
+                "url": _fallback_url,
             }
 
     return jsonify(out), 200

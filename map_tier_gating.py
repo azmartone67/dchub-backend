@@ -353,7 +353,22 @@ def _normalize_tier(plan):
 # ─── Upgrade CTA builder ────────────────────────────────────────────────────
 
 def _upgrade_cta(tier, feature_name='full map data'):
-    """Build tier-appropriate upgrade call to action."""
+    """Build tier-appropriate upgrade call to action.
+
+    r-bare-pricing-sweep (2026-09-23): 'free' carried a raw, unattributed
+    buy.stripe.com link and 'developer' a bare /pricing with not even a
+    #fragment — the biggest single fix in the sweep by caller count (7
+    sites in this file, plus util/facility_tier_gate.py and
+    routes/mcp_tier1_tools.py). Both now sign through
+    routes.checkout_click_tracker.checkout_url(), caller-independent (no
+    ref/sid threaded through the ~9 call sites in this pass — still
+    measured, /go/c stamps mcp_checkout_clicks with the plan either way;
+    key-binding each call site is a possible follow-up, not required to
+    stop this from being a bare-pricing dead end). 'checkout' is kept as a
+    compat alias pointing at the SAME signed url, not a second raw link —
+    api_response_contract caught exactly this shape of break on the
+    grid_intelligence_routes.py fix earlier in this sweep.
+    """
     if tier == 'anonymous':
         return {
             'action': 'sign_up',
@@ -361,20 +376,31 @@ def _upgrade_cta(tier, feature_name='full map data'):
             'url': 'https://dchub.cloud/signup',
         }
     elif tier == 'free':
+        _url = _signed_checkout_url('developer')
         return {
             'action': 'upgrade',
             'message': f'Upgrade to Developer ($49/mo) for more {feature_name}. Pro ($99/mo) unlocks everything.',
-            'url': 'https://dchub.cloud/pricing#developer',
-            'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+            'url': _url,
+            'checkout': _url,
             'price': '$49/mo',
         }
     elif tier == 'developer':
         return {
             'action': 'upgrade',
             'message': f'Upgrade to Pro ($99/mo) for full {feature_name} with no limits.',
-            'url': 'https://dchub.cloud/pricing',
+            'url': _signed_checkout_url('pro'),
         }
     return None  # Pro/Enterprise — no CTA
+
+
+def _signed_checkout_url(plan: str) -> str:
+    """checkout_url(plan), or the bare pricing page only if the signer
+    itself can't be reached — never a raw buy.stripe.com literal."""
+    try:
+        from routes.checkout_click_tracker import checkout_url
+        return checkout_url(plan)
+    except Exception:
+        return 'https://dchub.cloud/pricing'
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
