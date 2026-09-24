@@ -75,8 +75,8 @@ def store_teaser(token: str, label: str, value: str) -> dict:
                     cur.execute(_DDL)
                     _DDL_DONE[0] = True
                 cur.execute(
-                    "INSERT INTO relay_teasers (token_sig, session_id, tool, label, value)"
-                    " VALUES (%s, %s, %s, %s, %s) ON CONFLICT (token_sig) DO NOTHING",
+                    """INSERT INTO relay_teasers (token_sig, session_id, tool, label, value)
+                       VALUES (%s, %s, %s, %s, %s) ON CONFLICT (token_sig) DO NOTHING""",
                     (_sig(token), info.get("sid") or None, info.get("tool") or None,
                      label.strip(), value.strip()))
                 stored = cur.rowcount == 1
