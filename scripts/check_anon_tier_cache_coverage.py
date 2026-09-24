@@ -84,10 +84,12 @@ EXIT_OK, EXIT_NEW_GAP, EXIT_SELF = 0, 1, 2
 # GETs each. /api/v1/stats returned `HIT age=1148` with a frozen
 # x-dc-response-time; the other three returned DYNAMIC twice.
 # ★ 2026-09-24: /api/v1/stats moved to bypass rule 19, so the cached control is
-# now /api/v1/facilities, measured MISS->HIT that day. (Stats is deliberately
-# NOT re-added as 'bypass' until that is measured at the edge after the apply.)
+# now /api/v1/facilities, measured MISS->HIT that day. Stats itself is measured
+# 'bypass' after the rule-19 apply (ruleset v68): two un-busted GETs each on
+# dchub.cloud and api.dchub.cloud read DYNAMIC, 2026-09-24 06:10Z.
 ORACLE = {
     "/api/v1/facilities": "cached",
+    "/api/v1/stats": "bypass",
     "/api/v1/health": "bypass",
     "/grid": "bypass",
     "/api/v1/mcp/tools/export_facility_csv": "bypass",
