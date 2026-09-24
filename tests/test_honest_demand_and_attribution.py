@@ -348,11 +348,15 @@ def test_touched_files_are_wellformed(rel):
 _PAID_SUB_START = "const paFmt ="
 _PAID_SUB_END = "not the revenue KPI`;"
 
-# Live values, 2026-09-24 (mcp_checkout_payments / mcp_conversions read-only).
+# Live values after paid_attributed v4 (be#5382), 2026-09-24: the headline is
+# 0 because both counted payments were the operator's own test packs; the
+# incl-self diagnostic still sees them (24h/7d/30d incl_self = 1/2/2).
 _REC_0924 = {"measured": True, "conversions_30d": 6, "honest_paid_30d": 4,
              "excluded_by_honest_filter": 2, "signal_bridged_30d": 0,
-             "paid_attributed_7d": 2, "paid_attributed_30d": 2,
-             "paid_attributed_definition_version": 3}
+             "paid_attributed_7d": 0, "paid_attributed_30d": 0,
+             "paid_attributed_including_self_7d": 2,
+             "paid_attributed_including_self_30d": 2,
+             "paid_attributed_definition_version": 4}
 
 
 def _render_paid_sub(rec, html=None):
@@ -376,36 +380,59 @@ def _render_paid_sub(rec, html=None):
     return proc.stdout
 
 
+def _fmt(v):
+    return '<b style="color:#d29922">n/a</b>' if v is None else f"<b>{v}</b>"
+
+
 def paid_tile_error(rec, out):
-    """None if the rendered tile is honest about both attributions."""
-    if "the MCP-attributable figure" in out:
-        return "signal_bridged is still labelled THE MCP-attributable figure"
-    for win in ("7d", "30d"):
-        v = rec.get("paid_attributed_" + win)
-        want = "n/a</b> " + win if v is None else f"<b>{v}</b> {win}"
-        if want not in out:
-            return f"paid_attributed {win}={v!r} is not printed as {want!r}"
+    """None if the rendered tile reads right at a glance (Grok DoD 09-24):
+    (1) MCP-attributed paid (v4, operator excluded) first, (2) the same count
+    incl. operator tests second and labelled so, and no signal_bridged wording
+    that reads a 0 as "MCP sales failed"."""
+    for bad in ("the MCP-attributable figure",
+                "trace end-to-end to an MCP signal"):
+        if bad in out:
+            return f"tile still prints {bad!r}"
+    primary = "MCP-attributed paid:</b> {} 7d / {} 30d".format(
+        _fmt(rec.get("paid_attributed_7d")), _fmt(rec.get("paid_attributed_30d")))
+    secondary = "incl. operator tests: {} 7d / {} 30d".format(
+        _fmt(rec.get("paid_attributed_including_self_7d")),
+        _fmt(rec.get("paid_attributed_including_self_30d")))
+    signal = "signal raised before the sale: <b>{}</b>".format(
+        rec.get("signal_bridged_30d") if rec.get("signal_bridged_30d") is not None else 0)
+    pos = []
+    for name, want in (("primary", primary), ("secondary", secondary),
+                       ("signal_bridged", signal)):
+        k = out.find(want)
+        if k < 0:
+            return f"{name} line not printed as {want!r}"
+        pos.append(k)
+    if pos != sorted(pos):
+        return "order is not MCP-attributed → incl. operator tests → signal"
+    if "operator excluded" not in out:
+        return "headline does not say the operator is excluded"
     if "not a subset" not in out:
         return "paid_attributed is printed without saying it is a different population"
     return None
 
 
-def test_tile_prints_both_attributions_on_the_real_0924_numbers():
+def test_tile_reads_right_on_the_real_v4_numbers():
     out = _render_paid_sub(_REC_0924)
     assert paid_tile_error(_REC_0924, out) is None, out
-    assert "<b>0</b> of these trace end-to-end" in out, (
-        "signal_bridged must still be printed, not replaced")
 
 
 def test_tile_says_unmeasured_not_zero():
-    rec = dict(_REC_0924, paid_attributed_7d=None, paid_attributed_30d=None)
+    rec = dict(_REC_0924, paid_attributed_7d=None, paid_attributed_30d=None,
+               paid_attributed_including_self_7d=None,
+               paid_attributed_including_self_30d=None)
     out = _render_paid_sub(rec)
     assert paid_tile_error(rec, out) is None, out
+    assert "<b>0</b> 7d" not in out, "an unmeasured count rendered as 0"
 
 
-# MUST-FAIL CONTROL
+# MUST-FAIL CONTROLS
 def test_checker_rejects_the_pre_fix_tile():
-    """The copy that shipped until 2026-09-24, rendered through the same
+    """The copy that shipped until be#5378, rendered through the same
     harness, must be rejected — else paid_tile_error is a no-op."""
     pre = ("const paFmt = null; const paidSub = recOK\n"
            "  ? `honest paid — Stripe customer present, seed/comp/NLR excluded`\n"
@@ -416,13 +443,33 @@ def test_checker_rejects_the_pre_fix_tile():
     assert paid_tile_error(_REC_0924, out) is not None, out
 
 
+def test_checker_rejects_the_be5378_tile():
+    """be#5378's copy: both counts printed, but signal_bridged's 0 first and
+    no incl-operator line — the tile ops read as broken once v4 landed."""
+    pre = ("const paFmt = v => (v == null) ? 'n/a' : `<b>${v}</b>`;\n"
+           "const paidSub = recOK\n"
+           "  ? `honest paid — Stripe customer present, seed/comp/NLR excluded`\n"
+           "    + ` · <b>${rec.signal_bridged_30d ?? 0}</b> of these trace end-to-end to an MCP signal`\n"
+           "    + ` · separately, ${paFmt(rec.paid_attributed_7d)} 7d / ${paFmt(rec.paid_attributed_30d)} 30d`\n"
+           "    + ` (a different population, not a subset of the honest-paid count)`\n"
+           "  : `raw — not the revenue KPI`;")
+    out = _render_paid_sub(_REC_0924, html=pre)
+    assert paid_tile_error(_REC_0924, out) is not None, out
+
+
 def test_funnel_publishes_paid_attributed_from_the_canonical_builder():
     src = _read("flask_mcp_endpoints.py")
-    block = src.split("r-two-attributions (2026-09-24)")[1][:5000]
-    assert "_paid_attributed_count_sql(_pa_iv)" in block, (
+    block = src.split("r-two-attributions (2026-09-24)")[1]
+    block = block.split("conversions_reconciliation_30d_error")[0]
+    assert re.search(r"_paid_attributed_count_sql\(\s*_pa_iv\b", block), (
         "paid_attributed must come from routes/handoff_definition's builder, "
         "the one /handoff-funnel uses, never a second SQL copy")
+    assert "include_self_traffic=_pa_self" in block, (
+        "the incl-operator count must come from the same builder with the "
+        "exclusion dropped, not a second SQL copy")
     for key in ("paid_attributed_7d", "paid_attributed_30d",
+                "paid_attributed_including_self_7d",
+                "paid_attributed_including_self_30d",
                 "paid_attributed_population", "signal_bridged_population"):
         assert f'"{key}"' in block, f"reconciliation block lacks {key}"
     assert "as MCP-attributable revenue" not in src, (

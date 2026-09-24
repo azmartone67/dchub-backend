@@ -6399,17 +6399,28 @@ def mcp_funnel():
             # Published side by side from the SAME builder /handoff-funnel
             # uses. Neither is relabelled as the other. Own try/except:
             # None means "not measured", never 0.
+            # ★ r-operator-tests-labelled (2026-09-24): v4 excludes operator
+            # payers by email, so the headline read 0 while the operator's own
+            # $10.88 test packs still sat in the table. The incl-self count is
+            # published beside it (same builder, include_self_traffic=True) so
+            # a 0 headline next to a 1 incl-self reads "the tests are
+            # excluded", not "attribution is broken". Diagnostic, never the
+            # headline; None = not measured.
             _pa = {}
             for _pa_win, _pa_iv in (("7d", "7 days"), ("30d", "30 days")):
-                try:
-                    cur.execute(_paid_attributed_count_sql(_pa_iv))
-                    _r = cur.fetchone()
-                    _pa[_pa_win] = int(_r[0]) if _r and _r[0] is not None else 0
-                except Exception as e:
-                    try: conn.rollback()
-                    except Exception: pass
-                    _pa[_pa_win] = None
-                    out["paid_attributed_error"] = str(e)[:120]
+                for _pa_key, _pa_self in ((_pa_win, False),
+                                          (_pa_win + "_incl_self", True)):
+                    try:
+                        cur.execute(_paid_attributed_count_sql(
+                            _pa_iv, include_self_traffic=_pa_self))
+                        _r = cur.fetchone()
+                        _pa[_pa_key] = (int(_r[0])
+                                        if _r and _r[0] is not None else 0)
+                    except Exception as e:
+                        try: conn.rollback()
+                        except Exception: pass
+                        _pa[_pa_key] = None
+                        out["paid_attributed_error"] = str(e)[:120]
             try:
                 _psa = out.get("paid_signal_attribution_30d") or {}
                 _c30 = out.get("conversions_30d")
@@ -6431,6 +6442,14 @@ def mcp_funnel():
                     # distinct sessions/key refs over mcp_checkout_payments.
                     "paid_attributed_7d": _pa.get("7d"),
                     "paid_attributed_30d": _pa.get("30d"),
+                    "paid_attributed_including_self_7d": _pa.get("7d_incl_self"),
+                    "paid_attributed_including_self_30d": _pa.get("30d_incl_self"),
+                    "paid_attributed_including_self_basis": (
+                        "the same count with operator self-traffic and "
+                        "operator payers (test purchases) left IN. A "
+                        "diagnostic, not the headline: the difference from "
+                        "paid_attributed_7d/30d is the operator's own test "
+                        "checkouts, excluded by design."),
                     "paid_attributed_definition_version": (
                         _paid_attributed_definition()["definition_version"]),
                     "paid_attributed_population": (
