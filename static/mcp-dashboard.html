@@ -174,10 +174,21 @@ async function load() {
     const rec = d.conversions_reconciliation_30d || null;
     const recOK = !!(rec && rec.measured && rec.honest_paid_30d != null);
     const paidVal = recOK ? rec.honest_paid_30d : (d.conversions_30d ?? 0);
+    // ★★★ r-two-attributions (2026-09-24): this line said "0 of these trace
+    // to an MCP signal (the MCP-attributable figure)" while paid_attributed
+    // read 7d=2, and ops read the 0 as "no MCP sales". Both counts are true
+    // over DIFFERENT populations (packs have no Stripe customer, so they can
+    // never be "of these"). Print both, each with its own population; never
+    // present one as the other. null = not measured, printed as such.
+    const paFmt = v => (v == null) ? '<b style="color:#d29922">n/a</b>' : `<b>${v}</b>`;
     const paidSub = recOK
       ? `honest paid — Stripe customer present, seed/comp/NLR excluded`
         + ` · <b>${rec.signal_bridged_30d ?? 0}</b> of these trace end-to-end to an MCP signal`
-        + ` (the MCP-attributable figure)`
+        + ` (signal-bridged; subscriptions only, credit packs are never in this count)`
+        + ` · separately, ${paFmt(rec.paid_attributed_7d)} 7d / ${paFmt(rec.paid_attributed_30d)} 30d`
+        + ` paid checkouts attributed to a relayed MCP /go/c click`
+        + ` (paid_attributed v${rec.paid_attributed_definition_version ?? '?'}, packs included —`
+        + ` a different population, not a subset of the honest-paid count)`
         + ` · <span style="color:#888">${rec.conversions_30d ?? 0} raw 30d rows after refunds;`
         + ` the ${rec.excluded_by_honest_filter ?? 0} difference is seed/comp/no-Stripe, not missing data</span>`
       // Fail-open: the bridge query is in its own try/except server-side. If it
