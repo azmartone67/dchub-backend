@@ -603,3 +603,84 @@ def test_claim_compare_and_set_refuses_a_row_already_running(pg, monkeypatch):
     d = al.claim_next(live=live)
     assert "brief" not in d and d["idle"] == "lost the claim race"
     assert _state(pg, ra)[1:3] == ("running", 1)
+
+
+# ══ 11 · probe.sh --grep — the filter the agent's allowlist forced into the tool
+
+def _fake_curl(tmp_path):
+    """A `curl` on PATH that prints a canned response and records its argv,
+    so probe.sh runs end to end with no network."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    log = tmp_path / "argv.txt"
+    (bin_ / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        "printf 'HTTP/2 200 \\r\\ncf-cache-status: HIT\\r\\ncache-control: private, no-store\\r\\n"
+        "x-other: 1\\r\\n\\r\\n<html><td>—</td><p>DCPI 311 markets</p></html>\\n'\n")
+    (bin_ / "curl").chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_}:{os.environ['PATH']}")
+    return env, log
+
+
+def _probe(env, *args):
+    return subprocess.run([str(TOOLS / "probe.sh"), *args], capture_output=True,
+                          text=True, env=env)
+
+
+def test_probe_grep_prints_status_line_and_only_matching_lines(tmp_path):
+    env, _ = _fake_curl(tmp_path)
+    p = _probe(env, "https://dchub.cloud/dcpi", "--grep", "^(cf-cache-status|cache-control):")
+    assert p.returncode == 0, p.stderr
+    lines = p.stdout.splitlines()
+    assert lines[0].startswith("HTTP/2 200")
+    assert lines[1:] == ["2:cf-cache-status: HIT", "3:cache-control: private, no-store"]
+
+
+def test_probe_grep_with_head_asks_curl_for_headers_only(tmp_path):
+    env, log = _fake_curl(tmp_path)
+    p = _probe(env, "https://dchub.cloud/dcpi", "HEAD", "--grep", "cf-cache")
+    assert p.returncode == 0 and "cf-cache-status: HIT" in p.stdout
+    assert " -I " in f" {log.read_text()} "
+
+
+def test_probe_grep_no_match_says_so_and_succeeds(tmp_path):
+    env, _ = _fake_curl(tmp_path)
+    p = _probe(env, "https://dchub.cloud/dcpi", "--grep", "nothing-like-this")
+    assert p.returncode == 0 and "no line matched" in p.stdout
+
+
+@pytest.mark.parametrize("args", [
+    ("--grep",),                       # missing pattern
+    ("--grep", "("),                   # invalid regex
+    ("--grep", "x" * 201),             # too long
+    ("--output", "/tmp/x"),            # a curl flag smuggled through
+    ("-o", "/tmp/x"),
+    ("GET",),
+])
+def test_probe_refuses_anything_but_head_and_grep(tmp_path, args):
+    env, log = _fake_curl(tmp_path)
+    p = _probe(env, "https://dchub.cloud/dcpi", *args)
+    assert p.returncode == 2, (args, p.stdout)
+    assert not log.exists(), "curl must not run on a refused call"
+
+
+def test_probe_grep_pattern_is_never_shell_evaluated(tmp_path):
+    env, _ = _fake_curl(tmp_path)
+    # relative marker, run from tmp_path: keeps the pattern under the 200-char cap
+    p = subprocess.run([str(TOOLS / "probe.sh"), "https://dchub.cloud/dcpi", "--grep",
+                        "$(touch pwned)|`touch pwned2`"], capture_output=True,
+                       text=True, env=env, cwd=tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
+
+
+def test_probe_host_lock_still_applies_with_grep(tmp_path):
+    env, log = _fake_curl(tmp_path)
+    p = _probe(env, "https://evil.example/", "--grep", "x")
+    assert p.returncode == 2 and not log.exists()
+
+
+def test_the_prompt_tells_the_agent_to_use_grep_not_pipes():
+    t = (TOOLS / "prompt.md").read_text()
+    assert "--grep" in t and "Do not pipe or redirect" in t
