@@ -92,7 +92,7 @@ def test_evaluator_reproduces_dispositions_measured_at_the_edge(rules):
     on 2026-09-07: /api/v1/stats returned HIT age=1148 with a frozen
     x-dc-response-time; the other three returned DYNAMIC twice. The cached
     control moved to /api/v1/facilities (MISS->HIT) on 2026-09-24 when stats
-    joined bypass rule 19. An evaluator
+    joined bypass rule 19; stats itself was then measured DYNAMIC x4 (bypass). An evaluator
     that cannot reproduce real edge behaviour cannot be trusted to find gaps in
     it.
     """
