@@ -657,7 +657,8 @@ def test_probe_grep_no_match_says_so_and_succeeds(tmp_path):
     ("--output", "/tmp/x"),            # a curl flag smuggled through
     ("-o", "/tmp/x"),
     ("GET",),
-])
+], ids=["grep-no-pattern", "grep-invalid-regex", "grep-too-long",
+        "curl-output-flag", "curl-o-flag", "get-verb"])
 def test_probe_refuses_anything_but_head_and_grep(tmp_path, args):
     env, log = _fake_curl(tmp_path)
     p = _probe(env, "https://dchub.cloud/dcpi", *args)
