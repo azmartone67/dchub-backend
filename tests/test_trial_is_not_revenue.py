@@ -94,7 +94,10 @@ def test_the_handler_applies_the_decision():
     # signal flip: skipped when not booked
     flip = h.rindex("mark_signals_converted(")          # the subscription path's call
     assert "if not _book:" in h[h.rindex("try:", 0, flip):flip], "signal flip not gated"
-    # provisioning: the whole key grant sits under `if _provision:`
-    prov = h.index("if _provision:")
+    # provisioning: the key grant's try bails first when not provisioning
+    start = h.index("provisioned_key = None")
+    m = re.search(r"if not _provision:\s*\n\s*raise _NotBooked\(\)", h[start:])
+    assert m, "provisioning not gated"
+    prov = start + m.start()
     assert prov < h.index("UPDATE mcp_dev_keys SET tier=%s") and prov < h.index("INSERT INTO mcp_dev_keys")
-    assert prov > h.index("provisioned_key = None")
+    assert "except _NotBooked:" in h[prov:h.index("r68-canonical", prov)]

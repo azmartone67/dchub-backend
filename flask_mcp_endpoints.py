@@ -7930,99 +7930,102 @@ def stripe_webhook_mcp():
     # grant (500 calls/day) so the metered "no per-seat ceiling" pitch holds for
     # essentially every agent (a >500/day caller can be bumped).
     provisioned_key = None
-    # r-trial-honest: never (re)grant a paid key on past_due/unpaid/canceled —
-    # main.py demotes on those, and this used to re-upgrade the key it had
-    # just demoted (e.g. a trial whose day-7 charge failed).
-    if _provision:
-        try:
-            import secrets as _sec
-            # mcp_dev_keys.tier has a CHECK constraint allowing ONLY free/paid/enterprise
-            # (the gate maps the richer plan names — starter/developer/pro — onto 'paid').
-            # Any paid subscription (incl the $1/100 metered plan) → 'paid'.
-            _ptier = "enterprise" if (plan_to or "").lower() == "enterprise" else "paid"
-            with _pool.connection() as conn, conn.cursor() as cur:
-                # 2026-09-12 (security, #4428 follow-up): pick up an existing key
-                # ONLY where the address was confirmed by its owner.
-                #
-                # This SELECT took the NEWEST active key on the buyer's address and
-                # the UPDATE below lifted it to paid. Anyone could bind a key to a
-                # customer's address (/keys/claim, /keys/identify), and because the
-                # ordering is created_at DESC, binding shortly before that customer
-                # paid took the grant deterministically — their payment upgraded
-                # someone else's key. #4428 closed that on the claim/identify/
-                # reconcile/webhook grants and missed this one.
-                #
-                # A buyer whose only key is unconfirmed now falls through to the
-                # mint branch and is EMAILED a fresh paid key, which is the same
-                # delivery the no-key case already uses. They are never left
-                # without one — that was the r-coldbuy failure and it stays fixed.
-                cur.execute("SELECT api_key, tier FROM mcp_dev_keys "
-                            "WHERE LOWER(email)=%s AND status='active' "
-                            "  " + _VERIFIED_BINDING_SQL +
-                            "ORDER BY created_at DESC LIMIT 1", (email, email))
-                _ex = cur.fetchone()
-                _newmint = False
-                _upgraded = False
-                if _ex:
-                    provisioned_key = _ex[0]
-                    if (_ex[1] or "free").lower() in ("free", "trial", "anon", ""):
-                        cur.execute("UPDATE mcp_dev_keys SET tier=%s WHERE api_key=%s",
-                                    (_ptier, provisioned_key))
-                        conn.commit()
-                        _upgraded = True  # free/trial key just became paid → deliver it
-                else:
-                    provisioned_key = "dch_live_" + _sec.token_hex(16)
-                    _newmint = True
-                    cur.execute("""INSERT INTO mcp_dev_keys
-                                     (api_key, developer_id, email, tier, status, metadata)
-                                   VALUES (%s, %s, %s, %s, 'active', %s::jsonb)""",
-                                (provisioned_key, "dev_" + _sec.token_hex(8), email, _ptier,
-                                 json.dumps({"source": "stripe_subscription",
-                                             "stripe_customer_id": customer_id,
-                                             "stripe_subscription_id": sub_id})))
+    try:
+        # r-trial-honest: never (re)grant a paid key on past_due/unpaid/
+        # canceled — main.py demotes on those, and this used to re-upgrade
+        # the key it had just demoted (e.g. a trial whose day-7 charge failed).
+        if not _provision:
+            raise _NotBooked()
+        import secrets as _sec
+        # mcp_dev_keys.tier has a CHECK constraint allowing ONLY free/paid/enterprise
+        # (the gate maps the richer plan names — starter/developer/pro — onto 'paid').
+        # Any paid subscription (incl the $1/100 metered plan) → 'paid'.
+        _ptier = "enterprise" if (plan_to or "").lower() == "enterprise" else "paid"
+        with _pool.connection() as conn, conn.cursor() as cur:
+            # 2026-09-12 (security, #4428 follow-up): pick up an existing key
+            # ONLY where the address was confirmed by its owner.
+            #
+            # This SELECT took the NEWEST active key on the buyer's address and
+            # the UPDATE below lifted it to paid. Anyone could bind a key to a
+            # customer's address (/keys/claim, /keys/identify), and because the
+            # ordering is created_at DESC, binding shortly before that customer
+            # paid took the grant deterministically — their payment upgraded
+            # someone else's key. #4428 closed that on the claim/identify/
+            # reconcile/webhook grants and missed this one.
+            #
+            # A buyer whose only key is unconfirmed now falls through to the
+            # mint branch and is EMAILED a fresh paid key, which is the same
+            # delivery the no-key case already uses. They are never left
+            # without one — that was the r-coldbuy failure and it stays fixed.
+            cur.execute("SELECT api_key, tier FROM mcp_dev_keys "
+                        "WHERE LOWER(email)=%s AND status='active' "
+                        "  " + _VERIFIED_BINDING_SQL +
+                        "ORDER BY created_at DESC LIMIT 1", (email, email))
+            _ex = cur.fetchone()
+            _newmint = False
+            _upgraded = False
+            if _ex:
+                provisioned_key = _ex[0]
+                if (_ex[1] or "free").lower() in ("free", "trial", "anon", ""):
+                    cur.execute("UPDATE mcp_dev_keys SET tier=%s WHERE api_key=%s",
+                                (_ptier, provisioned_key))
                     conn.commit()
-            # Email the key on a fresh mint OR when a buyer's pre-existing free/trial key
-            # was just upgraded to paid. The upgrade case is the white-glove gap that bit
-            # our first Pro customer (eren@globeholder.ai, 2026-07-10): she claimed a free
-            # key BEFORE paying, so the sub webhook reused it and — under the old
-            # `_newmint`-only guard — sent NO welcome, leaving a paying customer who never
-            # received her key. mcp_dev_keys stores api_key in plaintext, so we can deliver
-            # the actual key even on reuse. Both branches are one-time state transitions
-            # (mint / free→paid), so Stripe webhook re-delivery is a no-op email-wise: the
-            # 2nd delivery finds tier already 'paid' → no upgrade → no email. Lazy import of
-            # main (main imports us, so a top-level import would be circular).
-            if (_newmint or _upgraded) and provisioned_key:
-                try:
-                    import main as _main_mod
-                    # r-claim (2026-08-17): provenance rides plan_name and the
-                    # sender's own atomic claim writes THE one log row. The
-                    # separate audit row this block used to add double-counted
-                    # every send (the "second log row" the onboarding shell
-                    # flagged) and — worse — logged 'sent' for a fire-and-forget
-                    # thread that had not sent anything yet.
-                    # r-entry-path (2026-08-19): mint the 72h set-password link.
-                    # THIS is the path a buyer who had a free account first takes,
-                    # and it used to omit reset_url entirely — so those customers
-                    # received a key and no way into the dashboard, while a COLD
-                    # buyer (main.py's new-user branch) got the button. That
-                    # asymmetry is what made rob@hedmarkholdings.com email support
-                    # asking how to reset his password 51 minutes after paying.
-                    # mint_reset_url returns None if the token did not persist, and
-                    # send_welcome_email_sendgrid already renders the no-link
-                    # variant on None — so a DB blip degrades to today's behaviour
-                    # instead of shipping a dead link.
-                    from routes._password_reset_link import mint_reset_url
-                    _main_mod.send_welcome_email_sendgrid(
-                        email, provisioned_key,
-                        plan_name=f"{_ptier}:{'mint' if _newmint else 'upgrade'}",
-                        reset_url=mint_reset_url(email))
-                except Exception as _ee:
-                    # send_welcome_email_sendgrid already admin-alerts on SendGrid
-                    # failure; swallow here so provisioning never breaks the webhook.
-                    pass
-        except Exception:
-            note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.stripe_webhook_mcp")
-            pass
+                    _upgraded = True  # free/trial key just became paid → deliver it
+            else:
+                provisioned_key = "dch_live_" + _sec.token_hex(16)
+                _newmint = True
+                cur.execute("""INSERT INTO mcp_dev_keys
+                                 (api_key, developer_id, email, tier, status, metadata)
+                               VALUES (%s, %s, %s, %s, 'active', %s::jsonb)""",
+                            (provisioned_key, "dev_" + _sec.token_hex(8), email, _ptier,
+                             json.dumps({"source": "stripe_subscription",
+                                         "stripe_customer_id": customer_id,
+                                         "stripe_subscription_id": sub_id})))
+                conn.commit()
+        # Email the key on a fresh mint OR when a buyer's pre-existing free/trial key
+        # was just upgraded to paid. The upgrade case is the white-glove gap that bit
+        # our first Pro customer (eren@globeholder.ai, 2026-07-10): she claimed a free
+        # key BEFORE paying, so the sub webhook reused it and — under the old
+        # `_newmint`-only guard — sent NO welcome, leaving a paying customer who never
+        # received her key. mcp_dev_keys stores api_key in plaintext, so we can deliver
+        # the actual key even on reuse. Both branches are one-time state transitions
+        # (mint / free→paid), so Stripe webhook re-delivery is a no-op email-wise: the
+        # 2nd delivery finds tier already 'paid' → no upgrade → no email. Lazy import of
+        # main (main imports us, so a top-level import would be circular).
+        if (_newmint or _upgraded) and provisioned_key:
+            try:
+                import main as _main_mod
+                # r-claim (2026-08-17): provenance rides plan_name and the
+                # sender's own atomic claim writes THE one log row. The
+                # separate audit row this block used to add double-counted
+                # every send (the "second log row" the onboarding shell
+                # flagged) and — worse — logged 'sent' for a fire-and-forget
+                # thread that had not sent anything yet.
+                # r-entry-path (2026-08-19): mint the 72h set-password link.
+                # THIS is the path a buyer who had a free account first takes,
+                # and it used to omit reset_url entirely — so those customers
+                # received a key and no way into the dashboard, while a COLD
+                # buyer (main.py's new-user branch) got the button. That
+                # asymmetry is what made rob@hedmarkholdings.com email support
+                # asking how to reset his password 51 minutes after paying.
+                # mint_reset_url returns None if the token did not persist, and
+                # send_welcome_email_sendgrid already renders the no-link
+                # variant on None — so a DB blip degrades to today's behaviour
+                # instead of shipping a dead link.
+                from routes._password_reset_link import mint_reset_url
+                _main_mod.send_welcome_email_sendgrid(
+                    email, provisioned_key,
+                    plan_name=f"{_ptier}:{'mint' if _newmint else 'upgrade'}",
+                    reset_url=mint_reset_url(email))
+            except Exception as _ee:
+                # send_welcome_email_sendgrid already admin-alerts on SendGrid
+                # failure; swallow here so provisioning never breaks the webhook.
+                pass
+    except _NotBooked:
+        pass
+    except Exception:
+        note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.stripe_webhook_mcp")
+        pass
 
     # r68-canonical (2026-06-02): write-back attribution on signals.converted.
     # Previously this webhook recorded mcp_conversions but never flipped
