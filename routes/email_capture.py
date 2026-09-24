@@ -488,12 +488,8 @@ _CHECKOUT_START_HTML = """<!DOCTYPE html>
 <body><div class="card">
   <span class="tier" id="tier-tag">Developer</span>
   <h1>Almost there.</h1>
-  <p class="price" id="price-tag">$49/mo · cancel anytime</p>
-  <ul>
-    <li>1,000 MCP calls/day across all 24 tools</li>
-    <li>Full grid &amp; fiber intelligence (no preview limits)</li>
-    <li>Email when your tool quota resets</li>
-  </ul>
+  <p class="price" id="price-tag"></p>
+  <ul id="plan-points"></ul>
   <form id="f">
     <label for="email">Your email (for receipt + your DC Hub account)</label>
     <input type="email" name="email" id="email" required placeholder="you@company.com">
@@ -508,14 +504,22 @@ _CHECKOUT_START_HTML = """<!DOCTYPE html>
 <script>
 (function(){
   var p = new URLSearchParams(location.search);
+  // One plan table, built server-side from canon (see _checkout_plans_json).
+  // The alias map and the fallback are the SAME ones /checkout/initiate uses,
+  // so the page can never name one plan while the button charges another.
+  var PLANS = __PLANS_JSON__;
   var tier = (p.get('tier') || 'developer').toLowerCase();
+  tier = PLANS.aliases[tier] || tier;
+  if (!PLANS.plans[tier]) tier = 'developer';
+  var plan = PLANS.plans[tier];
   var key  = p.get('key')  || '';
   var tool = p.get('tool') || '';
   var sid  = p.get('sid')  || '';
   var ref  = p.get('client_reference_id') || '';
-  var pricing = {developer:'__DEV_PRICE__', pro:'__PRO_PRICE__', starter:'__STARTER_PRICE__', enterprise:'custom'};
-  document.getElementById('tier-tag').textContent = tier.charAt(0).toUpperCase()+tier.slice(1);
-  document.getElementById('price-tag').textContent = (pricing[tier]||'__DEV_PRICE__')+' · cancel anytime';
+  document.getElementById('tier-tag').textContent = plan.label;
+  document.getElementById('price-tag').textContent = plan.price;
+  var ul = document.getElementById('plan-points');
+  plan.points.forEach(function(t){ var li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
   document.getElementById('f').addEventListener('submit', function(e){
     e.preventDefault();
     var btn = document.getElementById('submit-btn');
@@ -547,9 +551,66 @@ _CHECKOUT_START_HTML = """<!DOCTYPE html>
 # Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
 # Typed into the template they drift silently: this surface quoted a Pro
 # price retired at r-price-collapse (2026-09-05) until it was swept.
-_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__PRO_PRICE__", _canon_price_display("pro"))
-_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__DEV_PRICE__", _canon_price_display("developer"))
-_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__STARTER_PRICE__", _canon_price_display("starter"))
+#
+# r-checkout-metered (2026-09-24): the page knew developer/pro/starter only.
+# ?tier=metered rendered "Metered · $49/mo · cancel anytime" and
+# /checkout/initiate sent it to the DEVELOPER Payment Link (the local link map
+# had no 'metered') — label and charge agreed, both wrong. And every tier saw
+# the same hardcoded "1,000 MCP calls/day across all 24 tools". Now one table
+# (below) drives the page, and _checkout_tier() drives both the page and the
+# link. Starter is retired from every offer (owner 2026-09-24): a stale
+# ?tier=starter lands on Developer, not on a plan that is not sold.
+_CHECKOUT_ALIASES = {"pack5": "metered", "pack": "metered", "founding": "pro",
+                     "starter": "developer"}
+_CHECKOUT_TIERS = ("developer", "pro", "metered", "enterprise")
+
+
+def _checkout_tier(raw):
+    """The plan /checkout/start shows and /checkout/initiate charges for."""
+    t = str(raw or "developer").strip().lower()
+    t = _CHECKOUT_ALIASES.get(t, t)
+    return t if t in _CHECKOUT_TIERS else "developer"
+
+
+def _checkout_plans_json():
+    import json as _json
+    try:
+        import tier_registry as _tr
+        dev_calls = f"{_tr.calls_per_day('developer'):,}"
+        pro_calls = f"{_tr.calls_per_day('pro'):,}"
+    except Exception:
+        dev_calls, pro_calls = "500", "2,000"
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+        pack_price, pack_credits = PACK10_PRICE_CENTS // 100, f"{PACK10_CREDITS:,}"
+    except Exception:
+        pack_price, pack_credits = 10, "1,000"
+    plans = {
+        "developer": {"label": "Developer",
+                      "price": f"{_canon_price_display('developer')} · cancel anytime",
+                      "points": [f"{dev_calls} MCP calls/day",
+                                 "Full depth on every tool except the Pro-only ones",
+                                 "Email when your tool quota resets"]},
+        "pro": {"label": "Pro",
+                "price": f"{_canon_price_display('pro')} · cancel anytime",
+                "points": [f"{pro_calls} MCP calls/day",
+                           "Every tool, including Land & Power and the Pro-only tools",
+                           "Email when your tool quota resets"]},
+        # The pack is API capacity, never an unlock (owner wording rule
+        # 2026-09-22) — so no "full depth" line here.
+        "metered": {"label": "Credit pack",
+                    "price": f"${pack_price} one-time · no subscription",
+                    "points": [f"{pack_credits} API credits",
+                               "1 credit per call, 5 for heavy tools",
+                               "Credits never expire; nothing renews"]},
+        "enterprise": {"label": "Enterprise", "price": "Custom — priced with you",
+                       "points": ["Org-wide seats, raw exports, custom DCPI weights"]},
+    }
+    # "</" cannot appear inside the inline <script>
+    return _json.dumps({"plans": plans, "aliases": _CHECKOUT_ALIASES}).replace("</", "<\\/")
+
+
+_CHECKOUT_START_HTML = _CHECKOUT_START_HTML.replace("__PLANS_JSON__", _checkout_plans_json())
 
 
 @email_capture_bp.route("/checkout/start", methods=["GET"])
@@ -567,7 +628,7 @@ def checkout_initiate():
     already captured their email here."""
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip()
-    tier  = (data.get("tier") or "developer").strip().lower()
+    tier  = _checkout_tier(data.get("tier"))
     tool  = (data.get("tool") or "").strip()
     key   = (data.get("key") or "").strip()
     sid   = (data.get("session_id") or "").strip()
@@ -580,7 +641,8 @@ def checkout_initiate():
                     session_id=sid, tool=tool,
                     api_key_hint=key[:8] if key else None)
 
-    base = _STRIPE_LINKS.get(tier) or _STRIPE_LINKS["developer"]
+    # metered is not in the local map: read it from canon, like the rest.
+    base = _STRIPE_LINKS.get(tier) or _canon_link(tier) or _STRIPE_LINKS["developer"]
 
     # If caller didn't supply a client_reference_id, mint a pair-code
     # from their api_key (if any) so the webhook can attribute on success
