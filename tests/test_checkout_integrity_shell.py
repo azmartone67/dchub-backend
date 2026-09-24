@@ -41,7 +41,7 @@ CANON_FOUNDING = "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o"
 # button → indeterminate, so the "whole lane PASSES" tests serve the relay
 # its honest page. tests/test_relay_sells_what_it_says.py owns the relay cases.
 _HONEST_RELAY = ('<a href="https://api.dchub.cloud/pricing/upgrade?from=mcp_relay'
-                 '&amp;tier=metered&amp;direct=1">Unlock full data — $10 one-time</a>')
+                 '&amp;tier=metered&amp;direct=1">Get full data — $10 one-time</a>')
 
 
 def _serving(body, shell):

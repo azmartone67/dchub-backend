@@ -129,7 +129,7 @@ TIER_PRICE_LABEL = {
 # ── the one-time pack ─────────────────────────────────────────────────
 # 2026-09-02 (relay-sells-what-it-says). The $10 one-time pack is the ONLY
 # thing an anonymous or merely-identified caller is ever offered by copy
-# ("Unlock full data — $10 one-time" on /upgrade/h/<token>), so it is also
+# ("Get full data — $10 one-time" on /upgrade/h/<token>), so it is also
 # the only thing an unresolvable tier may fall through to. `metered` and
 # `pack5` are the same Stripe link (see STRIPE_LINKS); `metered` is the
 # canonical key, `pack5` the legacy alias mcp_conversion_plays still emits.

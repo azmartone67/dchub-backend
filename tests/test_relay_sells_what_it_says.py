@@ -210,18 +210,34 @@ def test_a_keyed_token_still_sells_the_pack_when_no_link_can_be_minted(relay_app
 
 def test_a_keyless_page_serves_the_bytes_it_always_served(relay_app):
     """Four-field links are in the wild. Their button and pack copy are pinned
-    as the exact bytes the page served before the fifth field existed."""
+    byte for byte (reworded 2026-09-24, r-sku-wall: the pack is not an unlock)."""
     app, relay, _ = relay_app
     tok = relay.make_relay_token("sess-1", "get_dchub_recommendation", "free")
     html = app.test_client().get(f"/upgrade/h/{tok}").get_data(as_text=True)
     assert ("<a class='btn' href='https://api.dchub.cloud/pricing/upgrade?"
             "from=mcp_relay&amp;tier=metered&amp;direct=1&amp;"
             "tool=get_dchub_recommendation&amp;sid=sess-1'>"
-            "Unlock full data — $10 one-time</a>") in html
+            "Get full data — $10 one-time</a>") in html
     assert ("<p>The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
-            "unlocks the full dataset — your agent's very next call returns "
-            "complete data, no reconnect needed.</p>") in html
+            "pays for full data on every call — your agent's very next call "
+            "returns complete data, no reconnect needed.</p>") in html
     assert "/go/c/" not in html
+
+
+@pytest.mark.parametrize("kref", [None, KREF], ids=["keyless", "keyed"])
+def test_the_relay_page_never_calls_the_pack_an_unlock(relay_app, kref):
+    """r-sku-wall (owner, 2026-09-24): the $10 pack is paid per call, never an
+    unlock; Pro keeps the unlock wording. This page sells only the pack, so the
+    word does not appear on it at all, in either variant. The MCP walls carry the
+    same rule (dchub-mcp-server test/pack-is-not-an-unlock.test.mjs)."""
+    app, relay, _ = relay_app
+    tok = (relay.make_relay_token("sess-u", "rank_markets", "free", kref=kref)
+           if kref else relay.make_relay_token("sess-u", "rank_markets", "free"))
+    html = app.test_client().get(f"/upgrade/h/{tok}").get_data(as_text=True)
+    assert "$10 one-time" in html, "the page did not render the pack at all"
+    assert "unlock" not in html.lower(), [
+        html[max(0, i - 60):i + 40] for i in range(len(html))
+        if html.lower().startswith("unlock", i)][:3]
 
 
 def test_the_shells_audit_costume_is_not_logged_as_a_human_open(monkeypatch):
@@ -250,7 +266,7 @@ def test_the_shell_wears_the_costume_the_relay_recognises():
 
 # ── 3 · lane 3 reads the relay page ──────────────────────────────────
 
-def _relay_html(tier, label="Unlock full data — $10 one-time", tool="analyze_site"):
+def _relay_html(tier, label="Get full data — $10 one-time", tool="analyze_site"):
     return ("<html><body><a class='btn' href='https://api.dchub.cloud/pricing/upgrade"
             "?from=mcp_relay&amp;tier=%s&amp;direct=1&amp;tool=%s'>%s</a></body></html>"
             % (tier, tool, label))

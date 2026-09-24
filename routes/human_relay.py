@@ -537,16 +537,16 @@ def relay_page(token):
         "and M&amp;A intelligence — and hit the paid data boundary.")
     pack_line = (
         "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
-        "unlocks the full dataset, and the credits land on the API key your "
-        "agent is already using."
+        "pays for full data on every call, and the credits land on the API "
+        "key your agent is already using."
         if keyed else
         "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
-        "unlocks the full dataset — your agent's very next call returns "
-        "complete data, no reconnect needed.")
+        "pays for full data on every call — your agent's very next call "
+        "returns complete data, no reconnect needed.")
     html = ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<meta name='robots' content='noindex'>"
-            "<title>Unlock DC Hub for your AI agent</title>"
+            "<title>DC Hub: full data for your AI agent</title>"
             "<style>body{font-family:system-ui;max-width:560px;margin:48px auto;"
             "padding:0 20px;line-height:1.55;color:#111}"
             ".btn{display:block;text-align:center;background:#3478f6;color:#fff;"
@@ -571,11 +571,11 @@ def relay_page(token):
             # changed the very anchor those two read.
             "form.cap ~ a.btn{background:#eef1f6;color:#333;font-weight:500}"
             "small{color:#888}</style></head><body>"
-            "<h1>Your AI agent found data worth unlocking</h1>"
+            "<h1>Your AI agent found data worth the full answer</h1>"
             "<p>%s</p>"
             "<p>%s</p>"
             "%s"
-            "<a class='btn' href='%s'>Unlock full data — $10 one-time</a>"
+            "<a class='btn' href='%s'>Get full data — $10 one-time</a>"
             "<p class='alt'>Prefer to look first? <a href='%s'>Explore the live "
             "data free in your browser</a> — no signup.</p>"
             "<p><small>DC Hub · dchub.cloud · data licensed CC-BY-4.0 · this "

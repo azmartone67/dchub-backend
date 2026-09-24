@@ -305,4 +305,4 @@ class TestTheOpen:
                            kref=PACK_REF)
         r = relay_client.get("/upgrade/h/" + tok)
         assert r.status_code == 200
-        assert b"Unlock full data" in r.data
+        assert b"Get full data" in r.data
