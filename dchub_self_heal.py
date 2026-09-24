@@ -1959,11 +1959,24 @@ FIXES["aggregator_v2"] = fix_aggregator_v2
 # from when /dcpi shipped a literal "276 MARKETS" string; phase 241 moved
 # it to a Jinja `{{ count }}` template variable, so any current match is
 # just the dynamic count rendering correctly.
+#
+# 2026-09-23: "sole text content" was the intent, but `>\s*—\s*<` does not say
+# it — it matches ANY em-dash with a tag on each side, including prose between
+# two inline elements. Measured live: /grid/PJM, /grid/CAISO and /grid/ERCOT
+# were each filed once for the SAME line, the AI-agents footer
+#     <a>https://dchub.cloud/mcp</a> — <code>get_grid_intelligence</code>
+# (a closing tag, a spaced dash, an opening tag), and the squasher queued all
+# three as defects. The pattern now requires an OPENING tag, the dash, and the
+# MATCHING closing tag — an element whose whole content is the dash, which is
+# what an unfilled data cell (`<td>—</td>`) actually looks like. Separators
+# between elements no longer match on any page, so no URL has to be added to
+# EMDASH_IGNORE_URLS for this. scripts/dchub_qa_crawl.py keeps an identical
+# copy (_PLACEHOLDER_RE); tests/test_emdash_placeholder_detector.py pins parity.
 import re as _hp_re
 
 HTML_BAD_PATTERNS = {
     # name                       -> str (literal) | re.Pattern (regex)
-    "— placeholder":              _hp_re.compile(r">[\s ]*—[\s ]*<"),
+    "— placeholder":              _hp_re.compile(r"<([A-Za-z][\w-]*)\b[^>]*>[\s ]*—[\s ]*</\1\s*>", _hp_re.I),
     "$$$$ pricing leak":          "$" * 4,
     "Save 34% stale text":        "Save 34%",
     "$249.50 stale text":         "$249.50",
