@@ -1015,7 +1015,9 @@ def run():
     Item J-unblock (2026-06-02): off-slot publishing support.
       - force=true OR ignore_slot=true (query OR JSON body) bypasses the
         08/12/16/20 UTC slot check entirely, so an operator can publish
-        any time (defaults to the first slot's topic).
+        any time. With a known ?topic= that topic's slot runs, even inside
+        another slot's HH:00-HH:14 window; without one, the current window's
+        slot runs, else the first slot's topic.
       - manual_copy (JSON body) overrides the topic-rotation default —
         if provided, that exact text is posted instead of the engine's
         composition. Lets operators publish a hand-written piece without
@@ -1044,16 +1046,15 @@ def run():
     _manual_copy = _p("manual_copy")
 
     now = datetime.datetime.utcnow()
+    _forced = _ignore_slot or _p("force")
     target_slot = None
-    for slot in SLOTS:
-        if now.hour == slot["hour"] and now.minute < 15:
-            target_slot = slot
-            break
-    # force/ignore_slot bypass: when set, pick a slot by ?topic= (if
-    # given and matched) or fall through to the first slot. This is
-    # broader than the old `force AND topic` path, which only worked
-    # if BOTH params were present.
-    if not target_slot and (_ignore_slot or _p("force")):
+    # force/ignore_slot with a known ?topic= picks that topic's slot. It is
+    # read BEFORE the current-hour window: a forced topic is the explicit
+    # override (linkedin-quad-daily.yml's workflow_dispatch force_topic), and
+    # reading it second meant any force+topic call landing in HH:00-HH:14 of
+    # 08/12/16/20 silently ran that hour's slot instead — at 08:04 a forced
+    # industry_pulse ran dcpi_mover (db-parity runs 35973090730, 35973119359).
+    if _forced:
         _topic = _p("topic")
         target_slot = next(
             (s for s in SLOTS if s["topic"] == _topic), None)
@@ -1066,8 +1067,15 @@ def run():
         if target_slot is None and _topic == "agent_demand":
             target_slot = {"hour": now.hour, "topic": "agent_demand",
                            "style": "data", "title": "Agent Demand · weekly"}
-        if target_slot is None:
-            target_slot = SLOTS[0]
+    if not target_slot:
+        for slot in SLOTS:
+            if now.hour == slot["hour"] and now.minute < 15:
+                target_slot = slot
+                break
+    # force/ignore_slot with no (or an unknown) topic, off-window: fall
+    # through to the first slot. Inside a window it keeps that hour's slot.
+    if not target_slot and _forced:
+        target_slot = SLOTS[0]
     # 2026-06-20: CATCH-UP. The heartbeat that drives this is GitHub-throttled
     # (~26 runs/day, stateless, no replay) so a slot's exact hour-window is
     # frequently missed entirely — which is why whole days had ZERO posts. On

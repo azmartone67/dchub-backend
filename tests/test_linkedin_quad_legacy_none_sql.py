@@ -220,6 +220,60 @@ def _assert_skipped(lq, body, hour, reason):
     assert error_msg == f"suppressed: {reason} — engine {_ENGINE_ERR}", row
 
 
+def _freeze_utc(monkeypatch, lq, hour, minute):
+    """Pin the clock run() reads (`datetime.datetime.utcnow()` in the route
+    module) to today at hour:minute UTC. Only the module's own `datetime`
+    name is swapped, so psycopg2 and the test's _today() keep the real one."""
+    import types
+
+    frozen = _dt.datetime.combine(_today(), _dt.time(hour, minute))
+
+    class _Frozen(_dt.datetime):
+        @classmethod
+        def utcnow(cls):
+            return frozen
+
+    shim = types.SimpleNamespace(**{k: getattr(_dt, k) for k in dir(_dt)
+                                    if not k.startswith("__")})
+    shim.datetime = _Frozen
+    monkeypatch.setattr(lq, "datetime", shim)
+    assert lq.datetime.datetime.utcnow() == frozen
+
+
+# ── slot window vs an explicit ?topic= ──────────────────────────────────
+
+@pytest.mark.parametrize("hour", [8, 12, 16, 20])
+def test_w1_explicit_topic_wins_inside_another_slots_window(lq, monkeypatch, hour):
+    # db-parity runs at any minute. Inside HH:00-HH:14 of a slot hour, run()
+    # used to pick the current-hour slot before reading ?topic=, so a forced
+    # industry_pulse/hyperscaler_deal ran dcpi_mover at 08:04 (CI runs
+    # 35973090730, 35973119359). A forced explicit topic is the override.
+    _freeze_utc(monkeypatch, lq, hour, 4)
+    topic, slot_hour = (("industry_pulse", 20) if hour != 20
+                        else ("hyperscaler_deal", 12))
+    _exec("DROP TABLE news")
+
+    body = _run(lq, topic)
+
+    assert body.get("slot", {}).get("topic") == topic, body
+    reason = ("no_industry_pulse_data" if topic == "industry_pulse"
+              else "no_hyperscaler_news")
+    _assert_skipped(lq, body, slot_hour, reason)
+    assert _row(hour) is None, "the current-hour slot was claimed instead"
+
+
+def test_w2_force_without_topic_inside_a_window_keeps_the_hours_slot(lq, monkeypatch):
+    # Control: with no ?topic= the current-hour slot still wins.
+    _freeze_utc(monkeypatch, lq, 8, 4)
+    from flask import Flask
+    app = Flask(__name__)
+    app.register_blueprint(lq.linkedin_quad_bp)
+    body = app.test_client().post("/api/v1/linkedin-quad/run?force=1").get_json()
+
+    assert body.get("slot", {}).get("topic") == "dcpi_mover", body
+    assert _row(8) is not None, body
+
+
 # ── hyperscaler_deal (12:00) ────────────────────────────────────────────
 
 def test_n1_hyperscaler_no_fresh_headline_skips_and_stamps(lq):
