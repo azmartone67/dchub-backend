@@ -356,6 +356,18 @@ textarea{min-height:110px;resize:vertical;}
 .alt a{color:var(--acc-light);text-decoration:none;border-bottom:1px dotted rgba(129,140,248,0.5);}
 .cal{display:inline-flex;align-items:center;gap:0.5rem;background:transparent;border:1px solid var(--bd);color:var(--tx);padding:0.65rem 1rem;border-radius:8px;text-decoration:none;font-weight:600;font-size:0.9rem;margin-top:1rem;}
 .cal:hover{border-color:var(--acc);}
+/* Customer quote: a named customer, approved for public use. Same card as
+   /testimonials, /pricing and the homepage. People only, never agent quotes. */
+.cq{margin:2.2rem 0 0;background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:1.8rem 2rem;position:relative;overflow:hidden;}
+.cq::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--green),var(--acc));}
+.cq blockquote{margin:0 0 1.2rem;font-size:1.15rem;line-height:1.6;font-weight:500;color:var(--tx);}
+.cq figcaption{display:flex;align-items:center;gap:0.85rem;flex-wrap:wrap;}
+.cq-avatar{width:40px;height:40px;flex:0 0 40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.9rem;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.3);}
+.cq-name{font-weight:700;font-size:0.95rem;}
+.cq-role{color:var(--tx2);font-size:0.88rem;}
+.cq-more{margin-left:auto;font-size:0.85rem;color:var(--tx2);text-decoration:none;}
+.cq-more:hover{color:var(--tx);}
+@media (max-width:640px){.cq{padding:1.4rem 1.2rem;}.cq blockquote{font-size:1.02rem;}.cq-more{margin-left:0;}}
 .foot{color:var(--tx3);font-size:0.8rem;margin-top:3rem;text-align:center;}
 </style>
 </head>
@@ -412,6 +424,15 @@ textarea{min-height:110px;resize:vertical;}
       </ul>
     </div>
   </div>
+
+  <figure class="cq" aria-label="What customers say">
+    <blockquote>&ldquo;DC Hub is now integral to how we evaluate every site. For so long, we&rsquo;ve had to piecemeal information from multiple sources. DC Hub has it all in one place and provides the clearest picture of infrastructure that we&rsquo;ve found.&rdquo;</blockquote>
+    <figcaption>
+      <span class="cq-avatar" aria-hidden="true">RB</span>
+      <span><span class="cq-name">Rich Bray</span><br><span class="cq-role">Development Manager, LPI Group</span></span>
+      <a class="cq-more" href="/testimonials">More from people and AI agents &rarr;</a>
+    </figcaption>
+  </figure>
 
   <p class="foot">DC Hub · the canonical data-center intelligence layer for AI agents.<br>Already on free tier? Your existing API key works here once you're upgraded — no migration.</p>
 </div>
