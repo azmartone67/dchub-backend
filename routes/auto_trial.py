@@ -376,6 +376,30 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                     # FAIL-OPEN — fall through to the ip_hash probes below.
                     pass
 
+            # ── r-mint-scan (2026-09-24): PER-CALLER MINT CEILING ─────────────
+            # Placed AFTER the presented-key probe (handing a caller the key it
+            # already holds is not a mint and is never limited) and BEFORE any
+            # new row is written. Week 2026-09-14 minted 11,442 keys from 145
+            # ip hashes against a ~200/week baseline, and a partner's feed shows
+            # repeated POST /keys/auto-mint probes. The (ip_hash, ua) reuse that
+            # used to absorb retries was removed on purpose (#4612/#4616: it
+            # handed a credential to a caller that never presented it), so a
+            # limited caller gets a refusal — never someone's existing key.
+            #
+            # Scope: the MCP gateway (internal key) reaches us from ITS egress,
+            # so the IP is not the agent's — count only the forwarded UA there.
+            # FAIL-OPEN inside check_mint_rate. Thresholds: routes/mint_guard.py.
+            try:
+                from routes.mint_guard import (check_mint_rate,
+                                               is_internal_request,
+                                               rate_limited_body)
+                _hit = check_mint_rate(cur, "trial", ip_key=ip_hash, ua=ua,
+                                       count_ip=not is_internal_request(req))
+            except Exception:
+                _hit = None
+            if _hit:
+                return rate_limited_body(_hit)
+
             # ── no (ip_hash, ua) reuse: mint fresh, don't hand a key back ──────
             # (revised 2026-09-15.) The durable identifier is the key the caller
             # holds — read above by the presented-key probe, and it survives IP
@@ -636,12 +660,20 @@ def auto_mint_endpoint():
     funnel). No email in the body → unchanged anonymous mint."""
     d = request.get_json(silent=True) or {}
     tool = (request.args.get("tool") or d.get("tool") or "").strip()
-    return jsonify(mint_trial_for_request(
+    out = mint_trial_for_request(
         request, tool,
         client_name=(d.get("client_name") or "").strip(),
         operator_email=(d.get("operator_email") or d.get("email") or "").strip(),
         operator_name=(d.get("operator_name") or "").strip(),
-    )), 200
+    )
+    # r-mint-scan (2026-09-24): a per-caller mint ceiling is a real 429 with
+    # Retry-After, not a 200 carrying ok:false — the MCP gateway's
+    # mintAutoTrial already treats !resp.ok as "fall back to the preview".
+    if isinstance(out, dict) and out.get("reason") == "rate_limited":
+        resp = jsonify(out)
+        resp.headers["Retry-After"] = str(int(out.get("retry_after") or 3600))
+        return resp, 429
+    return jsonify(out), 200
 
 
 def _bind_receipt_armed() -> bool:

@@ -1269,6 +1269,28 @@ jobs:
             echo "::error::the claim cap SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Key-mint scan guard (r-mint-scan, 2026-09-24) ─────────────────────
+      # Which trial-key mints are scan traffic, what "reused" means once the
+      # gate_carry seed is subtracted, and what the per-caller mint ceiling
+      # counts are all decided in SQL. Runs the real retention / funnel
+      # handlers, the ceiling and the radar detector against Postgres. Owns
+      # and drops its own database (mint_scan_guard_t).
+      - name: Mint scan guard SQL against a real Postgres
+        env:
+          MINT_SCAN_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_mint_scan_guard_sql.py -v --tb=short
+
+      - name: Prove the mint scan guard SQL test actually RAN
+        env:
+          MINT_SCAN_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_mint_scan_guard_sql.py \
+            -q -rs --tb=no > msg.txt 2>&1 || { cat msg.txt; exit 1; }
+          cat msg.txt
+          if grep -qi "skipped" msg.txt; then
+            echo "::error::the mint scan guard SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # crm_flush_last is the row the CRM health endpoint reads to describe the
       # process that actually flushes. Its recorder never raises, so SQL that
       # Postgres refuses (an ON CONFLICT target with no unique constraint) would

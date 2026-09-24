@@ -132,35 +132,60 @@ def mcp_retention():
                     c.rollback()
                 except Exception:
                     pass
-            cur.execute("""
-                SELECT date_trunc('week', minted_at)::date AS week, COUNT(*) AS minted,
-                       COUNT(*) FILTER (WHERE call_count > 1) AS reused_2plus,
-                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL
+            # ── r-mint-scan (2026-09-24): SCAN TRAFFIC IS FILTERED, NOT DELETED ──
+            # Week 2026-09-14 read minted 11,442 / reused_2plus 9,082 from 145
+            # ip hashes against a ~200/week baseline, and pct_reused_30d (the
+            # "79% reuse" KPI) was computed over those rows. Every column below
+            # is now read over NON-scan rows (routes/mint_guard.py defines scan)
+            # and each row publishes what was excluded, so the headline is
+            # honest AND the raw volume stays visible.
+            # "reused" also subtracts the gate_carry seed: a born-gated mint is
+            # INSERTed with call_count = N >= 10 and read as reused before its
+            # first call.
+            from routes.mint_guard import scored_trial_keys_cte, scan_definition_note
+            _cte, _cte_params = scored_trial_keys_cte("(%s || ' weeks')::interval")
+            cur.execute(f"""
+                WITH {_cte}
+                SELECT date_trunc('week', minted_at)::date AS week,
+                       COUNT(*) FILTER (WHERE NOT is_scan) AS minted,
+                       COUNT(*) FILTER (WHERE NOT is_scan AND real_calls > 1) AS reused_2plus,
+                       COUNT(*) FILTER (WHERE NOT is_scan AND last_used_at IS NOT NULL
                                 AND last_used_at > minted_at + interval '1 hour') AS returned_later,
-                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL
+                       COUNT(*) FILTER (WHERE NOT is_scan AND last_used_at IS NOT NULL
                                 AND date_trunc('week', last_used_at) > date_trunc('week', minted_at)) AS returned_next_week,
-                       COUNT(DISTINCT request_ip_hash) AS distinct_ips
-                FROM auto_trial_keys WHERE minted_at >= now() - (%s || ' weeks')::interval
+                       COUNT(DISTINCT request_ip_hash) FILTER (WHERE NOT is_scan) AS distinct_ips,
+                       COUNT(*) AS minted_incl_scan,
+                       COUNT(*) FILTER (WHERE is_scan) AS excluded_scan_mints,
+                       COUNT(DISTINCT request_ip_hash) FILTER (WHERE is_scan) AS excluded_scan_ips
+                FROM scored
                 GROUP BY week ORDER BY week
-            """, (weeks,))
+            """, (weeks,) + _cte_params)
             out["key_reuse"] = [dict(r) for r in cur.fetchall()]
-            cur.execute("""
-                SELECT COUNT(*) AS minted_30d,
-                       ROUND(100.0*COUNT(*) FILTER (WHERE call_count > 1)/NULLIF(COUNT(*),0),1) AS pct_reused_30d,
-                       ROUND(AVG(call_count),2) AS avg_calls_per_key_30d,
+            out["scan_exclusion"] = scan_definition_note()
+            _cte30, _cte30_params = scored_trial_keys_cte("interval '30 days'")
+            cur.execute(f"""
+                WITH {_cte30}
+                SELECT COUNT(*) FILTER (WHERE NOT is_scan) AS minted_30d,
+                       ROUND(100.0*COUNT(*) FILTER (WHERE NOT is_scan AND real_calls > 1)
+                             /NULLIF(COUNT(*) FILTER (WHERE NOT is_scan),0),1) AS pct_reused_30d,
+                       ROUND(AVG(real_calls) FILTER (WHERE NOT is_scan),2) AS avg_calls_per_key_30d,
                        -- r-retention fix (2026-06-19): the cross-session-return RATE is computed ONLY
                        -- over a MATURE cohort (keys minted 8-30d ago) so every key has had a full
                        -- subsequent ISO week in which to return. Including the last ~week would
                        -- right-censor it downward into a fake decline (the 'partial period = cliff'
                        -- trap r86b already fixed for ip_cohort). Volume (minted_30d) stays full-30d.
-                       COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days') AS mature_cohort_30d,
-                       COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days' AND last_used_at IS NOT NULL
+                       COUNT(*) FILTER (WHERE NOT is_scan AND minted_at < now() - interval '7 days') AS mature_cohort_30d,
+                       COUNT(*) FILTER (WHERE NOT is_scan AND minted_at < now() - interval '7 days' AND last_used_at IS NOT NULL
                                 AND date_trunc('week', last_used_at) > date_trunc('week', minted_at)) AS returned_next_week_mature,
-                       ROUND(100.0*COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days' AND last_used_at IS NOT NULL
+                       ROUND(100.0*COUNT(*) FILTER (WHERE NOT is_scan AND minted_at < now() - interval '7 days' AND last_used_at IS NOT NULL
                                 AND date_trunc('week', last_used_at) > date_trunc('week', minted_at))
-                             /NULLIF(COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days'),0),1) AS pct_returned_next_week_mature
-                FROM auto_trial_keys WHERE minted_at >= now() - interval '30 days'
-            """)
+                             /NULLIF(COUNT(*) FILTER (WHERE NOT is_scan AND minted_at < now() - interval '7 days'),0),1) AS pct_returned_next_week_mature,
+                       -- the pre-exclusion figures, so the before/after is on the page
+                       COUNT(*) AS minted_30d_incl_scan,
+                       COUNT(*) FILTER (WHERE is_scan) AS excluded_scan_mints_30d,
+                       ROUND(100.0*COUNT(*) FILTER (WHERE call_count > 1)/NULLIF(COUNT(*),0),1) AS pct_reused_30d_incl_scan
+                FROM scored
+            """, _cte30_params)
             row = cur.fetchone()
             out["summary"] = dict(row) if row else {}
             # r86b (2026-06-14): NEVER let the in-progress current week read as a
@@ -233,7 +258,9 @@ def mcp_retention():
                            "actually lift the 0.6% return rate.")}
             try:
                 # email-bound vs key-only return rate, same mature 8-30d cohort as summary.
-                cur.execute("""
+                # r-mint-scan: same non-scan population as summary.
+                cur.execute(f"""
+                    WITH {_cte30}
                     SELECT CASE WHEN operator_email IS NOT NULL AND operator_email <> ''
                                 THEN 'email_bound' ELSE 'key_only' END AS cohort,
                            COUNT(*) FILTER (WHERE minted_at < now() - interval '7 days') AS mature,
@@ -241,10 +268,10 @@ def mcp_retention():
                                     AND last_used_at IS NOT NULL
                                     AND date_trunc('week', last_used_at) > date_trunc('week', minted_at)
                                    ) AS returned_mature
-                    FROM auto_trial_keys
-                    WHERE minted_at >= now() - interval '30 days'
+                    FROM scored
+                    WHERE NOT is_scan
                     GROUP BY 1
-                """)
+                """, _cte30_params)
                 for r in cur.fetchall():
                     m = int(r["mature"] or 0); rt = int(r["returned_mature"] or 0)
                     ib[r["cohort"]] = {"mature_cohort": m, "returned_next_week_mature": rt,
@@ -329,14 +356,18 @@ def mcp_retention():
                 # pct_returned_next_week_mature is trial-only; this is the whole-cohort
                 # truth. Preserved as an ADDITIVE field so the tracked trial-only number
                 # keeps its meaning. anchor = mint/first-connect; same 8-30d mature window.
-                cur.execute("""
-                    WITH durable AS (
+                # r-mint-scan: the auto_trial half reads non-scan rows only.
+                # The LIKE below is written %% because this execute now binds
+                # params (the scan thresholds).
+                cur.execute(f"""
+                    WITH {_cte30},
+                    durable AS (
                         SELECT minted_at AS anchor, last_used_at
-                          FROM auto_trial_keys WHERE minted_at >= now() - interval '30 days'
+                          FROM scored WHERE NOT is_scan
                         UNION ALL
                         SELECT created_at AS anchor, last_used_at
                           FROM mcp_dev_keys
-                         WHERE api_key LIKE 'dch_live_%' AND created_at >= now() - interval '30 days'
+                         WHERE api_key LIKE 'dch_live_%%' AND created_at >= now() - interval '30 days'
                     )
                     SELECT COUNT(*) FILTER (WHERE anchor < now() - interval '7 days') AS mature,
                            COUNT(*) FILTER (WHERE anchor < now() - interval '7 days'
@@ -344,7 +375,7 @@ def mcp_retention():
                                     AND date_trunc('week', last_used_at) > date_trunc('week', anchor)
                                    ) AS returned
                     FROM durable
-                """)
+                """, _cte30_params)
                 d = cur.fetchone() or {}
                 dm = int(d.get("mature") or 0); dr = int(d.get("returned") or 0)
                 out["summary"]["mature_cohort_all_durable_30d"] = dm

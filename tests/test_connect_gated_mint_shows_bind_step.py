@@ -90,6 +90,10 @@ class _Db:
             return None
         if "and request_ua = %s" in sql:                      # same ip + user agent
             return None
+        if "count(*) filter" in sql and "request_ip_hash = %(ip)s" in sql:
+            # r-mint-scan per-caller mint ceiling (routes/mint_guard.py):
+            # this caller is under every ceiling.
+            return (0, 0, 0, 0, None, None, None, None)
         if "max(coalesce(call_count, 0))" in sql:             # gate-carry count for this ip
             if isinstance(self._carry, list):
                 return (self._carry.pop(0) if self._carry else 0,)
