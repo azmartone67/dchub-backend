@@ -67,15 +67,52 @@ def test_the_og_tier_opts_into_the_public_cache_key():
     assert tier.get("publicKeyCache") is True, (
         "the OG tier no longer requests a public cache key — purge-by-URL "
         "cannot address Railway-keyed objects")
+    assert tier.get("pkcAsset") is True, (
+        "the OG tier lost pkcAsset, so it takes the API semantics: every ?_= "
+        "probe becomes a one-shot entry no purge can name, and the card store "
+        "starts obeying origin directives it never obeyed")
 
 
-def test_live_api_tiers_do_not_take_the_new_path():
-    """Scoped on purpose: this is the card path, not the API hot path."""
+def test_warm_tier_and_the_default_fallthrough_take_the_public_key_path():
+    """2026-09-24 (4.9.75): warm opted in after /api/v1/stats served a stale
+    boot-degraded body that no purge-by-URL could evict. Warm is ALSO the
+    fallthrough tier, so an unmapped path must come along with it."""
+    for p in ("/api/v1/stats", "/api/v1/stats/canonical", "/api/v1/deals",
+              "/api/v1/zzz-unmapped-path"):
+        assert _node(f"getRouteTier({p!r}) === CACHE_TIERS.warm") is True, \
+            f"{p} is no longer on the warm tier — re-check this guard's premise"
+        assert _node(f"!!getRouteTier({p!r}).publicKeyCache") is True, \
+            f"{p} fell back to cf.cacheEverything under the Railway URL"
+        assert _node(f"!!getRouteTier({p!r}).pkcAsset") is False, \
+            f"{p} took asset semantics (?_= stripped, origin directives ignored)"
+
+
+def test_other_api_tiers_do_not_take_the_new_path():
+    """Scoped on purpose: hot/cold/emergency/none keep their current edge lane."""
     # `!!` because JSON.stringify(undefined) emits nothing at all, which would
     # come back as a decode error rather than a clean false.
-    for p in ("/api/v1/stats/canonical", "/api/news", "/api/v1/facilities"):
+    for p in ("/api/news", "/api/v1/facilities", "/api/v1/search", "/api/v1/map",
+              "/api/auth/x"):
+        assert _node(f"getRouteTier({p!r}) !== CACHE_TIERS.warm") is True, \
+            f"{p} moved onto warm — pick another non-warm sample"
         assert _node(f"!!getRouteTier({p!r}).publicKeyCache") is False, \
-            f"{p} was switched onto the asset cache path"
+            f"{p} was switched onto the public-key cache path"
+
+
+def test_api_keys_keep_the_cache_buster():
+    """`?_=$(date +%s)` is how monitors read FRESH API data. Stripping it on the
+    warm tier would turn every such probe into a hit."""
+    a = _node("_assetCacheKey(new URL('https://api.dchub.cloud/api/v1/stats?_=1'), false).url")
+    b = _node("_assetCacheKey(new URL('https://api.dchub.cloud/api/v1/stats?_=2'), false).url")
+    assert a != b and "_=1" in a, f"API cache-buster was stripped: {a} / {b}"
+
+
+def test_step_1_5_and_step_2_use_the_same_key_mode():
+    """match() and put() must agree on stripBust, or every lookup misses."""
+    src = open(WORKER, encoding="utf-8").read()
+    assert "await assetCacheMatch(url, _pkcStrip)" in src
+    assert "assetCachePut(ctx, url, assetClone, tier.edgeTtl, _pkcStrip)" in src
+    assert "const _pkcStrip = !!tier.pkcAsset;" in src
 
 
 def test_the_cache_key_is_the_public_url_not_the_origin():
@@ -119,7 +156,7 @@ def test_the_asset_cache_is_actually_consulted_and_filled():
     already spent is behaviour, and is fenced by EXECUTION in
     tests/test_worker_og_body_survives_edge_cache.py."""
     src = open(WORKER, encoding="utf-8").read()
-    assert "await assetCacheMatch(url)" in src, "nothing reads the public-key cache"
+    assert "await assetCacheMatch(url" in src, "nothing reads the public-key cache"
     call = next((l for l in src.splitlines()
                  if "assetCachePut(ctx, url" in l
                  and not l.lstrip().startswith("function")), None)
@@ -128,7 +165,7 @@ def test_the_asset_cache_is_actually_consulted_and_filled():
         f"assetCachePut is handed the client's own response again: {call.strip()} — "
         "that response's body is spent by `new Response(resp.body, resp)`, which is "
         "the 2026-09-08 blank-card outage. Pass a clone taken BEFORE that line.")
-    assert "x-dc-hub-backend', 'edge-asset-cache'" in src, \
+    assert "cached.headers.set('x-dc-hub-backend', tier.pkcAsset ? 'edge-asset-cache' : 'edge-public-cache')" in src, \
         "a hit from this cache is indistinguishable from an origin fetch"
 
 

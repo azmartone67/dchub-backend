@@ -90,20 +90,29 @@ def _step2_sequence(src):
     return seq
 
 
-def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False):
+ASSET_TIER = "{ browserMaxAge: 604800, edgeTtl: 604800, publicKeyCache: true, pkcAsset: true }"
+WARM_TIER = "{ browserMaxAge: 180, edgeTtl: 300, publicKeyCache: true }"
+
+
+def _run(og_path="/api/v1/og/dynamic.png", has_api_key=False, tier=ASSET_TIER,
+         content_type="image/png", cache_control="public, max-age=604800, immutable",
+         set_cookie=None):
     """Execute the REAL assetCachePut + the REAL STEP-2 ordering on a streaming
     body, and report what the client and the cache each ended up with."""
     src = open(WORKER, encoding="utf-8").read()
+    extra_hdr = f", 'set-cookie': {json.dumps(set_cookie)}" if set_cookie else ""
     js = f"""
 {_block(src, "function _assetCacheKey(", "}")}
+{_block(src, "function _pkcStorable(", "}")}
+{_block(src, "function originAllowsSharedStore(", "}")}
 {_block(src, "function assetCachePut(", "}")}
 
 // ---- stubs for everything STEP 2 closes over ------------------------------
 const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
 const mkOrigin = () => new Response(
   new ReadableStream({{ start(c) {{ c.enqueue(PNG); c.close(); }} }}),
-  {{ status: 200, headers: {{ 'content-type': 'image/png',
-                             'cache-control': 'public, max-age=604800, immutable' }} }});
+  {{ status: 200, headers: {{ 'content-type': {json.dumps(content_type)},
+                             'cache-control': {json.dumps(cache_control)}{extra_hdr} }} }});
 
 let stored = null;
 globalThis.caches = {{ default: {{
@@ -122,8 +131,9 @@ const hasCredential = {str(has_api_key).lower()};
 const startTime = Date.now();
 const attempts = 1;
 const WORKER_VERSION = 'test';
-const tier = {{ browserMaxAge: 604800, edgeTtl: 604800, publicKeyCache: true }};
+const tier = {tier};
 const _pkc = !!(tier.publicKeyCache && isGet && !hasCredential);
+const _pkcStrip = !!tier.pkcAsset;
 const addCORS = (r) => r;
 const cacheControlFor = () => 'public, max-age=604800';
 const kvIsCacheable = () => false;
@@ -205,3 +215,36 @@ console.log(JSON.stringify({{ escaped: err }}));
         "a rejected caches.default.put() escaped assetCachePut into waitUntil. "
         "An unhandled waitUntil rejection fails the whole request — this is "
         "exactly how the OG route started answering 1101.")
+
+
+# ── the warm (API) tier: same STEP-2 code, stricter store gate (4.9.75) ─────
+
+def test_warm_tier_stores_a_public_api_response_and_keeps_the_client_body():
+    """/api/v1/stats answers `public, ...`: it must now be stored under the
+    public key, and the client must still get every byte."""
+    r = _run("/api/v1/stats", tier=WARM_TIER, content_type="application/json",
+             cache_control="public, max-age=300, s-maxage=300, stale-while-revalidate=86400")
+    assert r["client_error"] is None and r["client_bytes"] == r["expected_bytes"]
+    assert r["stored_bytes"] == r["expected_bytes"], (
+        "a public warm-tier response was not stored — the warm tier would have "
+        "NO edge copy at all, since it no longer passes cf.cacheTtl to the origin fetch")
+
+
+@pytest.mark.parametrize("cc,cookie", [
+    ("private, no-store, max-age=0", None),                # /api/v1/pipeline, measured
+    ("no-store, no-cache, must-revalidate, max-age=0", None),  # /api/v1/deals, measured
+    ("public, max-age=300", "sid=abc; Path=/"),           # per-visitor response
+])
+def test_warm_tier_never_stores_what_a_shared_cache_must_not_keep(cc, cookie):
+    r = _run("/api/v1/pipeline", tier=WARM_TIER, content_type="application/json",
+             cache_control=cc, set_cookie=cookie)
+    assert r["client_error"] is None and r["client_bytes"] == r["expected_bytes"]
+    assert r["stored_bytes"] is None, (
+        f"warm tier stored a response the origin marked {cc!r} / Set-Cookie={cookie!r} "
+        "under a zone-wide key — one caller's body would be served to everyone")
+
+
+def test_asset_tier_still_stores_regardless_of_origin_directives():
+    """The asset tier's old behaviour is kept on purpose (deterministic PNGs)."""
+    r = _run(cache_control="private, max-age=0")
+    assert r["stored_bytes"] == r["expected_bytes"]
