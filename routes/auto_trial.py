@@ -219,6 +219,26 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
             "claudebot", "google-extended", "perplexitybot", "dotbot", "mj12bot",
             "crawler", "spider")):
         return {"ok": False, "reason": "bot_skip", "bot": True}
+    # r-no-keys-for-ai-crawlers (2026-09-24): the list above predates the named
+    # AI crawlers. Measured (auto_trial_keys, 24h): OAI-SearchBot minted 169 keys
+    # across 62 IPs and 129 REST paths, YouBot 8 — one key per fetch, never
+    # presented again. The citation classifier (ai_citation_signals.UA_TOKENS)
+    # keeps the maintained list, so reuse it instead of growing a second one —
+    # but ONLY its crawler classes (search + training). Its USER_FETCH class is a
+    # human's request and must keep getting keys: Claude-User is the UA of the
+    # Anthropic Messages-API MCP connector (dchub-mcp-server
+    # _resolveClaudeConnector; 43 calls from 10 IPs in 7d), and ChatGPT-User is
+    # a person asking ChatGPT. Crawlers still get the anonymous data; they get
+    # no key. Deliberately NOT a bare "bot" substring either: a real agent may
+    # be named "acme-siting-bot".
+    try:
+        from ai_citation_signals import ai_agent_for, CRAWLER_CLASSES
+        _ai_agent = ai_agent_for(ua)
+        _ai_crawler = bool(_ai_agent) and _ai_agent[1] in CRAWLER_CLASSES
+    except Exception:
+        _ai_crawler = False
+    if _ai_crawler or "youbot" in _ua_l:
+        return {"ok": False, "reason": "bot_skip", "bot": True}
     ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:16]
 
     c = _conn()

@@ -175,6 +175,18 @@ def _ua_token(ua_lower: str):
     return None
 
 
+# Crawlers index or train; nobody is waiting on the fetch. USER_FETCH is a
+# person's request and is deliberately NOT here.
+CRAWLER_CLASSES = frozenset({SEARCH_CRAWLER, TRAINING_CRAWLER})
+
+
+def ai_agent_for(user_agent: str):
+    """(token, class, source) when the UA carries a known AI fetcher/crawler
+    token (UA_TOKENS), else None. Public for callers outside this module
+    (routes/auto_trial: no trial keys for these UAs)."""
+    return _ua_token((user_agent or "").lower())
+
+
 def _is_non_human_ua(ua_lower: str) -> bool:
     if not ua_lower:
         return True
