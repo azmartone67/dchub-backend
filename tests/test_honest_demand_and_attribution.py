@@ -334,3 +334,96 @@ def test_touched_files_are_wellformed(rel):
         ast.parse(src)
     else:
         assert src.count("<script>") == src.count("</script>")
+
+
+# ── 6. r-two-attributions (2026-09-24): both attributions, each named ────────
+#
+# The tile printed "0 of these trace ... to an MCP signal (the MCP-attributable
+# figure)" while /handoff-funnel's paid_attributed read 7d=2, and ops read the
+# 0 as "no MCP sales". Both were true over different populations: the two
+# attributed payments were credit packs, which carry no Stripe customer and so
+# never enter honest paid. These tests RENDER the real template in node — a
+# substring on the source cannot tell a label that prints from one that doesn't.
+
+_PAID_SUB_START = "const paFmt ="
+_PAID_SUB_END = "not the revenue KPI`;"
+
+# Live values, 2026-09-24 (mcp_checkout_payments / mcp_conversions read-only).
+_REC_0924 = {"measured": True, "conversions_30d": 6, "honest_paid_30d": 4,
+             "excluded_by_honest_filter": 2, "signal_bridged_30d": 0,
+             "paid_attributed_7d": 2, "paid_attributed_30d": 2,
+             "paid_attributed_definition_version": 3}
+
+
+def _render_paid_sub(rec, html=None):
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    html = html if html is not None else _read("static/mcp-dashboard.html")
+    i = html.find(_PAID_SUB_START)
+    j = html.find(_PAID_SUB_END, i)
+    assert i >= 0 and j > i, "paid-tile anchors moved; update the slice"
+    body = html[i:j + len(_PAID_SUB_END)]
+    js = ("const rec = " + json.dumps(rec) + ";\n"
+          "const recOK = !!(rec && rec.measured && rec.honest_paid_30d != null);\n"
+          + body + "\nprocess.stdout.write(paidSub);\n")
+    proc = subprocess.run([node, "-e", js], capture_output=True, text=True,
+                          timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def paid_tile_error(rec, out):
+    """None if the rendered tile is honest about both attributions."""
+    if "the MCP-attributable figure" in out:
+        return "signal_bridged is still labelled THE MCP-attributable figure"
+    for win in ("7d", "30d"):
+        v = rec.get("paid_attributed_" + win)
+        want = "n/a</b> " + win if v is None else f"<b>{v}</b> {win}"
+        if want not in out:
+            return f"paid_attributed {win}={v!r} is not printed as {want!r}"
+    if "not a subset" not in out:
+        return "paid_attributed is printed without saying it is a different population"
+    return None
+
+
+def test_tile_prints_both_attributions_on_the_real_0924_numbers():
+    out = _render_paid_sub(_REC_0924)
+    assert paid_tile_error(_REC_0924, out) is None, out
+    assert "<b>0</b> of these trace end-to-end" in out, (
+        "signal_bridged must still be printed, not replaced")
+
+
+def test_tile_says_unmeasured_not_zero():
+    rec = dict(_REC_0924, paid_attributed_7d=None, paid_attributed_30d=None)
+    out = _render_paid_sub(rec)
+    assert paid_tile_error(rec, out) is None, out
+
+
+# MUST-FAIL CONTROL
+def test_checker_rejects_the_pre_fix_tile():
+    """The copy that shipped until 2026-09-24, rendered through the same
+    harness, must be rejected — else paid_tile_error is a no-op."""
+    pre = ("const paFmt = null; const paidSub = recOK\n"
+           "  ? `honest paid — Stripe customer present, seed/comp/NLR excluded`\n"
+           "    + ` · <b>${rec.signal_bridged_30d ?? 0}</b> of these trace end-to-end to an MCP signal`\n"
+           "    + ` (the MCP-attributable figure)`\n"
+           "  : `raw — not the revenue KPI`;")
+    out = _render_paid_sub(_REC_0924, html=pre)
+    assert paid_tile_error(_REC_0924, out) is not None, out
+
+
+def test_funnel_publishes_paid_attributed_from_the_canonical_builder():
+    src = _read("flask_mcp_endpoints.py")
+    block = src.split("r-two-attributions (2026-09-24)")[1][:5000]
+    assert "_paid_attributed_count_sql(_pa_iv)" in block, (
+        "paid_attributed must come from routes/handoff_definition's builder, "
+        "the one /handoff-funnel uses, never a second SQL copy")
+    for key in ("paid_attributed_7d", "paid_attributed_30d",
+                "paid_attributed_population", "signal_bridged_population"):
+        assert f'"{key}"' in block, f"reconciliation block lacks {key}"
+    assert "as MCP-attributable revenue" not in src, (
+        "the note still tells readers signal_bridged IS MCP-attributable revenue")

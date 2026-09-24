@@ -6385,6 +6385,31 @@ def mcp_funnel():
             # above errored, honest_paid is None and the block SAYS so rather
             # than silently falling back to the looser count — a tile reading
             # this must be able to tell "not measured" from "measured zero".
+            # ★★★ r-two-attributions (2026-09-24): signal_bridged read 0 while
+            # /handoff-funnel's paid_attributed read 7d=2, and the tile called
+            # the 0 "the MCP-attributable figure". Both are correct; they count
+            # DIFFERENT populations. signal_bridged is a subset of honest paid
+            # mcp_conversions (Stripe customer present), and a credit-pack
+            # purchase has no Stripe customer, so it never enters that
+            # population, bridged or not. paid_attributed counts Checkout
+            # payments (packs included) sold through a relayed /go/c click.
+            # Measured 2026-09-24: both paid_attributed payments were packs
+            # (stripe_customer_id NULL on their mcp_conversions rows), the 4
+            # honest-paid rows were subscriptions with no signal on record.
+            # Published side by side from the SAME builder /handoff-funnel
+            # uses. Neither is relabelled as the other. Own try/except:
+            # None means "not measured", never 0.
+            _pa = {}
+            for _pa_win, _pa_iv in (("7d", "7 days"), ("30d", "30 days")):
+                try:
+                    cur.execute(_paid_attributed_count_sql(_pa_iv))
+                    _r = cur.fetchone()
+                    _pa[_pa_win] = int(_r[0]) if _r and _r[0] is not None else 0
+                except Exception as e:
+                    try: conn.rollback()
+                    except Exception: pass
+                    _pa[_pa_win] = None
+                    out["paid_attributed_error"] = str(e)[:120]
             try:
                 _psa = out.get("paid_signal_attribution_30d") or {}
                 _c30 = out.get("conversions_30d")
@@ -6398,6 +6423,23 @@ def mcp_funnel():
                         if (_c30 is not None and _honest is not None) else None),
                     "signal_bridged_30d": _bridged,
                     "measured": _honest is not None,
+                    "signal_bridged_population": (
+                        "honest paid mcp_conversions rows only (Stripe "
+                        "customer present). Credit-pack purchases carry no "
+                        "Stripe customer and are never in this population."),
+                    # NOT a ladder rung and NOT a subset of honest_paid_30d:
+                    # distinct sessions/key refs over mcp_checkout_payments.
+                    "paid_attributed_7d": _pa.get("7d"),
+                    "paid_attributed_30d": _pa.get("30d"),
+                    "paid_attributed_definition_version": (
+                        _paid_attributed_definition()["definition_version"]),
+                    "paid_attributed_population": (
+                        "paid Checkout Sessions (mcp_checkout_payments, packs "
+                        "included) sold through a signed, real-UA relayed /go/c "
+                        "click, counted as distinct session or pk-/k- key ref. "
+                        "Same builder as /api/v1/mcp/handoff-funnel "
+                        "steps.paid_attributed. A different population from "
+                        "signal_bridged_30d, not a subset of honest_paid_30d."),
                     "ladder": (
                         "conversions_30d >= honest_paid_30d >= "
                         "signal_bridged_30d — each step applies a STRICTER "
@@ -6412,7 +6454,11 @@ def mcp_funnel():
                         "missing data. signal_bridged_30d is how many of the "
                         "honest paid can be traced end-to-end to an upstream "
                         "mcp_upgrade_signal. ★Quote honest_paid_30d as revenue "
-                        "and signal_bridged_30d as MCP-attributable revenue. "
+                        "and signal_bridged_30d as signal-bridged revenue. "
+                        "paid_attributed_7d/30d is a separate count (relayed "
+                        "checkout payments, packs included), not a rung of "
+                        "this ladder; quote it beside signal_bridged_30d, "
+                        "never in place of it. "
                         "conversions_30d is the loosest of the three and is "
                         "the one that must NOT be labelled 'the revenue KPI'."),
                 }
