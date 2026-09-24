@@ -685,3 +685,69 @@ def test_probe_host_lock_still_applies_with_grep(tmp_path):
 def test_the_prompt_tells_the_agent_to_use_grep_not_pipes():
     t = (TOOLS / "prompt.md").read_text()
     assert "--grep" in t and "Do not pipe or redirect" in t
+
+
+# ══ 12 · excluded finding classes (operator_profile_gap) ═══════════════════
+
+GAP_ITEM = {"url": "/operators/equinix", "count": 541,
+            "issue": "operator_profile_gap:Equinix",
+            "detail": "Operator 'Equinix' has 541 facilities tracked but 80% missing power_mw"}
+
+
+def test_operator_profile_gap_is_excluded_by_the_detectors_issue():
+    row = _row(finding_key="/operators/equinix", title="")
+    assert al.pick_candidate([row], {"/operators/equinix"}, NOW,
+                             live_items={"/operators/equinix": GAP_ITEM}) is None
+
+
+def test_operator_profile_gap_is_excluded_by_the_row_title_alone():
+    row = _row(finding_key="/operators/digital-realty",
+               title="operator_profile_gap:Digital Realty")
+    assert al.pick_candidate([row], {"/operators/digital-realty"}, NOW) is None
+
+
+def test_a_real_defect_on_an_operator_page_is_still_claimable():
+    # matched on the ISSUE, never the URL
+    row = _row(finding_key="/operators/equinix", title="site_sentinel_unhealthy")
+    item = {"url": "/operators/equinix", "issue": "site_sentinel_unhealthy:/operators/equinix"}
+    got = al.pick_candidate([row], {"/operators/equinix"}, NOW,
+                            live_items={"/operators/equinix": item})
+    assert got is row
+
+
+def test_the_next_eligible_row_is_picked_past_an_excluded_one():
+    gap = _row(id=1, finding_key="/operators/equinix", seen_count=99)
+    real = _row(id=2, finding_key="https://dchub.cloud/dcpi")
+    got = al.pick_candidate([gap, real], {"/operators/equinix", "https://dchub.cloud/dcpi"},
+                            NOW, live_items={"/operators/equinix": GAP_ITEM})
+    assert got["id"] == 2
+
+
+def test_claim_next_hands_the_live_detector_items_to_the_exclusion(monkeypatch):
+    """Drives claim_next itself (no Postgres): the wiring, not just the helper.
+    Only the row TITLE is blank here, so only the detector item can exclude it."""
+    gap = _row(id=7, finding_key="/operators/equinix", title="", requested_at=None)
+
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): self.last = a
+        def fetchone(self): return (7,)
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def cursor(self): return _Cur()
+        def commit(self): pass
+
+    monkeypatch.setattr(al, "_conn", lambda: _Conn())
+    monkeypatch.setattr(al, "_ensure_columns", lambda cur: True)
+    monkeypatch.setattr(al, "reclaim_stale", lambda cur, now=None: 0)
+    monkeypatch.setattr(al, "_used_24h", lambda cur: 0)
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [gap])
+    d = al.claim_next(live={"ok": True, "items": {"/operators/equinix": GAP_ITEM}})
+    assert d["ok"] and "brief" not in d, d
+    # control: the same row with a non-excluded issue IS claimed through the same path
+    d2 = al.claim_next(live={"ok": True, "items": {"/operators/equinix": {
+        "url": "/operators/equinix", "issue": "site_sentinel_unhealthy"}}})
+    assert d2.get("brief", {}).get("queue_id") == 7, d2
