@@ -535,14 +535,33 @@ def relay_page(token):
         if tool else
         "Your AI assistant was using DC Hub — live data-center, grid, fiber "
         "and M&amp;A intelligence — and hit the paid data boundary.")
-    pack_line = (
-        "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
-        "pays for full data on every call, and the credits land on the API "
-        "key your agent is already using."
-        if keyed else
-        "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
-        "pays for full data on every call — your agent's very next call "
-        "returns complete data, no reconnect needed.")
+    # ★ r-relay-honest (2026-09-24): say what the checkout actually binds to.
+    # "Your agent's very next call returns complete data" is true only when the
+    # purchase binds to something the agent's next call presents: its key (the
+    # keyed /go/c button) or its session (sid= on /pricing/upgrade, which the
+    # pack webhook binds). A token with neither — every keyless, sessionless
+    # caller, live tokens carry sid='' — buys a pack bound to nothing: the
+    # webhook finds or mints a key for the checkout email, grants the credits
+    # there and emails it (main.py pack grant). The agent's current connection
+    # never sees it. The MCP side already refuses this promise for the same
+    # caller (_afterPayClause); the page now says the same thing.
+    if keyed:
+        pack_line = (
+            "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
+            "pays for full data on every call, and the credits land on the API "
+            "key your agent is already using.")
+    elif (info or {}).get("sid"):
+        pack_line = (
+            "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
+            "pays for full data on every call — your agent's very next call "
+            "returns complete data, no reconnect needed.")
+    else:
+        pack_line = (
+            "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
+            "pays for full data on every call. This link isn't tied to your "
+            "agent's connection, so after checkout DC Hub emails an API key "
+            "with the credits to the address you pay with. Give that key to "
+            "your agent: it sends it as the <code>X-API-Key</code> header.")
     # r-relay-teaser (2026-09-24): ONE withheld number, free, looked up by the
     # token (routes/relay_teaser: stored server-side so the agent never sees it).
     teaser_html = ""

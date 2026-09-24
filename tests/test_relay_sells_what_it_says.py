@@ -357,3 +357,40 @@ def test_lane3_reads_the_relay_surface_live():
     assert "resolve_tier(tool_param, tier_param)" in body, \
         "resolve the href the way the backend does, not by hand"
     assert "_relay_label_vs_plan(canon)" in src[src.index("def _lane_label_vs_plan"):i]
+
+
+# ── r-relay-honest (2026-09-24): promise only what the checkout binds to ──
+# "Your agent's very next call returns complete data" is true when the pack
+# binds to the agent's key (keyed /go/c) or session (sid= on /pricing/upgrade).
+# A keyless, sessionless token (live tokens carry sid='') binds to nothing: the
+# webhook mints/finds a key for the checkout email and emails it. That page must
+# say so, and must not make the promise.
+
+def test_a_sessionless_keyless_page_does_not_promise_the_next_call(relay_app):
+    app, relay, _ = relay_app
+    tok = relay.make_relay_token("", "get_fiber_intel", "IDENTIFIED")
+    html = app.test_client().get(f"/upgrade/h/{tok}").get_data(as_text=True)
+    assert "very next call" not in html
+    assert "no reconnect needed" not in html
+    assert ("This link isn't tied to your agent's connection, so after checkout "
+            "DC Hub emails an API key with the credits to the address you pay "
+            "with. Give that key to your agent: it sends it as the "
+            "<code>X-API-Key</code> header.") in html
+    # the button is unchanged: same pack, no sid, still one button
+    q, label = _button(html)
+    assert q["tier"] and "sid" not in q and "$10 one-time" in label
+    assert "unlock" not in html.lower()
+
+
+def test_the_promise_stays_where_it_is_true(relay_app):
+    """Session-bound pages keep the promise (pinned byte for byte above); a
+    sessionless page never carries it, whatever the tool or tier."""
+    app, relay, _ = relay_app
+    for tool in ("get_grid_intelligence", "get_water_risk", "rank_markets"):
+        for tier in ("free", "IDENTIFIED"):
+            bound = app.test_client().get(
+                "/upgrade/h/" + relay.make_relay_token("sess-z", tool, tier)).get_data(as_text=True)
+            loose = app.test_client().get(
+                "/upgrade/h/" + relay.make_relay_token("", tool, tier)).get_data(as_text=True)
+            assert "very next call" in bound, (tool, tier)
+            assert "very next call" not in loose, (tool, tier)
