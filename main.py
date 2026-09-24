@@ -6866,6 +6866,28 @@ def auto_issue_key_for_ai_agents():
         # wall offers the plan that opens the export instead.
         if _is_bulk_export_path(path):
             return None
+        # ★ r-no-keys-on-ops (2026-09-24, owner): internal / ops / site-widget
+        # paths never mint. Measured on auto_trial_keys (48h): one Claude-desktop
+        # UA on 38.77.23.151 minted 553 keys on /api/v1/mcp/funnel + /retention
+        # in 2.5h (a dashboard polling them); another on 72.208.88.69 minted one
+        # per poll of /api/v1/testimonials*. A key there opens nothing a caller
+        # builds on; it only inflates mint counts. The endpoints answer as
+        # before, keyless. (/api/founding-members is outside /api/v1/ and never
+        # reached this hook.) Inline, not a helper: several tests lift this
+        # function out of main.py by name, and a helper they do not lift turns
+        # into a NameError that the fail-soft except below swallows — the hook
+        # then mints nothing anywhere, silently.
+        if path.startswith((
+                "/api/v1/brain/",
+                "/api/v1/testimonials",       # /testimonials and /testimonials/stats
+                "/api/v1/founding-members",
+                "/api/v1/founding-customers",
+                "/api/v1/mcp/funnel",
+                "/api/v1/mcp/retention",
+                "/api/v1/mcp/dashboard",
+                "/api/v1/ops/",
+                "/api/v1/admin/")):
+            return None
         # Bail if the caller already has any auth shape.
         if (request.headers.get("X-API-Key")
                 or request.headers.get("x-api-key")

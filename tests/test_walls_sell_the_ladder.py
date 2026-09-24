@@ -176,6 +176,39 @@ def test_the_ai_agent_hook_still_mints_elsewhere(mints):
     assert len(mints) == 1
 
 
+# r-no-keys-on-ops (2026-09-24, owner): internal/ops paths never mint. Measured:
+# 553 keys on /api/v1/mcp/funnel + /retention from one dashboard in 2.5h, one
+# per poll of /api/v1/testimonials* from another.
+@pytest.mark.parametrize("path", [
+    "/api/v1/brain/squasher.json", "/api/v1/brain/autopilot/recent",
+    "/api/v1/testimonials", "/api/v1/testimonials/stats",
+    "/api/v1/founding-customers/count", "/api/v1/founding-members",
+    "/api/v1/mcp/funnel", "/api/v1/mcp/retention", "/api/v1/mcp/dashboard",
+    "/api/v1/ops/claims", "/api/v1/admin/relay/stats",
+])
+def test_the_ai_agent_hook_mints_nothing_on_an_ops_path(mints, path):
+    hook = _hook()
+    with flask.Flask("walls-ladder").test_request_context(
+            path, headers={"User-Agent": "Mozilla/5.0; compatible; ChatGPT-User/1.0"}):
+        hook()
+        assert flask.request.environ.get("HTTP_X_API_KEY") is None
+    assert mints == [], "the auto-issue hook minted a trial key for %s" % path
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/stats", "/api/v1/facilities", "/api/v1/dcpi/scores",
+    "/api/v1/mcp/tools", "/api/v1/brainstorm", "/api/v1/opsx",
+])
+def test_product_paths_that_merely_look_similar_still_mint(mints, path):
+    """Control: prefix matching must not swallow a product path."""
+    hook = _hook()
+    with flask.Flask("walls-ladder").test_request_context(
+            path, headers={"User-Agent": "Mozilla/5.0; compatible; ChatGPT-User/1.0"}):
+        hook()
+        assert flask.request.environ.get("HTTP_X_API_KEY") == "dch_trial_TESTKEY"
+    assert len(mints) == 1, path
+
+
 # ── the 401/403/429 _upgrade_hint ────────────────────────────────────────
 
 def _enriched(monkeypatch, status, variant):
