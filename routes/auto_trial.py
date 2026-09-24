@@ -390,10 +390,10 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
             # so the IP is not the agent's — count only the forwarded UA there.
             # FAIL-OPEN inside check_mint_rate. Thresholds: routes/mint_guard.py.
             try:
-                from routes.mint_guard import (check_mint_rate,
+                from routes.mint_guard import (mint_rate_decision,
                                                is_internal_request,
                                                rate_limited_body)
-                _hit = check_mint_rate(cur, "trial", ip_key=ip_hash, ua=ua,
+                _hit = mint_rate_decision(cur, "trial", ip_key=ip_hash, ua=ua,
                                        count_ip=not is_internal_request(req))
             except Exception:
                 _hit = None

@@ -2940,10 +2940,10 @@ def claim_key():
     #     it would pool every MCP claim into one bucket.
     # FAIL-OPEN: a failed count claims through.
     try:
-        from routes.mint_guard import (check_mint_rate, is_internal_request,
+        from routes.mint_guard import (mint_rate_decision, is_internal_request,
                                        rate_limited_body)
         with _pool.connection() as conn, conn.cursor() as cur:
-            _rl_hit = check_mint_rate(
+            _rl_hit = mint_rate_decision(
                 cur, "claim", ip_key=ip, ua=ua,
                 count_ip=not _meter_scope,
                 count_ua=not is_internal_request(request))
