@@ -36235,10 +36235,17 @@ def _canonical_pricing():
                           "results_per_query": "full",
                           "tools_unlocked": _non_pro,
                           "signup_url": "https://dchub.cloud/signup"},
+        # r-sku-wall (2026-09-24): Starter is retired from every offer. The
+        # row stays for the grandfathered subscribers and for readers that
+        # key on it (pricing is an open object in the contract), but it sells
+        # nothing: no buy link, and it says so. Same shape as tiers.starter
+        # on /upgrade-hint (routes/mcp_funnel_upgrade.py).
         "starter":    {"price_usd_month": 9,   "calls_per_day": 200,
                           "results_per_query": "full",
                           "tools_unlocked": _non_pro,
-                          "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
+                          "status": "retired",
+                          "label": "Starter — retired, existing subscribers only",
+                          "stripe_url": None},
         "developer":  {"price_usd_month": 49,  "calls_per_day": 500,
                           "results_per_query": "full",
                           "tools_unlocked": _non_pro,
@@ -36336,11 +36343,14 @@ def _well_known_tool_gate(live_tool_count=0):
                               "tools_unlocked": non_pro,
                               "tools_unlocked_note": _note("identified"),
                               "signup_url": "https://dchub.cloud/signup"},
+            # r-sku-wall (2026-09-24): retired — see _canonical_pricing().
             "starter":    {"price_usd_month": _money("starter", "price_usd_month"),
                               "calls_per_day": _money("starter", "calls_per_day"),
                               "tools_unlocked": _note("starter"),
                               "tools_unlocked_note": _note("starter"),
-                              "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
+                              "status": "retired",
+                              "label": _money("starter", "label"),
+                              "stripe_url": None},
             "developer":  {"price_usd_month": _money("developer", "price_usd_month"),
                               "calls_per_day": _money("developer", "calls_per_day"),
                               "tools_unlocked": non_pro,

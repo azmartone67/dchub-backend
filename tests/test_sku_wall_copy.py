@@ -15,6 +15,7 @@ come back in a sentence nobody paying ever reads.
 """
 from __future__ import annotations
 
+import ast
 import io
 import pathlib
 import re
@@ -216,3 +217,45 @@ def test_claim_success_page_promises_no_expired_promo(render):
 def test_no_wall_file_carries_the_expired_promo_code():
     for path in FIXED_FILES:
         assert "DCMCP50" not in _code_without_comments(path), path
+
+
+# ── r-sku-wall follow-up (2026-09-24): the MCP manifest's pricing table ────────
+# GET /api/v1/mcp/manifest published pricing.starter = {$9, stripe_url: the
+# Starter Payment Link} after every wall had stopped selling Starter (measured
+# live). Two tables in main.py built it: _canonical_pricing() and
+# _well_known_tool_gate(). Importing main.py is not cheap, so the rule is read
+# off the AST: every "starter" row that carries a stripe_url carries None, and
+# says it is retired.
+_STARTER_LINK_ID = "8x2dRa5sS0x75uteGuaZi0g"
+
+
+def _starter_rows_in(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    rows = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for k, v in zip(node.keys, node.values):
+            if (isinstance(k, ast.Constant) and k.value == "starter"
+                    and isinstance(v, ast.Dict)):
+                fields = {fk.value: fv for fk, fv in zip(v.keys, v.values)
+                          if isinstance(fk, ast.Constant)}
+                if "stripe_url" in fields:
+                    rows.append((v.lineno, fields))
+    return rows
+
+
+def test_manifest_pricing_starter_rows_sell_nothing():
+    rows = _starter_rows_in(ROOT / "main.py")
+    assert len(rows) >= 2, f"expected both manifest tables, found {len(rows)}"
+    for line, f in rows:
+        url = f["stripe_url"]
+        assert isinstance(url, ast.Constant) and url.value is None, \
+            f"main.py:{line} starter row carries a buy link"
+        st = f.get("status")
+        assert isinstance(st, ast.Constant) and st.value == "retired", \
+            f"main.py:{line} starter row does not say it is retired"
+
+
+def test_main_py_carries_no_starter_payment_link():
+    assert _STARTER_LINK_ID not in (ROOT / "main.py").read_text(encoding="utf-8")
