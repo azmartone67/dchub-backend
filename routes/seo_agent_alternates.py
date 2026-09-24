@@ -222,6 +222,11 @@ def register_alternate_hook(app):
             ct = (resp.headers.get("Content-Type") or "").lower()
             if "text/html" not in ct:
                 return resp
+            # r-facility-dead-slug (2026-09-24): an error page names no
+            # resource, so it gets no alternate. The /facilities/null 404
+            # linked /api/v1/facility/null here, and crawlers followed it.
+            if getattr(resp, "status_code", 200) >= 400:
+                return resp
             alt_url, kind, slug = _alternate_link_for(request.path)
             if not alt_url:
                 return resp

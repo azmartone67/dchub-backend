@@ -315,7 +315,10 @@ def frozen_slug_for_row(row):
         stored = row.get("canonical_slug")
     except AttributeError:
         stored = None
-    if stored:
+    # r-facility-dead-slug (2026-09-24): a stored "null"/"None"/"undefined" is
+    # a serialised null, not a frozen slug — recompute rather than link it.
+    from util.dead_slug import is_dead_slug
+    if stored and not is_dead_slug(stored):
         return stored
     prov = row.get("provider") if hasattr(row, "get") else None
     name = row.get("name") if hasattr(row, "get") else None

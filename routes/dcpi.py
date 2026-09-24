@@ -8902,7 +8902,8 @@ def _dcpi_facility_list_html(mkt_name, _fac_ctry_sql, _fac_ctry_params):
     _items = []
     for (_rid, _rname, _rprov, _rpow, _rcanon), _slug in zip(_frows, _slugs):
         _label = _fesc(_rname)
-        if _slug:
+        from util.dead_slug import is_dead_slug as _is_dead_slug
+        if _slug and not _is_dead_slug(_slug):
             _slug = _served.get(_slug) or _slug
             _label = (f'<a href="/facilities/{_fesc(_slug)}" '
                       f'style="color:#5aa3ff;text-decoration:none">{_label}</a>')

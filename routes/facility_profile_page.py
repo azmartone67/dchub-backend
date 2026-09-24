@@ -816,8 +816,8 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
         return ""
     items = []
     for rid, rname, rprov, rpow, rcanon in rows:
-        slug = rcanon or _fac_slug(rid, rprov, rname)
-        if not slug:      # un-sluggable (sub-3-char name) — skip, don't 404-link
+        slug = (rcanon if not _dead_slug(rcanon) else None) or _fac_slug(rid, rprov, rname)
+        if not slug or _dead_slug(slug):      # un-sluggable (sub-3-char name) — skip, don't 404-link
             continue
         extra = ""
         if rprov and rprov.strip().lower() != (rname or "").strip().lower():
@@ -1890,7 +1890,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     # one the sitemap + the /facility 301 both use), not whatever slug the request
     # arrived on — else a page reached via an alias/legacy slug declares ITSELF
     # canonical, splitting Google's index signals (GSC alternate/canonical churn).
-    _fslug = fac.get("canonical_slug") or slug
+    _fslug = (fac.get("canonical_slug") if not _dead_slug(fac.get("canonical_slug")) else None) or slug
     canonical = f"https://dchub.cloud/facilities/{_fslug}"
 
     # r-junk-noindex (2026-08-01): numeric-OSM junk pages serve 200 but ask
@@ -2533,8 +2533,8 @@ def _drained_twin_url(legacy_id):
         finally:
             try: conn.close()
             except Exception: pass
-        if row and row[0]:
-            return "https://dchub.cloud/facilities/" + str(row[0])
+        if row and row[0] and not _dead_slug(row[0]):
+            return "https://dchub.cloud/facilities/" + str(row[0]).strip()
     except Exception:
         return None
     return None
@@ -2584,8 +2584,8 @@ def _twin_pointer_url(legacy_id):
         finally:
             try: conn.close()
             except Exception: pass
-        if row and row[0]:
-            return "https://dchub.cloud/facilities/" + str(row[0])
+        if row and row[0] and not _dead_slug(row[0]):
+            return "https://dchub.cloud/facilities/" + str(row[0]).strip()
     except Exception:
         return None
     return None
@@ -2721,8 +2721,8 @@ def _canonical_twin_url(dup_of_id):
     self-canonical. Fail-soft: any error returns None.
     """
     row = _canonical_twin_row(dup_of_id)
-    if row and row.get("canonical_slug"):
-        return "https://dchub.cloud/facilities/" + str(row["canonical_slug"])
+    if row and row.get("canonical_slug") and not _dead_slug(row["canonical_slug"]):
+        return "https://dchub.cloud/facilities/" + str(row["canonical_slug"]).strip()
     return None
 
 
@@ -3150,10 +3150,13 @@ def served_slugs(slugs, max_hops: int = 3, conn=None) -> dict:
       `from main import get_read_db` re-entrantly, and the sitemap tests exec
       that builder with a stub cursor and no importable `main` at all.
     """
+    # r-facility-dead-slug (2026-09-24): "null"/"None"/"undefined" text is a
+    # serialised null — it is never looked up and never handed back as a hop.
+    from util.dead_slug import is_dead_slug as _is_dead_slug
     out = {}
     for s in slugs or ():
         s = str(s or "").strip()
-        if s:
+        if s and not _is_dead_slug(s):
             out[s] = s
     if not out:
         return out
@@ -3199,7 +3202,7 @@ def served_slugs(slugs, max_hops: int = 3, conn=None) -> dict:
                         continue
                 else:
                     nxt = aliases.get(at)
-                if not nxt or nxt == at:
+                if not nxt or nxt == at or _is_dead_slug(nxt):
                     out[start] = at               # terminal — this slug is served
                     del walks[start]
                 elif nxt in seen:
@@ -3233,9 +3236,39 @@ def served_slugs(slugs, max_hops: int = 3, conn=None) -> dict:
 # "/facilities/<path:slug>" on static-text length even though that one uses the
 # greedier path converter — verified against a real routing Map in the tests,
 # because if the ordering ever flips this silently becomes the HTML page.
+def _dead_slug(value):
+    """util.dead_slug.is_dead_slug, as a module-level def: the AST guards in
+    tests/test_duplicate_facility_seo.py require every _helper() a function
+    calls to be DEFINED here, not imported under an alias."""
+    from util.dead_slug import is_dead_slug
+    return is_dead_slug(value)
+
+
+def _dead_slug_gone():
+    """410 for /facilities/null|None|undefined|nan|blank (r-facility-dead-slug,
+    2026-09-24). meta-externalagent re-crawled /facilities/null ~60x in 42h;
+    the 404 it got carried rel=alternate links to /facilities/null.json and
+    /api/v1/facility/null, which it crawled too. 410, not a 301 to the hub:
+    the URL never named a facility, so there is nothing to move. text/plain,
+    so the alternates hook (HTML only) injects nothing."""
+    return Response(
+        "Gone. There is no facility at this URL. Directory: "
+        "https://dchub.cloud/facilities\n",
+        status=410,
+        headers={"Content-Type": "text/plain; charset=utf-8",
+                 "Cache-Control": "public, max-age=86400",
+                 "X-Robots-Tag": "noindex"})
+
+
 @facility_profile_bp.route("/facilities/<path:slug>.json", methods=["GET"])
 def facility_entity_json(slug):
     """The facility as schema.org Dataset JSON-LD — no auth, no key, plain GET."""
+    # r-facility-dead-slug: imported here, not via the module helper, because
+    # tests/test_facility_junk_value_suppression.py compiles this function
+    # alone into a fixed namespace.
+    from util.dead_slug import is_dead_slug as _is_dead
+    if _is_dead(slug):
+        return _dead_slug_gone()
     fac = _fetch_facility_by_slug(slug)
     if not fac:
         return jsonify(
@@ -3306,6 +3339,11 @@ def render_facility_profile(slug):
         slug = slug[:-5]
     # Handle nested paths just in case
     slug = slug.split("/")[0]
+
+    # r-facility-dead-slug (2026-09-24): the edge answers these first; this
+    # covers a request that reaches the origin directly.
+    if _dead_slug(slug):
+        return _dead_slug_gone()
 
     fac = _fetch_facility_by_slug(slug)
     if not fac:

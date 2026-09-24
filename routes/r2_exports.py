@@ -139,7 +139,8 @@ def _build_public_facilities():
         # is right; only the URL was wrong. So the URL goes null and the row is
         # counted — null says "this facility has no page", which is true, where
         # a bare directory URL said "here is its page", which was not.
-        slug = (r[0] or "").strip()
+        from util.dead_slug import live_slug as _live_slug
+        slug = _live_slug(r[0]) or ""
         out.append({
             "slug": slug,
             "name": r[1],

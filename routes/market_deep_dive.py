@@ -2485,7 +2485,8 @@ def _market_facility_links_html(name):
     _items = []
     for (_rid, _rname, _rprov, _rpow, _rcanon), _slug in zip(_frows, _slugs):
         _label = _fesc(_rname)
-        if _slug:
+        from util.dead_slug import is_dead_slug as _is_dead_slug
+        if _slug and not _is_dead_slug(_slug):
             _slug = _served.get(_slug) or _slug
             _label = f'<a href="/facilities/{_fesc(_slug)}">{_label}</a>'
         _items.append(

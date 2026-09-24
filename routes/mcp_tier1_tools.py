@@ -213,7 +213,9 @@ def _facility_page_urls(rows):
     from routes.facility_slug_freeze import frozen_slug_for_row
     slugs = [frozen_slug_for_row(r) for r in rows]
     served = served_slugs(s for s in slugs if s)
-    return [f"https://dchub.cloud/facilities/{served.get(s) or s}" if s else None
+    from util.dead_slug import is_dead_slug
+    return [f"https://dchub.cloud/facilities/{served.get(s) or s}"
+            if s and not is_dead_slug(s) else None
             for s in slugs]
 
 try:

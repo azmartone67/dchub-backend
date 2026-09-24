@@ -239,9 +239,58 @@ def attach_provenance(payload, source, method, as_of=None, counts=None,
                 source, method, as_of=as_of, counts=counts,
                 cite_template=cite_template, fallback_url=fallback_url,
                 default_v=default_v)
+            _stamp_record_cite_url(payload)
     except Exception:
         pass
     return payload
+
+
+def record_cite_url(block, record):
+    """The concrete cite URL for ONE record under ``block``'s template, or the
+    block's fallback_url when the record cannot fill it. NEVER raises.
+
+    ★ r-facility-dead-slug (2026-09-24): the single-facility responses
+    (/api/v1/facility/<slug>, /api/v1/facilities/<id>) published
+    cite_url_template "https://dchub.cloud/facilities/{slug}" beside a
+    ``data`` record that had NO slug field — so the template was
+    unfillable, and a client that filled it anyway got /facilities/null
+    (JS null), /facilities/undefined (JS missing key) or /facilities/None
+    (Python). All three were crawled by meta-externalagent. This resolves
+    the template server-side, and a missing OR null-as-text slug ("null",
+    "None", "undefined") resolves to the fallback, never into the path."""
+    try:
+        fb = (block or {}).get("fallback_url") or DEFAULT_FALLBACK_URL
+        tpl = (block or {}).get("cite_url_template")
+        if not tpl or not isinstance(record, dict):
+            return fb
+        import re as _re
+        keys = _re.findall(r"\{([a-z_]+)\}", str(tpl))
+        if not keys:
+            return str(tpl)
+        from util.dead_slug import is_dead_slug
+        out = str(tpl)
+        for k in keys:
+            v = record.get(k)
+            if is_dead_slug(v):
+                return fb
+            out = out.replace("{" + k + "}", str(v).strip())
+        return out
+    except Exception:
+        return DEFAULT_FALLBACK_URL
+
+
+def _stamp_record_cite_url(payload):
+    """Additive (v1 allows new keys): a single-record payload — ``data`` is a
+    dict — gets ``provenance.cite_url``, the resolved URL for that record.
+    Collections are untouched (cite_url_template stays collection-level)."""
+    try:
+        blk = payload.get("provenance")
+        rec = payload.get("data")
+        if isinstance(blk, dict) and isinstance(rec, dict) \
+                and blk.get("cite_url_template") and "cite_url" not in blk:
+            blk["cite_url"] = record_cite_url(blk, rec)
+    except Exception:
+        pass
 
 
 def verified_flag(row, default="tracked"):
