@@ -743,6 +743,28 @@ def _check_quota_moves(findings: list[Finding]) -> None:
                        "non-zero field retries for a full answer and gets a "
                        "preview every time, with no way to learn why."))
             break
+    else:
+        # ★ 2026-09-24 — REPORT THE PASS TOO. This check used to emit only its
+        #   RED, so "no contradiction" and "not probed this block" looked the
+        #   same: an ABSENT row. The tool ROTATES per 4h block, so the squasher
+        #   agent lane read a rotation as a fix (it closed row 492 that way).
+        #   Both envelopes were observed above (an unreachable call returned
+        #   BLIND before this loop), so a PASS here is a real observation — and
+        #   it is what lets a downstream consumer tell "fixed" from "moved on".
+        if isinstance(a, dict) and isinstance(b, dict):
+            findings.append(Finding(
+                key=stable_key("mcp", SEAT_ANON, "quota-contradiction", tool),
+                surface="mcp", seat=SEAT_ANON,
+                title="The envelope's budget fields agree",
+                verdict=PASS, severity=INFO,
+                evidence=f"{tool}: neither call carries a non-zero top-level "
+                         f"remaining_full_today next to a quota block that "
+                         f"disclaims a budget",
+                basis="two anonymous tools/call; both fields read from the SAME "
+                      "structuredContent of each call",
+                red_when="a caller is shown a non-zero remaining-budget field in "
+                         "a response whose own quota block says no budget "
+                         "applies to this seat"))
 
     basis = (f"anon MCP, two tools/call to {tool} with DIFFERENT arguments "
              f"({args_a} then {args_b}) so an unchanged value cannot be a cached "

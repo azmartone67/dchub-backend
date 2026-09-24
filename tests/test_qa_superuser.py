@@ -3443,6 +3443,21 @@ class TestQuotaCheckOnGatedAndContradictoryEnvelopes:
         _m, out = self._run(monkeypatch, quiet, quiet)
         assert not [f for f in out if "disclaims" in (f.title or "")]
 
+    def test_no_contradiction_is_REPORTED_as_a_pass_under_the_same_key(self, monkeypatch):
+        """★ 2026-09-24: absence was ambiguous — the tool rotates per block, so
+        "no RED row" meant either "passed" or "not probed". A consumer (the
+        squasher agent lane) closed a row on a rotation. The PASS is keyed like
+        the RED so a family match can see it."""
+        quiet = _env(preview_is_partial=True, remaining_full_today=2, quota={})
+        _m, out = self._run(monkeypatch, quiet, quiet)
+        cc = [f for f in out if "::quota-contradiction::" in f.key]
+        assert len(cc) == 1 and cc[0].verdict == PASS, [(f.key, f.verdict) for f in out]
+
+    def test_a_contradiction_files_only_its_red_never_a_pass(self, monkeypatch):
+        _m, out = self._run(monkeypatch, self._gated(2), self._gated(2))
+        cc = [f for f in out if "::quota-contradiction::" in f.key]
+        assert [f.verdict for f in cc] == [RED], [(f.key, f.verdict) for f in cc]
+
     def test_a_gated_pair_that_DOES_publish_a_meter_is_unobserved(self, monkeypatch):
         """★ The case the gated guard actually protects, and it survived a
         mutation until this test existed.
