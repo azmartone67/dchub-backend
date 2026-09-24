@@ -50,3 +50,33 @@ def test_gridstatus_dom_populates_errs_channel():
               if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     assert {"gridstatus_pjm_load", "gridstatus_pjm_lmp"} <= consts, (
         "_gridstatus_dom no longer records both dataset failures into errs")
+
+
+# ── 2026-09-24: a budget-only outage says it is temporary ─────────────────────
+def test_budget_outage_is_marked_temporary_with_reset_date():
+    from datetime import datetime, timezone
+    import pjm_dataminer as pd
+    be = "budget_exhausted: GRIDSTATUS_MONTHLY_BUDGET (200/mo) reached"
+    out = pd._budget_outage_fields(
+        {"gridstatus_pjm_load": be, "gridstatus_pjm_lmp": be},
+        now=datetime(2026, 9, 24, 16, tzinfo=timezone.utc))
+    assert out["temporary"] is True
+    assert out["retry_after_utc"] == "2026-10-01T00:00:00Z"
+    assert "2026-10-01" in out["message"] and "region_id=PJM" in out["message"]
+    assert "owner directive" not in out["message"]
+    dec = pd._budget_outage_fields({"a": be}, now=datetime(2026, 12, 5, tzinfo=timezone.utc))
+    assert dec["retry_after_utc"] == "2027-01-01T00:00:00Z"
+
+
+def test_non_budget_errors_leave_the_marker_unchanged():
+    import pjm_dataminer as pd
+    be = "budget_exhausted: x"
+    assert pd._budget_outage_fields({}) == {}
+    assert pd._budget_outage_fields({"gridstatus": "GRIDSTATUS_API_KEY not set"}) == {}
+    assert pd._budget_outage_fields({"a": be, "b": "http_403"}) == {}
+
+
+def test_marker_path_calls_budget_outage_fields():
+    names = {n.func.id for n in ast.walk(_fn("pjm_dom_zone"))
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "_budget_outage_fields" in names
