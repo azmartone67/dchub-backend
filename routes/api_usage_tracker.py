@@ -357,7 +357,7 @@ def _flush() -> dict:
                     """
                     INSERT INTO api_usage_meter
                           (api_key, tier, usage_date, calls_count, last_call_at, updated_at)
-                    VALUES (%s, %s, %s, %s, NOW(), NOW())
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
                     ON CONFLICT (api_key, usage_date) DO UPDATE
                        SET calls_count  = api_usage_meter.calls_count + EXCLUDED.calls_count,
                            tier         = EXCLUDED.tier,
@@ -400,7 +400,7 @@ def _flush() -> dict:
 _PARTNER_UPSERT = """
 INSERT INTO partner_keyless_daily
        (usage_date, partner, method, endpoint_rule, status, requests, updated_at)
-VALUES (%s, %s, %s, %s, %s, %s, NOW())
+VALUES (%s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
 ON CONFLICT (usage_date, partner, method, endpoint_rule, status) DO UPDATE
    SET requests   = partner_keyless_daily.requests + EXCLUDED.requests,
        updated_at = NOW()

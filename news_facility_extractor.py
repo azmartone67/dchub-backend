@@ -468,7 +468,7 @@ def insert_discovered_facility(conn, facility, failures=None):
                  power_mw, sqft, status, source, source_url,
                  confidence_score, discovered_at, notes,
                  investment_usd, acreage)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             RETURNING id
         """, (
             facility['name'], facility['provider'], facility['city'],

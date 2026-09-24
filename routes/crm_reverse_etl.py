@@ -592,7 +592,7 @@ def capture_event(event_type: str, payload: dict) -> dict:
                            lead_last_name, attribution_chain, intent_score,
                            status, captured_date)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                                'queued', (NOW() AT TIME ZONE 'UTC')::date)
+                                'queued', (NOW() ON CONFLICT DO NOTHING AT TIME ZONE 'UTC')::date)
                         ON CONFLICT (event_type, COALESCE(LOWER(lead_email),''),
                                      COALESCE(lead_session_id,''), captured_date)
                         DO NOTHING
@@ -1032,7 +1032,7 @@ def flush_slot_status(summary) -> str:
 
 _FLUSH_LAST_UPSERT = """
     INSERT INTO crm_flush_last (role, ran_at, summary)
-    VALUES (%s, NOW(), %s::jsonb)
+    VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s::jsonb)
     ON CONFLICT (role) DO UPDATE
        SET ran_at = EXCLUDED.ran_at, summary = EXCLUDED.summary"""
 

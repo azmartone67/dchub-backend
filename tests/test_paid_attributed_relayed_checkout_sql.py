@@ -215,7 +215,7 @@ def db():
         # ── the v1 lanes ────────────────────────────────────────────────────
         # Fix E writes this row inline in main.py's webhook; by hand here.
         cur.execute("INSERT INTO mcp_session_upgrades (mcp_session_id, plan,"
-                    " stripe_session_id, amount_cents) VALUES (%s, 'pro', 'cs_test_p4', 9900)",
+                    " stripe_session_id, amount_cents) VALUES (%s, 'pro', 'cs_test_p4', 9900) ON CONFLICT DO NOTHING",
                     (S5,))
         out["grant"] = mcp.grant_credit_pack(
             "test-key-paid-attributed-v1", S15, 1000,

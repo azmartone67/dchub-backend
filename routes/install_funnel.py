@@ -404,7 +404,7 @@ def record_install_attempt(client_name, outcome, *, api_key=None, key_client_nam
                     """INSERT INTO install_mint_attempts
                          (client_name, outcome, key_client_name, key_hash,
                           ip_hash, ua_hash, ua_class)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                     (name[:80], (outcome or "unknown")[:40],
                      (key_client_name or None) and str(key_client_name)[:80],
                      _hash16(api_key) if api_key else None,

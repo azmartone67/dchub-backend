@@ -148,7 +148,7 @@ def _mps(slug, name, verdict, excess, constraint, *, published=True,
 def _snap(day, slug, name, verdict, excess, constraint, method="2.2.1"):
     _exec("INSERT INTO dcpi_daily_snapshots (snapshot_date, market_slug, "
           "market_name, verdict, excess_power_score, constraint_score, "
-          "method_version) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+          "method_version) VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
           params=(day, slug, name, verdict, excess, constraint, method))
 
 
@@ -203,7 +203,7 @@ def _two_new_facilities():
     now = _dt.datetime.now(_dt.timezone.utc).isoformat()
     for i in (1, 2):
         _exec("INSERT INTO discovered_facilities (source, name, country, "
-              "discovered_at, canonical_slug) VALUES ('t', %s, 'US', %s, %s)",
+              "discovered_at, canonical_slug) VALUES ('t', %s, 'US', %s, %s) ON CONFLICT DO NOTHING",
               params=(f"DC {i}", now, f"dc-{i}"))
 
 

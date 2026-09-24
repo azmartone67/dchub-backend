@@ -319,7 +319,7 @@ def test_the_second_day_claims_cleanly(pg):
     c = _pg()
     try:
         with c.cursor() as cur:
-            cur.execute("INSERT INTO rag_tick_claims (utc_day) VALUES (%s) "
+            cur.execute("INSERT INTO rag_tick_claims (utc_day) VALUES (%s) ON CONFLICT DO NOTHING "
                         "ON CONFLICT DO NOTHING", (pg.replace(day=1) if pg.day != 1
                                                    else pg.replace(day=2),))
     finally:

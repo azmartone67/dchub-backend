@@ -97,7 +97,7 @@ _TX_DDL = """CREATE TABLE transmission_lines (
        last_updated TIMESTAMP DEFAULT NOW(), created_at TIMESTAMP DEFAULT NOW())"""
 _GAS_OK_DDL = "CREATE TABLE gas_pipelines (id SERIAL PRIMARY KEY, updated_at TIMESTAMP)"
 _SUB_OK_DDL = "CREATE TABLE substations (id SERIAL PRIMARY KEY, updated_at TIMESTAMP)"
-_GAS_STALE = "INSERT INTO gas_pipelines (updated_at) VALUES (NOW() - INTERVAL '900 hours')"
+_GAS_STALE = "INSERT INTO gas_pipelines (updated_at) VALUES (NOW() ON CONFLICT DO NOTHING - INTERVAL '900 hours')"
 _FAC_DDL = ("CREATE TABLE facilities (id TEXT PRIMARY KEY, name TEXT, source TEXT, "
             "first_seen TEXT, last_updated TEXT)")
 # The discovered_facilities columns insert_discovered_facility and its dedup
@@ -191,8 +191,8 @@ def _at(findings, table):
 
 def test_s1_rows_the_eia_ingest_writes_read_as_fresh(db, monkeypatch):
     _ddl(db, _TX_DDL, _GAS_OK_DDL, _SUB_OK_DDL,
-         "INSERT INTO gas_pipelines (updated_at) VALUES (NOW() - INTERVAL '900 hours')",
-         "INSERT INTO substations (updated_at) VALUES (NOW())")
+         "INSERT INTO gas_pipelines (updated_at) VALUES (NOW() ON CONFLICT DO NOTHING - INTERVAL '900 hours')",
+         "INSERT INTO substations (updated_at) VALUES (NOW() ON CONFLICT DO NOTHING)")
     _ingest(monkeypatch, _EIA_ROWS)
     n, nulls = _one(db, "SELECT COUNT(*), COUNT(*) FILTER (WHERE last_updated IS NULL) "
                         "FROM transmission_lines")
@@ -224,7 +224,7 @@ def test_s2_aged_rows_breach_and_the_breach_escalates(db, monkeypatch):
 def test_s3_a_missing_column_is_reported_not_fresh(db):
     _ddl(db, _TX_DDL, _GAS_OK_DDL,
          "CREATE TABLE substations (id SERIAL PRIMARY KEY, name TEXT)",
-         "INSERT INTO substations (name) VALUES ('SUB ONE')")
+         "INSERT INTO substations (name) VALUES ('SUB ONE') ON CONFLICT DO NOTHING")
 
     sub = _at(_scan(), "substations")
 
@@ -237,7 +237,7 @@ def test_s4_a_text_column_is_reported_not_fresh(db):
     # text that MAX() returns as a str.
     _ddl(db, _TX_DDL, _SUB_OK_DDL,
          "CREATE TABLE gas_pipelines (id SERIAL PRIMARY KEY, updated_at TEXT)",
-         "INSERT INTO gas_pipelines (updated_at) VALUES ('2026-09-23T03:07:45')")
+         "INSERT INTO gas_pipelines (updated_at) VALUES ('2026-09-23T03:07:45') ON CONFLICT DO NOTHING")
 
     gas = _at(_scan(), "gas_pipelines")
 
@@ -283,7 +283,7 @@ class _FailingCursor:
 def test_s5_an_age_query_that_raises_is_reported_not_fresh(db, monkeypatch):
     from routes import brain_consistency_radar as radar
     _ddl(db, _TX_DDL, _SUB_OK_DDL, _GAS_OK_DDL,
-         "INSERT INTO gas_pipelines (updated_at) VALUES (NOW())")
+         "INSERT INTO gas_pipelines (updated_at) VALUES (NOW() ON CONFLICT DO NOTHING)")
     conn = _FailingAgeQuery("gas_pipelines")
     monkeypatch.setattr(radar, "_db", lambda: conn)
 

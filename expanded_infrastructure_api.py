@@ -398,6 +398,7 @@ def get_infrastructure_layer(layer_id):
     return jsonify(response)
 
 
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/substations' also in hifld_neon_routes.py:35 — review and remove one
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/substations', methods=['GET'])
 def get_substations():
     """Query substations from Neon PostgreSQL (with ArcGIS fallback)."""
@@ -575,6 +576,7 @@ def get_substations():
 # weekly): that table stores no geometry. The question it answered — which lines
 # are near this point — is already served from maintained data by
 # /api/v1/grid/transmission-proximity, which places each line at its from_sub
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/transmission' also in hifld_neon_routes.py:123 — review and remove one
 # substation.
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
 def get_hifld_transmission():
@@ -589,6 +591,7 @@ def get_hifld_transmission():
                    'count.'),
         'instead': '/api/v1/grid/transmission-proximity?lat=<lat>&lon=<lon>&radius_km=<km>&min_kv=<kv>',
     }), 410
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/gas-pipelines' also in hifld_neon_routes.py:81 — review and remove one
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])

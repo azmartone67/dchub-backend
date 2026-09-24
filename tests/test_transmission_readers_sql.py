@@ -277,7 +277,7 @@ def no_network(monkeypatch):
 
 
 def _seed_lines(cur, lines, substations=(ASHBURN,)):
-    cur.executemany("INSERT INTO substations (name, lat, lng) VALUES (%s, %s, %s)",
+    cur.executemany("INSERT INTO substations (name, lat, lng) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                     list(substations))
     cur.executemany(
         "INSERT INTO transmission_lines (hifld_id, name, operator, voltage_kv, "
