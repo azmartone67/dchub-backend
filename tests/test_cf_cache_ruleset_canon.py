@@ -417,3 +417,27 @@ def test_stats_bypasses_and_outranks_the_public_api_cache_rule(canon):
         "the /api/v1/stats bypass sits BEFORE the public-API caching rule; "
         "last-match-wins means the caching rule wins"
     )
+
+
+def test_handoff_funnel_bypasses_and_outranks_the_public_api_cache_rule(canon):
+    """2026-09-24. /api/v1/mcp/handoff-funnel sends private/no-store, and Rule 2's
+    override_origin held a pre-be#5432 body ~7 min after deploy. Rule 19 was
+    extended on the live zone at 05:39Z (ruleset v70) without a canon PR; this
+    pins it, so the next apply does not revert it. Last match wins, so the bypass
+    must sit after the caching rule.
+    """
+    rules = canon["rules"]
+    public_api = next(
+        r for r in rules
+        if "/api/v1/" in r["expression"] and r["action_parameters"].get("cache") is True
+    )
+    bypass = [
+        r for r in rules
+        if 'http.request.uri.path eq "/api/v1/mcp/handoff-funnel"' in r["expression"]
+        and r["action_parameters"].get("cache") is False
+    ]
+    assert bypass, "no bypass rule covers /api/v1/mcp/handoff-funnel"
+    assert max(r["position"] for r in bypass) > public_api["position"], (
+        "the handoff-funnel bypass sits BEFORE the public-API caching rule; "
+        "last-match-wins means the caching rule wins"
+    )
