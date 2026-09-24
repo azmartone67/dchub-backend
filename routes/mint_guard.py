@@ -37,6 +37,7 @@ Every threshold is env-tunable and read per call (no redeploy to retune).
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import os
 import statistics
@@ -168,6 +169,60 @@ def is_internal_request(req) -> bool:
     except Exception:
         return False
     return False
+
+
+# ── the MCP gateway's caller identity (r-mint-gateway-id, 2026-09-24) ──────
+# Measured 2026-09-24 (auto_trial_keys, last 24h): the UA over the 500/day
+# ceiling was "node" — 546 mints across 12 tools. It is the REAL agent UA the
+# gateway forwards for Node-based MCP clients and Smithery's proxy, i.e. many
+# unrelated callers pooled under one string. Counting it would lock every one of
+# them out of the on-ramp together. And the gateway calls us from its own
+# egress, so request_ip_hash was the gateway's IP (17 hashes for 546 mints), not
+# the caller's.
+#
+# So for a gateway mint (internal key):
+#   * the caller's IP comes from X-DCHub-Client-IP, honoured ONLY with a valid
+#     internal key and only when it parses as an IP (anyone can call the origin
+#     directly; without the key the header is ignored);
+#   * the IP ceiling counts that forwarded IP, unless the platform reaches the
+#     gateway through ONE shared egress (Smithery's proxy, Grok's connector):
+#     there one IP is many people;
+#   * the UA ceiling counts the forwarded UA only when it names a client, never
+#     a pooled runtime default.
+SHARED_EGRESS_PLATFORMS = frozenset({"smithery", "grok", "connectors-manager"})
+POOLED_UAS = frozenset({"", "node", "undici", "node-fetch", "axios"})
+
+
+def gateway_caller_ip(req) -> str:
+    """The caller IP the MCP gateway forwarded, or '' (not internal, absent,
+    or not an IP). Never trusted without the internal key."""
+    try:
+        if not is_internal_request(req):
+            return ""
+        raw = (req.headers.get("X-DCHub-Client-IP") or "").strip()
+        if not raw or len(raw) > 64:
+            return ""
+        return str(ipaddress.ip_address(raw))
+    except Exception:
+        return ""
+
+
+def ua_names_a_client(ua: str) -> bool:
+    u = (ua or "").strip().lower()
+    return bool(u) and u not in POOLED_UAS and not u.startswith(("node/", "undici/", "node-fetch/"))
+
+
+def trial_mint_scopes(req, ua: str, forwarded_ip: str) -> tuple[bool, bool]:
+    """(count_ip, count_ua) for mint_trial_for_request.
+
+    Direct caller: both, as before. Gateway caller: the IP only when the
+    gateway forwarded one and the platform is not a shared egress; the UA only
+    when it names a client."""
+    if not is_internal_request(req):
+        return True, True
+    platform = (req.headers.get("X-MCP-Platform") or "").strip().lower()
+    count_ip = bool(forwarded_ip) and platform not in SHARED_EGRESS_PLATFORMS
+    return count_ip, ua_names_a_client(ua)
 
 
 # Count queries. {ip_col}/{ua_col}/{ts_col}/{table}/{where} are fixed
