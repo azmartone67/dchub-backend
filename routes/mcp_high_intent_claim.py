@@ -135,12 +135,40 @@ _SCRIPT_UA_TOKENS = (
 _SCRIPT_UA_RE  = re.compile("|".join(re.escape(t) for t in _SCRIPT_UA_TOKENS), re.I)
 _SCRIPT_UA_SQL = "(" + "|".join(_SCRIPT_UA_TOKENS) + ")"   # POSIX ~* alternation
 
+# r-hi-crawler-ua (2026-09-24): a self-declared crawler has no human either. Read on
+# Neon 2026-09-24: 19 mcp_high_intent_sessions rows, 15 sessions, 17 distinct tools,
+# all claim-minted between 09-17 and 09-21, from ONE client —
+#     mcp_client 'brickblue'
+#     user_agent 'BrickBlueBot/0.1 (+https://brick.blue/bot; agentic-web registry)'
+#                (and '... agentic-web indexer')
+# 0 claim-page opens, 0 human-view opens, 0 redemptions: a catalog sweep, counted in
+# relay_minted as 15 prospects. Neither guard above names it — it is not our
+# automation and not an HTTP library. Its UA says what it is, in the robots.txt
+# convention every crawler uses: a product token ending in bot/crawler/spider,
+# followed by a version.
+#
+# ★ The token shape is the point, not the word "bot". A bare `bot` substring would
+# also drop ChatGPT-User, whose UA ends '+https://openai.com/bot' — a request a human
+# made in ChatGPT, exactly the prospect this funnel exists for. Claude-User and
+# Perplexity-User carry no such token either. Checked on mcp_tool_calls 30d
+# (2026-09-24): the only UAs this shape matches are BrickBlueBot, HubGrokBot (ours)
+# and Baiduspider-render — no human-bearing agent.
+_CRAWLER_UA_PATTERN = r"[a-z0-9](bot|crawler|spider)(-[a-z]+)?/[0-9]"
+_CRAWLER_UA_RE = re.compile(_CRAWLER_UA_PATTERN, re.I)
+_CRAWLER_UA_SQL = _CRAWLER_UA_PATTERN   # same text is valid POSIX ~* (no \b, no lookaround)
+
+
+def _is_crawler_ua(user_agent: str | None) -> bool:
+    return bool(_CRAWLER_UA_RE.search(user_agent or ""))
+
 
 def _is_non_human_client(mcp_client: str | None, user_agent: str | None) -> bool:
     """True for traffic with no human able to open a /claim browser link —
     our own internal automation OR a raw HTTP-library/scripting UA. Used to
     keep both the MINT decision and the funnel METRIC honest (same predicate)."""
     if _is_internal_claim_client(mcp_client, user_agent):
+        return True
+    if _is_crawler_ua(user_agent):
         return True
     return bool(_SCRIPT_UA_RE.search(user_agent or ""))
 
@@ -192,6 +220,7 @@ def _hi_real_sql(prefix: str = "") -> str:
         f"COALESCE({p}mcp_client,'') !~* '{_INTERNAL_CLIENT_SQL}'",
         f"COALESCE({p}user_agent,'') !~* '{_INTERNAL_CLIENT_SQL}'",
         f"COALESCE({p}user_agent,'') !~* '{_SCRIPT_UA_SQL}'",
+        f"COALESCE({p}user_agent,'') !~* '{_CRAWLER_UA_SQL}'",
     ]
     try:
         from mcp_calls_deloop import (
@@ -492,7 +521,8 @@ def track_paid_hit():
     # no human to ever open the link, faking a ~99% drop. Skip recording entirely so
     # the funnel = real, browser-bearing prospects only.
     if _is_non_human_client(mcp_client, ua):
-        _why = "internal_client" if _is_internal_claim_client(mcp_client, ua) else "scripting_ua"
+        _why = ("internal_client" if _is_internal_claim_client(mcp_client, ua)
+                else "crawler_ua" if _is_crawler_ua(ua) else "scripting_ua")
         return jsonify(ok=True, count=0, is_high_intent=False,
                        threshold=HIGH_INTENT_THRESHOLD, skipped=_why)
     # Round 2 (2026-06-07): platform-derived variant for the A/B test. The
