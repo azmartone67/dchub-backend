@@ -1,9 +1,21 @@
 name: Cloudflare cache purge
 
-# Purge specific URLs from Cloudflare's edge cache. Built because a stale 404 got
-# cached for /dcpi/leaderboard before the route existed (origin 200, edge 404), and
-# there was no token in the dev environment to purge it. Reusable for any future
+# Purge from Cloudflare's edge cache. Built because a stale 404 got cached for
+# /dcpi/leaderboard before the route existed (origin 200, edge 404), and there
+# was no token in the dev environment to purge it. Reusable for any future
 # "the edge is serving a stale page" situation.
+#
+# Set EXACTLY ONE of urls / prefixes / hosts — Cloudflare takes one kind of
+# target per purge request. scripts/cf_purge_body.py builds and validates the
+# body; its docstring has the formats.
+#
+# ★ 2026-09-24: prefixes + hosts added. api.dchub.cloud/api/v1/stats is cached
+# under the zone worker's ORIGIN subrequest URL on the Railway host, and a
+# single-file purge of that URL (and of the public one) returned success and
+# did NOT evict it — only purge_everything did. A prefix or host purge is the
+# narrower thing to try first. `hosts` evicts EVERYTHING under each host: on
+# dchub-backend-production.up.railway.app that is every worker→Railway API
+# response, so expect a cache-miss spike on the API.
 #
 # Requires GitHub secret: CLOUDFLARE_API_TOKEN (zone Cache Purge permission).
 # Optional secret: CLOUDFLARE_ZONE_ID (falls back to the dchub.cloud zone).
@@ -11,21 +23,39 @@ name: Cloudflare cache purge
 on:
   workflow_dispatch:
     inputs:
+      # Every default is EMPTY on purpose: dispatch fills unspecified inputs
+      # with their defaults, so a non-empty default here would ride along with
+      # a prefixes/hosts run and trip the one-kind rule.
       urls:
-        description: "Space-separated absolute URLs to purge"
-        required: true
-        default: "https://dchub.cloud/dcpi/leaderboard https://dchub.cloud/mcp-standing"
+        description: "Space-separated absolute URLs (single-file purge)"
+        required: false
+        default: ""
+      prefixes:
+        description: "Space-separated host/path prefixes, NO scheme (e.g. dchub-backend-production.up.railway.app/api/v1/stats)"
+        required: false
+        default: ""
+      hosts:
+        description: "Space-separated hostnames — evicts EVERYTHING cached under each"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   purge:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Purge URLs from Cloudflare edge
+      - uses: actions/checkout@v5
+
+      - name: Purge from Cloudflare edge
         env:
           TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ZONE_SECRET: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           URLS: ${{ github.event.inputs.urls }}
+          PREFIXES: ${{ github.event.inputs.prefixes }}
+          HOSTS: ${{ github.event.inputs.hosts }}
         run: |
           if [ -z "$TOKEN" ]; then
             echo "::error::CLOUDFLARE_API_TOKEN secret is not set. Add it (zone Cache Purge perm) and re-run, or purge in the CF dashboard."
@@ -34,13 +64,17 @@ jobs:
           # Cloudflare ZONE ID, not a credential — it is in the path of
           # every CF API call and is useless without CF_API_TOKEN.
           ZONE="${ZONE_SECRET:-1cb22dda8d50546d6edf0c09a8be5128}"  # secretscan:allow
-          BODY=$(python3 -c "import os,json;print(json.dumps({'files':os.environ['URLS'].split()}))")
-          echo "Purging: $URLS"
-          RESP=$(curl -sS -m 30 -X POST \
+          python3 scripts/cf_purge_body.py /tmp/purge-body.json
+          CODE=$(curl -sS -m 30 -o /tmp/purge.json -w '%{http_code}' -X POST \
             "https://api.cloudflare.com/client/v4/zones/$ZONE/purge_cache" \
             -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-            --data "$BODY")
-          echo "$RESP" | python3 -m json.tool || echo "$RESP"
-          echo "$RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);sys.exit(0 if d.get('success') else 1)" \
-            && echo "✅ purge succeeded" \
-            || { echo "::error::CF purge failed — check token permission / zone id"; exit 1; }
+            --data @/tmp/purge-body.json || echo 000)
+          python3 -m json.tool /tmp/purge.json || cat /tmp/purge.json
+          # success=true says the request was accepted, not that a given object
+          # left the edge — re-read the URL and require MISS or a fresh age.
+          if [ "$CODE" = "200" ] && python3 -c "import json,sys;sys.exit(0 if json.load(open('/tmp/purge.json')).get('success') else 1)"; then
+            echo "✅ purge accepted (HTTP $CODE)"
+          else
+            echo "::error::CF purge failed (HTTP $CODE) — see the response above: token permission, zone id, or a purge type this plan does not allow"
+            exit 1
+          fi
