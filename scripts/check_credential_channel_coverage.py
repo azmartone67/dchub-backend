@@ -98,7 +98,12 @@ PROBE_PATHS = ("/api/v1/stats", "/api/v1/facilities",
                # anonymous request (cf-cache-status HIT, age 1). The brief and its
                # PDF resolve the caller tier; the rest sample rule 18's HTML set.
                "/markets/dallas/brief", "/markets/dallas/brief.pdf",
-               "/dcpi/dallas", "/facility/example", "/grid/pjm", "/")
+               "/dcpi/dallas", "/facility/example", "/grid/pjm", "/",
+               # ★ 2026-09-24: rule 16 stores /pockets for 3600s with override_origin
+               # and rule 24 did not list it. Measured live: an X-API-Key or
+               # dchub_token request MISSed and the next anonymous request got it
+               # (HIT age 2). /pockets renders full ranked rows for paid callers.
+               "/pockets")
 
 # ── ORACLE: dispositions MEASURED at the live edge ───────────────────────────
 # Two consecutive un-cache-busted GETs of ORACLE_PATH per row. First measured
