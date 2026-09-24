@@ -139,7 +139,14 @@ def test_pr_opened_keeps_the_row_open_and_records_the_pr():
     assert PR in upd["note"]
 
 
+def test_pr_opened_accepts_a_dchub_mcp_server_pull_url():
+    url = "https://github.com/azmartone67/dchub-mcp-server/pull/470"
+    upd, why = al.settle_plan(RUNNING, {"outcome": "pr_opened", "pr_url": url})
+    assert upd and upd["agent_pr_url"] == url, why
+
+
 @pytest.mark.parametrize("url", [
+    "https://github.com/azmartone67/dchub-frontend/pull/1",
     "https://github.com/someone-else/dchub-backend/pull/1",
     "https://github.com/azmartone67/dchub-backend/pull/1/files",
     "https://evil.example/azmartone67/dchub-backend/pull/1", ""])
@@ -457,7 +464,11 @@ def test_every_checkout_drops_git_credentials():
 
 def test_publish_re_guards_before_applying_and_disables_hooks():
     run = next(s["run"] for s in JOBS["publish"]["steps"] if s.get("id") == "pr")
-    assert run.index("guard.py --patch") < run.index("git apply")
+    # both branches (backend and mcp) guard before the one apply
+    first_apply = run.index("apply --index")
+    assert run.count("guard.py --patch") == 2
+    assert all(i < first_apply for i in
+               [j for j in range(len(run)) if run.startswith("guard.py --patch", j)])
     assert "core.hooksPath=/dev/null" in run
     # every python in the publish job runs isolated from the working tree
     for s in JOBS["publish"]["steps"]:
@@ -758,7 +769,9 @@ def test_the_agent_checkout_has_full_history():
     reported 1 commit in 21 days (real: 1,209) as evidence of no regression."""
     co = [st for st in JOBS["agent"]["steps"]
           if str(st.get("uses", "")).startswith("actions/checkout")]
-    assert len(co) == 1 and co[0]["with"].get("fetch-depth") == 0
+    # dchub-backend and dchub-mcp-server — both with history
+    assert len(co) == 2 and all(c["with"].get("fetch-depth") == 0 for c in co)
+    assert {c["with"].get("repository") for c in co} == {None, "azmartone67/dchub-mcp-server"}
 
 
 # ══ 13 · QA super-user reds fed to the agent ═══════════════════════════════
@@ -1043,3 +1056,123 @@ def test_closed_unmerged_pr_records_one_reject_on_postgres(pg):
         fetch_pr=lambda url: prs[url], live=live)
     with pg.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS brain_review_decisions")
+
+
+# ══ 15 · dchub-mcp-server as a second target ══════════════════════════════
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/ci.yml", "package.json", "package-lock.json", "railway.toml",
+    "nixpacks.toml", "Dockerfile", "canonical/facts.json", "mcp.json", "server.json",
+    "toolspec.json", "glama.json", "smithery.yaml", "oauth.mjs", "mpp-hook.mjs",
+    "lib/stripe_checkout.mjs", "lib/api_key_store.mjs", ".git/config"])
+def test_mcp_guard_denies_paths_an_agent_must_not_own(path):
+    v = guard.evaluate([(3, 1, path), (5, 0, "test/x.test.mjs")], "", repo="mcp")
+    assert not v["ok"] and any(path in r for r in v["reasons"]), v
+
+
+def test_mcp_guard_passes_a_server_fix_with_a_vitest_test():
+    v = guard.evaluate([(6, 2, "server.mjs"), (30, 0, "test/quota-contradiction.test.mjs")],
+                       "const x = 1;", repo="mcp")
+    assert v["ok"], v
+
+
+def test_mcp_guard_refuses_tests_only_by_its_own_test_rule():
+    assert not guard.evaluate([(9, 0, "test/a.test.mjs")], "", repo="mcp")["ok"]
+    # the backend rule would not see test/ as tests — the repo switch matters
+    assert guard.evaluate([(9, 0, "test/a.test.mjs")], "", repo="backend")["ok"]
+
+
+def test_guard_cli_refuses_an_unknown_repo(tmp_path):
+    patch = tmp_path / "p.patch"
+    patch.write_text("")
+    p = subprocess.run([sys.executable, "-I", str(TOOLS / "guard.py"), "--patch",
+                        str(patch), "--repo", "frontend"], capture_output=True, text=True)
+    assert p.returncode == 2 and "unknown --repo" in p.stdout
+
+
+@pytest.mark.parametrize("args, why", [
+    (("--reporter", "json"), "refused flag"), (("mcp/test/a.test.mjs", "-t", "x"), "refused flag"),
+    (("../etc/passwd",), "refused path"), (("/abs/test.mjs",), "refused path"),
+    ((), "name at least one")],
+    ids=["reporter-flag", "t-flag-after-a-file", "dotdot", "absolute", "no-args"])
+def test_run_mcp_tests_refuses_flags_and_odd_paths(args, why):
+    # the SPECIFIC reason: a generic exit 2 is also what a missing mcp/ gives
+    p = subprocess.run([str(TOOLS / "run_mcp_tests.sh"), *args], capture_output=True, text=True)
+    assert p.returncode == 2 and why in p.stderr, (args, p.stderr)
+
+
+def test_agent_can_only_run_bounded_commands_in_mcp():
+    run = next(s["run"] for s in JOBS["agent"]["steps"] if s.get("name") == "Run the agent")
+    allowed = run.split("--allowedTools", 1)[1].split("--disallowedTools", 1)[0]
+    assert "Bash(tools/squasher_agent/run_mcp_tests.sh:*)" in allowed
+    assert '"Bash(npm' not in allowed and '"Bash(npx' not in allowed and '"Bash(node' not in allowed
+
+
+def test_verify_refuses_a_patch_touching_both_repos():
+    run = next(s["run"] for s in JOBS["verify"]["steps"] if s.get("id") == "guard")
+    assert "one repo per fix" in run and "backend)" in run and "mcp)" in run
+
+
+def test_mcp_checkouts_never_carry_credentials_and_token_only_in_publish():
+    for name, job in JOBS.items():
+        for st in job.get("steps", []):
+            w = st.get("with") or {}
+            if w.get("repository") == "azmartone67/dchub-mcp-server":
+                assert w.get("persist-credentials") is False, name
+                assert "token" not in w, name
+
+
+@pytest.mark.parametrize("target, expect", [
+    ("mcp", [("mcp.patch", "mcp")]),
+    ("backend", [("agent.patch", "backend")]),
+    ("both", []), ("none", []),
+])
+def test_report_reads_guard_reasons_from_the_right_repos_patch(target, expect):
+    seen = []
+    fn = lambda path, repo: seen.append((os.path.basename(path), repo)) or ["r"]
+    out = report.guard_reasons_for({"outcome": "fixed"},
+                                   {"GUARD_OK": "0", "TARGET": target}, "/in", fn)
+    assert seen == expect and out
+    if target == "both":
+        assert "one repo per fix" in out[0]
+    assert report.guard_reasons_for({"outcome": "fixed"}, {"GUARD_OK": "1"}, "/in", fn) is None
+
+
+def test_fetch_pr_asks_github_about_the_repo_in_the_url(monkeypatch):
+    import requests
+    calls = []
+
+    class _R:
+        status_code = 200
+        def json(self): return {"state": "closed", "merged_at": "2026-09-24T01:00:00Z"}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr(requests, "get", lambda url, **k: calls.append(url) or _R())
+    al._fetch_pr("https://github.com/azmartone67/dchub-mcp-server/pull/470")
+    al._fetch_pr("https://github.com/azmartone67/dchub-backend/pull/5374")
+    assert calls == [
+        "https://api.github.com/repos/azmartone67/dchub-mcp-server/pulls/470",
+        "https://api.github.com/repos/azmartone67/dchub-backend/pulls/5374"]
+
+
+def _verify_read_script():
+    run = next(s["run"] for s in JOBS["verify"]["steps"] if s.get("id") == "read")
+    return run.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+
+
+@pytest.mark.parametrize("backend, mcp, target", [
+    ("diff --git a/x b/x\n", "", "backend"), ("", "diff --git a/y b/y\n", "mcp"),
+    ("d\n", "d\n", "both"), ("", "", "none")])
+def test_verify_works_out_which_repo_the_patch_touches(tmp_path, backend, mcp, target):
+    ind = tmp_path / "in"
+    ind.mkdir()
+    (ind / "result.json").write_text(json.dumps({"outcome": "fixed"}))
+    (ind / "agent.patch").write_text(backend)
+    (ind / "mcp.patch").write_text(mcp)
+    out = tmp_path / "gh_output"
+    out.write_text("")
+    p = subprocess.run([sys.executable, "-I", "-"], input=_verify_read_script(), text=True,
+                       capture_output=True,
+                       env=dict(os.environ, RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(out)))
+    assert p.returncode == 0, p.stderr
+    assert f"target={target}" in out.read_text().splitlines()

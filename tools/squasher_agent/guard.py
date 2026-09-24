@@ -44,6 +44,33 @@ DENY = (
 )
 _DENY_RE = [(re.compile(p, re.I), why) for p, why in DENY]
 
+# dchub-mcp-server (checked out at mcp/; its patch paths are repo-relative).
+# 2026-09-24: the agent may now fix the Node MCP server too. Same philosophy:
+# an automated writer never owns CI, dependencies, deploy config, GENERATED
+# surfaces (the tool manifests are synced by scripts/sync-tools-manifest.mjs,
+# canonical/ by dchub-backend's mcp-facts-export), or money/auth code.
+DENY_MCP = (
+    (r"(^|/)\.git(/|$)|(^|/)\.gitmodules$", "git internals"),
+    (r"^\.github/", "CI/workflow changes are human-authored"),
+    (r"^\.(claude|cursor-plugin)/", "agent configuration is human-authored"),
+    (r"(^|/)package(-lock)?\.json$|(^|/)requirements[^/]*\.txt$|"
+     r"(^|/)(Dockerfile|\.dockerignore|railway\.toml|nixpacks\.toml)$",
+     "dependencies/build/deploy config"),
+    (r"^canonical/|(^|/)(mcp|server|toolspec|glama|mcp-server)\.json$|"
+     r"(^|/)smithery\.yaml$|\.dxt$|^dxt/",
+     "generated manifest/facts — regenerate, don't hand-edit"),
+    (r"(^|/)(oauth|mpp-hook)\.mjs$|stripe|billing|checkout|payment|pricing|"
+     r"entitle|subscription|license|refund|invoice", "money/entitlement paths"),
+    (r"(^|/|_)auth|jwt|api_?key|secret|credential|password|token",
+     "auth/credential paths"),
+)
+_DENY_MCP_RE = [(re.compile(p, re.I), why) for p, why in DENY_MCP]
+
+
+def is_mcp_test_path(p: str) -> bool:
+    return p.startswith("test/") or "/test/" in p or \
+        re.search(r"\.test\.(mjs|js|ts)$", p) is not None
+
 SECRET_SHAPES = re.compile(
     r"sk-ant-[A-Za-z0-9_\-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
     r"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9\-]{10,}")
@@ -55,9 +82,13 @@ def is_test_path(p: str) -> bool:
 
 
 def evaluate(numstat: list[tuple[int, int, str]], added_text: str,
-             compile_errors: list[str] | None = None) -> dict:
+             compile_errors: list[str] | None = None, repo: str = "backend"
+             ) -> dict:
     """numstat rows are (added, removed, path) — binary files count as 0/0
-    and are refused separately. Returns {ok, reasons, files, lines}."""
+    and are refused separately. repo is "backend" or "mcp" and picks the deny
+    list and the test-path rule. Returns {ok, reasons, files, lines}."""
+    deny = _DENY_MCP_RE if repo == "mcp" else _DENY_RE
+    is_test = is_mcp_test_path if repo == "mcp" else is_test_path
     reasons = []
     files = [p for _, _, p in numstat]
     lines = sum(a + d for a, d, _ in numstat)
@@ -66,7 +97,7 @@ def evaluate(numstat: list[tuple[int, int, str]], added_text: str,
     for p in files:
         if p.startswith(".squasher/"):
             continue
-        for rx, why in _DENY_RE:
+        for rx, why in deny:
             if rx.search(p):
                 reasons.append(f"{p}: {why}")
                 break
@@ -75,7 +106,7 @@ def evaluate(numstat: list[tuple[int, int, str]], added_text: str,
         reasons.append(f"{len(real)} files changed (max {MAX_FILES})")
     if lines > MAX_LINES:
         reasons.append(f"{lines} lines changed (max {MAX_LINES})")
-    if real and all(is_test_path(p) for p in real):
+    if real and all(is_test(p) for p in real):
         reasons.append("only tests changed — a test alone does not fix a finding")
     if SECRET_SHAPES.search(added_text or ""):
         reasons.append("an added line is shaped like a credential")
@@ -89,7 +120,8 @@ _SYMLINK_OR_BINARY = re.compile(
     re.M)
 
 
-def evaluate_patch(patch_text: str, numstat_text: str) -> dict:
+def evaluate_patch(patch_text: str, numstat_text: str, repo: str = "backend"
+                   ) -> dict:
     """Static verdict on a patch FILE, before it is applied anywhere. This is
     what the publish job trusts: it runs from a pristine checkout of main, so
     nothing the agent wrote has executed on that runner."""
@@ -102,7 +134,7 @@ def evaluate_patch(patch_text: str, numstat_text: str) -> dict:
     extra = []
     if _SYMLINK_OR_BINARY.search(patch_text):
         extra.append("patch carries a symlink or a binary blob")
-    return evaluate(rows, added, extra)
+    return evaluate(rows, added, extra, repo=repo)
 
 
 def _git(*args: str) -> str:
@@ -139,15 +171,22 @@ def _collect() -> tuple[list[tuple[int, int, str]], str, list[str]]:
 
 
 def main() -> int:
-    if len(sys.argv) == 3 and sys.argv[1] == "--patch":
+    args = sys.argv[1:]
+    repo = "backend"
+    if len(args) >= 2 and args[-2] == "--repo":
+        repo, args = args[-1], args[:-2]
+        if repo not in ("backend", "mcp"):
+            print(json.dumps({"ok": False, "reasons": [f"unknown --repo {repo}"]}))
+            return 2
+    if len(args) == 2 and args[0] == "--patch":
         try:
-            text = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-            num = _git("apply", "--numstat", sys.argv[2])
+            text = open(args[1], encoding="utf-8", errors="replace").read()
+            num = _git("apply", "--numstat", args[1])
         except Exception as e:  # noqa: BLE001
             print(json.dumps({"ok": False, "reasons": [
                 f"patch unreadable or does not apply: {type(e).__name__}"]}))
             return 2
-        v = evaluate_patch(text, num)
+        v = evaluate_patch(text, num, repo=repo)
         print(json.dumps(v))
         return 0 if v["ok"] else 3
     try:
