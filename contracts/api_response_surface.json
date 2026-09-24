@@ -7762,7 +7762,7 @@
    "keys": []
   },
   "GET /api/v1/brain/autopilot/library": {
-   "source": "routes/brain_autopilot.py:2695",
+   "source": "routes/brain_autopilot.py:2699",
    "handler": "autopilot_library",
    "resolution": "resolved",
    "open_at": [
@@ -7836,7 +7836,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2674",
+   "source": "routes/brain_autopilot.py:2678",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -7850,7 +7850,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/recent": {
-   "source": "routes/brain_autopilot.py:3266",
+   "source": "routes/brain_autopilot.py:3270",
    "handler": "autopilot_recent",
    "resolution": "resolved",
    "open_at": [
@@ -7863,7 +7863,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/status": {
-   "source": "routes/brain_autopilot.py:2622",
+   "source": "routes/brain_autopilot.py:2626",
    "handler": "autopilot_status",
    "resolution": "resolved",
    "open_at": [
@@ -7893,7 +7893,7 @@
    ]
   },
   "GET /api/v1/brain/autopilot/verification-status": {
-   "source": "routes/brain_autopilot.py:3534",
+   "source": "routes/brain_autopilot.py:3538",
    "handler": "autopilot_verification_status",
    "resolution": "resolved",
    "open_at": [
@@ -8365,14 +8365,14 @@
    ]
   },
   "GET /api/v1/brain/heartbeat": {
-   "source": "routes/brain_autopilot.py:2818",
+   "source": "routes/brain_autopilot.py:2822",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/brain/heartbeat-alt": {
-   "source": "routes/brain_autopilot.py:2818",
+   "source": "routes/brain_autopilot.py:2822",
    "handler": "brain_heartbeat",
    "resolution": "opaque",
    "open_at": [],
@@ -27733,7 +27733,7 @@
    "keys": []
   },
   "POST /api/v1/brain/autopilot/promote-on-failure": {
-   "source": "routes/brain_autopilot.py:2674",
+   "source": "routes/brain_autopilot.py:2678",
    "handler": "autopilot_promote_on_failure",
    "resolution": "partial",
    "open_at": [
@@ -27747,7 +27747,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/run": {
-   "source": "routes/brain_autopilot.py:2209",
+   "source": "routes/brain_autopilot.py:2213",
    "handler": "autopilot_run",
    "resolution": "resolved",
    "open_at": [
@@ -27781,7 +27781,7 @@
    ]
   },
   "POST /api/v1/brain/autopilot/verify": {
-   "source": "routes/brain_autopilot.py:3313",
+   "source": "routes/brain_autopilot.py:3317",
    "handler": "autopilot_verify",
    "resolution": "resolved",
    "open_at": [
