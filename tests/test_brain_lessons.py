@@ -50,7 +50,7 @@ def test_a_failing_family_says_do_not_repeat_and_names_the_files():
 
 
 def test_a_working_family_says_keep_the_shape():
-    l = bl.compile_lessons([_ev("x", "worked", "a.py")] * 3)["x"]
+    l = bl.compile_lessons([_ev("fam_x", "worked", "a.py")] * 3)["fam_x"]
     assert l["verdict"] == "works" and "keep the same shape" in l["guidance"]
     assert l["files_worked"] == ["a.py"] and l["files_failed"] == []
 
@@ -58,36 +58,57 @@ def test_a_working_family_says_keep_the_shape():
 def test_human_rejection_is_carried_even_on_a_thin_family():
     """MUTATION: gate the rejection line on verdict != thin → the one real
     human 'no' this family has is silently dropped."""
-    l = bl.compile_lessons([_ev("y", "rejected", note="wrong file")])["y"]
+    l = bl.compile_lessons([_ev("fam_y", "rejected", note="wrong file")])["fam_y"]
     assert l["verdict"] == "thin"
     assert "A human closed 1 proposal(s)" in l["guidance"]
     assert "wrong file" in l["guidance"]
 
 
 def test_guard_refusals_need_two_before_they_teach():
-    one = bl.compile_lessons([_ev("z", "refused")])["z"]
-    two = bl.compile_lessons([_ev("z", "refused")] * 2)["z"]
+    one = bl.compile_lessons([_ev("fam_z", "refused")])["fam_z"]
+    two = bl.compile_lessons([_ev("fam_z", "refused")] * 2)["fam_z"]
     assert one["guidance"] == ""
     assert "refused by the deterministic guards" in two["guidance"]
+
+
+def test_a_decline_is_not_told_it_hallucinated():
+    """The first live compile told 64 inspector_l22_handoff DECLINES (the
+    model returned an empty edit) that they had claimed a syntax/SQLite bug.
+    MUTATION: map 'refused' to REFUSED again."""
+    l = bl.compile_lessons([_ev("inspector_l22_handoff", "declined")] * 3)
+    g = l["inspector_l22_handoff"]["guidance"]
+    assert "declined 3 times" in g and "config, data or product" in g
+    assert "syntax" not in g and "SQLite" not in g
+    assert bl._GUARD_OUTCOME["refused"] == "declined"
+    assert bl._GUARD_OUTCOME["rejected_false_syntax_claim"] == "refused"
+    assert bl._GUARD_OUTCOME["rejected_sqlite_hallucination"] == "refused"
+
+
+@pytest.mark.parametrize("label", ["https://dchub.cloud/x", "dchub", "table",
+                                   "ai_interconnection.py", "static/app_main.js",
+                                   "ops_runbook.md"])
+def test_urls_bare_words_and_filenames_are_not_families(label):
+    """MUTATION: drop the underscore / extension filter."""
+    assert bl.family_of(label) == ""
 
 
 def test_nothing_to_teach_is_empty_not_filler():
     """A thin family with one success says NOTHING — an always-present hint
     trains the drafter to skim past it."""
-    assert bl.compile_lessons([_ev("q", "worked")])["q"]["guidance"] == ""
+    assert bl.compile_lessons([_ev("fam_q", "worked")])["fam_q"]["guidance"] == ""
 
 
 def test_unplaceable_events_do_not_move_a_verdict():
     """MUTATION: count unknown outcomes as failed."""
-    events = [_ev("a", "worked")] * 3 + [_ev("a", "banana"), _ev("", "failed"),
+    events = [_ev("fam_a", "worked")] * 3 + [_ev("fam_a", "banana"), _ev("", "failed"),
                                          None, {"outcome": "failed"}]
     l = bl.compile_lessons(events)
-    assert list(l) == ["a"] and l["a"]["counts"]["failed"] == 0
+    assert list(l) == ["fam_a"] and l["fam_a"]["counts"]["failed"] == 0
 
 
 def test_notes_are_only_taken_from_failures_and_rejections():
-    l = bl.compile_lessons([_ev("n", "worked", note="SUCCESS NOTE")] * 3
-                           + [_ev("n", "rejected", note="human said no")])["n"]
+    l = bl.compile_lessons([_ev("fam_n", "worked", note="SUCCESS NOTE")] * 3
+                           + [_ev("fam_n", "rejected", note="human said no")])["fam_n"]
     assert "SUCCESS NOTE" not in l["guidance"]
     assert "human said no" in l["guidance"]
 
@@ -211,7 +232,8 @@ def test_refresh_compiles_all_four_sources_on_postgres(pg):
                     " ORDER BY family")
         rows = {r[0]: r[1:] for r in cur.fetchall()}
     assert rows["shadowed_route"][:2] == ("fails", 4)
-    assert rows["boot_syntax"][2]["refused"] == 2
+    bs = rows["boot_syntax"][2]
+    assert (bs["refused"], bs["declined"]) == (1, 1)
     js = rows["js_field_fallback_missing"][2]
     assert js["failed"] == 1 and js["rejected"] == 1   # not 2: no double count
     # the cache was cleared, so the read path sees the new page

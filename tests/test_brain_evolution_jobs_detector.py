@@ -40,3 +40,23 @@ def test_detector_is_registered_in_the_sweep():
     src = inspect.getsource(R.scan_all)
     names = {n.id for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Name)}
     assert "check_brain_evolution_jobs_alive" in names
+
+
+def test_junk_lesson_families_are_flagged():
+    """The first live compile's junk: MUTATION — return [] unconditionally."""
+    out = R.junk_lesson_family_findings(
+        ["autonomy_proactive", "https", "dchub", "ai_interconnection.py"])
+    assert [f["issue"] for f in out] == ["brain_lessons_junk_family"]
+    assert out[0]["count"] == 3 and "https" in out[0]["detail"]
+
+
+def test_clean_or_unreadable_lesson_table_is_quiet():
+    assert R.junk_lesson_family_findings(["autonomy_proactive", "data_stale"]) == []
+    assert R.junk_lesson_family_findings(None) == []
+
+
+def test_junk_family_detector_is_registered():
+    import ast, inspect
+    names = {n.id for n in ast.walk(ast.parse(inspect.getsource(R.scan_all)))
+             if isinstance(n, ast.Name)}
+    assert "check_brain_lessons_families_are_findings" in names

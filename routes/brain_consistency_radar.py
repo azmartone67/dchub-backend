@@ -3960,6 +3960,55 @@ def check_brain_evolution_jobs_alive() -> list[dict]:
         last, datetime.datetime.now(datetime.timezone.utc))
 
 
+# 2026-09-24: the first live lessons compile wrote pages for `https`, `dchub`,
+# `table` and `ai_interconnection.py` — a URL scheme, bare words and a filename,
+# which are not finding families. Agents were then handed lessons keyed on
+# them. brain_lessons.family_of() now drops such tokens; this watches the LIVE
+# table so a regression in that filter (or a new writer) is seen.
+def junk_lesson_family_findings(families) -> list[dict]:
+    """PURE. families: the brain_lessons.family values, or None (unreadable)."""
+    if not families:
+        return []
+    try:
+        from routes.brain_lessons import family_of
+    except Exception:
+        return []
+    junk = sorted(f for f in families if family_of(f) != f)
+    if not junk:
+        return []
+    return [{
+        "issue": "brain_lessons_junk_family",
+        "url": "brain_lessons.family",
+        "count_kind": "item_count",
+        "count": len(junk),
+        "detail": (f"{len(junk)} lesson page(s) keyed on something that is not "
+                   f"a snake_case finding family: {', '.join(junk[:8])}. "
+                   f"Agents receive these as lessons; check family_of() and "
+                   f"the brain_lessons writers."),
+    }]
+
+
+def check_brain_lessons_families_are_findings() -> list[dict]:
+    conn = _db()
+    if conn is None:
+        return []
+    fams = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.brain_lessons')")
+            if (cur.fetchone() or [None])[0]:
+                cur.execute("SELECT family FROM brain_lessons")
+                fams = [r[0] for r in cur.fetchall()]
+    except Exception:
+        fams = None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return junk_lesson_family_findings(fams)
+
+
 def _dchub_share_of_voice_pct() -> Optional[float]:
     """r64-d (2026-05-31): DC Hub's real AI-citation share-of-voice over
     the last 30 days, as a %. Mirrors the math behind
@@ -13308,6 +13357,8 @@ def scan_all() -> list[dict]:
     for fn in (# 2026-09-24: lessons compiler + evolution scorecard shipped
                # green and died on their first live run; nothing watched them.
                check_brain_evolution_jobs_alive,
+               # 2026-09-24: lessons pages keyed on URLs / filenames.
+               check_brain_lessons_families_are_findings,
                # 2026-09-12: the brain's own review gate had returned 0
                # rejections across 293 decisions while the grade scored that
                # 4/4 — a can't-fail signature nothing was watching.
