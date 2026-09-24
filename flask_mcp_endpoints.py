@@ -271,17 +271,29 @@ def _sanitize_track_source(raw):
 # REAL transaction (SET LOCAL is a no-op under autocommit), then restore
 # autocommit. Runs on the direct track connection, never a db_utils cursor
 # (whose execute() silently drops DDL under SKIP_DDL).
-_CALL_LOG_SOURCE_STATE = {"ready": False, "next_try": 0.0}
-_CALL_LOG_SOURCE_RETRY_S = 300
-_CALL_LOG_SOURCE_PRESENT_SQL = (
+#
+# r-reach-source (#3778 follow-up): the same column on mcp_tool_calls
+# (migrations/2026-09-24_mcp_tool_calls_source.sql), because /api/v1/reach
+# reads mcp_calls_identity — a view over mcp_tool_calls, not mcp_call_log.
+# One state per table: the two columns converge independently. The table name
+# is interpolated into the ALTER, so it must be a key of this dict — nothing
+# caller-supplied ever reaches it.
+_SOURCE_COLUMN_STATE = {
+    "mcp_call_log":   {"ready": False, "next_try": 0.0},
+    "mcp_tool_calls": {"ready": False, "next_try": 0.0},
+}
+_SOURCE_COLUMN_RETRY_S = 300
+_SOURCE_COLUMN_PRESENT_SQL = (
     "SELECT 1 FROM information_schema.columns"
     " WHERE table_schema = current_schema()"
-    " AND table_name = 'mcp_call_log' AND column_name = 'source'")
+    " AND table_name = %s AND column_name = 'source'")
 
 
-def _ensure_call_log_source_column(conn) -> bool:
-    """True once mcp_call_log.source is confirmed present. Never raises."""
-    st = _CALL_LOG_SOURCE_STATE
+def _ensure_source_column(conn, table) -> bool:
+    """True once <table>.source is confirmed present. Never raises."""
+    st = _SOURCE_COLUMN_STATE.get(table)
+    if st is None:
+        return False
     if st["ready"]:
         return True
     if conn is None:
@@ -289,10 +301,10 @@ def _ensure_call_log_source_column(conn) -> bool:
     now = time.time()
     if now < st["next_try"]:
         return False
-    st["next_try"] = now + _CALL_LOG_SOURCE_RETRY_S
+    st["next_try"] = now + _SOURCE_COLUMN_RETRY_S
     try:
         with conn.cursor() as cur:
-            cur.execute(_CALL_LOG_SOURCE_PRESENT_SQL)
+            cur.execute(_SOURCE_COLUMN_PRESENT_SQL, (table,))
             if cur.fetchone():
                 st["ready"] = True
                 return True
@@ -301,8 +313,8 @@ def _ensure_call_log_source_column(conn) -> bool:
         try:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL lock_timeout = '2s'")
-                cur.execute("ALTER TABLE mcp_call_log"
-                            " ADD COLUMN IF NOT EXISTS source TEXT")
+                cur.execute("ALTER TABLE " + table
+                            + " ADD COLUMN IF NOT EXISTS source TEXT")
             conn.commit()
         except Exception:
             try:
@@ -313,7 +325,7 @@ def _ensure_call_log_source_column(conn) -> bool:
         finally:
             conn.autocommit = prev
         with conn.cursor() as cur:
-            cur.execute(_CALL_LOG_SOURCE_PRESENT_SQL)
+            cur.execute(_SOURCE_COLUMN_PRESENT_SQL, (table,))
             st["ready"] = bool(cur.fetchone())
     except Exception:
         pass
@@ -3680,6 +3692,13 @@ def track_tool_call():
     # tag for probe-health observability. client_name keeps the raw string.
     _platform_clean = _normalize_write_platform(_r_platform)
 
+    # r-source-path (#3778): registry arrival tag — its own column, never
+    # folded into platform. See _sanitize_track_source for the trust rule.
+    # Written to BOTH call tables: mcp_call_log (the canonical log) and
+    # mcp_tool_calls, which is what /api/v1/reach's mcp_calls_identity view
+    # reads — so the per-source reach split inherits is_real_external.
+    _src = _sanitize_track_source(body.get("source"))
+
     # phase9j_dual: also write to legacy mcp_tool_calls so the existing
     # /api/v1/usage and /api/v1/data-freshness queries (which read from
     # that table) reflect activity. The 4/30 rewrite of this file moved
@@ -3699,6 +3718,13 @@ def track_tool_call():
         _db_lt = try_get_db() if not _is_synthetic_selfheal else None
         if _db_lt:
             _c_lt = _db_lt.cursor()
+            # The column is converged on the DIRECT track connection (DDL on
+            # this pooled db_utils cursor may be silently skipped); only once
+            # it is confirmed is `source` named, so deploy skew never costs
+            # the row.
+            _lt_src = ()
+            if _src is not None and _ensure_source_column(_tc_conn, "mcp_tool_calls"):
+                _lt_src = (_src,)
             _params_str = params if isinstance(params, str) else (json.dumps(params or {}) if params is not None else '{}')
             # Phase FF++ (2026-05-12): DROPPED the session_id fallback in
             # client_name. Previously, when upstream MCP server (server.mjs)
@@ -3717,8 +3743,10 @@ def track_tool_call():
             _c_lt.execute(
                 """INSERT INTO mcp_tool_calls
                        (tool_name, platform, client_name, params, success,
-                        response_time_ms, ip_address, user_agent, session_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        response_time_ms, ip_address, user_agent, session_id"""
+                + (", source" if _lt_src else "") + """)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s"""
+                + (", %s" if _lt_src else "") + ")",
                 (
                     str(tool)[:200],
                     (_platform_clean or 'mcp-worker')[:80],
@@ -3739,7 +3767,7 @@ def track_tool_call():
                     # user_agent='node'.
                     ((body.get('user_agent') or request.headers.get('User-Agent') or ''))[:300],
                     (str(_r_session)[:200] if _r_session else None),
-                )
+                ) + _lt_src
             )
             _db_lt.commit()
     except Exception as _e_lt:
@@ -3807,16 +3835,12 @@ def track_tool_call():
             except Exception:
                 pass  # activation advance is best-effort — never block tracking
 
-    # r-source-path (#3778): registry arrival tag — its own column, never
-    # folded into platform. See _sanitize_track_source for the trust rule.
-    _src = _sanitize_track_source(body.get("source"))
-
     try:
         if _tc_conn is None:
             _tc_conn = _open_track_conn()
         _src_col = ""
         _src_val = ()
-        if _src is not None and _ensure_call_log_source_column(_tc_conn):
+        if _src is not None and _ensure_source_column(_tc_conn, "mcp_call_log"):
             _src_col = ", source"
             _src_val = (_src,)
         with _tc_conn.cursor() as cur:
@@ -8473,6 +8497,17 @@ def _reach_build_data():
         "depth_per_agent_7d": {"agents": 0, "median_calls": None, "p90_calls": None,
                                "mean_calls": None, "max_calls": 0},
         "retention_30d": {"agents": 0, "returned_2nd_day": 0, "day2_return_rate_pct": None},
+        # r-reach-source (#3778 follow-up): real 7d traffic split by the
+        # registry ARRIVAL PATH the MCP server tagged it with (/mcp/glama ->
+        # 'glama'). Same rows, same is_real_external filter as real_calls_7d.
+        # Caller-assertable attribution, NOT identity: anyone can hit
+        # /mcp/glama. `untagged_calls` = arrived on canonical /mcp, or before
+        # the tag was stored (2026-09-24).
+        "arrival_source_7d": {
+            "basis": "attribution_only",
+            "sources": [],
+            "untagged_calls": 0,
+        },
         "citations_7d": 0, "citation_engines_7d": 0,
         "flags": {"calls_available": False, "retention_available": False,
                   "citations_available": False},
@@ -8482,6 +8517,7 @@ def _reach_build_data():
             "probe_calls_7d": "COUNT(*) mcp_calls_identity (7d) WHERE NOT is_real_external (internal/probe/self-heal/scripted-UA)",
             "depth_per_agent_7d": "PERCENTILE_CONT median + p90 of calls-per-agent over mcp_calls_identity (7d) WHERE is_real_external AND is_public_ip, grouped by agent_id — depth-per-visit lever vs the day2_return retention lever",
             "retention_30d":  "mcp_agent_retention_30d — per-agent active_days over 30d (canonical retention view)",
+            "arrival_source_7d": "mcp_calls_identity (7d) WHERE is_real_external, JOIN mcp_tool_calls ON id, GROUP BY mcp_tool_calls.source — the MCP server's registry arrival-path tag (caller-assertable attribution, never identity or a payout basis); NULL source counted as untagged_calls",
             "citations_7d":   "COUNT(*) ai_citations (7d) WHERE dchub_cited = true",
         },
         "note": ("Agent counts read the canonical DB views mcp_calls_identity / "
@@ -8578,6 +8614,35 @@ def _reach_build_data():
         out["data_available"] = True
     except Exception as e:
         out["flags"]["calls_error"] = str(e)[:160]
+    # r-reach-source (#3778 follow-up): registry arrival split. mcp_calls_identity
+    # is a plain projection of mcp_tool_calls (id = its PK), so joining back on
+    # id reads the source tag for EXACTLY the rows the headline counts, under
+    # the same is_real_external filter — our probes / self-traffic stay out —
+    # without redefining the shared view that ~80 read sites depend on. Own
+    # connection: until mcp_tool_calls.source exists this fails into a flag
+    # and cannot poison any other read.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            rows = _reach_bounded(cur,
+                "SELECT tc.source, COUNT(*) AS calls, "
+                "       COUNT(DISTINCT i.agent_id) FILTER (WHERE i.is_public_ip) AS agents "
+                "FROM mcp_calls_identity i JOIN mcp_tool_calls tc ON tc.id = i.id "
+                "WHERE i.created_at >= NOW() - (7 * INTERVAL '1 day') "
+                "  AND i.is_real_external "
+                "GROUP BY 1 ORDER BY calls DESC LIMIT 25")
+            _srcs, _untagged = [], 0
+            for (src, calls, agents) in (rows or []):
+                if src is None:
+                    _untagged += int(calls or 0)
+                else:
+                    _srcs.append({"source": src, "calls": int(calls or 0),
+                                  "agents": int(agents or 0)})
+            out["arrival_source_7d"]["sources"] = _srcs
+            out["arrival_source_7d"]["untagged_calls"] = _untagged
+        out["flags"]["arrival_source_available"] = True
+    except Exception as e:
+        out["flags"]["arrival_source_available"] = False
+        out["flags"]["arrival_source_error"] = str(e)[:160]
     # 30d retention — straight read of the canonical retention view.
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
