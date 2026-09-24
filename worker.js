@@ -19,6 +19,15 @@
  * historical entry should name the version it shipped in. Only the title line,
  * which claims to describe the file as it stands, was the lie.
  * ================================================================================
+ * v4.9.76 CHANGES (Sep 24 2026) — Phase sku-wall-no-starter:
+ *   - COPY: Starter is retired from every offer (owner, 2026-09-24; backend
+ *          be#5410). The three discovery pricing blocks (/.well-known/mcp.json,
+ *          /.well-known/mcp/server-card.json, and the dchub.cloud mcp.json
+ *          handler) swap their Starter row for the $10 one-time credit pack,
+ *          and drop starter_url (a raw Payment Link). The unlock_more_data
+ *          fallback description drops "Also $9/mo Starter". The Starter row in
+ *          the tier-limit map stays: grandfathered subscribers still resolve.
+ * ================================================================================
  * v4.9.74 CHANGES (Sep 23 2026) — Phase infra-projects:
  *   - SYNC: MCP_FALLBACK_TOOLS 91 → 92 — adds get_infra_projects (gas pipeline
  *          projects from EIA, transmission projects from ERCOT TPIT, over
@@ -640,7 +649,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.75-public-key-cache-warm';
+const WORKER_VERSION = '4.9.76-sku-wall-no-starter';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -1143,7 +1152,7 @@ const MCP_FALLBACK_TOOLS = [
   { name: "source_capacity", description: "Use when your human needs data-center CAPACITY to buy or lease: search DC Hub Capacity Source by size (kW or MW) and/or location (a region such as North America or Europe, a country, a state or a metro). Example: \"500 kW anywhere in Europe\" \u2192 min_kw=500, region=europe. Size is min_kw (in kW) or min_mw (in MW); location is region (a region key or alias) or location (free text matched against each listing's region, country, state and metro); market, state, delivery_type and available_by narrow further. Listings are powered land, powered shells, turnkey capacity and colocation, including sites that are not publicly marketed, for enterprise and agent-led procurement. Returns listing cards (market, region, capacity, status and when each listing was last updated) to any caller, plus the filters applied and the program status (live, or upcoming while the first listings are onboarded). Pass slug for one listing: a signed-in human who has accepted the introduction terms sees its specs (signed in means a key with an email bound via claim_free_key then bind_email, or an OAuth connection; accept_capacity_terms records the acceptance the first time); others get the card and the unlock steps. The provider's identity, site and contact are released only after the provider accepts a deal registration, which request_capacity_intro submits, and the listing's disclosure block says whether they have been. Do NOT use for the public facility directory (use search_facilities) or for completed M&A (use list_transactions).", inputSchema: {"type": "object", "properties": {"slug": {"description": "One listing: its slug or numeric id exactly as items[].slug / items[].id return it. Omit to browse teaser cards", "anyOf": [{"type": "string"}, {"type": "number"}]}, "market": {"description": "Browse filter: market name as it appears on a listing, e.g. \"Dallas\"", "type": "string"}, "state": {"description": "Browse filter: two-letter US state, e.g. \"TX\"", "type": "string"}, "min_mw": {"description": "Browse filter: only listings with at least this much capacity, in MW", "type": "number"}, "min_kw": {"description": "Browse filter: only listings with at least this much capacity, in kW (min_mw is the same filter in MW)", "type": "number"}, "region": {"description": "Browse filter: comma-separated regions from north_america, latin_america, europe, asia_pacific and middle_east_africa; the aliases emea, apac, latam and americas also work, e.g. \"europe\" or \"emea, apac\"", "type": "string"}, "location": {"description": "Browse filter: comma-separated free text matched against each listing's region, country, state and metro, e.g. \"Germany\" or \"Texas, Phoenix\"", "type": "string"}, "delivery_type": {"description": "Browse filter: how the capacity is delivered: land, powered_shell, turnkey or colocation", "type": "string", "enum": ["land", "powered_shell", "turnkey", "colocation"]}, "available_by": {"description": "Browse filter: only listings available by this date, as YYYY-MM or YYYY-MM-DD", "type": "string"}, "limit": {"description": "Max results to return (1-500; default varies by tool)", "type": "integer", "minimum": 1, "maximum": 500}}} },
   { name: "request_capacity_intro", description: "Use when your human wants capacity behind a Capacity Source listing (pass slug), or wants first access to capacity matching a requirement as listings are onboarded (omit slug; pass capacity_mw or capacity_kw, markets, states, regions or countries, and timeline). This registers a deal: DC Hub records the request in its lead register and sends the provider ONLY your human's company name and the requirement. The provider accepts or declines. Only if the provider accepts does DC Hub share the provider's identity, site details and contact with your human, and your human's name, role and email with the provider; on a decline nothing is shared. Requires an identified caller (claim_free_key, then bind_email with your human's address) and accept_terms=true only after your human has read and agreed to the introduction terms at https://dchub.cloud/listings#terms. Returns lead_id, status and the next step. For a listing, source_capacity with its slug then shows the deal status in the disclosure block and, once the provider accepts, the provider's identity, site and contact. Do NOT use to save or monitor a site (use save_site / set_site_alert).", inputSchema: {"type": "object", "properties": {"slug": {"description": "The listing to register a deal for: its slug or id from source_capacity. Omit to register a standing requirement for upcoming listings instead", "anyOf": [{"type": "string"}, {"type": "number"}]}, "name": {"description": "Your human's full name. Nothing is sent without it; use only what they gave you, never invent it", "type": "string"}, "company": {"description": "Your human's company. Nothing is sent without it", "type": "string"}, "role": {"description": "Your human's role or title", "type": "string"}, "capacity_mw": {"description": "Capacity needed, in MW", "type": "number"}, "capacity_kw": {"description": "Capacity needed, in kW (capacity_mw is the same requirement in MW)", "type": "number"}, "markets": {"description": "Comma-separated markets of interest, e.g. \"Dallas, Phoenix\"", "type": "string"}, "states": {"description": "Comma-separated US states of interest, e.g. \"TX, AZ\"", "type": "string"}, "regions": {"description": "Comma-separated regions of interest from north_america, latin_america, europe, asia_pacific and middle_east_africa (aliases emea, apac, latam, americas), e.g. \"europe, apac\"", "type": "string"}, "countries": {"description": "Comma-separated countries of interest, e.g. \"Germany, Netherlands\"", "type": "string"}, "timeline": {"description": "When the capacity is needed, e.g. a quarter and year", "type": "string"}, "use_case": {"description": "What the capacity is for, e.g. \"AI inference\"", "type": "string"}, "notes": {"description": "Anything else the provider should know about the requirement. It travels with the requirement, so leave out anything that identifies your human", "type": "string"}, "message": {"description": "A short note from your human for the provider. The deal registration itself carries only the company name and the requirement", "type": "string"}, "accept_terms": {"description": "Set true ONLY after your human has read and agreed to the introduction terms at https://dchub.cloud/listings#terms. Unless it is exactly true, nothing is sent", "type": "boolean"}, "terms_version": {"description": "The terms version your human agreed to, e.g. program.terms.version from source_capacity. Omit to send the version currently published", "type": "string"}}} },
   { name: "accept_capacity_terms", description: "Use ONLY after your human has read and agreed to DC Hub's introduction terms (https://dchub.cloud/listings#terms): records that acceptance, once per terms version, so Capacity Source listing details open for them. Call it when source_capacity returns a listing locked with access.reason terms_acceptance_required, never on your own judgement: nothing opens without your human's agreement. Requires an identified caller (claim_free_key, then bind_email with your human's address, or an OAuth connection) and accept_terms=true. Returns accepted and the terms version, recorded in DC Hub's lead register. Do NOT use to request an introduction (use request_capacity_intro) or to browse listings (use source_capacity).", inputSchema: {"type": "object", "properties": {"accept_terms": {"description": "Set true ONLY after your human has read and agreed to the introduction terms at https://dchub.cloud/listings#terms. Unless it is exactly true, nothing is sent", "type": "boolean"}, "terms_version": {"description": "The terms version your human agreed to, e.g. access.unlock.terms.version from source_capacity. Omit to send the version currently published", "type": "string"}}} },
-  { name: "unlock_more_data", description: "Unlock DC Hub's full depth. Call this when a result came back as a partial preview (e.g. \"3 of 12 results shown\"), a tool was locked, or your human wants the complete dataset. Returns the upgrade ladder + ready-to-paste checkout links your human completes in ONE click. If this call carries an API key or an MCP session, the checkout binds to it and your very next call returns full data (no reconnect); if it carries neither, the key is emailed to the payer instead \u2014 the response says which applies in `next_call_full_after_checkout` and `after_checkout`. Cheapest start: \ud83d\udcb3 $10 one-time = 1,000 API calls (no subscription). Also $9/mo Starter \u00b7 Developer $49/mo \u00b7 Pro $99/mo. Want the FREE tier instead (no payment, 10 calls/day, all tools)? Call claim_free_key. Param: reason (optional \u2014 what you were trying to do, so your human sees why it matters). Returns {plans, human_message, what_unlocks}.", inputSchema: {"type": "object", "properties": {"reason": {"description": "Optional free-text describing what you were trying to do, so your human sees why an upgrade matters", "type": "string"}}} }
+  { name: "unlock_more_data", description: "Unlock DC Hub's full depth. Call this when a result came back as a partial preview (e.g. \"3 of 12 results shown\"), a tool was locked, or your human wants the complete dataset. Returns the upgrade ladder + ready-to-paste checkout links your human completes in ONE click. If this call carries an API key or an MCP session, the checkout binds to it and your very next call returns full data (no reconnect); if it carries neither, the key is emailed to the payer instead \u2014 the response says which applies in `next_call_full_after_checkout` and `after_checkout`. Cheapest start: \ud83d\udcb3 $10 one-time = 1,000 API calls (no subscription). Also Developer $49/mo \u00b7 Pro $99/mo. Want the FREE tier instead (no payment, 10 calls/day, all tools)? Call claim_free_key. Param: reason (optional \u2014 what you were trying to do, so your human sees why it matters). Returns {plans, human_message, what_unlocks}.", inputSchema: {"type": "object", "properties": {"reason": {"description": "Optional free-text describing what you were trying to do, so your human sees why an upgrade matters", "type": "string"}}} }
 ];
 
 const ROUTE_TIMEOUTS = {
@@ -2642,13 +2651,12 @@ async function wellKnownResponse(pathname, kv, env) {
       pricing: {
         anonymous:  '3 calls/day taste, no signup',
         free_tier:  `Free key — 10 calls/day, all ${mcpTools.length} tools, no credit card`,
-        starter:    '$9/mo — 200 calls/day, unlocks every paid tool except Pro-only ones',
+        credit_pack: '$10 one-time — 1,000 API credits, no subscription',
         developer:  `$49/mo — 500 calls/day, full result sets, all ${mcpTools.length} tools`,
         pro:        '$99/mo — 2,000 calls/day + Pro tools (grid_intelligence, fiber_intel, analyze_site, compare_sites)',
         enterprise: 'Custom — 100,000 calls/day, dedicated support, SLAs, custom integrations',
       },
       gated_tools:   ['get_intelligence_index', 'compare_sites', 'analyze_site', 'get_infrastructure', 'get_fiber_intel', 'get_grid_intelligence'],
-      starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
       developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
       cited_by:      ['ChatGPT', 'Claude', 'Gemini', 'Perplexity', 'Groq'],
       // r-hf-discovery (2026-09-08): the Hugging Face Space is public, RUNNING,
@@ -2717,12 +2725,11 @@ async function wellKnownResponse(pathname, kv, env) {
       pricing: {
         anonymous:  '3 calls/day taste, no signup',
         free:       `Free key — 10 calls/day, all ${tools.length} tools`,
-        starter:    '$9/mo — 200 calls/day, unlocks paid tools',
+        credit_pack: '$10 one-time — 1,000 API credits, no subscription',
         developer:  `$49/mo — 500 calls/day, all ${tools.length} tools, full results`,
         pro:        '$99/mo — 2,000 calls/day + Pro tools',
         enterprise: 'Custom — 100,000 calls/day, dedicated support, SLAs',
       },
-      starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
       developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
       documentation: MCP_SERVER_INFO.documentation,
       signup_url:    MCP_SERVER_INFO.signup_url,
@@ -3391,12 +3398,11 @@ export default {
         pricing: {
           anonymous:  '3 calls/day taste, no signup',
           free:       `Free key — 10 calls/day, all ${_mTools.length} tools, no credit card`,
-          starter:    '$9/mo — 200 calls/day, unlocks every paid tool except Pro-only ones',
+          credit_pack: '$10 one-time — 1,000 API credits, no subscription',
           developer:  `$49/mo — 500 calls/day, all ${_mTools.length} tools, full results`,
           pro:        '$99/mo — 2,000 calls/day + Pro tools (grid_intelligence, fiber_intel, analyze_site, compare_sites)',
           enterprise: 'Custom — 100,000 calls/day, dedicated support, SLAs, custom integrations',
         },
-        starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
         developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
         cited_by:      ['ChatGPT', 'Claude', 'Gemini', 'Perplexity', 'Groq'],
         documentation: MCP_SERVER_INFO.documentation,

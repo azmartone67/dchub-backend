@@ -609,7 +609,10 @@ def test_repo_worker_is_canon_clean_and_current():
     # the Cache API under the PUBLIC URL instead of cf.cacheEverything under the
     # Railway URL, so purge-by-URL can evict it. Ships on merge via
     # deploy-zone-worker.yml (auto-deploy armed) — the first push-triggered run.
-    assert "WORKER_VERSION = '4.9.75-public-key-cache-warm'" in src
+    # ★2026-09-24 4.9.76: Starter retired from every offer — the discovery
+    # pricing blocks sell the $10 pack instead and drop starter_url; ships on
+    # merge via deploy-zone-worker.yml (auto-deploy armed).
+    assert "WORKER_VERSION = '4.9.76-sku-wall-no-starter'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
