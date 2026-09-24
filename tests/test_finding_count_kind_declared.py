@@ -86,6 +86,9 @@ _NOT_A_DETECTOR = {
     "routes/brain_findings_writer.py":
         "the writer itself — its row dict forwards whatever count/count_kind "
         "the caller passed",
+    "routes/brain_autopilot.py":
+        "a finding CONSUMER — its dicts copy brain_findings rows into the "
+        "action loop; the radar imports it only for the lesson-gate predicate",
 }
 
 
