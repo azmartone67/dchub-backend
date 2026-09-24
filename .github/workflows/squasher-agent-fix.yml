@@ -293,6 +293,13 @@ jobs:
             echo "::warning::the agent listed no runnable test ids for $TARGET -- a fix needs a test"
             echo "ok=0" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          # dchub-mcp-server requires every test file to be run by some workflow
+          # (test/every-test-file-runs.test.mjs); a new file not listed in
+          # test/hard-gate.txt fails its smoke job. Run that guard here, so the
+          # omission is caught before a PR exists (mcp#533 needed a follow-up).
+          if [ "$TARGET" = "mcp" ] && [ -f mcp/test/every-test-file-runs.test.mjs ]; then
+            TESTS+=("mcp/test/every-test-file-runs.test.mjs")
+          fi
           mkdir -p "$RUNNER_TEMP/agent-home"
           if "$RUNNER" "${TESTS[@]}" > "$RUNNER_TEMP/tests.log" 2>&1; then
             echo "ok=1" >> "$GITHUB_OUTPUT"

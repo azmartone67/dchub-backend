@@ -1176,3 +1176,67 @@ def test_verify_works_out_which_repo_the_patch_touches(tmp_path, backend, mcp, t
                        env=dict(os.environ, RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(out)))
     assert p.returncode == 0, p.stderr
     assert f"target={target}" in out.read_text().splitlines()
+
+
+# ══ 16 · the MCP hard gate: no-network preload, verdict, list guard ═════════
+
+def _mcp_tree(tmp_path, *, preload=True, verdict_rc=0, vitest_rc=0):
+    """A throwaway backend root with the REAL run_mcp_tests.sh, a fake mcp/
+    checkout and a fake `npx` that records what it was asked to run."""
+    import shutil
+    root = tmp_path / "root"
+    (root / "tools" / "squasher_agent").mkdir(parents=True)
+    shutil.copy(TOOLS / "run_mcp_tests.sh", root / "tools" / "squasher_agent")
+    (root / "mcp" / "test" / "helpers").mkdir(parents=True)
+    (root / "mcp" / "scripts").mkdir(parents=True)
+    if preload:
+        (root / "mcp" / "test" / "helpers" / "no-network-preload.cjs").write_text("")
+    (root / "mcp" / "scripts" / "hard-gate-no-network.mjs").write_text(
+        f"console.log('VERDICT ' + process.argv[2]); process.exit({verdict_rc});\n")
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "npx").write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "NODE_OPTIONS=$NODE_OPTIONS"\necho "LOG=$DCHUB_NO_NETWORK_LOG"\necho "ARGS=$*"\n'
+        f"exit {vitest_rc}\n")
+    (bin_ / "npx").chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_}:{os.environ['PATH']}", RUNNER_TEMP=str(tmp_path))
+    return root, env
+
+
+def _run_mcp(root, env, *files):
+    return subprocess.run([str(root / "tools" / "squasher_agent" / "run_mcp_tests.sh"), *files],
+                          capture_output=True, text=True, env=env)
+
+
+def test_mcp_tests_run_under_the_repos_no_network_preload_and_verdict(tmp_path):
+    root, env = _mcp_tree(tmp_path)
+    p = _run_mcp(root, env, "mcp/test/x.test.mjs")
+    assert p.returncode == 0, p.stderr
+    assert f"NODE_OPTIONS=--require {root}/mcp/test/helpers/no-network-preload.cjs" in p.stdout
+    assert "ARGS=--no-install vitest run test/x.test.mjs" in p.stdout
+    assert "VERDICT " in p.stdout                     # the verdict script ran on the log
+
+
+@pytest.mark.parametrize("vitest_rc, verdict_rc", [(1, 0), (0, 1)], ids=["test-fails", "network-verdict-fails"])
+def test_mcp_run_fails_when_tests_or_the_network_verdict_fail(tmp_path, vitest_rc, verdict_rc):
+    root, env = _mcp_tree(tmp_path, vitest_rc=vitest_rc, verdict_rc=verdict_rc)
+    assert _run_mcp(root, env, "mcp/test/x.test.mjs").returncode != 0
+
+
+def test_mcp_run_without_the_preload_still_runs_plain_vitest(tmp_path):
+    root, env = _mcp_tree(tmp_path, preload=False)
+    p = _run_mcp(root, env, "mcp/test/x.test.mjs")
+    assert p.returncode == 0 and "NODE_OPTIONS=\n" in p.stdout and "VERDICT" not in p.stdout
+
+
+def test_verify_adds_the_every_test_file_runs_guard_for_mcp_fixes():
+    run = next(s["run"] for s in JOBS["verify"]["steps"] if s.get("id") == "tests")
+    i = run.index('if [ "$TARGET" = "mcp" ] && [ -f mcp/test/every-test-file-runs.test.mjs ]')
+    assert 'TESTS+=("mcp/test/every-test-file-runs.test.mjs")' in run[i:i + 200]
+    assert i > run.index('if [ "${#TESTS[@]}" = "0" ]')   # added AFTER the "no tests" refusal
+
+
+def test_prompt_tells_the_agent_about_hard_gate_txt():
+    t = (TOOLS / "prompt.md").read_text()
+    assert "mcp/test/hard-gate.txt" in t and "every-test-file-runs" in t

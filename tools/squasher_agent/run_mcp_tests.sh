@@ -20,5 +20,24 @@ for a in "$@"; do
 done
 [ -d "$root/mcp" ] || { echo "run_mcp_tests.sh: no mcp/ checkout beside the backend" >&2; exit 2; }
 cd "$root/mcp" || exit 2
-exec env -i PATH="$PATH" HOME="${RUNNER_TEMP:-/tmp}/agent-home" LANG=C.UTF-8 CI=1 \
+home="${RUNNER_TEMP:-/tmp}/agent-home"
+# The same conditions dchub-mcp-server's own hard gate uses (test.yml): the
+# no-network preload in every vitest worker, then its verdict script, which
+# fails on any network attempt the repo has not registered as debt. Tests that
+# pass here are fit for test/hard-gate.txt — and a test the agent writes cannot
+# reach the network either.
+preload="$root/mcp/test/helpers/no-network-preload.cjs"
+if [ -f "$preload" ]; then
+  log="${RUNNER_TEMP:-/tmp}/agent-mcp-no-network.jsonl"
+  rm -f "$log"
+  env -i PATH="$PATH" HOME="$home" LANG=C.UTF-8 CI=1 \
+    NODE_OPTIONS="--require $preload" DCHUB_NO_NETWORK_LOG="$log" \
+    npx --no-install vitest run "${files[@]}"
+  rc=$?
+  if [ -f "$root/mcp/scripts/hard-gate-no-network.mjs" ]; then
+    env -i PATH="$PATH" HOME="$home" node scripts/hard-gate-no-network.mjs "$log" || rc=1
+  fi
+  exit $rc
+fi
+exec env -i PATH="$PATH" HOME="$home" LANG=C.UTF-8 CI=1 \
   npx --no-install vitest run "${files[@]}"
