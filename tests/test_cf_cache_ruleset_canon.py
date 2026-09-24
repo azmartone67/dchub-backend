@@ -388,34 +388,33 @@ def test_seo_performance_bypasses_and_outranks_the_public_api_cache_rule(canon):
     )
 
 
-def test_stats_bypasses_and_outranks_the_public_api_cache_rule(canon):
-    """2026-09-24. get_stats() answers its boot window with a boot-degraded 200
-    marked no-store. Rule 2's `override_origin` 3600 discarded that, and
-    api.dchub.cloud/api/v1/stats served the 01:12:24Z boot body (HIT, age
-    climbing) until a zone-wide purge at 01:31Z. A healthy body polled the same
-    night was still HIT at age 923 on one origin request id — past both the
-    worker's cacheTtl 300 and the origin's s-maxage 600, i.e. rule 2's TTL.
+def test_stats_is_neither_bypassed_nor_held_by_the_public_api_rule(canon):
+    """2026-09-24, twice. get_stats() answers its boot window with a
+    boot-degraded 200 marked no-store. Rule 2's `override_origin` 3600 discarded
+    that, and api.dchub.cloud/api/v1/stats served the 01:12:24Z boot body until a
+    zone-wide purge at 01:31Z. The first fix was a rule-19 BYPASS (#5405).
 
-    Exact path only: /api/v1/stats/<x> is not this route. Last-match-wins, so
-    the bypass must sit after the caching rule.
+    That bypass also made the zone worker's Cache API put() store nothing:
+    `x-dc-edge-store: put`, then `readback-miss`, never a HIT, so every
+    api.dchub.cloud stats call reached Railway (rule-21's /api/v1/ops/claims
+    showed the same). Now NO rule matches /api/v1/stats: the worker keeps its own
+    300s TTL and already refuses a no-store body (skip:origin-cache-control).
+
+    So neither a cache:true rule (the pin) nor a cache:false rule (the dropped
+    put) may match it. Exact path: /api/v1/stats/<x> is not this route.
     """
-    rules = canon["rules"]
+    for r in canon["rules"]:
+        assert 'http.request.uri.path eq "/api/v1/stats"' not in r["expression"], (
+            f"rule {r['position']} names /api/v1/stats again. A bypass drops the "
+            "worker's own cache; a caching rule overrides its TTL and its no-store"
+        )
     public_api = next(
-        r for r in rules
+        r for r in canon["rules"]
         if "/api/v1/" in r["expression"] and r["action_parameters"].get("cache") is True
     )
-    stats = [
-        r for r in rules
-        if 'http.request.uri.path eq "/api/v1/stats"' in r["expression"]
-        and r["action_parameters"].get("cache") is False
-    ]
-    assert stats, (
-        "no bypass rule covers /api/v1/stats — Rule 2 caches it for 3600s with "
-        "override_origin and the boot-degraded no-store is discarded"
-    )
-    assert max(r["position"] for r in stats) > public_api["position"], (
-        "the /api/v1/stats bypass sits BEFORE the public-API caching rule; "
-        "last-match-wins means the caching rule wins"
+    assert '"/api/v1/stats"' in public_api["expression"] and "not (" in public_api["expression"], (
+        "the public-API caching rule no longer excludes /api/v1/stats, so its "
+        "3600s override_origin holds the boot-degraded body again"
     )
 
 
