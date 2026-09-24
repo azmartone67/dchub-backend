@@ -154,7 +154,7 @@ def _guidance(fam: str, c: dict, files_failed: list, files_worked: list,
             f"kind of edit: look for the upstream cause, or refuse and say "
             f"what a human must decide.")
         if files_failed:
-            lines.append("Already edited without effect: "
+            lines.append("Already tried without effect: "
                          + ", ".join(f"`{p}`" for p in files_failed) + ".")
     elif v == "mixed":
         lines.append(f"Fixes for `{fam}` held {w} of {graded} times. "
@@ -279,6 +279,25 @@ _L5_OUTCOMES_SQL = (
     "  JOIN brain_proposed_code_fixes p ON p.id = f.proposal_id"
     " WHERE f.proposal_kind = 'code' AND f.still_broken IS NOT NULL"
     "   AND COALESCE(f.checked_at, f.applied_at) >= NOW() - %s * INTERVAL '1 day'")
+# ★ Added 2026-09-24. brain_fix_outcomes holds TWO graded id spaces:
+# proposal_kind='code' → brain_proposed_code_fixes.id (the join above), and
+# proposal_kind='autopilot' → brain_autopilot_actions.id, mirrored in by
+# brain_learning's autopilot grader. Live, 173 of the latest 189 graded rows
+# were 'autopilot' — the code-only join saw 63 of 199 in 30d. The action row
+# carries the finding (finding_issue) and what was tried (pattern_name).
+_AUTOPILOT_OUTCOMES_SQL = (
+    "SELECT a.finding_issue, f.still_broken, a.pattern_name, f.evidence_note"
+    "  FROM brain_fix_outcomes f"
+    "  JOIN brain_autopilot_actions a ON a.id = f.proposal_id"
+    " WHERE f.proposal_kind = 'autopilot' AND f.still_broken IS NOT NULL"
+    "   AND COALESCE(f.checked_at, f.applied_at) >= NOW() - %s * INTERVAL '1 day'")
+#: Every graded outcome in the window, whatever its kind — the denominator
+#: for `coverage`, so an id space no source joins is SEEN, not silently lost.
+_GRADED_TOTAL_SQL = (
+    "SELECT proposal_kind, COUNT(*) FROM brain_fix_outcomes"
+    " WHERE still_broken IS NOT NULL"
+    "   AND COALESCE(checked_at, applied_at) >= NOW() - %s * INTERVAL '1 day'"
+    " GROUP BY 1")
 _L5_REFUSED_SQL = (
     "SELECT issue_label, last_outcome FROM brain_issue_persistence"
     " WHERE last_outcome = ANY(%s)"
@@ -302,6 +321,25 @@ _AGENT_OUTCOME = {"fixed": WORKED, "merged_unverified": FAILED,
 # counting it from both tables would double every human "no".
 
 
+def outcome_coverage(by_kind: dict | None, seen: dict) -> dict | None:
+    """PURE. How many graded outcomes the joins actually reached.
+
+    by_kind: {proposal_kind: graded rows in window} or None (unreadable).
+    None when unmeasurable; `unjoined_kinds` names any graded kind that no
+    source reads — the shape of the gap this was added to expose.
+    """
+    if by_kind is None:
+        return None
+    total = sum(by_kind.values())
+    joined_by = {"code": seen.get("l5_fix_outcomes"),
+                 "autopilot": seen.get("autopilot_fix_outcomes")}
+    joined = sum(v or 0 for v in joined_by.values())
+    return {"graded_total": total, "joined": joined,
+            "pct": round(100.0 * joined / total, 1) if total else None,
+            "by_kind": dict(by_kind),
+            "unjoined_kinds": sorted(k for k in by_kind if k not in joined_by)}
+
+
 def read_events(cur, days: int = WINDOW_DAYS) -> tuple[list, dict]:
     """(events, per-source row counts). A source that could not be read is
     reported as None — unmeasured, never 0."""
@@ -311,6 +349,12 @@ def read_events(cur, days: int = WINDOW_DAYS) -> tuple[list, dict]:
     for fam, broken, fp, note in rows or []:
         events.append({"family": fam, "outcome": FAILED if broken else WORKED,
                        "file": fp, "note": note if broken else ""})
+    rows = _rows(cur, _AUTOPILOT_OUTCOMES_SQL, (days,))
+    seen["autopilot_fix_outcomes"] = None if rows is None else len(rows)
+    for fam, broken, pattern, note in rows or []:
+        events.append({"family": fam, "outcome": FAILED if broken else WORKED,
+                       "file": f"autopilot:{pattern}" if pattern else "",
+                       "note": note if broken else ""})
     rows = _rows(cur, _L5_REFUSED_SQL, (list(_PERMAFAIL), days))
     seen["l5_guard_refusals"] = None if rows is None else len(rows)
     for label, oc in rows or []:
@@ -356,6 +400,9 @@ def refresh(days: int = WINDOW_DAYS) -> dict:
         with c.cursor() as cur:
             cur.execute(_DDL)
             events, seen = read_events(cur, days)
+            kinds = _rows(cur, _GRADED_TOTAL_SQL, (days,))
+            coverage = outcome_coverage(
+                None if kinds is None else {k: n for k, n in kinds}, seen)
             if all(v is None for v in seen.values()):
                 # ★ Every source unreadable is NOT "nothing learned": keep the
                 # last good pages rather than truncating them to empty.
@@ -395,6 +442,7 @@ def refresh(days: int = WINDOW_DAYS) -> dict:
     for l in lessons.values():
         by_verdict[l["verdict"]] = by_verdict.get(l["verdict"], 0) + 1
     return {"ok": True, "window_days": days, "sources": seen,
+            "outcome_coverage": coverage,
             "events": len(events), "families": len(lessons),
             "by_verdict": by_verdict,
             "with_guidance": sum(1 for l in lessons.values() if l["guidance"])}

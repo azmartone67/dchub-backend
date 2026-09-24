@@ -60,3 +60,24 @@ def test_junk_family_detector_is_registered():
     names = {n.id for n in ast.walk(ast.parse(inspect.getsource(R.scan_all)))
              if isinstance(n, ast.Name)}
     assert "check_brain_lessons_families_are_findings" in names
+
+
+def test_unjoined_outcome_kind_is_flagged():
+    """MUTATION: return [] unconditionally, or ignore the minimum."""
+    out = R.unjoined_outcome_findings({"code": 16, "autopilot": 173, "text": 9,
+                                       "pr": 2})
+    assert [f["issue"] for f in out] == ["brain_lessons_outcomes_unjoined"]
+    assert out[0]["count"] == 9 and "text" in out[0]["detail"]
+    assert "pr" not in out[0]["detail"]          # under the minimum
+
+
+def test_every_joined_kind_or_unreadable_is_quiet():
+    assert R.unjoined_outcome_findings({"code": 16, "autopilot": 173}) == []
+    assert R.unjoined_outcome_findings(None) == []
+
+
+def test_unjoined_detector_is_registered():
+    import ast, inspect
+    names = {n.id for n in ast.walk(ast.parse(inspect.getsource(R.scan_all)))
+             if isinstance(n, ast.Name)}
+    assert "check_brain_lessons_see_every_outcome_kind" in names
