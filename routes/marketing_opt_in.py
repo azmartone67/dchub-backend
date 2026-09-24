@@ -597,6 +597,59 @@ def opt_in_status():
             pass
 
 
+# ── the paywall opt-in card, for a keyed caller the MCP server cannot vet ──
+# 2026-09-24 (r-optin-keyed). The Node MCP server (dchub-mcp-server#519) builds
+# the same `optin_cta` card as mcp_gatekeeper._optin_cta_block, but it cannot
+# read the suppression list or resolve a key's tier, so it skips every keyed
+# caller. This endpoint answers for one key: the gatekeeper's OWN card, or
+# null. Nothing is re-implemented here — flag, FREE-only, tool set and the
+# suppression check (fail-safe = skip) are the gatekeeper's functions, so the
+# two paths cannot drift.
+#
+#   GET /api/v1/opt-in/cta?tool=<tool>
+#   X-Internal-Key: <service key>     (callers are our own services)
+#   X-API-Key:      <the caller's key> (header only — never a query string,
+#                                      which would land in access logs)
+#
+# Read-only: sends nothing, writes nothing, never sets marketing_opt_in. The
+# answer never contains the key's email, only a coarse reason.
+_CTA_TOOL_RE = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def _no_store(resp, status=200):
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+    return resp
+
+
+@marketing_opt_in_bp.get("/api/v1/opt-in/cta")
+def opt_in_cta():
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="forbidden",
+                                 hint="X-Internal-Key header required"), 403)
+    tool = (request.args.get("tool") or "").strip()
+    if not _CTA_TOOL_RE.fullmatch(tool):
+        return _no_store(jsonify(ok=False, error="bad_tool"), 400)
+    api_key = (request.headers.get("X-API-Key") or "").strip() or None
+    try:
+        import mcp_gatekeeper as g
+        if not g.optin_cta_enabled():
+            return _no_store(jsonify(ok=True, optin_cta=None, reason="flag_off"))
+        if tool not in g.OPTIN_CTA_TOOLS:
+            return _no_store(jsonify(ok=True, optin_cta=None, reason="tool"))
+        tier = g.resolve_tier(api_key)
+        card = g._optin_cta_block(tool, tier, api_key)
+        if card is None:
+            return _no_store(jsonify(ok=True, optin_cta=None, reason="tier"))
+        if g._optin_recipient_suppressed(api_key):
+            return _no_store(jsonify(ok=True, optin_cta=None, reason="suppressed"))
+        return _no_store(jsonify(ok=True, optin_cta=card, reason="ok"))
+    except Exception as e:
+        # Fail-safe, like the gatekeeper: no card when anything is unknown.
+        log.warning("opt_in_cta: failed, answering no card: %s", e)
+        return _no_store(jsonify(ok=False, optin_cta=None, reason="error"), 200)
+
+
 def register(app):
     """Wire the blueprint + bootstrap the audit table (best-effort)."""
     app.register_blueprint(marketing_opt_in_bp)
