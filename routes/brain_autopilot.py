@@ -2091,6 +2091,28 @@ def _lesson_gate_check(cur, pattern: str) -> str | None:
         return None
 
 
+def _lesson_gate_for_escalation_only(c, pattern: str) -> str | None:
+    """The lesson gate for a pattern whose action is escalation-only.
+
+    run_cycle short-circuits an action of (None, None) BEFORE _rate_limit_check,
+    so the lesson gate inside it never saw those findings: measured 2026-09-24,
+    inspector_l22_handoff (6 of 143 held over 90d) kept writing "no autonomous
+    action" escalations and never a lesson_gate row. Same check, same one
+    escalation row; returns the bench reason or None. Never raises."""
+    try:
+        with c.cursor() as cur:
+            reason = _lesson_gate_check(cur, pattern)
+            if reason:
+                _escalate_recidivism_once(cur, pattern, reason)
+            return reason
+    except Exception:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def _rate_limit_check(cur, pattern: str, url: str | None) -> tuple[bool, str]:
     """Return (allowed, reason)."""
     if pattern in _quarantined_patterns():
@@ -2559,6 +2581,33 @@ def autopilot_run():
             # cleared. The escalated state should be terminal until a
             # human resolves it, not a perpetual retry loop.
             if action_path is None:
+                # 2026-09-24: a failing escalation-only pattern is benched by the
+                # lesson gate too, and says so (lesson_gate row, once per
+                # finding) instead of another "no autonomous action".
+                _les = _lesson_gate_for_escalation_only(c, issue)
+                if _les:
+                    summary["rate_limited"] += 1
+                    _seen = False
+                    try:
+                        with c.cursor() as _lcur:
+                            _lcur.execute("""
+                                SELECT 1 FROM brain_autopilot_actions
+                                 WHERE pattern_name = %s
+                                   AND COALESCE(finding_url,'') = %s
+                                   AND outcome = 'rate_limited'
+                                   AND LEFT(COALESCE(error,''), 11) = 'lesson_gate'
+                                 LIMIT 1
+                            """, (issue, f.get("url") or ""))
+                            _seen = _lcur.fetchone() is not None
+                    except Exception:
+                        try: c.rollback()
+                        except Exception: pass
+                    if not _seen:
+                        _record_action(f, issue, None, None,
+                                        dry_run=_is_dry_run(), escalated=True,
+                                        http_code=None, body=None, error=_les,
+                                        outcome="rate_limited")
+                    continue
                 summary["escalated"] += 1
                 # r43-fix#4 (2026-05-30): the dominant escalation path
                 # (~900/day) recorded a brain_autopilot_actions row but never

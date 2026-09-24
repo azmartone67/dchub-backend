@@ -86,3 +86,115 @@ def test_kill_switch_lets_it_through_to_the_next_gate(monkeypatch):
 def test_a_working_pattern_is_not_stopped_by_the_gate(monkeypatch):
     _isolate(monkeypatch)
     assert ap._lesson_gate_check(_Cur((311, 1)), "schema_org_coverage_low") is None
+
+
+# ── escalation-only patterns (action (None, None)) reach the gate too ─
+# run_cycle's escalation branch ran BEFORE _rate_limit_check, so on
+# 2026-09-24 inspector_l22_handoff (6 of 143) wrote "no autonomous action"
+# rows and never a lesson_gate one.
+class _Conn:
+    """Answers the gate's count query with `counts`; every dedupe probe
+    ("have we recorded this before?") with no row."""
+
+    def __init__(self, counts):
+        self.counts = counts
+
+    def cursor(self, *a, **k):
+        conn = self
+
+        class _C(_Cur):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def fetchone(self):
+                last = self.sql[-1] if self.sql else ""
+                return conn.counts if "autopilot_outcomes" in last else None
+        return _C(None)
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_escalation_only_helper_benches_and_escalates(monkeypatch):
+    escalated = _isolate(monkeypatch)
+    why = ap._lesson_gate_for_escalation_only(_Conn((6, 137)), "inspector_l22_handoff")
+    assert why and why.startswith("lesson_gate")
+    assert escalated == [("inspector_l22_handoff", why)]
+    assert ap._lesson_gate_for_escalation_only(_Conn((311, 1)), "x") is None
+
+
+def _drive_cycle(monkeypatch, counts, issue="inspector_l22_handoff"):
+    """Run the real autopilot_run route over one escalation-only finding."""
+    import io, json
+    from flask import Flask
+    _isolate(monkeypatch)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(ap, "_admin_key", lambda: None)
+    monkeypatch.setattr(ap, "_is_disabled", lambda: False)
+    monkeypatch.setattr(ap, "_conn", lambda: _Conn(counts))
+    monkeypatch.setattr(ap, "_lookup_pattern",
+                        lambda i: {"action": lambda f: (None, None)})
+    payload = {"actionable_backend_issues": [{"issue": issue, "url": "u"}]}
+    monkeypatch.setattr(ap.urllib.request, "urlopen",
+                        lambda *a, **k: io.BytesIO(json.dumps(payload).encode()))
+    from routes import brain_consistency_radar as R
+    monkeypatch.setattr(R, "scan_all", lambda *a, **k: [])
+    recorded = []
+    monkeypatch.setattr(ap, "_record_action",
+                        lambda f, p, *a, **k: recorded.append((p, k)))
+    app = Flask(__name__)
+    with app.test_request_context("/api/v1/brain/autopilot/run", method="POST"):
+        ap.autopilot_run()
+    return recorded
+
+
+def test_run_cycle_records_lesson_gate_for_a_failing_escalation_only_pattern(monkeypatch):
+    """MUTATION: remove the gate call from the `action_path is None` branch →
+    the row is outcome='escalated', error='no autonomous action …'."""
+    rec = _drive_cycle(monkeypatch, (6, 137))
+    assert len(rec) == 1
+    p, k = rec[0]
+    assert p == "inspector_l22_handoff" and k["outcome"] == "rate_limited"
+    assert k["error"].startswith("lesson_gate")
+
+
+def test_run_cycle_still_escalates_a_working_escalation_only_pattern(monkeypatch):
+    rec = _drive_cycle(monkeypatch, (311, 1), issue="schema_org_coverage_low")
+    assert [(p, k["outcome"], k["error"]) for p, k in rec] == [
+        ("schema_org_coverage_low", "escalated", "no autonomous action for this pattern")]
+
+
+# ── the radar detector that would have caught it ─────────────────────
+def test_leak_detector_flags_a_benched_pattern_still_escalating():
+    """MUTATION: return [] unconditionally, or drop the bench predicate."""
+    from routes import brain_consistency_radar as R
+    out = R.lesson_gate_leak_findings([
+        ("inspector_l22_handoff", 6, 137, 2),       # benched, leaked
+        ("schema_org_coverage_low", 311, 1, 9),     # working — never flagged
+        ("render_pipeline_blocked", 5, 30, 0),      # benched, gated → quiet
+    ])
+    assert [f["issue"] for f in out] == ["brain_lesson_gate_leak"]
+    assert out[0]["count"] == 2
+    assert "inspector_l22_handoff" in out[0]["detail"]
+    assert "schema_org" not in out[0]["detail"]
+
+
+def test_leak_detector_quiet_when_unreadable_or_gate_killed(monkeypatch):
+    from routes import brain_consistency_radar as R
+    assert R.lesson_gate_leak_findings(None) == []
+    monkeypatch.setenv("BRAIN_LESSON_GATE_DISABLED", "1")
+    assert R.lesson_gate_leak_findings([("inspector_l22_handoff", 6, 137, 2)]) == []
+
+
+def test_leak_detector_is_registered():
+    import ast, inspect
+    from routes import brain_consistency_radar as R
+    names = {n.id for n in ast.walk(ast.parse(inspect.getsource(R.scan_all)))
+             if isinstance(n, ast.Name)}
+    assert "check_brain_lesson_gate_reaches_benched_patterns" in names

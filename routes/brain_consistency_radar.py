@@ -4066,6 +4066,85 @@ def check_brain_lessons_see_every_outcome_kind() -> list[dict]:
     return unjoined_outcome_findings(by_kind)
 
 
+
+# 2026-09-24: the autopilot lesson gate lived inside _rate_limit_check, which
+# escalation-only patterns never reach — inspector_l22_handoff held 6 of 143 and
+# still wrote "no autonomous action" rows, never a lesson_gate one. This flags a
+# pattern the gate WOULD bench (same predicate, same 30d counts) that still wrote
+# an action or escalation row the gate should have replaced.
+_LESSON_GATE_LEAK_HOURS = 6
+
+
+def lesson_gate_leak_findings(rows) -> list[dict]:
+    """PURE. rows: [(pattern, verified_ok, verified_failed, ungated_rows)] or None."""
+    if not rows:
+        return []
+    try:
+        from routes import brain_autopilot as _ap
+    except Exception:
+        return []
+    if _ap._lesson_gate_disabled():
+        return []
+    leaked = {}
+    for pattern, ok, bad, n in rows:
+        if n and _ap.lesson_bench_reason(ok, bad):
+            leaked[pattern] = int(n)
+    if not leaked:
+        return []
+    n = sum(leaked.values())
+    return [{
+        "issue": "brain_lesson_gate_leak",
+        "url": "brain_autopilot_actions.outcome",
+        "count_kind": "item_count",
+        "count": n,
+        "detail": (f"{n} autopilot row(s) in {_LESSON_GATE_LEAK_HOURS}h for "
+                   f"pattern(s) the lesson gate benches "
+                   f"({', '.join(sorted(leaked))}) were written as actions or "
+                   f"escalations, not lesson_gate — a run_cycle path reaches "
+                   f"them without the gate."),
+    }]
+
+
+def check_brain_lesson_gate_reaches_benched_patterns() -> list[dict]:
+    conn = _db()
+    if conn is None:
+        return []
+    rows = None
+    try:
+        from routes.brain_autopilot import _LESSON_GATE_DAYS
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.autopilot_outcomes'),"
+                        "       to_regclass('public.brain_autopilot_actions')")
+            have = cur.fetchone() or (None, None)
+            if have[0] and have[1]:
+                cur.execute("""
+                    WITH a AS (
+                        SELECT pattern_name, COUNT(*) AS n
+                          FROM brain_autopilot_actions
+                         WHERE started_at > NOW() - make_interval(hours => %s)
+                           AND outcome IN ('escalated', 'executed_ok',
+                                           'execution_failed')
+                         GROUP BY 1),
+                    v AS (
+                        SELECT pattern_name,
+                               COUNT(*) FILTER (WHERE succeeded IS TRUE)  AS ok,
+                               COUNT(*) FILTER (WHERE succeeded IS FALSE) AS bad
+                          FROM autopilot_outcomes
+                         WHERE verified_at > NOW() - make_interval(days => %s)
+                         GROUP BY 1)
+                    SELECT a.pattern_name, v.ok, v.bad, a.n
+                      FROM a JOIN v ON v.pattern_name = a.pattern_name
+                """, (_LESSON_GATE_LEAK_HOURS, _LESSON_GATE_DAYS))
+                rows = cur.fetchall()
+    except Exception:
+        rows = None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return lesson_gate_leak_findings(rows)
+
 def _dchub_share_of_voice_pct() -> Optional[float]:
     """r64-d (2026-05-31): DC Hub's real AI-citation share-of-voice over
     the last 30 days, as a %. Mirrors the math behind
@@ -13418,6 +13497,8 @@ def scan_all() -> list[dict]:
                check_brain_lessons_families_are_findings,
                # 2026-09-24: graded outcome kinds the lessons never read.
                check_brain_lessons_see_every_outcome_kind,
+               # 2026-09-24: benched patterns reaching run_cycle past the lesson gate.
+               check_brain_lesson_gate_reaches_benched_patterns,
                # 2026-09-12: the brain's own review gate had returned 0
                # rejections across 293 decisions while the grade scored that
                # 4/4 — a can't-fail signature nothing was watching.
