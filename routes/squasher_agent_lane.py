@@ -36,6 +36,8 @@ THE CONTRACT
     (/api/v1/heal/findings, the read sweep_self_cleared trusts). An agent run
     costs real money; a finding that already self-cleared is not worth one.
     An unreadable or empty detector claims NOTHING (blind != clean).
+  * Finding classes in AGENT_EXCLUDED_ISSUE_PREFIXES are skipped (today:
+    operator_profile_gap — missing data, which no code change fixes).
   * Rows with an action_class are skipped: a granted class has its own
     verified actuator (squasher_action_classes) and a model must not race it.
   * One agent attempt per finding row; an infra `failed` may retry once.
@@ -78,6 +80,31 @@ AGENT_OUTCOMES = ("pr_opened", "needs_human", "not_reproducible", "failed")
 # the cheap lane goes first — and NOT awaiting_ops: those name an admin
 # endpoint, and the agent deliberately holds no admin key.
 CLAIMABLE_STATUSES = ("awaiting_decision", "refused")
+
+# Finding classes the agent never claims, keyed by the detector's own issue
+# prefix (the live /heal/findings item's `issue`, or the queue row's title).
+# Measured 2026-09-24: the queue's most re-observed rows were
+# `operator_profile_gap:<operator>` (routes/brain_consistency_radar.py
+# check_operator_profile_gap — "N facilities tracked but X% missing power_mw").
+# Runs 35948754305 and 35951658519 each spent a claim confirming that the data
+# is simply missing: no code change fixes it; it needs sourcing/enrichment. The
+# rows stay in the queue for a human or an enrichment lane; the agent skips
+# them so its daily budget reaches findings it can fix. Matched on the ISSUE,
+# not the URL, so a real defect on an /operators/ page is still claimable.
+AGENT_EXCLUDED_ISSUE_PREFIXES = {
+    "operator_profile_gap:": "operator data gap — needs enrichment, not code",
+}
+
+
+def excluded_reason(row: dict, live_item: dict | None) -> str | None:
+    """Why the agent must not claim this row, or None. Pure."""
+    names = (str((live_item or {}).get("issue") or ""),
+             str(row.get("title") or ""))
+    for prefix, why in AGENT_EXCLUDED_ISSUE_PREFIXES.items():
+        if any(n.startswith(prefix) for n in names):
+            return why
+    return None
+
 
 # agent_state values that mean "leave this row alone".
 _BUSY_STATES = ("running", "pr_open")
@@ -196,17 +223,22 @@ def live_findings() -> dict:
 
 # ── pure decisions (the unit under test) ─────────────────────────────────
 
-def pick_candidate(rows: list[dict], live_keys, now: datetime | None = None
-                   ) -> dict | None:
+def pick_candidate(rows: list[dict], live_keys, now: datetime | None = None,
+                   live_items: dict | None = None) -> dict | None:
     """The first row this lane may claim, or None. Rows arrive ordered by
-    priority (most re-observed first). Pure: every clause is a test."""
+    priority (most re-observed first). Pure: every clause is a test.
+    live_items ({key: detector item}) lets the exclusion read the detector's
+    own issue name; without it only the row title is checked."""
     now = now or _now()
+    live_items = live_items or {}
     for r in rows:
         if r.get("status") not in CLAIMABLE_STATUSES:
             continue
         if (r.get("action_class") or "").strip():
             continue
         if r.get("finding_key") not in live_keys:
+            continue
+        if excluded_reason(r, live_items.get(r.get("finding_key"))):
             continue
         state = r.get("agent_state") or ""
         attempts = int(r.get("agent_attempts") or 0)
@@ -429,7 +461,8 @@ def claim_next(live: dict | None = None) -> dict:
                         "idle": f"daily budget spent ({max_per_day()}/24h)"}
             where = "status IN (%s)" % ", ".join(
                 "'%s'" % s for s in CLAIMABLE_STATUSES)
-            row = pick_candidate(_rows(cur, where), set(live["items"]))
+            row = pick_candidate(_rows(cur, where), set(live["items"]),
+                                 live_items=live["items"])
             if not row:
                 conn.commit()
                 return {"ok": True, "reclaimed": reclaimed,
