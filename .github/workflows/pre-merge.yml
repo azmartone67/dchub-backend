@@ -1436,6 +1436,28 @@ jobs:
             echo "::error::the LinkedIn quad canon copy SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── agent_broadcast Pass 2 publishes PUBLISHED rows only ────────────
+      # The dcpi-shifts fallback read market_power_scores with no `published`
+      # filter; the column defaults to false and production holds unpublished
+      # BUILD/AVOID alias twins. A NULL/false flag is a data fact no fake
+      # cursor holds, so the shipped route reads a real table here. Owns and
+      # recreates market_power_scores and dcpi_daily_snapshots.
+      - name: agent_broadcast published-only SQL against a real Postgres
+        env:
+          AGENT_BROADCAST_PUBLISHED_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_agent_broadcast_published_sql.py -v --tb=short
+
+      - name: Prove the agent_broadcast published-only SQL test actually RAN
+        env:
+          AGENT_BROADCAST_PUBLISHED_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_agent_broadcast_published_sql.py \
+            -q -rs --tb=no > abp.txt 2>&1 || { cat abp.txt; exit 1; }
+          cat abp.txt
+          if grep -qi "skipped" abp.txt; then
+            echo "::error::the agent_broadcast published-only SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -1498,6 +1520,7 @@ jobs:
             clr.txt
             lql.txt
             lqc.txt
+            abp.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

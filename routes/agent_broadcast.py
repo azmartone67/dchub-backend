@@ -52,6 +52,10 @@ from routes.url_registry import build_public_url
 # Pass 2, i.e. silently reinstate the exact "current state relabelled as a
 # shift" bug #2437 fixed. The module is pure constants: no DB, no flask.
 from util.dcpi_method import verdict_case_sql as _verdict_case_sql
+# The reader-side publish gate ("may I show this row?"). Same module-scope
+# binding and the same reason: pure constants, and a failed import must fail
+# the blueprint rather than drop Pass 2's filter.
+from util.dcpi_score_row import PUBLISHED_ONLY as _PUBLISHED_ONLY
 
 import datetime
 import json
@@ -385,9 +389,11 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
     differs from their 7-days-ago verdict (104 at days=1, 210 at days=30).
 
     Its writer inserts only rows passing the publish gate
-    (`WHERE COALESCE(published, true) = true`), so no extra `published`
-    filter is needed here — which is just as well, since
-    `market_power_scores` has no `published` column on some deploys.
+    (`WHERE COALESCE(published, true) = true`), so Pass 1 needs no extra
+    `published` filter. Pass 2 reads market_power_scores directly and DOES
+    filter (PUBLISHED_ONLY, 2026-09-23); the column is in production
+    (boolean DEFAULT false) and canonical_stats and agent_index already
+    filter on it the same way.
 
     ★ RESTATEMENTS ARE NOT SHIFTS (r-restatement-marker, 2026-08-08).
     Pass 1's premise is that a market whose verdict differs from its
@@ -590,15 +596,24 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
             # is suppressed and the feed would otherwise carry one notice
             # and nothing else. This preserves the pre-existing trigger:
             # no genuine shift -> fall back to current decisive verdicts.
+            #
+            # PUBLISHED rows only (2026-09-23). Pass 1 inherits the publish
+            # gate from the snapshot writer; this pass reads the live table,
+            # where the column DEFAULTs to false and the retired alias twins
+            # (cheyenne-wy, northern-virginia) still sit unpublished with a
+            # BUILD/AVOID verdict. Measured 2026-09-23 they rank 258-259 of
+            # 259 by computed_at, below the [:20] cut; one recompute of either
+            # would put it at the top.
             if not genuine_shifts:
                 cur.execute("""
                     SELECT DISTINCT ON (market_slug)
                            market_slug, market_name, iso, verdict,
                            excess_power_score, constraint_score, computed_at
                       FROM market_power_scores
-                     WHERE verdict IN ('BUILD', 'AVOID')
+                     WHERE {published}
+                       AND verdict IN ('BUILD', 'AVOID')
                      ORDER BY market_slug, computed_at DESC
-                """)
+                """.replace("{published}", _PUBLISHED_ONLY))
                 rows = cur.fetchall() or []
                 rows.sort(key=lambda x: x[6] or datetime.datetime.min,
                           reverse=True)
