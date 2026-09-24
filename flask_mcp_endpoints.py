@@ -7396,6 +7396,27 @@ def mcp_dashboard():
 
 
 
+class _NotBooked(Exception):
+    """r-trial-honest: control flow for 'record nothing for this status'."""
+
+
+def subscription_booking(sub) -> tuple:
+    """r-trial-honest: (status, book, provision) for a Stripe subscription.
+
+    book      — record it in mcp_conversions as revenue (and flip signals).
+                Never while 'trialing'; a subscription that had a trial books
+                only once 'active'. No trial: always, exactly as before.
+    provision — grant/keep the durable paid MCP key: 'active' or 'trialing'
+                only, never past_due / unpaid / canceled / incomplete*.
+    """
+    sub = sub or {}
+    status = (sub.get("status") or "").strip().lower()
+    had_trial = bool(sub.get("trial_end") or sub.get("trial_start"))
+    book = not (status == "trialing" or (had_trial and status != "active"))
+    provision = status in ("active", "trialing")
+    return status, book, provision
+
+
 # ── POST /api/v1/stripe/webhook-mcp — Stripe → mcp_conversions ─────────────
 
 @mcp_bp.post("/api/v1/stripe/webhook-mcp")
@@ -7772,6 +7793,20 @@ def stripe_webhook_mcp():
     customer_id = obj.get("customer")
     sub_id      = obj.get("id")
 
+    # ★ r-trial-honest (2026-09-24): a trial is not revenue until it converts.
+    # The Pro 7-day trial Payment Link (offer=pro_trial_7d) creates a
+    # subscription with status 'trialing' and $0 charged. This handler booked
+    # every created/updated subscription at the price's unit_amount, whatever
+    # its status, so a trial start read as a $99 paid conversion on day 0 and
+    # stayed booked if the trial was cancelled or its day-7 charge failed. And
+    # it re-granted a paid key on any status, undoing main.py's demotion.
+    #   • book: never while 'trialing'; a subscription that had a trial books
+    #     only once 'active' (the first real charge). A subscription with no
+    #     trial books exactly as before.
+    #   • provision: only on 'active' / 'trialing' (a trial user has access).
+    #   • flip mcp_upgrade_signals.converted only when booked.
+    _sub_status, _book, _provision = subscription_booking(obj)
+
     # Resolve customer email
     email = None
     try:
@@ -7858,8 +7893,11 @@ def stripe_webhook_mcp():
     # checkout.session.completed.client_reference_id is the deliberate next step.
     _source = "mcp_signal_attributed" if attribution_id else "organic_no_mcp_touch"
     # Insert (idempotent on stripe_subscription_id thanks to the UNIQUE constraint)
+    conv_id = None
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
+            if not _book:
+                raise _NotBooked()
             cur.execute(
                 """INSERT INTO mcp_conversions
                      (user_email, caller_id, stripe_customer_id, stripe_subscription_id,
@@ -7875,6 +7913,8 @@ def stripe_webhook_mcp():
                  _source, attribution_id),
             )
             conv_id = cur.fetchone()[0]
+    except _NotBooked:
+        conv_id = None
     except Exception as e:
         return jsonify({"error": "db insert failed", "detail": str(e)}), 500
 
@@ -7891,6 +7931,11 @@ def stripe_webhook_mcp():
     # essentially every agent (a >500/day caller can be bumped).
     provisioned_key = None
     try:
+        # r-trial-honest: never (re)grant a paid key on past_due/unpaid/
+        # canceled — main.py demotes on those, and this used to re-upgrade
+        # the key it had just demoted (e.g. a trial whose day-7 charge failed).
+        if not _provision:
+            raise _NotBooked()
         import secrets as _sec
         # mcp_dev_keys.tier has a CHECK constraint allowing ONLY free/paid/enterprise
         # (the gate maps the richer plan names — starter/developer/pro — onto 'paid').
@@ -7976,6 +8021,8 @@ def stripe_webhook_mcp():
                 # send_welcome_email_sendgrid already admin-alerts on SendGrid
                 # failure; swallow here so provisioning never breaks the webhook.
                 pass
+    except _NotBooked:
+        pass
     except Exception:
         note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.stripe_webhook_mcp")
         pass
@@ -7985,13 +8032,18 @@ def stripe_webhook_mcp():
     # signals.converted, so /api/v1/mcp/funnel kept reporting 0% on `mcp`
     # platform forever. Now matches by email OR session OR caller_id OR
     # stripe_customer_id so the ~99% of `mcp` signals with NULL email also get flipped.
+    signal_attribution = {"skipped": "not_booked", "status": _sub_status}
     try:
+        if not _book:
+            raise _NotBooked()
         from mcp_signal_canonical import mark_signals_converted
         signal_attribution = mark_signals_converted(
             email=email,
             stripe_customer_id=customer_id,
             session_id=(obj.get('metadata') or {}).get('mcp_session_id'),
         )
+    except _NotBooked:
+        pass
     except Exception as _e:
         signal_attribution = {'error': str(_e)[:120]}
 
@@ -8021,6 +8073,9 @@ def stripe_webhook_mcp():
         "plan_to":               plan_to,
         "mrr_cents":             mrr_cents,
         "signal_attribution":    signal_attribution,
+        "subscription_status":   _sub_status,
+        "booked":                _book,
+        "provisioned":           _provision,
     }), 200
 
 
