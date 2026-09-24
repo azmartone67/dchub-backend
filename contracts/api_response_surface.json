@@ -11,13 +11,13 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1516,
+  "python_files_scanned": 1517,
   "endpoints_total": 1811,
   "endpoints_resolved": 1292,
   "endpoints_partial": 66,
   "endpoints_opaque_not_covered": 453,
-  "keys_total": 10786,
-  "keys_strictly_protected": 9774,
+  "keys_total": 10788,
+  "keys_strictly_protected": 9776,
   "keys_open_level_unmeasured_on_removal": 1012,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 113
@@ -13494,7 +13494,8 @@
     "rates.calls_to_2plus_use_pct",
     "rates.signup_to_upgrade_pct",
     "rates.trial_to_signup_pct",
-    "rates.trial_to_upgrade_pct"
+    "rates.trial_to_upgrade_pct",
+    "scan_exclusion"
    ],
    "keys": [
     "generated_at",
@@ -13504,6 +13505,7 @@
     "rates.signup_to_upgrade_pct",
     "rates.trial_to_signup_pct",
     "rates.trial_to_upgrade_pct",
+    "scan_exclusion",
     "stages",
     "stages.anon_unique_callers",
     "stages.trials_minted",
@@ -13514,7 +13516,7 @@
    ]
   },
   "GET /api/v1/funnel/by-tool": {
-   "source": "routes/funnel_attribution.py:118",
+   "source": "routes/funnel_attribution.py:133",
    "handler": "by_tool",
    "resolution": "resolved",
    "open_at": [],
@@ -13524,7 +13526,7 @@
    ]
   },
   "GET /api/v1/funnel/chain/<api_key>": {
-   "source": "routes/funnel_attribution.py:172",
+   "source": "routes/funnel_attribution.py:187",
    "handler": "trace_chain",
    "resolution": "resolved",
    "open_at": [
@@ -15495,7 +15497,7 @@
    ]
   },
   "GET /api/v1/keys/auto-trial/stats": {
-   "source": "routes/auto_trial.py:901",
+   "source": "routes/auto_trial.py:933",
    "handler": "stats_endpoint",
    "resolution": "resolved",
    "open_at": [
@@ -17512,6 +17514,7 @@
     "identity_breakdown.oauth_durable.pct_returned",
     "identity_breakdown.oauth_durable.returned_next_week_mature",
     "identity_breakdown.oauth_durable.with_email",
+    "scan_exclusion",
     "summary",
     "weeks"
    ],
@@ -17576,6 +17579,7 @@
     "key_reuse",
     "note",
     "primary_metric",
+    "scan_exclusion",
     "summary",
     "weeks"
    ]
@@ -29877,14 +29881,14 @@
    ]
   },
   "POST /api/v1/keys/auto-mint": {
-   "source": "routes/auto_trial.py:627",
+   "source": "routes/auto_trial.py:651",
    "handler": "auto_mint_endpoint",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/keys/auto-trial/bind": {
-   "source": "routes/auto_trial.py:840",
+   "source": "routes/auto_trial.py:872",
    "handler": "bind_operator_endpoint",
    "resolution": "resolved",
    "open_at": [
@@ -29903,7 +29907,7 @@
    ]
   },
   "POST /api/v1/keys/auto-trial/redeem": {
-   "source": "routes/auto_trial.py:799",
+   "source": "routes/auto_trial.py:831",
    "handler": "redeem_endpoint",
    "resolution": "resolved",
    "open_at": [
