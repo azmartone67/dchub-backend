@@ -610,6 +610,20 @@ def init_db():
                 company VARCHAR(100)
             )
         """)
+        # r-facility-dead-slug (2026-09-24): the PATH dimension, additive and
+        # bounded. path_key is crawl_path_key.crawl_path_key(endpoint) — a
+        # fixed key space (section templates + dead-slug keys + "other"), so
+        # this grows by at most len(path_key_space()) rows per platform/day
+        # whatever a crawler requests. VARCHAR(80) is that module's MAX_KEY_LEN.
+        _execute("""
+            CREATE TABLE IF NOT EXISTS ai_daily_path_stats (
+                date DATE NOT NULL,
+                platform VARCHAR(50) NOT NULL,
+                path_key VARCHAR(80) NOT NULL,
+                request_count INTEGER DEFAULT 0,
+                PRIMARY KEY (date, platform, path_key)
+            )
+        """)
         # Full mcp_connections shape for fresh installs.
         _execute("""
             CREATE TABLE IF NOT EXISTS mcp_connections (
@@ -731,6 +745,12 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
                 company = EXCLUDED.company
         """, (platform, now, now, info["name"], info["color"], info["company"]))
 
+        # 4. Per-path counter (r-facility-dead-slug, 2026-09-24). Its OWN try:
+        #    the three writes above already landed, and a failure here must
+        #    not send this request to the SQLite buffer, which would replay it
+        #    into ai_requests a second time.
+        _bump_path_stat(today, platform, endpoint)
+
     except Exception as e:
         # 25006 = read_only_sql_transaction. A read-only instance (the Render
         # GET-failover) can NEVER write to Neon, so the SQLite buffer can never
@@ -751,6 +771,52 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
             buf.close()
         except Exception as buf_err:
             logger.error(f"SQLite buffer write also failed: {buf_err}")
+
+
+def _bump_path_stat(day, platform, endpoint):
+    """Upsert ai_daily_path_stats for one hit. The key is bounded (see
+    crawl_path_key). Never raises; a lost increment is telemetry, not data.
+    ★ Rows that went through the SQLite buffer are NOT counted here — the
+      buffer replays straight into ai_requests. The counter is a floor while
+      Neon is failing over, and says so in /api/ai/path-stats."""
+    try:
+        from crawl_path_key import crawl_path_key
+        key = crawl_path_key(endpoint)
+        _execute("""
+            INSERT INTO ai_daily_path_stats (date, platform, path_key, request_count)
+            VALUES (%s, %s, %s, 1)
+            ON CONFLICT (date, platform, path_key) DO UPDATE SET
+                request_count = ai_daily_path_stats.request_count + 1
+        """, (day, platform, key))
+    except Exception as e:
+        logger.debug(f"ai_daily_path_stats bump skipped: {e}")
+
+
+def get_path_stats(days=7, prefix=None, limit=200):
+    """[(path_key, platform, count)] over the last `days`, largest first.
+    `prefix` narrows to keys starting with it (e.g. "/facilities/{")."""
+    days = max(1, min(int(days or 7), 90))
+    limit = max(1, min(int(limit or 200), 500))
+    sql = """
+        SELECT path_key, platform, SUM(request_count) AS n
+        FROM ai_daily_path_stats
+        WHERE date >= (CURRENT_DATE - %s::int)
+    """
+    params = [days]
+    if prefix:
+        sql += " AND path_key LIKE %s"
+        params.append(str(prefix)[:80].replace("%", "").replace("_", r"\_") + "%")
+    sql += " GROUP BY path_key, platform ORDER BY n DESC LIMIT %s"
+    params.append(limit)
+    rows = _execute(sql, tuple(params), fetchall=True) or []
+    out = []
+    for r in rows:
+        try:
+            out.append({"path_key": r["path_key"], "platform": r["platform"],
+                        "count": int(r["n"] or 0)})
+        except (TypeError, KeyError, IndexError):
+            out.append({"path_key": r[0], "platform": r[1], "count": int(r[2] or 0)})
+    return out
 
 
 def log_mcp_connection(
@@ -2141,6 +2207,40 @@ def init_ai_tracking(app: Flask):
             "scanned_recent": feed.get("scanned"),
             "excluded_internal": feed.get("excluded_internal"),
             "error": feed.get("error"),
+        })
+
+    @app.route("/api/ai/path-stats", methods=["GET", "OPTIONS"])
+    def ai_path_stats():
+        """AI-crawler hits per bounded path key (ai_daily_path_stats).
+
+        ?days=7 (1..90) · ?prefix=/facilities/{ (dead-slug keys only) ·
+        ?limit=200 (1..500). Keys are templates, never raw paths — see
+        crawl_path_key.py for the whole key space."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
+        try:
+            days = int(request.args.get("days", 7))
+        except Exception:
+            days = 7
+        try:
+            limit = int(request.args.get("limit", 200))
+        except Exception:
+            limit = 200
+        prefix = (request.args.get("prefix") or "").strip() or None
+        try:
+            rows = get_path_stats(days, prefix, limit)
+            err = None
+        except Exception as e:
+            rows, err = [], str(e)[:120]
+        return cors_jsonify({
+            "success": err is None,
+            "window_days": max(1, min(days, 90)),
+            "rows": rows,
+            "basis": ("ai_daily_path_stats: one increment per AI-platform hit "
+                      "recorded by log_ai_request; path_key is a bounded "
+                      "template (crawl_path_key). Hits that fell back to the "
+                      "SQLite buffer are not counted, so this is a floor."),
+            "error": err,
         })
 
     @app.route("/api/ai/mcp-stats", methods=["GET", "OPTIONS"])

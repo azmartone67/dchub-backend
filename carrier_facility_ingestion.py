@@ -790,7 +790,8 @@ def register_carrier_routes(app, get_db):
                 if row[7]:
                     fac['dchub_facility_id'] = row[7]
                     # Not /facility/<id>: that legacy form 301s. No slug, no URL.
-                    if slugs.get(row[7]):
+                    from util.dead_slug import is_dead_slug as _is_dead_slug
+                    if slugs.get(row[7]) and not _is_dead_slug(slugs.get(row[7])):
                         fac['dchub_url'] = f"/facilities/{slugs[row[7]]}"
                 facilities.append(fac)
 

@@ -669,8 +669,9 @@ def _render_facility(f: dict, nearby: list, served=None) -> str:
             n_slug = frozen_slug_for_row(n)
             if n_slug and served:
                 n_slug = served.get(n_slug) or n_slug
+            from util.dead_slug import is_dead_slug as _is_dead_slug
             n_label = (f'<a href="/facilities/{_esc_attr(n_slug)}">{_h(n["name"])}</a>'
-                       if n_slug else _h(n["name"]))
+                       if n_slug and not _is_dead_slug(n_slug) else _h(n["name"]))
             items.append(f'<li>{n_label} · {_h(n.get("provider") or "Unknown")}{_h(mw_str)}</li>')
         nearby_html = f"""
   <h2>Other Data Centers in {_h(city)}, {_h(state)}</h2>
@@ -1766,8 +1767,10 @@ def facilities_directory(page: int = 1):
         # 301 (the exact recurrence this closes). Fall back to a live compute
         # only for rows not yet frozen (canonical_slug NULL); the daily
         # slug-freeze cron backfills those set-once so the link converges.
-        slug = (canonical_slug or "").strip() or _facility_canonical_slug(provider, name)
-        if not slug:
+        # r-facility-dead-slug (2026-09-24): a stored "null"/"None" is no slug.
+        from util.dead_slug import live_slug as _live_slug
+        slug = _live_slug(canonical_slug) or _facility_canonical_slug(provider, name)
+        if not _live_slug(slug):
             continue
         loc = ", ".join([x for x in (city, state, country) if x])
         prov = (provider or "").strip()

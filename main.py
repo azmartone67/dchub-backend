@@ -25184,6 +25184,15 @@ def facility_by_slug(slug):
             return jsonify({'success': False, 'error': 'Not found'}), 404
         cols = [desc[0] for desc in c.description]
         data = dict(zip(cols, row))
+        # r-facility-dead-slug (2026-09-24): the record now names the slug it
+        # was served at. Without it the provenance block's cite_url_template
+        # ".../facilities/{slug}" had nothing to fill, and a client that filled
+        # it anyway produced /facilities/null (meta-externalagent crawled that
+        # ~60x in 42h). The requested slug has already resolved (its hash8
+        # matched a row), and it is in the request URL, so it discloses nothing.
+        from util.dead_slug import live_slug as _live_slug
+        if _live_slug(slug):
+            data['slug'] = _live_slug(slug)
         _cc = int(data.get('fiber_carrier_count') or 0)
         data['fiber_providers'] = data.get('fiber_providers') or []
         data['on_net'] = _cc > 0
@@ -25562,12 +25571,15 @@ def _list_facilities_full():
         # non-empty; the builder's None preserves the skip-guard.
         try:
             from routes.facility_slug_freeze import build_canonical_slug
+            from util.dead_slug import live_slug as _live_slug
             for _f in facilities:
-                _cs = ((_f.get('canonical_slug') or None)
+                _cs = ((_live_slug(_f.get('canonical_slug')))
                        or build_canonical_slug(_f.get('provider'), _f.get('name')))
-                if _cs:
+                if _live_slug(_cs):
                     _f['slug'] = _cs
                     _f['profile_url'] = f"https://dchub.cloud/facilities/{_cs}"
+                elif 'slug' in _f and not _live_slug(_f.get('slug')):
+                    _f['slug'] = None   # a "null" text slug is no slug
         except Exception:
             pass
 
@@ -25849,13 +25861,16 @@ def _list_facilities_free():
     # skip-guard for un-sluggable names.
     try:
         from routes.facility_slug_freeze import build_canonical_slug
+        from util.dead_slug import live_slug as _live_slug
         for _f, _raw in zip(facilities, rows):
             _stored = _raw.get('canonical_slug') if hasattr(_raw, 'get') else None
-            _cs = ((_stored or None)
+            _cs = (_live_slug(_stored)
                    or build_canonical_slug(_f.get('provider'), _f.get('name')))
-            if _cs:
+            if _live_slug(_cs):
                 _f['slug'] = _cs
                 _f['profile_url'] = f"https://dchub.cloud/facilities/{_cs}"
+            elif 'slug' in _f and not _live_slug(_f.get('slug')):
+                _f['slug'] = None   # a "null" text slug is no slug
     except Exception:
         pass
 
@@ -26086,14 +26101,17 @@ def search_facilities():
         # non-empty; the builder's None preserves the skip-guard.
         try:
             from routes.facility_slug_freeze import build_canonical_slug
+            from util.dead_slug import live_slug as _live_slug
             for f in facilities:
                 if f.get('id') is None:
                     continue
-                _slug = ((f.get('canonical_slug') or None)
+                _slug = (_live_slug(f.get('canonical_slug'))
                          or build_canonical_slug(f.get('provider'), f.get('name')))
-                if _slug:
+                if _live_slug(_slug):
                     f['slug'] = _slug
                     f['profile_url'] = f"https://dchub.cloud/facilities/{_slug}"
+                elif 'slug' in f and not _live_slug(f.get('slug')):
+                    f['slug'] = None   # a "null" text slug is no slug
         except Exception:
             pass  # never let slug enrichment break search
 
@@ -35168,8 +35186,14 @@ def _build_sitemap_sections():
         # source of truth — it can't drift when re-ingestion cleans the name.
         # The compute above is only the fallback for rows not yet backfilled.
         _stored = row[7] if len(row) > 7 else None
-        if _stored:
+        # r-facility-dead-slug (2026-09-24): a stored "null"/"None" is a
+        # serialised null, never a <loc>. Fall back to the compute; if that is
+        # empty too, the row has no URL and is skipped.
+        from util.dead_slug import is_dead_slug as _is_dead_slug
+        if _stored and not _is_dead_slug(_stored):
             full_slug = _stored
+        if _is_dead_slug(full_slug):
+            continue
 
         # r-osm-junk (2026-07-10): authoritative junk guard on the FINAL slug —
         # catches the SQL-fallback paths and rows whose canonical_slug is NULL

@@ -255,7 +255,10 @@ def _served_facility_urls(slugs, stats=None):
     slugs = list(slugs or [])
     served = served_slugs(slugs)
     urls, emitted, moved = [], set(), 0
+    from util.dead_slug import is_dead_slug
     for slug in slugs:
+        if is_dead_slug(slug):
+            continue        # r-facility-dead-slug: never submit /facilities/null
         landed = served.get(slug) or slug
         if landed != slug:
             moved += 1

@@ -120,6 +120,7 @@ on:
       - 'scripts/workflow_trigger_modules.py'
       - 'util/__init__.py'
       - 'util/dcpi_score_row.py'
+      - 'util/dead_slug.py'
       - 'util/deployability_rank.py'
       - 'util/facility_facts.py'
       - 'util/facility_headline.py'
