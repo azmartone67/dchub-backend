@@ -710,3 +710,43 @@ def test_oversized_snapshot_detail_is_still_valid_json():
     assert detail.get("armed") == "True"
     assert detail.get("generated_at") == snap["generated_at"]
     assert len(params[-1]) <= 60000
+
+
+# ── attempt_note: a refusal must not record as a blank ────────────────
+def test_attempt_note_keeps_the_drafter_refusal():
+    """The 2026-09-23 armed tick recorded note="" for a refused spec.
+
+    MUTATION: read only res["note"] (the pre-fix behaviour) → "".
+    """
+    res = {"ok": True, "acted": False,
+           "pr": {"ok": True, "acted": False, "refused": True,
+                  "rationale": "needs an owner decision, not an edit"}}
+    assert lcs.attempt_note(res) == "refused: needs an owner decision, not an edit"
+
+
+def test_attempt_note_reports_gate_and_errors():
+    assert lcs.attempt_note({"pr": {"ok": False, "error": "autonomy_gate_closed",
+                                    "reason": "paused"}}) == "gate: paused"
+    assert lcs.attempt_note({"ok": False, "error": "boom"}) == "error: boom"
+    assert lcs.attempt_note({"pr": {"ok": False, "error": "no JSON"}}) == \
+        "drafter error: no JSON"
+
+
+def test_attempt_note_prefers_the_implementers_own_note_and_names_the_pr():
+    assert lcs.attempt_note({"note": "dry run"}) == "dry run"
+    assert lcs.attempt_note({"acted": True, "pr": {"pr_url": "u/1"}}) == "opened u/1"
+    assert lcs.attempt_note(None) == ""
+
+
+def test_armed_refusal_is_recorded_with_its_reason(monkeypatch):
+    mod = types.ModuleType("routes.brain_spec_implementer")
+    mod.implement_spec = lambda doc, apply=False: {
+        "ok": True, "acted": False,
+        "pr": {"acted": False, "refused": True, "rationale": "no single edit"}}
+    monkeypatch.setitem(sys.modules, "routes.brain_spec_implementer", mod)
+    seen = []
+    monkeypatch.setattr(lcs, "_record_attempt",
+                        lambda doc, acted, note: seen.append((doc, acted, note)))
+    res = lcs.act_spec_debt({"target": {"doc": "s.md"}}, dry=False)
+    assert seen == [("s.md", False, "refused: no single edit")]
+    assert res["note"] == "refused: no single edit"

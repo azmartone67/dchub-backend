@@ -1,0 +1,53 @@
+name: Brain evolution — compile lessons + scorecard snapshot (daily)
+
+# Drives routes/brain_lessons.py and routes/brain_evolution_scorecard.py.
+#
+# 1. LESSONS: recompiles one page per finding family from verified fix
+#    outcomes, L5 guard refusals, squasher-agent PR fates and human
+#    rejections. L5, the spec implementer and the squasher agent read those
+#    pages before their next attempt.
+# 2. SCORECARD: upserts this ISO week's row (a daily run refreshes the same
+#    week), so /api/v1/admin/brain/evolution-scorecard has a weekly series.
+#
+# Runs at 06:50 UTC, before the loop-closure tick at 07:17 so that tick's
+# spec implementer reads fresh lessons.
+#
+# PUBLIC REPO -> PUBLIC ACTIONS LOGS: prints counts and verdict words only.
+# Guidance text and rates stay behind the admin-gated endpoints.
+
+on:
+  schedule:
+    - cron: '50 6 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compile lessons and snapshot the scorecard
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
+            exit 0
+          fi
+          BASE="https://dchub-backend-production.up.railway.app"
+          fail=0
+          for step in lessons/compile evolution-scorecard/snapshot; do
+            CODE=$(curl -sS -o "$RUNNER_TEMP/out.json" -w '%{http_code}' -X POST \
+              --max-time 120 "$BASE/api/v1/admin/brain/$step" \
+              -H "X-Admin-Key: $ADMIN_KEY" || echo 000)
+            OK=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ok"))' \
+              "$RUNNER_TEMP/out.json" 2>/dev/null || echo "?")
+            echo "$step: HTTP $CODE ok=$OK"
+            if [ "$step" = "lessons/compile" ]; then
+              python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("families:", d.get("families"), "| by_verdict:", d.get("by_verdict"), "| with_guidance:", d.get("with_guidance"))' "$RUNNER_TEMP/out.json" 2>/dev/null || true
+            fi
+            if [ "$CODE" != "200" ] || [ "$OK" != "True" ]; then
+              echo "::error::$step failed (HTTP $CODE, ok=$OK). 401 = admin key mismatch; 404 = route not deployed."
+              fail=1
+            fi
+          done
+          exit $fail

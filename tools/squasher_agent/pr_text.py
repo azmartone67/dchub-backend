@@ -37,6 +37,10 @@ def texts(r: dict, qid: str, run: str) -> tuple[str, str, str]:
         f"paths, within size, compiles, nothing shaped like a credential.\n\n"
         f"This row counts as **fixed** only if the detector stops reporting the "
         f"finding after this merges (reconciled on the next agent run).\n\n"
+        f"**Not right? Close this PR without merging.** That is recorded as a "
+        f"human rejection in `brain_review_decisions` — the one signal the "
+        f"brain's self-assessment reads to learn it was wrong — and the agent "
+        f"will not retry this queue row.\n\n"
         f"Run: {run}\n\n"
         f"🤖 Generated with [Claude Code](https://claude.com/claude-code)\n")
     return title, msg, body

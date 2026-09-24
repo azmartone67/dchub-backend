@@ -22,7 +22,11 @@ name: Loop-closure shell tick (daily; shadow unless LOOP_CLOSURE_ARM=1)
 
 on:
   schedule:
-    - cron: '17 7 * * *'    # 07:17 UTC daily, after the RAG shell's ~06:00 tick
+    # 07:17 UTC after the RAG shell's ~06:00 tick, then twice more. Each armed
+    # tick drives ONE spec (one Claude call, inside curl's 150s budget), so
+    # once a day meant ~380 open specs would take a year to reach. Three
+    # ticks is three specs a day without raising the per-call blast radius.
+    - cron: '17 7,15,23 * * *'
   workflow_dispatch: {}
 
 jobs:
