@@ -6426,6 +6426,11 @@
     "routes.squasher_portal"
    ]
   },
+  "GET /api/v1/brain/squasher/agent/status": {
+   "modules": [
+    "routes.squasher_agent_lane"
+   ]
+  },
   "GET /api/v1/brain/squasher/classes": {
    "modules": [
     "routes.squasher_action_classes"
@@ -6439,6 +6444,16 @@
   "GET /api/v1/brain/squasher/inbox": {
    "modules": [
     "routes.squasher_queue"
+   ]
+  },
+  "GET /api/v1/brain/squasher/ops/freshness-breaches": {
+   "modules": [
+    "routes.squasher_action_classes"
+   ]
+  },
+  "GET /api/v1/brain/squasher/ops/sentinel-unhealthy": {
+   "modules": [
+    "routes.squasher_action_classes"
    ]
   },
   "GET /api/v1/brain/squasher/queue": {
@@ -17256,6 +17271,21 @@
     "routes.squasher_action_classes"
    ]
   },
+  "POST /api/v1/brain/squasher/agent/next": {
+   "modules": [
+    "routes.squasher_agent_lane"
+   ]
+  },
+  "POST /api/v1/brain/squasher/agent/reconcile": {
+   "modules": [
+    "routes.squasher_agent_lane"
+   ]
+  },
+  "POST /api/v1/brain/squasher/agent/result": {
+   "modules": [
+    "routes.squasher_agent_lane"
+   ]
+  },
   "POST /api/v1/brain/squasher/classify": {
    "modules": [
     "routes.squasher_action_classes"
@@ -17277,6 +17307,16 @@
    ]
   },
   "POST /api/v1/brain/squasher/grant": {
+   "modules": [
+    "routes.squasher_action_classes"
+   ]
+  },
+  "POST /api/v1/brain/squasher/ops/edge-purge": {
+   "modules": [
+    "routes.squasher_action_classes"
+   ]
+  },
+  "POST /api/v1/brain/squasher/ops/refresh-job": {
    "modules": [
     "routes.squasher_action_classes"
    ]
