@@ -6523,28 +6523,28 @@
    "keys": []
   },
   "GET /api/v1/agent-broadcast": {
-   "source": "routes/agent_broadcast.py:934",
+   "source": "routes/agent_broadcast.py:949",
    "handler": "agent_broadcast",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/agent-broadcast/dcpi-shifts": {
-   "source": "routes/agent_broadcast.py:965",
+   "source": "routes/agent_broadcast.py:980",
    "handler": "agent_broadcast_dcpi_shifts",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/agent-broadcast/rss": {
-   "source": "routes/agent_broadcast.py:980",
+   "source": "routes/agent_broadcast.py:995",
    "handler": "agent_broadcast_rss",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/agent-broadcast/subscribers": {
-   "source": "routes/agent_broadcast.py:1061",
+   "source": "routes/agent_broadcast.py:1076",
    "handler": "agent_broadcast_subscribers",
    "resolution": "resolved",
    "open_at": [
@@ -6565,7 +6565,7 @@
    ]
   },
   "GET /api/v1/agent-broadcast/today": {
-   "source": "routes/agent_broadcast.py:951",
+   "source": "routes/agent_broadcast.py:966",
    "handler": "agent_broadcast_today",
    "resolution": "opaque",
    "open_at": [],
