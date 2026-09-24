@@ -14773,9 +14773,15 @@ def add_security_headers(response):
     # could catch a future per-tier endpoint. Necessary-but-not-sufficient: pair
     # with the worker attachSessionCookie allowlist + the CF dashboard Cache Rule
     # (#3) for /api/v1/*, which is the final edge gate (verify with a live curl).
+    # ★2026-09-24 — a route's own `no-store` wins. get_stats() answers the boot
+    # window with a boot-degraded/boot-stub 200 marked no-store, and this branch
+    # used to run BEFORE the respect clause below and restamp it public with
+    # swr=86400 — so the edge held a boot-degraded /api/v1/stats from 01:12Z
+    # 2026-09-24 until a zone-wide purge.
     if (response.status_code == 200 and request.method in ('GET', 'HEAD')
             and path in ('/api/v1/stats', '/api/v1/site/stats',
-                         '/api/v1/discovery/last-7d')):
+                         '/api/v1/discovery/last-7d')
+            and 'no-store' not in _existing_cc):
         response.headers['Cache-Control'] = (
             'public, max-age=120, s-maxage=600, stale-while-revalidate=86400')
         response.headers['CDN-Cache-Control'] = 'public, max-age=600'
