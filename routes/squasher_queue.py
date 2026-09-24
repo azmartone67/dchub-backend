@@ -74,6 +74,19 @@ def _register_action_classes(state):
         logger.warning("[squasher_queue] action_classes register skipped: %s", _e)
 
 
+# 2026-09-23: the AGENT LANE (routes/squasher_agent_lane.py) — the squasher's
+# hands — rides on the same registration, for the same reason, and is just as
+# defensive: a broken import can never break the queue or boot.
+@squasher_queue_bp.record_once
+def _register_agent_lane(state):
+    try:
+        from routes.squasher_agent_lane import squasher_agent_lane_bp
+        if "squasher_agent_lane" not in state.app.blueprints:
+            state.app.register_blueprint(squasher_agent_lane_bp)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[squasher_queue] agent_lane register skipped: %s", _e)
+
+
 def _classify_all_open(limit: int = 50) -> dict:
     try:
         from routes.squasher_action_classes import classify_all_open
