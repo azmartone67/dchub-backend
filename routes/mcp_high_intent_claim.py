@@ -840,8 +840,7 @@ _CLAIM_SUCCESS_HTML = r"""<!DOCTYPE html>
   <pre>{"mcpServers":{"dchub":{"command":"npx","args":["-y","mcp-remote","https://dchub.cloud/mcp"],"env":{"DCHUB_API_KEY":"__KEY__"}}}}</pre>
 
   <p class="note">Need more? The <strong>$10 one-time credit pack</strong> (1,000 calls) or <strong>$49/mo Developer</strong>
-  (500 calls/day) at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
-  50% off the first 3 months with code <code>DCMCP50_LAUNCH</code>.</p>
+  (500 calls/day) at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.</p>
 </body>
 </html>
 """
