@@ -531,6 +531,12 @@ def check_worker_version_drift() -> list[dict]:
 # They need different findings because they need different actions, and calling
 # both "drift" would send a reader to the wrong one half the time.
 #
+# 2026-09-23: merges can now ship it — deploy-zone-worker.yml, armed by the repo
+# variable ZONE_WORKER_AUTO_DEPLOY. Both directions still happen: the arm can be
+# off, a run can refuse or fail verification, and the dashboard still accepts a
+# paste. That workflow REFUSES to deploy over "pasted, not committed", so the
+# first direction now also blocks the second until someone commits the paste.
+#
 # ★ Source is read from the LOCAL FILE, not raw.githubusercontent.com. This repo
 # is the one that owns worker.js, so the file is already on disk beside this
 # module — no token, and none of the 404-means-four-things ambiguity that cost
@@ -542,6 +548,11 @@ _ZONE_WORKER_SOURCE_PATH = os.path.join(
 # handler sends no-store, but a query-keyed edge cache is exactly the thing that
 # would serve us yesterday's header and call it today's.
 _ZONE_WORKER_PROBE_URL = "https://dchub.cloud/mcp"
+# What ships worker.js since 2026-09-23 (before that, only a dashboard paste
+# did). Named in the commit_not_pasted detail; a test pins that the file exists
+# and reads this exact variable, so the advice cannot point at nothing.
+_ZONE_WORKER_DEPLOY_WORKFLOW = ".github/workflows/deploy-zone-worker.yml"
+_ZONE_WORKER_ARM_VAR = "ZONE_WORKER_AUTO_DEPLOY"
 
 
 def _version_core(v: str) -> tuple[int, ...]:
@@ -644,7 +655,8 @@ def check_zone_worker_version_drift() -> list[dict]:
                        "whatever only ever existed in the dashboard. Retrieve "
                        "the live script first (Cloudflare API: GET "
                        "/accounts/<id>/workers/scripts/dchubapiproxy), commit "
-                       "that, then amend."),
+                       "that, then amend. Until then "
+                       f"{_ZONE_WORKER_DEPLOY_WORKFLOW} refuses to deploy."),
             "expected": in_repo,
             "deployed": deployed,
         })
@@ -655,9 +667,16 @@ def check_zone_worker_version_drift() -> list[dict]:
             "count": 1,
             "detail": (f"worker.js declares '{in_repo}' but GET /mcp still "
                        f"reports '{deployed}'. The change is merged and has "
-                       "NOT shipped: this worker deploys by a paste into the "
-                       "Cloudflare dashboard, which no merge performs. Paste "
-                       "worker.js into the dchubapiproxy script to ship it."),
+                       "NOT shipped. A merge that changes worker.js deploys "
+                       f"through {_ZONE_WORKER_DEPLOY_WORKFLOW} only while the "
+                       f"repo variable {_ZONE_WORKER_ARM_VAR} is '1'; otherwise "
+                       "that run only previews. Read its latest run: a "
+                       "refusal says why (live ahead of the repo, live bytes "
+                       "in no commit), a failed verification names the probe. "
+                       "To ship now, run that workflow by hand "
+                       "(workflow_dispatch, dry_run=false) — or, as a last "
+                       "resort, paste worker.js into the dchubapiproxy script "
+                       "in the Cloudflare dashboard."),
             "expected": in_repo,
             "deployed": deployed,
         })
