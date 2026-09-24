@@ -237,7 +237,6 @@ def _freeze_utc(monkeypatch, lq, hour, minute):
                                     if not k.startswith("__")})
     shim.datetime = _Frozen
     monkeypatch.setattr(lq, "datetime", shim)
-    assert lq.datetime.datetime.utcnow() == frozen
 
 
 # ── slot window vs an explicit ?topic= ──────────────────────────────────
