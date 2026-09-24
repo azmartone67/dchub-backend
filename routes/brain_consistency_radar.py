@@ -3887,6 +3887,79 @@ def _db():
         return None
 
 
+# 2026-09-24 (be#5453 → be#5459): the lessons compiler and the evolution
+# scorecard both shipped with tests green and FAILED on their first live run —
+# ai_reach._conn() is autocommit, so every SAVEPOINT raised. Lessons "kept last
+# pages" (i.e. none) and the scorecard wrote nothing, and nothing watched either.
+# A job whose output agents read (lessons) or that a weekly verdict needs
+# (scorecard) is dead when its output stops being refreshed; that is what this
+# checks, whatever the cause.
+_EVOLUTION_JOB_MAX_AGE_H = 36     # daily job at 06:50 UTC, plus a missed run's slack
+_EVOLUTION_JOB_OUTPUTS = (
+    # (issue, table, what reads it)
+    ("brain_lessons_compile_dead", "brain_lessons",
+     "L5, the spec implementer and the squasher agent read these pages"),
+    ("brain_evolution_scorecard_dead", "brain_evolution_scorecard",
+     "the weekly 'is the brain evolving?' verdict needs one row per week"),
+)
+
+
+def evolution_job_findings(last_by_table: dict, now) -> list[dict]:
+    """PURE. last_by_table: {table: newest timestamp | None (no rows / no
+    table)}. A table ABSENT from the mapping was unreadable — unmeasured, so
+    no finding (a DB blip must not page as a dead job)."""
+    out = []
+    for issue, table, reader in _EVOLUTION_JOB_OUTPUTS:
+        if table not in last_by_table:
+            continue
+        last = last_by_table[table]
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+        age_h = None if last is None else (now - last).total_seconds() / 3600
+        if age_h is not None and age_h <= _EVOLUTION_JOB_MAX_AGE_H:
+            continue
+        out.append({
+            "issue": issue,
+            "url": f"{table}: newest row",
+            "count_kind": "item_count",
+            "count": 0 if last is None else 1,
+            "detail": ((f"{table} has NO rows — brain-evolution-daily.yml has "
+                        f"never produced output" if last is None else
+                        f"{table} last written {age_h:.0f}h ago "
+                        f"(> {_EVOLUTION_JOB_MAX_AGE_H}h)")
+                       + f"; {reader}. Read the workflow run and POST the "
+                         f"admin endpoint by hand to see its error."),
+        })
+    return out
+
+
+def check_brain_evolution_jobs_alive() -> list[dict]:
+    conn = _db()
+    if conn is None:
+        return []
+    last: dict = {}
+    try:
+        with conn.cursor() as cur:
+            for _issue, table, _r in _EVOLUTION_JOB_OUTPUTS:
+                col = "compiled_at" if table == "brain_lessons" else "computed_at"
+                try:
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                    if not (cur.fetchone() or [None])[0]:
+                        last[table] = None
+                        continue
+                    cur.execute(f"SELECT MAX({col}) FROM {table}")
+                    last[table] = (cur.fetchone() or [None])[0]
+                except Exception:
+                    pass          # unreadable → absent → unmeasured
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return evolution_job_findings(
+        last, datetime.datetime.now(datetime.timezone.utc))
+
+
 def _dchub_share_of_voice_pct() -> Optional[float]:
     """r64-d (2026-05-31): DC Hub's real AI-citation share-of-voice over
     the last 30 days, as a %. Mirrors the math behind
@@ -13164,7 +13237,10 @@ def scan_all() -> list[dict]:
     are collected first, then run concurrently with per-detector 20s
     timeout — wall time becomes max(detector) instead of sum(detector)."""
     detectors: list = []
-    for fn in (# 2026-09-12: the brain's own review gate had returned 0
+    for fn in (# 2026-09-24: lessons compiler + evolution scorecard shipped
+               # green and died on their first live run; nothing watched them.
+               check_brain_evolution_jobs_alive,
+               # 2026-09-12: the brain's own review gate had returned 0
                # rejections across 293 decisions while the grade scored that
                # 4/4 — a can't-fail signature nothing was watching.
                check_review_gate_never_disagrees,

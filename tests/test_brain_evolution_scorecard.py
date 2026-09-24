@@ -90,7 +90,15 @@ def pg(monkeypatch):
     if any(h in DSN for h in ("neon.tech", "railway", "rlwy", "amazonaws")):
         pytest.fail("DCHUB_PG_TEST_DSN looks managed — point it at a throwaway")
     import psycopg2
-    monkeypatch.setattr(sc, "_conn", lambda: psycopg2.connect(DSN))
+    # Production's raw connector is AUTOCOMMIT (routes/ai_reach.py); the
+    # module's own _conn must undo that or every SAVEPOINT fails.
+    from routes import ai_reach
+
+    def _autocommit():
+        c = psycopg2.connect(DSN)
+        c.autocommit = True
+        return c
+    monkeypatch.setattr(ai_reach, "_conn", _autocommit)
     c = psycopg2.connect(DSN)
     c.autocommit = True
     with c.cursor() as cur:
