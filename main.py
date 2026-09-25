@@ -51049,14 +51049,19 @@ def _admin_welcome_sequence():
             """)
             rows = cur.fetchall()
 
-        from datetime import datetime as DT, timedelta
+        from datetime import datetime as DT, timedelta, timezone
         cutoff = DT.utcnow() - timedelta(days=days)
         first_call_made = []
         still_zero = []
         for r in rows:
             user_created = r[3]
+            # users.created_at is TEXT: bare ISO on old rows, an offset on newer
+            # ones. An aware value compared to the naive cutoff raised TypeError
+            # and 500'd the whole route (2026-09-25), so normalise to naive UTC.
             try:
                 created_dt = user_created if hasattr(user_created, "year") else DT.fromisoformat(str(user_created).replace("Z",""))
+                if created_dt.tzinfo is not None:
+                    created_dt = created_dt.astimezone(timezone.utc).replace(tzinfo=None)
             except: continue
             if created_dt < cutoff: continue
             entry = {
