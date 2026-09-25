@@ -1327,10 +1327,11 @@ def self_file_class_rows(cur, classes: dict, *, fetch=None) -> dict:
                    (finding_key, title, source, status, reason, action_class,
                     action_url, action_method, requested_at, finished_at,
                     last_seen)
-               VALUES (%s, %s, %s, 'awaiting_ops', %s, %s, %s, %s,
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
                        NOW(), NOW(), NOW())
                ON CONFLICT DO NOTHING RETURNING id""",
             (key, f"{cls}: {spec['metric']}={pre}", SELF_FILE_SOURCE,
+             "awaiting_ops",
              (f"self-filed: class {cls} is granted and its verifier reads "
               f"{spec['metric']}={pre} — the class is the work item")[:600],
              cls, build_action_url(cls, {}), spec["method"]))

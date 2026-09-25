@@ -1580,9 +1580,9 @@ def test_a_granted_class_with_work_and_no_row_files_one(monkeypatch, claim_ledge
     out = sac.run_granted_actions(fetch=_Fetch2(readings={"blindspot": [12]}))
     ins = _self_file_inserts(cur)
     assert len(ins) == 1
-    key, title, source, reason, cls, url, method = ins[0]
-    assert (key, source, cls, method) == (
-        "action-class:" + NEWS, "action_class", NEWS, "POST")
+    key, title, source, status, reason, cls, url, method = ins[0]
+    assert (key, source, status, cls, method) == (
+        "action-class:" + NEWS, "action_class", "awaiting_ops", NEWS, "POST")
     assert url == NEWS_ACT + "?confirm=1"
     assert out["self_filed"]["filed"] == [
         {"class": NEWS, "queue_id": 900, "blindspot": 12}]
