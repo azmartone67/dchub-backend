@@ -670,6 +670,15 @@ def test_eligible_for_grant_is_the_code_rule(row, record, eligible, needle):
         assert why == []
 
 
+def test_a_granted_class_is_not_charged_for_dry_runs_it_is_never_given():
+    """probe_candidates skips granted classes, so their clean-dry-run count is
+    0 by design; the only reason reported is that the class is granted."""
+    ok, why = sac.eligible_for_grant(_news_cls(granted=True), None)
+    assert ok is False and why == ["already granted"], why
+    # CONTROL: the same empty record on an ungranted class still reports it.
+    assert "0/3 clean dry runs in 7d" in sac.eligible_for_grant(_news_cls(), None)[1]
+
+
 def test_a_higher_N_on_the_data_row_is_honoured():
     row = _news_cls(track_record_required={"clean_dry_runs": 5})
     assert sac.eligible_for_grant(row, _rec(clean=4))[0] is False
@@ -1539,6 +1548,18 @@ def test_the_portal_groups_by_class_with_ONE_decide_control_per_registry_class()
     assert "oldest 41.5 h" in html
     assert "/api/v1/brain/squasher/resolve-class" in html, "the control posts to resolve-class"
     assert "1/3 clean dry runs in 7d" in html and "never an automatic grant" in html
+
+
+def test_the_portal_shows_no_dry_run_ratio_for_a_granted_class():
+    d = _page()
+    g = d["action_classes"]["graduation"]["classes"]
+    g.append({**g[0], "class": "deals_exact_dupe_quarantine", "granted": True,
+              "clean_dry_runs_7d": 0, "dry_run_reads_7d": 0,
+              "not_eligible_because": ["already granted"]})
+    html = sp.render(d)
+    assert "n/a — granted classes are not probed" in html
+    assert "0 / 3" not in html, "a granted class must not render a permanent 0 / 3"
+    assert "1 / 3" in html, "CONTROL: the ungranted candidate keeps its ratio"
 
 
 def test_the_portal_renders_an_unreadable_graduation_as_unreadable():
