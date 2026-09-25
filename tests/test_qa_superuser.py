@@ -2381,6 +2381,9 @@ class TestAutoProposeRefusesLoudly:
         from routes import qa_superuser_dashboard as mod
         monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
         monkeypatch.delenv("QA_AUTO_PROPOSE", raising=False)
+        # These tests pin QA's OWN proposer; by default it now defers to the
+        # squasher agent lane (TestAutoProposeDefersToTheSquasher).
+        monkeypatch.setenv("QA_AUTO_PROPOSE_ALONGSIDE_SQUASHER", "1")
         monkeypatch.setattr(mod, "_load",
                             lambda limit=1: {"latest": latest, "error": err,
                                              "history": []})
@@ -2488,6 +2491,49 @@ class TestAutoProposeRefusesLoudly:
                                 "T", (), {"start": lambda s: target(*args)})())
         self._post(client)
         assert fired and fired[0].get("auto") is True, fired
+
+
+class TestAutoProposeDefersToTheSquasher(TestAutoProposeRefusesLoudly):
+    """2026-09-25: one actor per QA red. While the squasher agent lane is
+    enabled it files every red this lane would propose for, so this lane
+    hands off instead of opening a second PR for the same defect."""
+
+    RED = {"key": "a", "verdict": "RED", "severity": "critical", "evidence": "e",
+           "investigation": {"state": "current", "survived": True,
+                             "recommendation": "r"}}
+
+    def _deferring(self, monkeypatch, *findings):
+        client, mod = self._client(monkeypatch, self._run(list(findings)))
+        monkeypatch.delenv("QA_AUTO_PROPOSE_ALONGSIDE_SQUASHER", raising=False)
+        monkeypatch.delenv("SQUASHER_AGENT_DISABLE", raising=False)
+        monkeypatch.delenv("SQUASHER_QUEUE_DISABLE", raising=False)
+        return client, mod
+
+    def test_an_eligible_red_is_handed_off_not_proposed(self, monkeypatch):
+        fired = []
+        client, mod = self._deferring(monkeypatch, dict(self.RED))
+        monkeypatch.setattr(mod, "_run_proposal", lambda m: fired.append(m))
+        body = self._post(client).get_json()
+        assert body["ok"] and body["dispatched"] == [] and fired == []
+        assert body["handed_to"] == "squasher_agent_lane"
+        assert "squasher" in body["skipped"][-1]["why"]
+        dry = self._post(client, dry_run=True).get_json()
+        assert dry["would_dispatch"] == [] and dry["handed_to"] == "squasher_agent_lane"
+
+    @pytest.mark.parametrize("env", ["SQUASHER_AGENT_DISABLE", "SQUASHER_QUEUE_DISABLE",
+                                     "QA_AUTO_PROPOSE_ALONGSIDE_SQUASHER"])
+    def test_it_resumes_when_the_squasher_is_off_or_overridden(self, monkeypatch, env):
+        client, _ = self._deferring(monkeypatch, dict(self.RED))
+        monkeypatch.setenv(env, "1")
+        body = self._post(client, dry_run=True).get_json()
+        assert body["would_dispatch"] == ["a"] and body["handed_to"] is None
+
+    def test_a_refuted_red_is_still_skipped_for_its_own_reason(self, monkeypatch):
+        red = dict(self.RED, investigation=dict(self.RED["investigation"], survived=False))
+        client, _ = self._deferring(monkeypatch, red)
+        body = self._post(client, dry_run=True).get_json()
+        assert body["handed_to"] is None
+        assert "refutation" in body["skipped"][0]["why"]
 
 
 class TestTheRunWiresTheLane:

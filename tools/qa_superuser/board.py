@@ -739,6 +739,8 @@ def request_auto_proposal(admin: str) -> tuple[bool, str]:
     note = f"dispatched {n}"
     if deferred:
         note += f", {deferred} deferred to the next run"
+    if body.get("handed_to"):
+        note += f"; eligible reds handed to {body.get('handed_to')}"
     # ★ A lane that proposes NOTHING every run for weeks is the RAG-shell
     #   failure: running, green, inert. Name the reasons so a permanently empty
     #   lane is legible in the run log instead of reading as "all clear".

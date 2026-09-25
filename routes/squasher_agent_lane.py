@@ -37,9 +37,12 @@ THE CONTRACT
     costs real money; a finding that already self-cleared is not worth one.
     An unreadable or empty detector claims NOTHING (blind != clean).
   * QA reds are fed in too (2026-09-24): every claim first files the QA
-    super-user board's actionable reds that QA's OWN lane has handed off
-    (parked, or its one PR attempt refused/errored, no QA PR open) as
-    source='qa' rows, claimed ahead of heal rows. Liveness for them is the
+    super-user board's actionable reds as source='qa' rows, claimed ahead of
+    heal rows. Since 2026-09-25 a red is filed as soon as the brain's
+    investigation of it is CURRENT and survived refutation — this lane is the
+    one actor for QA reds, and QA's own auto-propose stands down while it is
+    enabled. Reds QA's lane parked or failed on are filed as before; a red
+    with a QA PR open or in flight is never filed. Liveness for them is the
     FULL fresh board (not the 4-per-hour slice /heal/findings carries), and
     this lane closes its own qa rows when a fresh board stops reporting them
     — squasher_queue's sweep never touches source='qa'.
@@ -48,6 +51,12 @@ THE CONTRACT
   * Rows with an action_class are skipped: a granted class has its own
     verified actuator (squasher_action_classes) and a model must not race it.
   * One agent attempt per finding row; an infra `failed` may retry once.
+  * One agent FIX per finding at a time (2026-09-25): a row is not claimed
+    while another row for the same finding (QA: same family) has an agent PR
+    open, or had one merged or closed in the last _RECENT_FIX_HOLD_H hours.
+    Measured 2026-09-25: row 7 (/dc-hub-media) was fixed by be#5561, the
+    finding came back as row 18, and the lane spent two more claims on it and
+    opened be#5563 — a duplicate of the merged fix, closed by hand.
     Budget SQUASHER_AGENT_MAX_PER_DAY (default 4), counted from the ledger
     columns on the rows themselves.
   * NOTHING HERE MERGES. The workflow opens the PR (draft unless the repo
@@ -119,6 +128,10 @@ _BUSY_STATES = ("running", "pr_open")
 _STALE_RUNNING_MIN = 90       # the workflow's own timeout is 60 min
 _UNVERIFIED_AFTER_H = 6       # merge → Railway deploy → next detector pass
 _MAX_ATTEMPTS = 2             # 1 real attempt + 1 retry after an infra failure
+_RECENT_FIX_HOLD_H = 24       # a merged/closed agent PR holds its finding this long
+# agent_state values whose row carries a PR that already answered the finding.
+_HOLD_STATES = ("pr_open", "fixed", "merged_unverified", "merged_after_clear",
+                "cleared_unverified", "pr_closed")
 # 2026-09-24: the agent may fix dchub-mcp-server too, so its PR can live there.
 _PR_URL_RE = re.compile(
     r"^https://github\.com/azmartone67/(dchub-backend|dchub-mcp-server)/pull/(\d+)$")
@@ -239,6 +252,15 @@ def live_findings() -> dict:
 # auto-investigate → auto-propose lane (draft PRs, ONE attempt per finding
 # ever); taking only what that lane has finished with means the two actors
 # never both open a PR for one red.
+#
+# ★ 2026-09-25 — ONE ACTOR, NO WAIT. Waiting for QA's lane to give up cost a
+# red at least investigate (run N) → propose (run N+1) → refusal → the next 3h
+# claim slot: ~8-11h, and the proposer it waited on can only make one
+# find-and-replace in one backend file. Now a red is filed the moment the
+# brain's investigation is current and survived refutation (the SAME gate QA's
+# proposer uses, imported, never copied), and qa_superuser_dashboard's
+# auto-propose defers to this lane while it is enabled. A QA PR open or in
+# flight still blocks filing, so a human-clicked proposal is never raced.
 
 QA_PREFIX = "dchub://qa-superuser/"
 QA_SOURCE = "qa"
@@ -300,10 +322,47 @@ def qa_board() -> dict:
                 "passed_families": {qa_family(f["key"]) for f in allf
                                     if f.get("verdict") == "PASS"},
                 "red_families": {qa_family(f["key"]) for f in allf
-                                 if f.get("verdict") == "RED"}}
+                                 if f.get("verdict") == "RED"},
+                # None → only reds QA's lane handed off are filed (the
+                # pre-2026-09-25 rule): without the gate a refuted analysis
+                # cannot be told from a sound one.
+                "gate": _investigation_gate()}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "reds": {},
                 "reason": f"QA board unreadable: {type(e).__name__}"}
+
+
+def _investigation_gate():
+    """tools.qa_superuser.propose.gate_investigation_detail, or None when the
+    tools tree will not import (the auto-propose endpoint refuses on the same
+    condition)."""
+    try:
+        from tools.qa_superuser.propose import gate_investigation_detail
+        return gate_investigation_detail
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher-agent] QA gate unavailable: %s",
+                       type(e).__name__)
+        return None
+
+
+def _qa_pr_in_flight(f: dict) -> bool:
+    p = f.get("proposal") or {}
+    return bool(p.get("pr_url")) or p.get("state") in ("opened", "running")
+
+
+def qa_ready_basis(f: dict, gate=None) -> str | None:
+    """Why this red may be filed for the agent now, or None. Pure.
+    'handed_off' — QA's lane finished with it without a PR;
+    'investigated' — the brain's investigation is current and survived
+    refutation (gate = gate_investigation_detail). Never while a QA PR is
+    open or in flight."""
+    if _qa_pr_in_flight(f):
+        return None
+    if qa_handed_off(f):
+        return "handed_off"
+    if gate is not None and gate(f.get("investigation"))[0]:
+        return "investigated"
+    return None
 
 
 def qa_handed_off(f: dict) -> bool:
@@ -340,11 +399,11 @@ def merge_qa_items(items: dict, qa: dict) -> dict:
     return out
 
 
-def qa_feed_plan(reds: dict, open_keys) -> list[tuple[str, dict]]:
-    """Which reds to file now: handed off, not already open, critical first,
-    capped. Pure."""
+def qa_feed_plan(reds: dict, open_keys, gate=None) -> list[tuple[str, dict]]:
+    """Which reds to file now: ready (qa_ready_basis), not already open,
+    critical first, capped. Pure."""
     todo = [(k, f) for k, f in (reds or {}).items()
-            if k not in open_keys and qa_handed_off(f)]
+            if k not in open_keys and qa_ready_basis(f, gate)]
     todo.sort(key=lambda kf: (_SEV_RANK.get(str(kf[1].get("severity")), 9), kf[0]))
     # One row per FAMILY: a check that rotates its variant is one defect.
     seen = {qa_family(k) for k in open_keys if str(k).startswith(QA_PREFIX)}
@@ -384,12 +443,52 @@ def qa_clear_plan(rows: list[dict], passed_families, red_families,
 
 # ── pure decisions (the unit under test) ─────────────────────────────────
 
+def hold_key(key) -> str:
+    """What one fix covers: a QA check's family, else the finding key."""
+    k = str(key or "")
+    return qa_family(k) if k.startswith(QA_PREFIX) else k
+
+
+def fix_holds(rows: list[dict], now: datetime | None = None) -> dict:
+    """{hold_key: holder row} for findings an agent PR already answered. Pure.
+    rows carry id, finding_key, agent_state, agent_pr_url and `at` (when the
+    answer landed: agent_verified_at, else agent_finished_at). An open PR
+    holds at any age; a merged or closed one for _RECENT_FIX_HOLD_H — long
+    enough for deploy + detector to settle, short enough that a fix which did
+    not hold gets another agent attempt the next day."""
+    now = now or _now()
+    out = {}
+    for r in rows or []:
+        state = r.get("agent_state")
+        if state not in _HOLD_STATES or not r.get("agent_pr_url"):
+            continue
+        if state != "pr_open":
+            at = r.get("at")
+            if at is None:
+                continue
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            if now - at > timedelta(hours=_RECENT_FIX_HOLD_H):
+                continue
+        out.setdefault(hold_key(r.get("finding_key")), r)
+    return out
+
+
+def held_by(row: dict, holds: dict | None) -> dict | None:
+    """The OTHER row whose agent PR holds this row's finding, or None."""
+    h = (holds or {}).get(hold_key(row.get("finding_key")))
+    return h if h and h.get("id") != row.get("id") else None
+
+
 def pick_candidate(rows: list[dict], live_keys, now: datetime | None = None,
-                   live_items: dict | None = None) -> dict | None:
+                   live_items: dict | None = None,
+                   holds: dict | None = None) -> dict | None:
     """The first row this lane may claim, or None. Rows arrive ordered by
     priority (most re-observed first). Pure: every clause is a test.
     live_items ({key: detector item}) lets the exclusion read the detector's
-    own issue name; without it only the row title is checked."""
+    own issue name; without it only the row title is checked. holds is
+    fix_holds() over the queue — a finding another row's agent PR already
+    answered is not claimed again."""
     now = now or _now()
     live_items = live_items or {}
     for r in rows:
@@ -398,6 +497,8 @@ def pick_candidate(rows: list[dict], live_keys, now: datetime | None = None,
         if (r.get("action_class") or "").strip():
             continue
         if r.get("finding_key") not in live_keys:
+            continue
+        if held_by(r, holds):
             continue
         if excluded_reason(r, live_items.get(r.get("finding_key"))):
             continue
@@ -657,6 +758,19 @@ def reclaim_stale(cur, now: datetime | None = None) -> int:
     return n
 
 
+def _fix_holds(cur) -> dict:
+    cur.execute(
+        "SELECT id, finding_key, agent_state, agent_pr_url,"
+        " COALESCE(agent_verified_at, agent_finished_at)"
+        " FROM squasher_work_queue WHERE agent_pr_url IS NOT NULL"
+        " AND agent_state IN (" + ", ".join("'%s'" % s for s in _HOLD_STATES)
+        + ") AND (agent_state = 'pr_open' OR COALESCE(agent_verified_at,"
+        " agent_finished_at) > NOW() - make_interval(hours => %s))"
+        " ORDER BY id DESC LIMIT 500", (_RECENT_FIX_HOLD_H,))
+    cols = ("id", "finding_key", "agent_state", "agent_pr_url", "at")
+    return fix_holds([dict(zip(cols, r)) for r in cur.fetchall()])
+
+
 def feed_qa(cur, qa: dict) -> dict:
     """File handed-off QA reds as source='qa' rows and close the qa rows a
     fresh board no longer reports. No-op on a refused board. Each insert has
@@ -676,11 +790,18 @@ def feed_qa(cur, qa: dict) -> dict:
     # connection each statement is already isolated (the psycopg2
     # savepoint/autocommit trap squasher_queue._apply_schema_ddl documents).
     guarded = not getattr(getattr(cur, "connection", None), "autocommit", False)
-    for key, f in qa_feed_plan(qa["reds"], open_keys):
+    gate = qa.get("gate")
+    for key, f in qa_feed_plan(qa["reds"], open_keys, gate):
         inv = f.get("investigation") or {}
         prop = f.get("proposal") or {}
-        why = ((f.get("parked") or {}).get("why") or prop.get("detail")
-               or prop.get("state") or "")
+        if qa_ready_basis(f, gate) == "investigated":
+            lead = "QA red, brain investigation current: "
+            why = ("the brain's investigation is current and survived "
+                   "refutation — filed straight to the agent lane")
+        else:
+            lead = "QA lane handed off: "
+            why = ((f.get("parked") or {}).get("why") or prop.get("detail")
+                   or prop.get("state") or "")
         try:
             if guarded:
                 cur.execute("SAVEPOINT sq_agent_qa")
@@ -695,7 +816,7 @@ def feed_qa(cur, qa: dict) -> dict:
                    ON CONFLICT DO NOTHING RETURNING id""",
                 (key, qa_item(key, f)["issue"][:200], QA_SOURCE,
                  "awaiting_decision",
-                 ("QA lane handed off: " + str(why))[:600],
+                 (lead + str(why))[:600],
                  str(inv.get("recommendation") or "")[:4000] or None,
                  str(why)[:1500] or None, inv.get("confidence")))
             filed = cur.fetchone() is not None
@@ -766,12 +887,19 @@ def claim_next(live: dict | None = None, qa: dict | None = None) -> dict:
                         "idle": f"daily budget spent ({max_per_day()}/24h)"}
             where = "status IN (%s)" % ", ".join(
                 "'%s'" % s for s in CLAIMABLE_STATUSES)
-            row = pick_candidate(_rows(cur, where), set(items),
-                                 live_items=items)
+            rows = _rows(cur, where)
+            holds = _fix_holds(cur)
+            row = pick_candidate(rows, set(items), live_items=items,
+                                 holds=holds)
             if not row:
                 conn.commit()
+                held = sum(1 for r in rows if held_by(r, holds))
+                idle = "no live, unattempted hand-off rows"
+                if held:
+                    idle += (f" ({held} held: another row's agent PR already "
+                             f"answered that finding)")
                 return {"ok": True, "reclaimed": reclaimed, "qa": fed,
-                        "idle": "no live, unattempted hand-off rows"}
+                        "held": held, "idle": idle}
             # Compare-and-set: two workflow runs cannot claim the same row.
             cur.execute(
                 "UPDATE squasher_work_queue SET agent_state = 'running',"
