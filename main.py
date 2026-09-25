@@ -40124,6 +40124,12 @@ def _site_score_preview(full):
         'overall_score': None,
         # how many factors were scored is not a number the preview withholds
         'scored_factors': full.get('scored_factors'),
+        # composite-v2.4 (live verify 2026-09-25): what each factor rests on,
+        # its source and as_of are labels and dates, not withheld numbers.
+        # nearest{} (the distances) stays out.
+        'methodology_version': full.get('methodology_version'),
+        'overall_basis': full.get('overall_basis'),
+        'coverage': full.get('coverage'),
         'scores': {k: None for k in (full.get('scores') or {})},
         'power_cost': None,
         'nearby': {
