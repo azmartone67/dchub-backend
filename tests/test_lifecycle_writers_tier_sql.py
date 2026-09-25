@@ -707,6 +707,8 @@ def test_a_k_checkout_leaves_an_enterprise_key_unrecorded_so_its_cancel_does_too
 # although the account's first subscription was still paid.
 
 FIRST, SECOND = "cus_first_t", "cus_second_t"
+PRO_PRICE = "price_1UCTZDJ9ey2ATcQlrpMPBVWf"         # Pro's own $99 price
+DEV_PRICE = ("price_dev_49_t", 4900)
 
 
 class _List:
@@ -733,8 +735,13 @@ class _FakeStripe:
             def list(customer=None, status=None, limit=None):
                 if outer.boom:
                     raise RuntimeError("stripe down")
-                return _List([{"id": i, "status": st, "created": cr}
-                              for i, st, cr in outer._subs.get(customer, [])])
+                out = []
+                for row in outer._subs.get(customer, []):
+                    i, st, cr = row[:3]
+                    price = row[3] if len(row) > 3 else (PRO_PRICE, 9900)
+                    out.append({"id": i, "status": st, "created": cr, "items": {"data": [
+                        {"price": {"id": price[0], "unit_amount": price[1]}}]}})
+                return _List(out)
 
         self.Customer, self.Subscription = Customer, Subscription
 
@@ -787,12 +794,84 @@ def test_with_no_other_live_subscription_the_cancel_still_demotes(h):
     assert h.api_row()[0] == "free" and h.mcp_row()[0] == "free"
 
 
-def test_a_stripe_failure_demotes_as_before(h):
+# ── owner follow-ups (2026-09-25) ──────────────────────────────────────────
+
+def test_a_stripe_failure_does_not_demote_it_asks_for_redelivery(h):
+    from routes.subscription_scope import CheckUnavailable
     h.with_stripe(_FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS, boom=True))
     h.user(plan="pro", cus=SECOND)
+    h.api_key(rate_limit_tier="pro", plan="pro")
     h.mcp_key(tier="paid")
-    h.sub_deleted(customer=SECOND, sub_id="sub_second")
-    assert h.user_row()[0] == "free" and h.mcp_row()[0] == "free"
+    with pytest.raises(CheckUnavailable):
+        h.sub_deleted_fn({"customer": SECOND, "id": "sub_second"})
+    with pytest.raises(CheckUnavailable):
+        h.sub_updated_fn({"customer": SECOND, "status": "canceled", "id": "sub_second"})
+    assert h.user_row() == ("pro", "pro", SECOND, "active")
+    assert h.api_row()[0] == "pro" and h.mcp_row()[0] == "paid"
+
+
+def test_the_repoint_takes_the_plan_of_the_kept_subscription(h):
+    # Dev $49 kept + a canceled Pro trial: lands on Developer, not Pro.
+    h.with_stripe(_FakeStripe({FIRST: [("sub_dev", "active", 100, DEV_PRICE)],
+                               SECOND: [("sub_trial", "canceled", 200)]}))
+    h.user(plan="pro", cus=SECOND)
+    h.api_key(rate_limit_tier="pro", plan="pro")
+    h.mcp_key(tier="paid")
+    h.sub_deleted(customer=SECOND, sub_id="sub_trial", demotes=False)
+    assert h.user_row() == ("developer", "developer", FIRST, "active")
+    assert h.api_row()[:2] == ("developer", "developer")
+    assert h.mcp_row()[0] == "paid"                      # MCP tiers cannot say Developer
+
+
+def test_the_repoint_keeps_an_admin_role_whatever_the_plan(h):
+    h.with_stripe(_FakeStripe({FIRST: [("sub_dev", "active", 100, DEV_PRICE)],
+                               SECOND: [("sub_trial", "canceled", 200)]}))
+    h.user(plan="pro", cus=SECOND, role="admin")
+    h.sub_deleted(customer=SECOND, sub_id="sub_trial", demotes=False)
+    assert h.user_row() == ("developer", "admin", FIRST, "active")
+
+
+def test_an_unrecognised_kept_price_moves_the_customer_not_the_plan(h):
+    h.with_stripe(_FakeStripe({FIRST: [("sub_odd", "active", 100, ("price_odd_t", 1234))],
+                               SECOND: [("sub_trial", "canceled", 200)]}))
+    h.user(plan="pro", cus=SECOND)
+    h.api_key(rate_limit_tier="pro", plan="pro")
+    h.sub_deleted(customer=SECOND, sub_id="sub_trial", demotes=False)
+    assert h.user_row() == ("pro", "pro", FIRST, "active")
+    assert h.api_row()[0] == "pro"
+
+
+def test_an_enterprise_kept_subscription_sets_the_row_and_never_raises_a_key(h):
+    # An address-chosen GRANT needs the proof clause; the re-point only lowers
+    # MCP keys. Enterprise reaches the key through the users row.
+    h.with_stripe(_FakeStripe({FIRST: [("sub_ent", "active", 100, ("price_ent_x", 70000))],
+                               SECOND: [("sub_trial", "canceled", 200)]}))
+    h.user(plan="pro", cus=SECOND)
+    h.mcp_key(tier="paid")
+    h.sub_deleted(customer=SECOND, sub_id="sub_trial", demotes=False)
+    assert h.user_row()[0] == "enterprise" and h.mcp_row()[0] == "paid"
+
+
+def test_a_non_enterprise_kept_subscription_lowers_an_enterprise_mcp_key(h):
+    h.with_stripe(_FakeStripe({FIRST: [("sub_dev", "active", 100, DEV_PRICE)],
+                               SECOND: [("sub_ent", "canceled", 200)]}))
+    h.user(plan="enterprise", cus=SECOND)
+    h.mcp_key(tier="enterprise")
+    h.sub_deleted(customer=SECOND, sub_id="sub_ent", demotes=False)
+    assert h.user_row()[0] == "developer" and h.mcp_row()[0] == "paid"
+
+
+def test_the_v2_route_raises_on_a_stripe_failure_and_demotes_nothing(h, monkeypatch):
+    from routes import subscription_scope
+    fake = _FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS, boom=True)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(subscription_scope, "_stripe", lambda stripe_mod=None: fake)
+    h.user(plan="pro", cus=SECOND)
+    h.mcp_key(tier="paid")
+    with pytest.raises(RuntimeError):
+        api_tier_gating._handle_sub_deleted_v2({"customer": SECOND, "id": "sub_second"})
+    assert h.user_row() == ("pro", "pro", SECOND, "active")
+    assert h.mcp_row()[0] == "paid"
 
 
 def test_a_second_checkout_keeps_a_stored_customer_that_still_pays(h):

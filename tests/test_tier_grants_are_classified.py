@@ -68,6 +68,10 @@ REGISTER = {
         (POSSESSION, "client_reference_id k-<sha256(api_key)>: the caller opened "
                      "the checkout HOLDING that key, so no address is involved"),
     ],
+    ("routes/subscription_scope.py", "repoint_statements"): [
+        (DOWNGRADE, "#5555 re-point: enterprise -> paid only, when the kept "
+                    "subscription is not Enterprise; never raises a key"),
+    ],
     ("main.py", "_demote_customer_mcp_keys"): [
         (DOWNGRADE, "sets tier='free' when a subscription ends: handle_subscription_deleted "
                     "and the updated->canceled branch both call it"),
