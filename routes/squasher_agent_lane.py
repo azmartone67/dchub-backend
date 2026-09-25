@@ -281,6 +281,144 @@ _SEV_RANK = {"critical": 0, "major": 1}
 _QA_PASS_MARK = "QA PASS-verified"
 
 
+# ★ 2026-09-25 — A CHECK THAT CANNOT LOOK IS A PROBE DEFECT NOBODY OWNED.
+# BLIND ("could not observe") is correctly never a product failure, so nothing
+# routed it anywhere — and a check that is blind most of the time is an
+# instrument that has stopped measuring. Measured that day: quota-meter carried
+# "UNSTABLE 39x" (passing only when the runner's anon budget happened to allow
+# it), paid-vs-anon was blind because the anon control had been spent, glama was
+# unreadable. Each was a fix to tools/qa_superuser/, and none reached a fixer.
+#
+# So: a check FAMILY blind in at least _BLIND_SHARE of the last _BLIND_WINDOW
+# canary-fired runs it appeared in (and in at least _BLIND_MIN_RUNS of them) is
+# filed as ONE row keyed QA_BLIND_PREFIX + family, briefed as a PROBE fix — the
+# product may be fine. It closes when the share drops below the line on a fresh
+# history, i.e. the check observes again; that is positive evidence, not absence.
+QA_BLIND_PREFIX = QA_PREFIX + "blind/"
+_BLIND_WINDOW = 12          # runs — ~48h at the probe's 4h cadence
+_BLIND_MIN_RUNS = 6         # the family must have been attempted this often
+_BLIND_SHARE = 0.5
+_BLIND_FEED_MAX = 1         # a probe fix per claim; reds come first
+_QA_OBSERVED_MARK = "QA observes again"
+
+
+def chronic_blind(runs: list[dict]) -> dict:
+    """{QA_BLIND_PREFIX + family: info} for check families blind in most of
+    the recent runs. Pure. runs are newest first, each {canary_fired,
+    findings}; runs whose must-fail control did not fire are skipped, and only
+    families present in the NEWEST trusted run count (a retired check is not
+    a probe to fix)."""
+    trusted = [r for r in (runs or []) if r.get("canary_fired")][:_BLIND_WINDOW]
+    if not trusted:
+        return {}
+    newest = {}
+    for f in trusted[0].get("findings") or []:
+        if isinstance(f, dict) and f.get("key"):
+            newest.setdefault(qa_family(f["key"]), f)
+    seen, blind, last_blind = {}, {}, {}
+    for r in trusted:
+        fams = {}
+        for f in r.get("findings") or []:
+            if isinstance(f, dict) and f.get("key"):
+                fam = qa_family(f["key"])
+                # One vote per family per run; a run where ANY variant of the
+                # family observed counts as observed.
+                was = fams.get(fam)
+                fams[fam] = (f if was is None or was.get("verdict") == "BLIND"
+                             else was)
+        for fam, f in fams.items():
+            seen[fam] = seen.get(fam, 0) + 1
+            if f.get("verdict") == "BLIND":
+                blind[fam] = blind.get(fam, 0) + 1
+                last_blind.setdefault(fam, f)
+    out = {}
+    for fam, n in seen.items():
+        b = blind.get(fam, 0)
+        if fam in newest and n >= _BLIND_MIN_RUNS and b / n >= _BLIND_SHARE:
+            out[QA_BLIND_PREFIX + fam] = {"family": fam, "blind": b, "runs": n,
+                                          "finding": last_blind[fam]}
+    return out
+
+
+def blind_item(key: str, info: dict) -> dict:
+    """A chronic-blind family in /heal/findings item shape — the agent's
+    detector_item. The brief says, in the detector's own fields, that the
+    PROBE is the thing to fix."""
+    f = info.get("finding") or {}
+    return {"url": key,
+            "issue": f"qa_blind chronic: {str(f.get('title') or '')[:150]}",
+            "severity": "instrument", "verdict": "BLIND",
+            "surface": f.get("surface"), "seat": f.get("seat"),
+            "evidence": str(f.get("evidence") or "")[:2000],
+            "basis": (f"the QA super-user check family {info.get('family')!r} "
+                      f"could not observe its target in {info.get('blind')} of "
+                      f"its last {info.get('runs')} runs. A blind reading is "
+                      f"NOT a product failure — the probe is not measuring."),
+            "remedy": ("Fix the PROBE in tools/qa_superuser/ so this check can "
+                       "observe on most runs (e.g. pick a control that is not "
+                       "spent, read a stable endpoint), or change what it "
+                       "measures. Do not change product behaviour to satisfy "
+                       "the check. If only a human can fix it (an external "
+                       "registry is down), say needs_human and name the action."),
+            "red_when": f.get("red_when"),
+            "qa_key": f.get("key"), "chronic_blind": True}
+
+
+def blind_feed_plan(blind: dict, open_keys) -> list[tuple[str, dict]]:
+    """Chronic-blind families to file now: not already open, most-blind
+    first, capped. Pure."""
+    todo = [(k, i) for k, i in (blind or {}).items() if k not in open_keys]
+    todo.sort(key=lambda ki: (-ki[1]["blind"] / max(ki[1]["runs"], 1), ki[0]))
+    return todo[:_BLIND_FEED_MAX]
+
+
+def blind_clear_plan(rows: list[dict], blind: dict,
+                     now: datetime | None = None) -> list[int]:
+    """Open chronic-blind rows whose family is no longer chronic on a fresh
+    history — the check observes again. Pure; only call with a history
+    qa_board() read successfully (an unreadable one clears nothing)."""
+    now = now or _now()
+    out = []
+    for r in rows:
+        key = str(r.get("finding_key") or "")
+        if r.get("source") != QA_SOURCE or not key.startswith(QA_BLIND_PREFIX):
+            continue
+        if key in (blind or {}):
+            continue
+        at = r.get("requested_at")
+        if at is not None and at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if at is None or now - at < timedelta(hours=_QA_CLEAR_MIN_AGE_H):
+            continue
+        out.append(r["id"])
+    return out
+
+
+def _recent_runs(limit: int = _BLIND_WINDOW * 2) -> list[dict] | None:
+    """Newest-first {canary_fired, findings} from qa_superuser_runs, or None
+    when unreadable. Twice the window, so skipped (canary-less) runs do not
+    shrink it."""
+    from routes import qa_superuser_dashboard as qd
+    c = qd._conn()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT canary_fired, findings FROM qa_superuser_runs"
+                        " ORDER BY generated_at DESC LIMIT %s", (limit,))
+            return [{"canary_fired": bool(r[0]), "findings": r[1] or []}
+                    for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher-agent] QA history unreadable: %s",
+                       type(e).__name__)
+        return None
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def qa_family(key: str) -> str:
     """The check a QA key belongs to, without its variant: the first three
     `::` parts of the slug (surface::seat::check). Keys come from
@@ -326,10 +464,20 @@ def qa_board() -> dict:
                 # None → only reds QA's lane handed off are filed (the
                 # pre-2026-09-25 rule): without the gate a refuted analysis
                 # cannot be told from a sound one.
-                "gate": _investigation_gate()}
+                "gate": _investigation_gate(),
+                **_blind_view()}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "reds": {},
                 "reason": f"QA board unreadable: {type(e).__name__}"}
+
+
+def _blind_view() -> dict:
+    """{blind, blind_known} for qa_board(). blind_known=False (history
+    unreadable) files nothing and clears nothing — blind != clean."""
+    runs = _recent_runs()
+    if runs is None:
+        return {"blind": {}, "blind_known": False}
+    return {"blind": chronic_blind(runs), "blind_known": True}
 
 
 def _investigation_gate():
@@ -396,6 +544,8 @@ def merge_qa_items(items: dict, qa: dict) -> dict:
     if (qa or {}).get("ok"):
         for k, f in (qa.get("reds") or {}).items():
             out[k] = qa_item(k, f)
+        for k, info in (qa.get("blind") or {}).items():
+            out[k] = blind_item(k, info)
     return out
 
 
@@ -607,7 +757,9 @@ def reconcile_plan(row: dict, pr: dict | None, live_keys,
         if cleared is not None and cleared.tzinfo is None:
             cleared = cleared.replace(tzinfo=timezone.utc)
         is_qa = str(row.get("finding_key") or "").startswith(QA_PREFIX)
-        if is_qa and _QA_PASS_MARK not in str(row.get("reason") or ""):
+        reason = str(row.get("reason") or "")
+        if (is_qa and _QA_PASS_MARK not in reason
+                and _QA_OBSERVED_MARK not in reason):
             # Closed by the old absence rule (or by hand): no PASS was ever
             # observed, so the merge is not credited as a fix.
             return {"agent_state": "cleared_unverified",
@@ -628,12 +780,15 @@ def reconcile_plan(row: dict, pr: dict | None, live_keys,
     still_red = key in live_keys or (
         str(key or "").startswith(QA_PREFIX)
         and qa_family(key) in (live_families or set()))
-    if still_red and now - merged_at > timedelta(hours=_UNVERIFIED_AFTER_H):
+    # A chronic-blind family is judged on a _BLIND_WINDOW-run share, which
+    # cannot fall below the line until most of the window postdates the fix.
+    wait_h = (_BLIND_WINDOW * 4 if str(key or "").startswith(QA_BLIND_PREFIX)
+              else _UNVERIFIED_AFTER_H)
+    if still_red and now - merged_at > timedelta(hours=wait_h):
         return {"agent_state": "merged_unverified",
                 "note": f"{url} merged {merged_at:%Y-%m-%dT%H:%MZ} but the "
                         f"detector still reports the finding "
-                        f"{_UNVERIFIED_AFTER_H}h later — the PR did not fix "
-                        f"it"}
+                        f"{wait_h}h later — the PR did not fix it"}
     return None
 
 
@@ -790,18 +945,8 @@ def feed_qa(cur, qa: dict) -> dict:
     # connection each statement is already isolated (the psycopg2
     # savepoint/autocommit trap squasher_queue._apply_schema_ddl documents).
     guarded = not getattr(getattr(cur, "connection", None), "autocommit", False)
-    gate = qa.get("gate")
-    for key, f in qa_feed_plan(qa["reds"], open_keys, gate):
-        inv = f.get("investigation") or {}
-        prop = f.get("proposal") or {}
-        if qa_ready_basis(f, gate) == "investigated":
-            lead = "QA red, brain investigation current: "
-            why = ("the brain's investigation is current and survived "
-                   "refutation — filed straight to the agent lane")
-        else:
-            lead = "QA lane handed off: "
-            why = ((f.get("parked") or {}).get("why") or prop.get("detail")
-                   or prop.get("state") or "")
+
+    def insert(key, title, reason, analysis, decision, confidence):
         try:
             if guarded:
                 cur.execute("SAVEPOINT sq_agent_qa")
@@ -814,18 +959,45 @@ def feed_qa(cur, qa: dict) -> dict:
                        status, reason, analysis, decision, confidence, last_seen)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                    ON CONFLICT DO NOTHING RETURNING id""",
-                (key, qa_item(key, f)["issue"][:200], QA_SOURCE,
-                 "awaiting_decision",
-                 (lead + str(why))[:600],
-                 str(inv.get("recommendation") or "")[:4000] or None,
-                 str(why)[:1500] or None, inv.get("confidence")))
+                (key, title[:200], QA_SOURCE, "awaiting_decision",
+                 reason[:600], analysis, decision, confidence))
             filed = cur.fetchone() is not None
             if guarded:
                 cur.execute("RELEASE SAVEPOINT sq_agent_qa")
-            out["filed"] += 1 if filed else 0
+            return filed
         except Exception:  # noqa: BLE001
             if guarded:
                 cur.execute("ROLLBACK TO SAVEPOINT sq_agent_qa")
+            return False
+
+    gate = qa.get("gate")
+    for key, f in qa_feed_plan(qa["reds"], open_keys, gate):
+        inv = f.get("investigation") or {}
+        prop = f.get("proposal") or {}
+        if qa_ready_basis(f, gate) == "investigated":
+            lead = "QA red, brain investigation current: "
+            why = ("the brain's investigation is current and survived "
+                   "refutation — filed straight to the agent lane")
+        else:
+            lead = "QA lane handed off: "
+            why = ((f.get("parked") or {}).get("why") or prop.get("detail")
+                   or prop.get("state") or "")
+        if insert(key, qa_item(key, f)["issue"], lead + str(why),
+                  str(inv.get("recommendation") or "")[:4000] or None,
+                  str(why)[:1500] or None, inv.get("confidence")):
+            out["filed"] += 1
+    blind_known = bool(qa.get("blind_known"))
+    if blind_known:
+        out["blind_filed"] = 0
+        for key, info in blind_feed_plan(qa.get("blind") or {}, open_keys):
+            it = blind_item(key, info)
+            if insert(key, it["issue"],
+                      f"QA check chronically blind ({info['blind']} of "
+                      f"{info['runs']} recent runs) — fix the probe, not the "
+                      f"product", None, it["remedy"][:1500], None):
+                out["blind_filed"] += 1
+    else:
+        out["blind_skipped"] = "QA run history unreadable"
     rows = _rows(cur, "source = %s AND status IN (" + open_sql + ")",
                  (QA_SOURCE,))
     for rid in qa_clear_plan(rows, qa.get("passed_families") or set(),
@@ -836,6 +1008,16 @@ def feed_qa(cur, qa: dict) -> dict:
                                      "RED in its family (must-fail control "
                                      "fired). No fix is claimed here."}):
             out["cleared"] += 1
+    if blind_known:
+        for rid in blind_clear_plan(rows, qa.get("blind") or {}):
+            if _apply(cur, rid, {"status": "self_cleared",
+                                 "finished_at": _now(),
+                                 "note": f"self-cleared ({_QA_OBSERVED_MARK}): "
+                                         f"this check family is no longer "
+                                         f"blind in {int(_BLIND_SHARE * 100)}%+"
+                                         f" of its last {_BLIND_WINDOW} runs. "
+                                         "No fix is claimed here."}):
+                out["cleared"] += 1
     return out
 
 
