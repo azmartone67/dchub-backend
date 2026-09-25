@@ -1715,6 +1715,23 @@ _DISPATCH = [
      f"{BASE}/api/v1/jobs/infra-coverage",
      "POST",
      lambda now: now.hour == 4 and now.minute < 10),
+    # MCP registry presence crawl — daily backstop (2026-09-25). The intended
+    # backstop for this lane lives in dchub-scheduler.py, but that file is
+    # NEVER LAUNCHED (Procfile/railway.json only run start_web.sh — see its
+    # own module docstring), so the only thing that ever crawled
+    # mcp_presence_listings was crawler_scheduler's in-process thread, whose
+    # slot tracking is in-memory and resets on every worker restart. That gap
+    # is exactly why 12 of 16 registry listings sat >72h stale (crawler SLA is
+    # 3 days) while check_mcp_presence_stale kept re-filing
+    # mcp_presence_listing_stale. This entry rides the cron-heartbeat's
+    # already-live external trigger instead, so it fires even if the
+    # in-process scheduler drops a slot. Wide window (GitHub cron drops
+    # fires); min-refire-gated below so it stays a once-a-day sweep, not a
+    # re-hammer of every registry on each 5-min heartbeat tick.
+    ("mcp_presence_crawl_daily",
+     f"{BASE}/api/v1/admin/mcp-presence/crawl",
+     "POST",
+     lambda now: now.hour == 3 and now.minute < 55),
 ]
 
 # r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes
@@ -1753,6 +1770,10 @@ _HEAVY_LABELS = frozenset({
     # 2026-07-22: the 4 read-only master-shell scoreboards wired into _DISPATCH.
     "deepdive_master_tick_daily", "pillars_master_tick_daily",
     "qa_fixwave_master_tick_daily", "roadmap_master_tick_daily",
+    # up to MAX_REQUESTS_PER_RUN (15) outbound registry fetches, each
+    # rate-limited (>=1s apart, some hosts back off 5-15s) — same class as
+    # audit_closure_shell_daily's live-probe budget.
+    "mcp_presence_crawl_daily",
 })
 
 
@@ -1792,6 +1813,11 @@ _MIN_REFIRE_S = {
     # shell #65's tick is idempotent (its snapshot is an upsert, its filing is
     # ledger-bounded) but heavy (see _HEAVY_LABELS); one fire per window.
     "agentic_loop_shell_daily": 6 * 3600,
+    # not unsafe to overlap (each row UPDATE is independent + idempotent) but
+    # pointless to repeat inside the same 55-min window — this is meant as a
+    # once-a-day sweep, not a re-hammer of every tracked registry on each
+    # 5-min heartbeat tick.
+    "mcp_presence_crawl_daily": 20 * 3600,
 }
 _LAST_FIRED = {}
 _LAST_FIRED_LOCK = threading.Lock()
