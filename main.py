@@ -40122,6 +40122,8 @@ def _site_score_preview(full):
                      'state': loc.get('state')},
         'capacity_requested_mw': full.get('capacity_requested_mw'),
         'overall_score': None,
+        # how many factors were scored is not a number the preview withholds
+        'scored_factors': full.get('scored_factors'),
         'scores': {k: None for k in (full.get('scores') or {})},
         'power_cost': None,
         'nearby': {
@@ -40568,6 +40570,12 @@ def api_site_score():
             # presence is itself the proof the argument was received and used.
             **({'capacity_context': _cap_ctx} if _cap_ctx else {}),
             'overall_score': overall,
+            # owner 2026-09-25: how many of the five factors are in the score,
+            # at the top, so a renormalised composite is never read as whole.
+            'scored_factors': _ss.scored_factors({
+                'power_infrastructure': power_score, 'gas_pipeline_access': gas_score,
+                'fiber_connectivity': fiber_score, 'market_conditions': market_score,
+                'risk_resilience': risk_score}),
             'scores': {
                 'power_infrastructure': round(power_score, 1),
                 'gas_pipeline_access': round(gas_score, 1),

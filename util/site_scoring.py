@@ -141,3 +141,52 @@ def coverage(state, state_basis, hv, gas_km, as_of, errors, *,
         'market_conditions': _f(market_basis, 'discovered_facilities within ~100 km'),
         'risk_resilience': _f(risk_basis, 'DC Hub state risk table (not county-level)'),
     }
+
+
+FACTORS = tuple(WEIGHTS)
+
+
+def scored_factors(scores):
+    """'n/5': how many of the five composite factors carry a score."""
+    scores = scores or {}
+    return "%d/%d" % (sum(1 for k in FACTORS if scores.get(k) is not None), len(FACTORS))
+
+
+def row_completeness(row):
+    """For a rank_sites candidate: (scored_factors 'n/m' or None, risk_missing).
+
+    A row is recognised as a site-score row by what it carries: a
+    scored_factors string, a site-score `scores` block, or the factor fields
+    themselves (all five, flattened). Anything else says nothing: (None, False).
+    risk_missing is True when the row carries risk_resilience as null or its
+    composite was renormalised without it."""
+    if not isinstance(row, dict):
+        return None, False
+    sf = row.get("scored_factors")
+    scores = row.get("scores") if isinstance(row.get("scores"), dict) else None
+    flat = {k: row[k] for k in FACTORS if k in row}
+    src = scores if scores is not None else (flat or None)
+    risk_missing = False
+    if src is not None and "risk_resilience" in src and src.get("risk_resilience") is None:
+        risk_missing = True
+    if "risk_resilience" in str(row.get("overall_basis") or ""):
+        risk_missing = True
+    if isinstance(sf, str) and "/" in sf:
+        return sf, risk_missing
+    if scores is not None:
+        return scored_factors(scores), risk_missing
+    if len(flat) == len(FACTORS):          # all five flattened: a site-score row
+        got = sum(1 for v in flat.values() if v is not None)
+        return "%d/%d" % (got, len(FACTORS)), risk_missing
+    # A caller who passed only some factor fields chose its objectives; that
+    # is not an incomplete site-score row (rank_sites declares any missing
+    # objective itself, in missing_objectives).
+    return None, risk_missing
+
+
+def is_complete(sf):
+    try:
+        n, m = (int(x) for x in str(sf).split("/"))
+        return n == m
+    except Exception:
+        return True
