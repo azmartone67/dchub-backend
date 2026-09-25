@@ -1571,9 +1571,19 @@ def check_press_stale_vs_citations() -> list[dict]:
         if body2:
             try:
                 d3 = _json.loads(body2)
-                items = d3.get("items") or d3.get("press_releases") or d3.get("releases") or (d3 if isinstance(d3, list) else [])
+                # r-sentinel-fix: the live endpoint (main.py list_press_releases)
+                # returns a bare JSON array, not {"items": [...]}. Calling .get()
+                # on a list raises AttributeError BEFORE the isinstance(d3, list)
+                # fallback is ever reached, so newest_press silently stayed None
+                # on every real response — permanently pinning lag_h at the 9999
+                # sentinel below regardless of actual press freshness.
+                if isinstance(d3, list):
+                    items = d3
+                else:
+                    items = d3.get("items") or d3.get("press_releases") or d3.get("releases") or []
                 if items:
-                    at = items[0].get("published_date") or items[0].get("created_at")
+                    at = (items[0].get("published_date") or items[0].get("created_at")
+                          or items[0].get("date"))
                     if at:
                         newest_press = _dt.fromisoformat(str(at).replace("Z", "+00:00"))
             except Exception: pass
