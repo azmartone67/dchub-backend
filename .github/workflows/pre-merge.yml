@@ -1498,6 +1498,23 @@ jobs:
             echo "::error::the agent_broadcast published-only SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Human customer quotes never serve as AI quotes, same Postgres ────
+      # ai_testimonials holds AI quotes and HUMAN customer quotes
+      # (source='claim_quote'). /api/v1/testimonials, /stats, /live, the media
+      # feed and the wall-dedup job must exclude them; /api/v1/cited-by must
+      # still list them. A WHERE clause over NULL-able data is a fact no fake
+      # cursor holds. Owns and recreates ai_testimonials.
+      - name: claim_quote fence SQL against a real Postgres
+        env:
+          CLAIM_QUOTE_FENCE_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_claim_quote_not_ai_feed_sql.py \
+            -q -rs --tb=short > cqf.txt 2>&1 || { cat cqf.txt; exit 1; }
+          cat cqf.txt
+          if grep -qi "skipped" cqf.txt; then
+            echo "::error::the claim_quote fence SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── warm-keys export consent + last wall (r-optin-consents) ───────────
       # routes/warm_key_cohort._gather's SQL, own schema, same Postgres.
       - name: warm-keys export SQL against a real Postgres
@@ -1577,6 +1594,7 @@ jobs:
             pp.txt
             wk.txt
             msg.txt
+            cqf.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

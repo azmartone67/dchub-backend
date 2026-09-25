@@ -49,6 +49,8 @@ import logging
 
 from flask import Blueprint, jsonify, request, Response
 
+from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
+
 logger = logging.getLogger("dchub.media_north_star")
 
 media_north_star_bp = Blueprint("media_north_star", __name__)
@@ -268,6 +270,10 @@ def _build_table_select(cols: set[str], table: str,
     # Always drop internal/synthetic noise (cron heartbeats etc.) from
     # BOTH tables so citation velocity reflects real external citations.
     clauses.extend(_synthetic_exclusion(cols))
+    # A human customer quote (source='claim_quote') is not an AI citation.
+    # See util/testimonial_sources.py.
+    if "source" in cols:
+        clauses.append(NOT_CLAIM_QUOTE_SQL)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return f"""
         SELECT {_src_expr(cols)}      AS src,

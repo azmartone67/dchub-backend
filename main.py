@@ -33009,6 +33009,10 @@ def get_testimonials():  # v2 neon-backed
     category = request.args.get('category')
     featured_only = request.args.get('featured', '').lower() == 'true'
 
+    # Human customer quotes (source='claim_quote') are not AI-agent quotes;
+    # they publish only on /cited-by. See util/testimonial_sources.py.
+    from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
+
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -33017,6 +33021,7 @@ def get_testimonials():  # v2 neon-backed
             "SELECT id, platform, agent_name, quote, context, query, category, featured, created_at "
             "FROM ai_testimonials "
             "WHERE approved = TRUE "
+            f"  AND {NOT_CLAIM_QUOTE_SQL} "
             # Phase FF quality gate — drop MCP search-log spam
             "  AND COALESCE(agent_name, '') NOT IN ('', 'unknown', 'anonymous', 'AI Agent via MCP') "
             "  AND COALESCE(platform, '')   NOT IN ('', 'unknown', 'anonymous') "
@@ -33155,16 +33160,20 @@ def delete_testimonial(tid):
 @app.route('/api/v1/testimonials/stats', methods=['GET'])
 def testimonial_stats():
     """Stats for the testimonials page hero"""
+    # The hero counts AI-agent quotes and AI platforms. Human customer quotes
+    # (source='claim_quote') are neither. See util/testimonial_sources.py.
+    from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
     try:
         conn = get_pg_connection()
         c = conn.cursor()
-        c.execute("""
+        c.execute(f"""
             SELECT
                 COUNT(*) as total,
                 COUNT(*) FILTER (WHERE approved = TRUE) as approved,
                 COUNT(DISTINCT platform) as platforms,
                 COUNT(*) FILTER (WHERE created_at > CURRENT_TIMESTAMP - INTERVAL '7 days') as this_week
             FROM ai_testimonials
+            WHERE {NOT_CLAIM_QUOTE_SQL}
         """)
         r = c.fetchone()
         return jsonify({
