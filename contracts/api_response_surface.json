@@ -22133,7 +22133,7 @@
    "keys": []
   },
   "GET /api/v1/site-selection/canvas": {
-   "source": "routes/site_selection_canvas.py:420",
+   "source": "routes/site_selection_canvas.py:435",
    "handler": "canvas",
    "resolution": "resolved",
    "open_at": [
@@ -31939,7 +31939,7 @@
    ]
   },
   "POST /api/v1/site-selection/canvas": {
-   "source": "routes/site_selection_canvas.py:420",
+   "source": "routes/site_selection_canvas.py:435",
    "handler": "canvas",
    "resolution": "resolved",
    "open_at": [
