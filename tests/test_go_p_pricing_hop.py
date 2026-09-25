@@ -207,7 +207,7 @@ def test_main_imports_and_registers_the_blueprint():
 # out of handoff_definition.CLICK_TO_PAY_PLANS, the lanes the 10-01 readout
 # reads) and out of STRIPE_LINKS (checkout-integrity compares a link's charge to
 # its label; a trial charges $0).
-TRIAL = "https://buy.stripe.com/cNieVeg7w93DcWV9maaZi0q"
+from routes._stripe_links import PRO_TRIAL_LINK as TRIAL  # noqa: E402  (canon)
 
 
 def test_the_trial_lands_on_the_trial_link_with_the_pages_ref(client_and_stamps, monkeypatch):
@@ -220,9 +220,12 @@ def test_the_trial_lands_on_the_trial_link_with_the_pages_ref(client_and_stamps,
     assert stamped == [("pro_trial", "", True), ("pro_trial", PAGE_REF, True)]
 
 
+# Invalid values built from canon links, never a new literal (the repo's
+# test_stripe_link_canonical ratchet scans every tracked file, tests included).
 @pytest.mark.parametrize("val", ["off", "OFF", "0", "false", "disabled",
-                                 "https://evil.example/x", "http://buy.stripe.com/abcdefgh",
-                                 "https://buy.stripe.com/../x"])
+                                 "https://evil.example/x",
+                                 "http://" + TRIAL.split("://", 1)[1],     # not https
+                                 TRIAL.rsplit("/", 1)[0] + "/../x"])
 def test_the_trial_can_be_switched_off_and_never_redirects_off_stripe(client_and_stamps, monkeypatch, val):
     monkeypatch.setenv("DCHUB_PRO_TRIAL_LINK", val)
     client, stamped = client_and_stamps
@@ -232,9 +235,11 @@ def test_the_trial_can_be_switched_off_and_never_redirects_off_stripe(client_and
 
 
 def test_the_trial_link_is_overridable(client_and_stamps, monkeypatch):
-    monkeypatch.setenv("DCHUB_PRO_TRIAL_LINK", "https://buy.stripe.com/test_abcdefgh1234")
+    from routes._stripe_links import STRIPE_LINKS
+    other = STRIPE_LINKS["pro"]            # any other canonical Payment Link
+    monkeypatch.setenv("DCHUB_PRO_TRIAL_LINK", other)
     client, _ = client_and_stamps
-    assert client.get("/go/p/pro_trial").headers["Location"] == "https://buy.stripe.com/test_abcdefgh1234"
+    assert client.get("/go/p/pro_trial").headers["Location"] == other
 
 
 def test_the_trial_is_not_a_cold_plan_or_a_stripe_link():

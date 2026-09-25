@@ -28,7 +28,7 @@ import re
 
 from flask import Blueprint, request, redirect
 
-from routes._stripe_links import STRIPE_LINKS
+from routes._stripe_links import PRO_TRIAL_LINK, STRIPE_LINKS
 from routes._swallowed_writes import note_swallowed_write
 from routes.checkout_click_tracker import _PRICING_URL, _REF_OK, _conn, _dsn, _pg
 
@@ -61,7 +61,7 @@ COLD_PLANS = ("metered", "developer", "pro")
 #   other value ("off") disables it without a frontend deploy — the button then
 #   lands on /pricing.
 PRO_TRIAL_PLAN = "pro_trial"
-_PRO_TRIAL_DEFAULT = "https://buy.stripe.com/cNieVeg7w93DcWV9maaZi0q"
+_PRO_TRIAL_DEFAULT = PRO_TRIAL_LINK     # canon: routes/_stripe_links.py
 _STRIPE_LINK_RE = re.compile(r"^https://buy\.stripe\.com/[A-Za-z0-9_]{8,64}$")  # test-mode links are test_…
 
 

@@ -135,6 +135,14 @@ TIER_PRICE_LABEL = {
 # canonical key, `pack5` the legacy alias mcp_conversion_plays still emits.
 # The USD figure is the charge on that link — cross-pinned against
 # mcp_conversion_plays.PACK10_PRICE_CENTS by tests/test_relay_sells_what_it_says.py.
+# r-pro-trial-web (2026-09-24, owner): the Pro $99/mo price with a 7-day trial
+# (card required, checkout metadata offer=pro_trial_7d). Sold on /pricing only,
+# through /go/p/pro_trial (routes/pricing_click_tracker). Canon lives HERE like
+# every Payment Link, but deliberately NOT in STRIPE_LINKS: the checkout-
+# integrity lanes compare each STRIPE_LINKS link's charge with its label, and a
+# trial charges $0 at checkout; and COLD_PLANS / CLICK_TO_PAY_PLANS stay pinned.
+PRO_TRIAL_LINK = "https://buy.stripe.com/cNieVeg7w93DcWV9maaZi0q"
+
 PACK_TIER = "metered"
 ONE_TIME_TIERS = frozenset({"metered", "pack5"})
 TIER_ONE_TIME_USD = {"metered": 10, "pack5": 10}
