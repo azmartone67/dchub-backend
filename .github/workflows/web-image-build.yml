@@ -6,38 +6,41 @@ name: Web image build
 # start scripts' system binaries exist, and weasyprint can render a PDF.
 # Railway only finds these out after the build, on a failed healthcheck.
 
+# ★2026-09-25 — REQUIRED CHECK (context `web-image-build`). No `paths:`
+# filters, on purpose: a required check that a PR never starts sits at
+# "Expected — waiting" forever and blocks the merge. And main-branch-health
+# judges this on every push to main (GATING in tools/deadman/
+# main_branch_verdict.py), so a filtered push would read as "no run for HEAD".
+# Layer caching (type=gha) keeps an unchanged requirements.txt from reinstalling.
 on:
   pull_request:
-    paths:
-      - Dockerfile.web
-      - .dockerignore
-      - railway.toml
-      - requirements.txt
-      - runtime.txt
-      - start_web.sh
-      - start_mcp.sh
-      - .github/workflows/web-image-build.yml
   push:
     branches: [main]
-    paths:
-      - Dockerfile.web
-      - .dockerignore
-      - requirements.txt
-      - runtime.txt
   workflow_dispatch: {}
 
 permissions:
   contents: read
+  actions: write   # type=gha layer cache read/write
 
 jobs:
-  build:
+  web-image-build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build Dockerfile.web
-        run: docker build -f Dockerfile.web -t dchub-web:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          tags: dchub-web:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=web-image
+          cache-to: type=gha,scope=web-image,mode=max
 
       - name: Interpreter, venv and system binaries
         run: |

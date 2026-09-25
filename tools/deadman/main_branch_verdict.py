@@ -48,24 +48,27 @@ import sys
 #     --jq .required_status_checks.contexts
 REQUIRED_CONTEXTS = ("substance-gate", "syntax-check", "unit-tests",
                      "regression-lint", "db-parity", "app-contract-gate",
-                     "contract")
+                     "contract", "web-image-build")
 # Required, but only brain-pr-substance-gate.yml emits it and that runs on
 # pull_request alone, so main never has a run of it to judge.
 PR_ONLY_CONTEXTS = ("substance-gate",)
 
-# The workflows whose runs on main carry the other six (a check's context is its
+# The workflows whose runs on main carry the other seven (a check's context is its
 # job's `name:`, else the job id):
 #   pre-merge.yml              syntax-check, unit-tests, regression-lint, db-parity
 #   app-contract-gate.yml      app-contract-gate
 #   api-response-contract.yml  contract
+#   web-image-build.yml        web-image-build   (required 2026-09-25: the
+#                              image railway.toml deploys for web + worker)
 # ★2026-09-21 api-response-contract.yml was missing: `contract` went red on main
 # at 84f4a441d (stats.mw_coverage removed) and four runs of this verdict said
 # "all 3 gating workflow(s) green" until #5039 fixed main.
-# regression-lint.yml is NOT here: it carries none of the seven. Its job is
+# regression-lint.yml is NOT here: it carries none of the eight. Its job is
 # `lint`; the `regression-lint` context is pre-merge.yml's job of that name, and
 # the workflow's `name:` matching it is what kept it here until 2026-09-21. A red
 # lint blocks no PR, so it must not read as main_red (ci-triage still triages it).
-GATING = ("pre-merge.yml", "app-contract-gate.yml", "api-response-contract.yml")
+GATING = ("pre-merge.yml", "app-contract-gate.yml", "api-response-contract.yml",
+          "web-image-build.yml")
 
 
 def verdict(head_sha, runs_by_workflow):
