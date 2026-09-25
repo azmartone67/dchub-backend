@@ -215,6 +215,11 @@ class _Harness:
             "stripe": None,
             "_send_dunning_demote_notice": lambda *a, **k: self.notices.append(a),
         }
+        # r-trial-dunning: the dunning handlers call these two helpers; compile
+        # the real ones against the same stubs (STRIPE_AVAILABLE=False -> the
+        # count is None and the post-trial check is False: today's behaviour).
+        ns["_real_paid_invoice_count"] = _compile("_real_paid_invoice_count", ns)
+        ns["_is_post_trial_first_charge"] = _compile("_is_post_trial_first_charge", ns)
         self.payment_failed_fn = _compile("handle_payment_failed", ns)
         self.invoice_paid_fn = _compile("handle_invoice_paid", ns)
 
