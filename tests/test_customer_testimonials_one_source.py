@@ -2,10 +2,10 @@
 
 NO NETWORK, NO DB. tests/conftest.py sets DCHUB_CUSTOMER_TESTIMONIALS_FETCH=0
 for the whole run; tests here replace _fetch_raw with a canned document, or
-patch urlopen when exercising the shipped _fetch_raw itself.
+patch requests.get when exercising the shipped _fetch_raw itself.
 
 What this pins:
-  * the loader: User-Agent (Cloudflare 403s urllib's default), validation drops
+  * the loader: User-Agent (Cloudflare 403s Python's default), validation drops
     incomplete rows, last good kept on error, [] when never loaded, no raise;
   * why_dchub carries the list, the page URL and a people-not-AI label;
   * the SERVED /llms.txt and /llms-full.txt carry the section, with the quote
@@ -56,38 +56,34 @@ def test_fetch_sends_the_backend_user_agent(monkeypatch):
     seen = {}
 
     class _Resp:
-        def __enter__(self):
-            return self
+        def raise_for_status(self):
+            return None
 
-        def __exit__(self, *a):
-            return False
+        def json(self):
+            return {"customer_testimonials": []}
 
-        def read(self):
-            return b'{"customer_testimonials": []}'
-
-    def fake_urlopen(req, timeout=None):
-        seen["ua"] = req.get_header("User-agent")
-        seen["url"] = req.full_url
+    def fake_get(url, headers=None, timeout=None, **kw):
+        seen["ua"] = (headers or {}).get("User-Agent")
+        seen["url"] = url
         seen["timeout"] = timeout
         return _Resp()
 
-    monkeypatch.setattr(ct.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(ct.requests, "get", fake_get)
     monkeypatch.setenv(ct.FETCH_ENV, "1")
     assert ct._fetch_raw() == {"customer_testimonials": []}
     assert seen["ua"] == "DCHub-Backend/1.0 (+https://dchub.cloud)"
     assert seen["url"] == "https://dchub.cloud/testimonials.json"
-    assert seen["timeout"] and seen["timeout"] <= 5
+    assert seen["timeout"] and max(seen["timeout"]) <= 5
 
 
 def test_fetch_switch_off_never_opens_a_socket(monkeypatch):
     called = []
-    monkeypatch.setattr(ct.urllib.request, "urlopen",
-                        lambda *a, **k: called.append(1))
+    monkeypatch.setattr(ct.requests, "get", lambda *a, **k: called.append(1))
     monkeypatch.setenv(ct.FETCH_ENV, "0")
     with pytest.raises(RuntimeError):
         ct._fetch_raw()
     assert ct.get_customer_testimonials() == []
-    assert called == [], "urlopen was reached with the fetch switched off"
+    assert called == [], "requests.get was reached with the fetch switched off"
 
 
 def test_loader_returns_valid_rows(monkeypatch):

@@ -18,7 +18,7 @@ every surface that renders them labels them as named human customers.
 
 BEHAVIOUR
 ---------
-* Fetch with a real User-Agent: Cloudflare answers 403 to urllib's default.
+* Fetch with a real User-Agent: Cloudflare answers 403 to Python's default ones.
 * Bounded: a short timeout, and an in-process cache so a page render costs no
   network on the hot path.
 * On any error the last good list is kept; before the first success the list
@@ -33,7 +33,8 @@ import logging
 import os
 import threading
 import time
-import urllib.request
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ TESTIMONIALS_PAGE_URL = "https://dchub.cloud/testimonials"
 TESTIMONIALS_JSON_URL = "https://dchub.cloud/testimonials.json"
 USER_AGENT = "DCHub-Backend/1.0 (+https://dchub.cloud)"
 FETCH_TIMEOUT_S = 4
+# (connect, read): a scalar would let a dead host burn the whole budget
+# connecting (see util/feed_fetch.py).
+_TIMEOUT = (2, FETCH_TIMEOUT_S)
 CACHE_TTL_S = 600
 _REQUIRED = ("name", "title", "company", "quote")
 
@@ -69,12 +73,14 @@ def _fetch_raw():
     """Return the parsed JSON document. Raises on any failure (caller catches)."""
     if os.environ.get(FETCH_ENV, "1").strip() == "0":
         raise RuntimeError(FETCH_ENV + "=0: testimonials fetch disabled")
-    req = urllib.request.Request(
+    resp = requests.get(
         TESTIMONIALS_JSON_URL,
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        timeout=_TIMEOUT,
+        allow_redirects=False,
     )
-    with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _validate(doc) -> list:
