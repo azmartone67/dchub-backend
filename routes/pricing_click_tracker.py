@@ -23,6 +23,8 @@ FAIL-OPEN, as on /go/c: a database error stamps nothing and still redirects.
 from __future__ import annotations
 
 import logging
+import os
+import re
 
 from flask import Blueprint, request, redirect
 
@@ -45,6 +47,29 @@ pricing_click_bp = Blueprint("pricing_click", __name__)
 #   client_reference_id exactly as the page used to append it. It is unsigned, so
 #   it is held to the same charset as a /go/c ref before it touches the Location.
 COLD_PLANS = ("metered", "developer", "pro")
+
+# ★ r-pro-trial-web (2026-09-24, owner): the Pro 7-day trial Payment Link, sold
+#   on /pricing only (web; MCP surfaces untouched until after 10-01). Deliberately
+#   NOT in COLD_PLANS / STRIPE_LINKS:
+#     · handoff_definition.CLICK_TO_PAY_PLANS is pinned equal to COLD_PLANS, so a
+#       trial there would enter the click-to-pay lanes the 10-01 readout uses
+#       (schema_repair files an unlisted plan under cold_go_p "other");
+#     · STRIPE_LINKS feeds the checkout-integrity lanes that compare a link's
+#       charge with its label, and a trial charges $0 at checkout.
+#   Clicks are still stamped in pricing_checkout_clicks, as plan 'pro_trial'.
+#   DCHUB_PRO_TRIAL_LINK overrides the URL (must be a buy.stripe.com link); any
+#   other value ("off") disables it without a frontend deploy — the button then
+#   lands on /pricing.
+PRO_TRIAL_PLAN = "pro_trial"
+_PRO_TRIAL_DEFAULT = "https://buy.stripe.com/cNieVeg7w93DcWV9maaZi0q"
+_STRIPE_LINK_RE = re.compile(r"^https://buy\.stripe\.com/[A-Za-z0-9_]{8,64}$")  # test-mode links are test_…
+
+
+def pro_trial_link():
+    """The trial Payment Link, or None when disabled / misconfigured. Any value
+    that is not a buy.stripe.com link ("off" included) disables it."""
+    v = (os.environ.get("DCHUB_PRO_TRIAL_LINK") or "").strip() or _PRO_TRIAL_DEFAULT
+    return v if _STRIPE_LINK_RE.match(v) else None
 
 _PRICING_CLICKS_READY = [False]
 
@@ -110,7 +135,12 @@ def pricing_click(plan):
     ref = (request.args.get("ref") or "").strip()
     if ref and not _REF_OK.match(ref):
         ref = ""
-    target = STRIPE_LINKS.get(plan) if plan in COLD_PLANS else None
+    if plan in COLD_PLANS:
+        target = STRIPE_LINKS.get(plan)
+    elif plan == PRO_TRIAL_PLAN:
+        target = pro_trial_link()
+    else:
+        target = None
     if not target:
         # Not a plan /pricing sells: land on the page rather than guess a
         # checkout. Stamped known_plan=false so a broken button shows up.
