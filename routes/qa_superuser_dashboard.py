@@ -208,7 +208,11 @@ def _ensure_investigations(cur) -> None:
                      # Live 2026-09-18: a refusal written 11.9 days earlier
                      # rendered beside a 4.1h-old analysis with no indication it
                      # described different evidence.
-                     ("proposal_evidence_sha", "TEXT")):
+                     ("proposal_evidence_sha", "TEXT"),
+                     # How many times the SAME evidence was re-analysed and
+                     # refuted again. Bounds the refuted-retry below; resets
+                     # when the evidence moves or an analysis survives.
+                     ("refuted_reruns", "INTEGER NOT NULL DEFAULT 0")):
         cur.execute("ALTER TABLE qa_superuser_investigations "
                     f"ADD COLUMN IF NOT EXISTS {col} {ddl}")
 
@@ -527,6 +531,13 @@ def _persist_investigation(meta: dict, ev_sha: str, question: str, result: dict,
                        brain_id       = EXCLUDED.brain_id,
                        issue_number   = EXCLUDED.issue_number,
                        commented      = FALSE,
+                       refuted_reruns = CASE
+                           WHEN qa_superuser_investigations.evidence_sha
+                                    = EXCLUDED.evidence_sha
+                            AND qa_superuser_investigations.survived IS FALSE
+                            AND EXCLUDED.survived IS FALSE
+                           THEN COALESCE(qa_superuser_investigations.refuted_reruns, 0) + 1
+                           ELSE 0 END,
                        created_at     = NOW()""",
                 (key, ev_sha, question[:2000],
                  (result.get("recommendation") or "")[:8000],
@@ -739,6 +750,16 @@ AUTO_INVESTIGATE_MAX_BOARD_AGE_H = 9.0
 # A brand-new finding has no prior row and is never delayed by this.
 AUTO_INVESTIGATE_COOLDOWN_H = 12.0
 
+# ★★ A REFUTED analysis that is still CURRENT used to be final: the lane
+#   skipped it ("already has a current investigation") until the evidence
+#   string moved, which for a steady RED is never. The propose gate stays
+#   exactly as strict — this only buys the finding another ANALYSIS, spaced and
+#   capped, so a first draft that got knocked down is not the last word. The
+#   park/hand-off to the agent lane still happens immediately (park_verdict is
+#   unchanged); a later analysis that SURVIVES simply un-parks it.
+REFUTED_RETRY_H = 24.0
+REFUTED_MAX_RERUNS = 2
+
 
 def is_actionable_finding(f: dict) -> bool:
     """Does this board finding represent REAL WORK?
@@ -925,6 +946,24 @@ def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[
             continue
         inv = f.get("investigation") or {}
         if inv.get("state") == "current":
+            if inv.get("survived") is False:
+                reruns = int(inv.get("refuted_reruns") or 0)
+                r_age = _age_hours(inv.get("at")) if inv.get("at") else None
+                if reruns >= REFUTED_MAX_RERUNS:
+                    skipped.append({
+                        "key": key,
+                        "why": f"refuted {reruns + 1}x against this same "
+                               "evidence — retries exhausted, handed off"})
+                    continue
+                if r_age is not None and r_age >= REFUTED_RETRY_H:
+                    todo.append(f)
+                    continue
+                skipped.append({
+                    "key": key,
+                    "why": "current analysis was refuted; re-analysis due "
+                           f"{REFUTED_RETRY_H:.0f}h after it "
+                           f"({reruns}/{REFUTED_MAX_RERUNS} retries used)"})
+                continue
             skipped.append({"key": key,
                             "why": "already has a current investigation"})
             continue
@@ -1690,7 +1729,8 @@ def _attach_investigations(latest: dict) -> None:
                         "confidence, survived, issue_number, commented, "
                         "created_at, proposal_state, proposal_detail, pr_url, "
                         "pr_number, proposal_at, parked_escalated_at, "
-                        "proposal_evidence_sha "
+                        "proposal_evidence_sha, "
+                        "refuted_reruns "
                         "FROM qa_superuser_investigations")
             for row in cur.fetchall() or []:
                 rows[row[0]] = row[1:]
@@ -1713,7 +1753,8 @@ def _attach_investigations(latest: dict) -> None:
         if not rec:
             continue
         (sha, rec_text, conf, survived, issue_no, commented, at,
-         p_state, p_detail, pr_url, pr_number, p_at, parked_at, p_sha) = rec
+         p_state, p_detail, pr_url, pr_number, p_at, parked_at, p_sha,
+         refuted_reruns) = rec
         f["parked_escalated_at"] = parked_at.isoformat() if parked_at else None
         cur_sha = evidence_sha(f.get("evidence") or "")
         f["investigation"] = {
@@ -1724,6 +1765,7 @@ def _attach_investigations(latest: dict) -> None:
             "issue_number": issue_no,
             "commented": bool(commented),
             "at": at.isoformat() if at else None,
+            "refuted_reruns": int(refuted_reruns or 0),
         }
         # ★ The card must be able to SAY "the loop has stopped on this". Same
         #   predicate the escalation uses — one definition, so the page and the

@@ -1966,6 +1966,45 @@ class TestAutoInvestigateSelectsOnlyWhatAHumanWouldClick:
         assert todo == []
         assert "already has a current investigation" in skipped[0]["why"]
 
+    # ── refuted + current: bounded re-analysis instead of a permanent freeze ──
+    def _refuted(self, *, age_h, reruns=0, survived=False):
+        import datetime as _dt
+        at = (_dt.datetime.now(_dt.timezone.utc)
+              - _dt.timedelta(hours=age_h)).isoformat()
+        return {"state": "current", "survived": survived, "at": at,
+                "refuted_reruns": reruns}
+
+    def test_a_refuted_current_analysis_is_re_analysed_once_old_enough(
+            self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        todo, _ = mod.auto_investigate_candidates([
+            self._f(key="r", investigation=self._refuted(
+                age_h=mod.REFUTED_RETRY_H + 1))])
+        assert [f["key"] for f in todo] == ["r"]
+
+    def test_a_young_refuted_analysis_waits(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="r", investigation=self._refuted(age_h=1))])
+        assert todo == []
+        assert "refuted" in skipped[0]["why"]
+
+    def test_refuted_retries_are_capped(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="r", investigation=self._refuted(
+                age_h=1000, reruns=mod.REFUTED_MAX_RERUNS))])
+        assert todo == []
+        assert "retries exhausted" in skipped[0]["why"]
+
+    def test_a_surviving_current_analysis_is_still_not_redone(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="s", investigation=self._refuted(
+                age_h=1000, survived=True))])
+        assert todo == []
+        assert "already has a current investigation" in skipped[0]["why"]
+
     def test_a_flapper_whose_evidence_moves_every_run_is_not_re_analysed(
             self, monkeypatch):
         """★ The defect this cooldown exists for, found by reading what the
@@ -2898,7 +2937,7 @@ class TestProposalStaleness:
     COLS = ("finding_key evidence_sha recommendation confidence survived "
             "issue_number commented created_at proposal_state proposal_detail "
             "pr_url pr_number proposal_at parked_escalated_at "
-            "proposal_evidence_sha").split()
+            "proposal_evidence_sha refuted_reruns").split()
 
     class _Cur:
         def __init__(self, rows):
@@ -2941,6 +2980,7 @@ class TestProposalStaleness:
                 __import__("datetime").datetime.fromisoformat(parked_at)
                 if parked_at else None),
             "proposal_evidence_sha": prop_sha,
+            "refuted_reruns": 1,
         }
         cur = self._Cur([tuple(row[c] for c in self.COLS)])
         monkeypatch.setattr(mod, "_conn", lambda: self._Conn(cur))
@@ -2956,6 +2996,13 @@ class TestProposalStaleness:
         sel = [q for q in cur.sql if "FROM qa_superuser_investigations" in q]
         assert sel, cur.sql
         assert "proposal_evidence_sha" in sel[0]
+
+    def test_the_refuted_retry_counter_is_read_back(self, monkeypatch):
+        f, cur, _m = self._attach(
+            monkeypatch, inv_evidence="e", prop_sha="x", now_evidence="e")
+        sel = [q for q in cur.sql if "FROM qa_superuser_investigations" in q]
+        assert "refuted_reruns" in sel[0]
+        assert f["investigation"]["refuted_reruns"] == 1
 
     def test_the_fixture_row_matches_the_real_column_list(self, monkeypatch):
         """★ Caught when a sibling PR added parked_escalated_at: COLS went one
