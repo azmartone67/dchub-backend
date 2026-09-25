@@ -1571,9 +1571,15 @@ def check_press_stale_vs_citations() -> list[dict]:
         if body2:
             try:
                 d3 = _json.loads(body2)
-                items = d3.get("items") or d3.get("press_releases") or d3.get("releases") or (d3 if isinstance(d3, list) else [])
+                # /api/v1/press-releases returns a bare JSON array (see
+                # main.py list_press_releases), not {"items": [...]} — calling
+                # .get("items") on a list raises AttributeError, which the
+                # bare `except Exception: pass` below swallowed, leaving
+                # newest_press permanently None and this detector stuck on
+                # the 9999h "no press row found" sentinel.
+                items = d3 if isinstance(d3, list) else (d3.get("items") or d3.get("press_releases") or d3.get("releases") or [])
                 if items:
-                    at = items[0].get("published_date") or items[0].get("created_at")
+                    at = items[0].get("published_date") or items[0].get("created_at") or items[0].get("date")
                     if at:
                         newest_press = _dt.fromisoformat(str(at).replace("Z", "+00:00"))
             except Exception: pass
