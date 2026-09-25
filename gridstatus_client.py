@@ -38,12 +38,32 @@ def gridstatus_key() -> str:
     return (os.environ.get("GRIDSTATUS_API_KEY") or "").strip()
 
 
+# Month ("YYYY-MM") this process already saw refused. The budget only resets
+# on the 1st, so once it is spent there is nothing to ask the ledger until then.
+_EXHAUSTED_MONTH = None
+
+
+def _month() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
 def _budget_spend() -> bool:
     """Increment-before-request ledger: one gridstatus_call_ledger row per
     month, bumped before the HTTP attempt so every consumer is counted (a call
     that then fails still spent a provider request). Fail-OPEN on DB trouble —
     a ledger outage must not kill the feed; the vendor-side 250 cap is the
-    true backstop."""
+    true backstop.
+
+    2026-09-25: the row counts PROVIDER REQUESTS only. It used to be bumped on
+    every attempt, refused ones included, so September read 1,543 against a
+    200 budget while real requests stopped at 200 (the PJM-DOM lookup kept
+    retrying after the budget was spent). The bump is now conditional on being
+    under budget, and a refusal is remembered in-process for the month so a
+    spent budget costs no further DB round trips."""
+    global _EXHAUSTED_MONTH
+    month = _month()
+    if _EXHAUSTED_MONTH == month:
+        return False
     try:
         import psycopg2
         db = os.environ.get("DATABASE_URL")
@@ -61,11 +81,15 @@ def _budget_spend() -> bool:
                     VALUES (%s, 1)
                     ON CONFLICT (month) DO UPDATE
                       SET calls = gridstatus_call_ledger.calls + 1
+                      WHERE gridstatus_call_ledger.calls < %s
                     RETURNING calls
-                """, (datetime.now(timezone.utc).strftime("%Y-%m"),))
-                n = int(cur.fetchone()[0])
+                """, (month, MONTHLY_BUDGET))
+                row = cur.fetchone()
             conn.commit()
-            return n <= MONTHLY_BUDGET
+            if row is None or int(row[0]) > MONTHLY_BUDGET:
+                _EXHAUSTED_MONTH = month
+                return False
+            return True
         finally:
             try:
                 conn.close()
@@ -83,6 +107,7 @@ def gs_request(path, params=None, timeout=15, caller="unknown", api_key=None):
 
     THE chokepoint: consults the ledger before any HTTP; budget refusals and
     provider-quota 403s are printed loudly, never swallowed."""
+    global _EXHAUSTED_MONTH
     key = (api_key or "").strip() or gridstatus_key()
     if not key:
         return None, "source_unavailable: GRIDSTATUS_API_KEY not set"
@@ -106,6 +131,7 @@ def gs_request(path, params=None, timeout=15, caller="unknown", api_key=None):
                 _t.sleep(1.1)
                 continue
             if r.status_code == 403:
+                _EXHAUSTED_MONTH = _month()   # provider quota: no point retrying until the 1st
                 print(f"[gridstatus] http_403 caller={caller} path={path} — "
                       "provider monthly quota exhausted (resets on the 1st); "
                       "the internal ledger stays authoritative", flush=True)
@@ -118,12 +144,76 @@ def gs_request(path, params=None, timeout=15, caller="unknown", api_key=None):
     return None, "http_429"
 
 
-def gridstatus_get(dataset, params=None, timeout=15, caller="unknown"):
+def _shared_cache(key, rows=None, ttl_s=0):
+    """Postgres-backed cache every worker and replica shares.
+
+    Read (rows is None): the unexpired rows for key, or None. Write: store rows
+    for ttl_s seconds. Fail-soft both ways — a cache outage means a normal
+    ledgered request, never a failed answer.
+
+    Why it exists (2026-09-25): the PJM-DOM lookup cached its answer for 6h in
+    an in-process dict, so every gunicorn worker on every replica paid for its
+    own copy, and the 200/month budget was gone by 2026-09-09 at the latest.
+    Measured in grid_ext_metrics the same day: none of the grid-data shell's
+    allowlisted PJM datasets has ingested since 2026-07-20."""
+    try:
+        import json
+        import psycopg2
+        db = os.environ.get("DATABASE_URL")
+        if not db:
+            return None
+        conn = psycopg2.connect(db, sslmode="require", connect_timeout=4)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS gridstatus_shared_cache (
+                        cache_key  TEXT PRIMARY KEY,
+                        rows_json  JSONB NOT NULL,
+                        expires_at TIMESTAMPTZ NOT NULL)
+                """)
+                if rows is None:
+                    cur.execute("SELECT rows_json FROM gridstatus_shared_cache "
+                                "WHERE cache_key = %s AND expires_at > NOW()", (key,))
+                    hit = cur.fetchone()
+                    conn.commit()
+                    return hit[0] if hit else None
+                cur.execute("""
+                    INSERT INTO gridstatus_shared_cache (cache_key, rows_json, expires_at)
+                    VALUES (%s, %s::jsonb, NOW() + make_interval(secs => %s))
+                    ON CONFLICT (cache_key) DO UPDATE
+                      SET rows_json = EXCLUDED.rows_json, expires_at = EXCLUDED.expires_at
+                """, (key, json.dumps(rows, default=str), int(ttl_s)))
+            conn.commit()
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return None
+
+
+def gridstatus_get(dataset, params=None, timeout=15, caller="unknown", shared_ttl_s=0):
     """GET one dataset /query. Returns (rows_list, error_str) — the contract
-    every ledgered consumer speaks (pjm_dataminer, grid_data_master_shell)."""
+    every ledgered consumer speaks (pjm_dataminer, grid_data_master_shell).
+
+    shared_ttl_s > 0: answer from the cross-worker cache while it is fresh, and
+    store a successful answer for that long. Only successes are stored, so an
+    error is never served from cache."""
+    key = None
+    if shared_ttl_s and shared_ttl_s > 0:
+        import json
+        key = dataset + "|" + json.dumps(params or {}, sort_keys=True, default=str)
+        hit = _shared_cache(key)
+        if hit is not None:
+            return hit, None
     payload, err = gs_request("/datasets/" + dataset + "/query",
                               params, timeout=timeout, caller=caller)
     if err:
         return None, err
     rows = payload.get("data") if isinstance(payload, dict) else payload
-    return (rows or []), None
+    rows = rows or []
+    if key is not None and rows:
+        _shared_cache(key, rows=rows, ttl_s=shared_ttl_s)
+    return rows, None
