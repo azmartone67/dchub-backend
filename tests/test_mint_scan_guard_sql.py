@@ -51,6 +51,13 @@ N_REAL = 30          # 30 real agents, 30 ip hashes, 1 key each
 N_REAL_REUSED = 15   # half of them called their key 3 times
 N_SCAN = 500         # one (ip_hash, UA) pair minting 500 keys in one day
 N_PROBE = 3          # probe-UA mints
+N_HARNESS_LOG = 3    # our MCP harness: UA `node`, calls logged under dchub-internal
+N_HARNESS_STAMP = 2  # our MCP harness, tagged at mint (mcp_platform), never called
+N_INTERNAL = N_HARNESS_LOG + N_HARNESS_STAMP
+# kept: the real agents, the born-gated key, and one external `node` agent
+# (a real client whose UA is plain node must NOT be dropped with the harness)
+N_KEPT = N_REAL + 2
+N_EXCLUDED = N_SCAN + N_PROBE + N_INTERNAL
 
 
 def _scoped_dsn():
@@ -88,6 +95,8 @@ def world():
     admin = _connect()
     with admin.cursor() as cur:
         cur.execute(TRIAL_DDL)
+        cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS mcp_platform TEXT")
+        cur.execute('CREATE TABLE mcp_call_log (api_key TEXT, platform TEXT, "timestamp" TIMESTAMPTZ)')
         # the retention endpoint's first (un-guarded) query reads this table
         cur.execute("CREATE TABLE mcp_tool_calls (ip_address TEXT, created_at TIMESTAMPTZ,"
                     " client_name TEXT, platform TEXT)")
@@ -122,6 +131,31 @@ def world():
             SELECT 'dch_trial_probe' || g, {WEEK_TS}, 'probeip' || g,
                    'dchub-selfheal-probe/1.0', 2
               FROM generate_series(1, %s) g""", (N_PROBE,))
+        # our harness, recognised by its call log: looks "reused" (5 calls)
+        cur.execute(f"""
+            INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
+                                         request_ua, call_count)
+            SELECT 'dch_trial_harness' || g, {WEEK_TS}, 'harnessip' || g, 'node', 5
+              FROM generate_series(1, %s) g""", (N_HARNESS_LOG,))
+        cur.execute(f"""
+            INSERT INTO mcp_call_log (api_key, platform, "timestamp")
+            SELECT 'dch_trial_harness' || g, 'dchub-internal', {WEEK_TS}
+              FROM generate_series(1, %s) g, generate_series(1, 5)""", (N_HARNESS_LOG,))
+        # our harness, stamped at mint, no calls yet
+        cur.execute(f"""
+            INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
+                                         request_ua, call_count, mcp_platform)
+            SELECT 'dch_trial_stamped' || g, {WEEK_TS}, 'stampip' || g, 'node', 1,
+                   'dchub-internal'
+              FROM generate_series(1, %s) g""", (N_HARNESS_STAMP,))
+        # a real external agent that also sends UA `node`: kept
+        cur.execute(f"""
+            INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
+                                         request_ua, call_count, mcp_platform)
+            VALUES ('dch_trial_extnode', {WEEK_TS}, 'extnodeip', 'node', 1, 'chatgpt')""")
+        cur.execute(f"""
+            INSERT INTO mcp_call_log (api_key, platform, "timestamp")
+            VALUES ('dch_trial_extnode', 'chatgpt', {WEEK_TS})""")
     admin.close()
     yield
     admin = _REAL_CONNECT(DSN)
@@ -157,11 +191,11 @@ def _the_week(j):
 
 def test_retention_key_reuse_excludes_scan_and_says_how_many(world):
     row = _the_week(_retention())
-    assert row["minted"] == N_REAL + 1, row
-    assert row["excluded_scan_mints"] == N_SCAN + N_PROBE, row
-    assert row["minted_incl_scan"] == N_REAL + 1 + N_SCAN + N_PROBE, row
-    assert row["distinct_ips"] == N_REAL + 1, row
-    assert row["excluded_scan_ips"] == 1 + N_PROBE, row
+    assert row["minted"] == N_KEPT, row
+    assert row["excluded_scan_mints"] == N_EXCLUDED, row
+    assert row["minted_incl_scan"] == N_KEPT + N_EXCLUDED, row
+    assert row["distinct_ips"] == N_KEPT, row
+    assert row["excluded_scan_ips"] == 1 + N_PROBE + N_INTERNAL, row
 
 
 def test_a_born_gated_key_is_not_reuse_until_it_is_called(world):
@@ -173,14 +207,14 @@ def test_a_born_gated_key_is_not_reuse_until_it_is_called(world):
 
 def test_retention_summary_is_the_non_scan_rate_with_the_raw_rate_beside_it(world):
     s = _retention()["summary"]
-    assert s["minted_30d"] == N_REAL + 1
-    assert s["excluded_scan_mints_30d"] == N_SCAN + N_PROBE
-    assert s["minted_30d_incl_scan"] == N_REAL + 1 + N_SCAN + N_PROBE
-    assert float(s["pct_reused_30d"]) == round(100.0 * N_REAL_REUSED / (N_REAL + 1), 1)
+    assert s["minted_30d"] == N_KEPT
+    assert s["excluded_scan_mints_30d"] == N_EXCLUDED
+    assert s["minted_30d_incl_scan"] == N_KEPT + N_EXCLUDED
+    assert float(s["pct_reused_30d"]) == round(100.0 * N_REAL_REUSED / N_KEPT, 1)
     # the pre-fix figure, kept visible: the scan rows all read "reused"
     assert float(s["pct_reused_30d_incl_scan"]) > 90
     assert int(s["returned_next_week_mature"]) == N_REAL_REUSED
-    assert int(s["mature_cohort_30d"]) == N_REAL + 1
+    assert int(s["mature_cohort_30d"]) == N_KEPT
 
 
 def test_retention_publishes_its_scan_definition(world):
@@ -193,10 +227,31 @@ def test_funnel_attribution_retried_rate_excludes_scan(world):
     import routes.funnel_attribution as fa
     j = _get(fa, fa.funnel_attribution_bp, "/api/v1/funnel/attribution")
     st = j["stages"]
-    assert st["trials_minted"] == N_REAL + 1, st
+    assert st["trials_minted"] == N_KEPT, st
     assert st["trials_used_2plus_calls"] == N_REAL_REUSED, st
-    assert st["excluded_scan_mints"] == N_SCAN + N_PROBE, st
-    assert j["rates"]["calls_to_2plus_use_pct"] == round(100.0 * N_REAL_REUSED / (N_REAL + 1), 1)
+    assert st["excluded_scan_mints"] == N_EXCLUDED, st
+    assert j["rates"]["calls_to_2plus_use_pct"] == round(100.0 * N_REAL_REUSED / N_KEPT, 1)
+
+
+def test_internal_harness_is_excluded_both_ways_and_a_node_agent_is_kept(world):
+    """By call log (dchub-internal calls) and by mint stamp (mcp_platform); a
+    real agent with UA `node` and an external platform stays counted."""
+    rows = _exec(f"""WITH {mint_guard.scored_trial_keys_cte("interval '30 days'")[0]}
+                     SELECT api_key, is_scan FROM scored
+                      WHERE api_key LIKE 'dch_trial_harness%%'
+                         OR api_key LIKE 'dch_trial_stamped%%'
+                         OR api_key = 'dch_trial_extnode'""",
+                 mint_guard.scored_trial_keys_cte("interval '30 days'")[1])
+    got = {k: v for k, v in rows}
+    assert len(got) == N_INTERNAL + 1, got
+    assert got.pop("dch_trial_extnode") is False
+    assert all(got.values()), got
+
+
+def test_retention_names_the_internal_exclusion(world):
+    se = _retention()["scan_exclusion"]
+    assert se["internal_platform_like"] == "%dchub%"
+    assert "harness" in se["definition"]
 
 
 def test_the_thresholds_are_env_tunable(world):
@@ -205,7 +260,7 @@ def test_the_thresholds_are_env_tunable(world):
     with mock.patch.dict(os.environ, {"DCHUB_MINT_SCAN_PAIR_PER_DAY": "1000",
                                       "DCHUB_MINT_SCAN_IP_PER_DAY": "1000"}):
         row = _the_week(_retention())
-    assert row["excluded_scan_mints"] == N_PROBE, row
+    assert row["excluded_scan_mints"] == N_PROBE + N_INTERNAL, row
 
 
 # ── the ceiling's counts, on both mint tables ───────────────────────────────

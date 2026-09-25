@@ -166,6 +166,9 @@ def _ensure_schema(c):
             # the full daily allowance — the bridge that makes agents capture a lead).
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS daily_count INT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS daily_date DATE")
+            # 2026-09-25: the MCP platform the gateway minted for, so the KPI scan
+            # filter can drop our own harness (mint_guard.INTERNAL_PLATFORM_LIKE).
+            cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS mcp_platform TEXT")
         # Only on a CLEAN pass. A failure leaves the flag false so the next
         # request retries — a half-applied schema must not be latched as done.
         _SCHEMA_READY = True
@@ -474,25 +477,44 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                     _carry = 0
             _seed = _carry if _carry >= TRIAL_FREE_CALLS_UNBOUND else 0
 
+            try:
+                from routes.mint_guard import gateway_platform
+                _mint_platform = gateway_platform(req) if req is not None else ""
+            except Exception:
+                _mint_platform = ""
+
             # Mint a new trial key
             api_key = "dch_trial_" + secrets.token_urlsafe(24).replace("_", "x").replace("-", "x")[:32]
+            _ins_cols = ("api_key, minted_for_tool, request_ip_hash, request_ua, expires_at, "
+                         "client_name, operator_email, operator_name, call_count, notes")
+            _ins_args = [api_key, tool_name[:40] or None, ip_hash, ua,
+                         (client_name[:80] or None) if client_name else None,
+                         (operator_email.strip().lower() or None) if operator_email else None,
+                         (operator_name[:120] or None) if operator_name else None,
+                         _seed,
+                         (f"gate_carry:{_seed} (cumulative unbound usage carried "
+                          f"from this identity — re-minting does not reset the "
+                          f"bind gate)") if _seed else None]
+
+            def _insert(with_platform):
+                cols = _ins_cols + (", mcp_platform" if with_platform else "")
+                args = _ins_args + ([_mint_platform or None] if with_platform else [])
+                ph = ", ".join(["%s"] * 4 + [f"NOW() + INTERVAL '{TRIAL_DAYS} days'"]
+                               + ["%s"] * (len(args) - 4))
+                cur.execute(f"INSERT INTO auto_trial_keys ({cols}) VALUES ({ph}) "
+                            "ON CONFLICT (api_key) DO NOTHING RETURNING expires_at", args)
+
             try:
-                cur.execute(f"""
-                    INSERT INTO auto_trial_keys
-                      (api_key, minted_for_tool, request_ip_hash, request_ua,
-                       expires_at, client_name, operator_email, operator_name,
-                       call_count, notes)
-                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days', %s, %s, %s, %s, %s)
-                    ON CONFLICT (api_key) DO NOTHING
-                    RETURNING expires_at
-                """, (api_key, tool_name[:40] or None, ip_hash, ua,
-                      (client_name[:80] or None) if client_name else None,
-                      (operator_email.strip().lower() or None) if operator_email else None,
-                      (operator_name[:120] or None) if operator_name else None,
-                      _seed,
-                      (f"gate_carry:{_seed} (cumulative unbound usage carried "
-                       f"from this identity — re-minting does not reset the "
-                       f"bind gate)") if _seed else None))
+                try:
+                    _insert(True)
+                except Exception as _e:
+                    # The column is added by _ensure_schema, which can fail on a
+                    # lock (see _SCHEMA_READY). A mint must never fail over a KPI
+                    # label, so retry without it. autocommit: the failed
+                    # statement left nothing to roll back.
+                    if "mcp_platform" not in str(_e):
+                        raise
+                    _insert(False)
                 r = cur.fetchone()
                 expires = r[0].isoformat() if r and r[0] else None
             except Exception:
