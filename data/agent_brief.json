@@ -172,7 +172,7 @@
       "id": "o-heavy-user-trial",
       "item": "Heavy-user Pro trial (5th analyze_site in 7d, 50/50 holdout). The 5th-call count includes only calls that returned data.",
       "owner": "DC Hub",
-      "blocked_until": "~2026-09-27 (3 clean days after #530/#535)"
+      "blocked_until": "2026-10-01 (owner decision 2026-09-24: MCP trial trigger after the 10-01 relay-wording readout, keyed callers only, holdout independent of the r-arms split; backend#5565 landed first)"
     },
     {
       "id": "o-chatgpt-profile",
