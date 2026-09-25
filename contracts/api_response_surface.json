@@ -15502,7 +15502,7 @@
    ]
   },
   "GET /api/v1/keys/auto-trial/stats": {
-   "source": "routes/auto_trial.py:965",
+   "source": "routes/auto_trial.py:988",
    "handler": "stats_endpoint",
    "resolution": "resolved",
    "open_at": [
@@ -29886,14 +29886,14 @@
    ]
   },
   "POST /api/v1/keys/auto-mint": {
-   "source": "routes/auto_trial.py:683",
+   "source": "routes/auto_trial.py:706",
    "handler": "auto_mint_endpoint",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/keys/auto-trial/bind": {
-   "source": "routes/auto_trial.py:904",
+   "source": "routes/auto_trial.py:927",
    "handler": "bind_operator_endpoint",
    "resolution": "resolved",
    "open_at": [
@@ -29912,7 +29912,7 @@
    ]
   },
   "POST /api/v1/keys/auto-trial/redeem": {
-   "source": "routes/auto_trial.py:863",
+   "source": "routes/auto_trial.py:886",
    "handler": "redeem_endpoint",
    "resolution": "resolved",
    "open_at": [
