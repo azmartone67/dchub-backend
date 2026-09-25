@@ -490,10 +490,10 @@ def main_() -> int:
         os.environ[_ovg.MODE_ENV] = "enforce"
         try:
             _ext = {"REMOTE_ADDR": "203.0.113.9"}
-            _rv = client.get("/api/v1/ops/deadman", environ_base=_ext)
+            _rv = client.get("/api/v1/mcp/retention", environ_base=_ext)
             if _rv.status_code != 401 or _rv.get_json() != {"error": "unauthorized"}:
                 failures.append(
-                    "OPS GATE OPEN: keyless external GET /api/v1/ops/deadman in "
+                    "OPS GATE OPEN: keyless external GET /api/v1/mcp/retention in "
                     "enforce mode returned %s %r, expected 401 "
                     "{'error': 'unauthorized'}." % (_rv.status_code,
                                                     _rv.get_data()[:120]))

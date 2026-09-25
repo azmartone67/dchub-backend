@@ -63,11 +63,12 @@ def env(monkeypatch):
     def data():
         return jsonify(SECRET_BODY)
 
-    for i, p in enumerate(("/api/v1/mcp/funnel", "/api/v1/mcp/funnel-stages",
+    for i, p in enumerate(("/api/v1/mcp/funnel/diagnostics", "/api/v1/mcp/funnel-stages",
                            "/api/v1/mcp/retention", "/api/v1/mcp/retention/cohorts",
-                           "/api/v1/ops/deadman", "/api/v1/admin/funnel/leakage",
+                           "/api/v1/ops/scoreboard", "/api/v1/admin/funnel/leakage",
                            "/api/admin/crm/customers", "/admin/agent-retention",
-                           "/ops/dashboard", "/dashboard")):
+                           "/ops/dashboard", "/dashboard",
+                           "/api/v1/mcp/funnel", "/api/v1/ops/deadman")):
         app.add_url_rule(p, "d%d" % i, data)
     app.add_url_rule("/api/v1/ops/brief", "brief", lambda: jsonify(brief=True))
     app.add_url_rule("/api/v1/ops/claims", "claims", lambda: jsonify(claims=[]))
@@ -96,9 +97,9 @@ def _get(client, path, **headers):
     return client.get(path, headers=headers, environ_base=EXT)
 
 
-GATED_READS = ["/api/v1/mcp/funnel", "/api/v1/mcp/funnel-stages",
+GATED_READS = ["/api/v1/mcp/funnel/diagnostics", "/api/v1/mcp/funnel-stages",
                "/api/v1/mcp/retention", "/api/v1/mcp/retention/cohorts",
-               "/api/v1/ops/deadman", "/api/v1/admin/funnel/leakage",
+               "/api/v1/ops/scoreboard", "/api/v1/admin/funnel/leakage",
                "/api/admin/crm/customers", "/admin/agent-retention",
                "/ops/dashboard"]
 
@@ -121,7 +122,7 @@ def test_enforce_keyless_is_401_with_no_data(env, path):
 def test_enforce_wrong_viewer_key_is_401(env):
     client, rec, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    r = _get(client, "/api/v1/mcp/funnel", **{"X-Admin-Key": "dchv_not-a-real-key"})
+    r = _get(client, "/api/v1/mcp/funnel/diagnostics", **{"X-Admin-Key": "dchv_not-a-real-key"})
     assert r.status_code == 401 and b"ops-only-numbers" not in r.get_data()
     assert rec.denials[-1]["reason"] == "unknown_or_revoked_viewer_key"
 
@@ -129,7 +130,7 @@ def test_enforce_wrong_viewer_key_is_401(env):
 def test_enforce_wrong_admin_key_is_401(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    r = _get(client, "/api/v1/ops/deadman", **{"X-Admin-Key": "guess"})
+    r = _get(client, "/api/v1/ops/scoreboard", **{"X-Admin-Key": "guess"})
     assert r.status_code == 401
 
 
@@ -152,7 +153,7 @@ def test_viewer_key_reads_every_gated_path(env, path, slot):
 def test_viewer_key_head_passes(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    r = client.head("/api/v1/mcp/funnel", headers={"X-Admin-Key": VIEWER},
+    r = client.head("/api/v1/mcp/funnel/diagnostics", headers={"X-Admin-Key": VIEWER},
                     environ_base=EXT)
     assert r.status_code == 200
 
@@ -160,8 +161,8 @@ def test_viewer_key_head_passes(env):
 def test_admin_key_still_reads(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    assert _get(client, "/api/v1/mcp/funnel", **{"X-Admin-Key": ADMIN}).status_code == 200
-    assert _get(client, "/api/v1/mcp/funnel?admin_key=" + ADMIN).status_code == 200
+    assert _get(client, "/api/v1/mcp/funnel/diagnostics", **{"X-Admin-Key": ADMIN}).status_code == 200
+    assert _get(client, "/api/v1/mcp/funnel/diagnostics?admin_key=" + ADMIN).status_code == 200
 
 
 def test_existing_admin_cookie_still_reads(env):
@@ -176,21 +177,21 @@ def test_internal_key_and_cron_secret_still_read(env):
     mp.setenv(ovg.MODE_ENV, "enforce")
     mp.setenv("DCHUB_INTERNAL_KEY", "internal-test-key")
     mp.setenv("DCHUB_CRON_SECRET", "cron-test-secret")
-    assert _get(client, "/api/v1/ops/deadman",
+    assert _get(client, "/api/v1/ops/scoreboard",
                 **{"X-Internal-Key": "internal-test-key"}).status_code == 200
-    assert _get(client, "/api/v1/ops/deadman",
+    assert _get(client, "/api/v1/ops/scoreboard",
                 **{"X-Internal-Cron": "cron-test-secret"}).status_code == 200
-    assert _get(client, "/api/v1/ops/deadman",
+    assert _get(client, "/api/v1/ops/scoreboard",
                 **{"X-Internal-Cron": "wrong"}).status_code == 401
 
 
 def test_loopback_self_call_passes_but_only_by_socket_peer(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    r = client.get("/api/v1/mcp/funnel", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    r = client.get("/api/v1/mcp/funnel/diagnostics", environ_base={"REMOTE_ADDR": "127.0.0.1"})
     assert r.status_code == 200
     # A forged forwarding header from an external peer is not loopback.
-    r = client.get("/api/v1/mcp/funnel", headers={"X-Forwarded-For": "127.0.0.1"},
+    r = client.get("/api/v1/mcp/funnel/diagnostics", headers={"X-Forwarded-For": "127.0.0.1"},
                    environ_base=EXT)
     assert r.status_code == 401
 
@@ -259,9 +260,9 @@ def test_public_paths_stay_public_in_enforce(env, path):
 def test_public_paths_env_exempts_at_flip_time(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    assert _get(client, "/api/v1/ops/deadman").status_code == 401
-    mp.setenv(ovg.PUBLIC_PATHS_ENV, "/api/v1/ops/deadman")
-    assert _get(client, "/api/v1/ops/deadman").status_code == 200
+    assert _get(client, "/api/v1/ops/scoreboard").status_code == 401
+    mp.setenv(ovg.PUBLIC_PATHS_ENV, "/api/v1/ops/scoreboard")
+    assert _get(client, "/api/v1/ops/scoreboard").status_code == 200
 
 
 def test_extra_paths_env_gates_a_subtree(env):
@@ -275,7 +276,7 @@ def test_extra_paths_env_gates_a_subtree(env):
 def test_cors_preflight_is_not_blocked(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    r = client.options("/api/v1/mcp/funnel", environ_base=EXT)
+    r = client.options("/api/v1/mcp/funnel/diagnostics", environ_base=EXT)
     assert r.status_code != 401
 
 
@@ -288,27 +289,27 @@ def test_log_mode_is_the_default_and_serves_but_records(env, mode_value):
         mp.delenv(ovg.MODE_ENV, raising=False)
     else:
         mp.setenv(ovg.MODE_ENV, mode_value)
-    r = _get(client, "/api/v1/mcp/funnel", **{"User-Agent": "probe/1.0",
+    r = _get(client, "/api/v1/mcp/funnel/diagnostics", **{"User-Agent": "probe/1.0",
                                               "CF-Connecting-IP": "198.51.100.7"})
     assert r.status_code == 200 and r.get_json() == SECRET_BODY
     assert len(rec.denials) == 1
     row = rec.denials[0]
     assert row["mode"] == "log" and row["status"] == 401
     assert row["ip"] == "198.51.100.7" and row["user_agent"] == "probe/1.0"
-    assert row["path"] == "/api/v1/mcp/funnel" and row["method"] == "GET"
+    assert row["path"] == "/api/v1/mcp/funnel/diagnostics" and row["method"] == "GET"
 
 
 def test_log_mode_leaves_response_headers_alone(env):
     client, _, mp = env
     mp.delenv(ovg.MODE_ENV, raising=False)
-    r = _get(client, "/api/v1/mcp/funnel")
+    r = _get(client, "/api/v1/mcp/funnel/diagnostics")
     assert "no-store" not in (r.headers.get("Cache-Control") or "")
 
 
 def test_off_mode_records_nothing(env):
     client, rec, mp = env
     mp.setenv(ovg.MODE_ENV, "off")
-    assert _get(client, "/api/v1/mcp/funnel").status_code == 200
+    assert _get(client, "/api/v1/mcp/funnel/diagnostics").status_code == 200
     assert rec.denials == []
 
 
@@ -339,7 +340,7 @@ def test_shell_opened_with_viewer_key_sets_httponly_cookie_that_reads_api(env):
 def test_api_path_with_viewer_query_sets_no_cookie(env):
     client, _, mp = env
     mp.setenv(ovg.MODE_ENV, "enforce")
-    r = _get(client, "/api/v1/mcp/funnel?admin_key=" + VIEWER)
+    r = _get(client, "/api/v1/mcp/funnel/diagnostics?admin_key=" + VIEWER)
     assert not [c for c in r.headers.getlist("Set-Cookie")
                 if c.startswith(ovg.COOKIE_NAME + "=")]
 
@@ -350,11 +351,13 @@ def test_api_path_with_viewer_query_sets_no_cookie(env):
     ("/api/v1/admin", True), ("/api/v1/admin/x/y", True),
     ("/api/v1/administrator", False),
     ("/api/admin/usage-report", True),
-    ("/api/v1/ops", True), ("/api/v1/ops/deadman", True),
-    ("/api/v1/ops/deadman/", True), ("//api/v1//ops/deadman", True),
+    ("/api/v1/ops", True), ("/api/v1/ops/scoreboard", True),
+    ("/api/v1/ops/scoreboard/", True), ("//api/v1//ops/scoreboard", True),
+    ("/api/v1/ops/deadman", False), ("/api/v1/ops/deadman/", False),
     ("/api/v1/ops/brief", False), ("/api/v1/ops/brief/", False),
     ("/api/v1/ops/claims", False), ("/api/v1/ops/origin-freshness", False),
-    ("/api/v1/mcp/funnel", True), ("/api/v1/mcp/funnel/diagnostics", True),
+    ("/api/v1/mcp/funnel", False), ("/api/v1/mcp/funnel/", False),
+    ("/api/v1/mcp/funnel/diagnostics", True),
     ("/api/v1/mcp/funnel-stages", True), ("/api/v1/mcp/handoff-funnel", False),
     ("/api/v1/mcp/retention", True), ("/api/v1/mcp/retention/cohorts", True),
     ("/admin/crm", True), ("/administer", False), ("/ops/dashboard", True),
@@ -382,7 +385,7 @@ def test_denial_log_line_is_structured_json(env, caplog):
     rec._ensure_thread = lambda: None  # no background thread, no DB
     with caplog.at_level(logging.INFO, logger="ops_viewer_gate"):
         row = {"ip": "203.0.113.9", "user_agent": "ua", "method": "GET",
-               "path": "/api/v1/ops/deadman", "reason": "no_credential",
+               "path": "/api/v1/ops/scoreboard", "reason": "no_credential",
                "mode": "log", "status": 401}
         rec.record_denial(row)
         rec.record_denial(row)  # same tuple: aggregated, logged once
@@ -391,3 +394,14 @@ def test_denial_log_line_is_structured_json(env, caplog):
     assert len(lines) == 1
     assert json.loads(lines[0][len("ops_gate_denial "):]) == row
     assert list(rec._pending.values())[0][2] == 2
+
+
+# ── owner decision 2026-09-25: funnel and deadman stay public ─────────────
+
+@pytest.mark.parametrize("path", ["/api/v1/mcp/funnel", "/api/v1/ops/deadman"])
+def test_funnel_and_deadman_stay_public_in_enforce(env, path):
+    client, rec, mp = env
+    mp.setenv(ovg.MODE_ENV, "enforce")
+    r = _get(client, path)
+    assert r.status_code == 200 and r.get_json() == SECRET_BODY, path
+    assert not rec.denials

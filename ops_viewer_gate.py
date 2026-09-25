@@ -4,9 +4,10 @@ What it gates
 -------------
 Every request whose path is an ops or admin surface (see ``is_gated_path``):
 ``/api/v1/admin/*``, ``/api/admin/*`` (the legacy admin namespace),
-``/api/v1/ops/*`` except ``/api/v1/ops/brief``, ``/api/v1/ops/claims`` and
-``/api/v1/ops/origin-freshness`` (see PUBLIC_EXACT for why),
-``/api/v1/mcp/funnel`` (+ ``/funnel/*`` and ``/funnel-stages``),
+``/api/v1/ops/*`` except ``/api/v1/ops/brief``, ``/api/v1/ops/claims``,
+``/api/v1/ops/origin-freshness`` and ``/api/v1/ops/deadman`` (see
+PUBLIC_EXACT for why), ``/api/v1/mcp/funnel/*`` and ``/funnel-stages`` (the
+bare ``/api/v1/mcp/funnel`` is public),
 ``/api/v1/mcp/retention`` (+ ``/retention/*``), and the ``/admin/*`` and
 ``/ops/*`` HTML shells. It is ONE ``before_request`` hook keyed on the request
 PATH, registered ahead of every other hook in main.py, so it covers every
@@ -114,12 +115,21 @@ GATED_EXACT = frozenset((
 #     the failover scripts read it keylessly, and it has to answer precisely
 #     when the origin is stale (routes/failover_stale_gate.py exempts it for
 #     the same reason).
+#   /api/v1/mcp/funnel — public by owner decision (2026-09-25): seven public
+#     dchub-frontend pages (ai, built-for-ai, cited-by, testimonials,
+#     audience/eyeball-card, audit, partner landing) read it from the
+#     visitor's browser. Its subpaths (/diagnostics etc.) stay gated.
+#   /api/v1/ops/deadman — public by owner decision (2026-09-25): the MCP
+#     server's instructions, README and smithery.yaml promise agents a
+#     keyless liveness read.
 # DCHUB_OPS_GATE_PUBLIC_PATHS (comma-separated exact paths) adds more at
 # flip time without a code change.
 PUBLIC_EXACT = frozenset((
     "/api/v1/ops/brief",
     "/api/v1/ops/claims",
     "/api/v1/ops/origin-freshness",
+    "/api/v1/mcp/funnel",
+    "/api/v1/ops/deadman",
 ))
 PUBLIC_PATHS_ENV = "DCHUB_OPS_GATE_PUBLIC_PATHS"
 
