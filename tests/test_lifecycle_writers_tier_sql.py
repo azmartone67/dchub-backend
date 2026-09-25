@@ -278,7 +278,7 @@ class _Harness:
 
     def api_key(self, uid="u1", key_hash=HASH, rate_limit_tier="pro", plan="pro", is_active=1):
         self.sql("INSERT INTO api_keys (user_id, key_hash, key_prefix, rate_limit_tier, "
-                 "is_active, plan) VALUES (%s,%s,%s,%s,%s,%s)",
+                 "is_active, plan) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                  (uid, key_hash, key_hash[:8], rate_limit_tier, is_active, plan))
 
     def mcp_key(self, api_key=DCH, email=EMAIL, tier="paid", metadata=None):

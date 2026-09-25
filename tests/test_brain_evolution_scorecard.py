@@ -138,7 +138,7 @@ def test_snapshot_measures_and_upserts_one_row_per_week_on_postgres(pg):
                     " INTERVAL '60 days' ELSE NOW() END, NOW()"
                     " FROM generate_series(1, 25) g")
         cur.execute("INSERT INTO brain_issue_persistence (first_seen_at,"
-                    " last_seen_at) VALUES (NOW() - INTERVAL '90 days',"
+                    " last_seen_at) VALUES (NOW() ON CONFLICT DO NOTHING - INTERVAL '90 days',"
                     " NOW() - INTERVAL '20 days')")   # not active this week
         cur.execute("CREATE TABLE brain_review_decisions (id BIGSERIAL PRIMARY"
                     " KEY, decision TEXT, decided_at TIMESTAMPTZ DEFAULT NOW())")

@@ -86,6 +86,7 @@ def list_images():
     })
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/images/library' also in images.py:66 — review and remove one
 @images_bp.route('/api/v1/images/library', methods=['POST'])
 @rate_limit(limit=50, per=60)
 def add_image():

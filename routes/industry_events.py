@@ -204,6 +204,7 @@ def upcoming():
     return resp, 200
 
 
+# AUTO-REPAIR: duplicate route '/events' also in routes/slack_app.py:280 — review and remove one
 @industry_events_bp.route("/events", methods=["GET"], strict_slashes=False)
 def events_page():
     """Public events directory — schema.org Event markup."""

@@ -423,6 +423,7 @@ def latest_for_iso(iso):
     return list(by.values())
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_caiso.py:149 — review and remove one
 @iso_ieso_bp.route("/extract", methods=["POST", "GET"])
 def trigger():
     s = run_extraction()
@@ -453,11 +454,13 @@ def snapshot():
                                       "model, NOT telemetry")
     return jsonify(payload), 200
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_caiso.py:155 — review and remove one
 
 @iso_ieso_bp.route("/latest", methods=["GET"])
 def latest():
     return jsonify(iso=ISO_CODE, method="baseline_model_v1",
                    metrics=latest_for_iso(ISO_CODE)), 200
+# AUTO-REPAIR: duplicate route '/health' also in main.py:8584 — review and remove one
 
 
 @iso_ieso_bp.route("/health", methods=["GET"])

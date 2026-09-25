@@ -357,7 +357,7 @@ def test_n4_a_forced_run_never_stamps_a_peers_live_claim(lq):
     # must leave the peer's row alone (the peer's _record owns it).
     _exec("INSERT INTO linkedin_quad_posts (slot_date, slot_hour, topic, style, "
           "success, error_msg, claimed_at) VALUES (%s, 12, 'hyperscaler_deal', "
-          "'narrative', FALSE, 'claimed_in_flight', NOW())", params=(_today(),))
+          "'narrative', FALSE, 'claimed_in_flight', NOW() ON CONFLICT DO NOTHING)", params=(_today(),))
 
     body = _run(lq, "hyperscaler_deal")
 

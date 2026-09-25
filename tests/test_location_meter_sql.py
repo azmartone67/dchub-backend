@@ -320,11 +320,11 @@ def redaction(monkeypatch):
                     if REDACTION_MIGRATION.exists() else REDACTION_FUNCTIONS)
         cur.execute("""
             INSERT INTO discovered_facilities (id, name, canonical_slug, source, source_id, latitude, longitude)
-            VALUES (1, 'A', 'acme-alpha-one-1a2b3c4d', 'osm', 'n1', 1.5, 2.5),
+            VALUES (1, 'A', 'acme-alpha-one-1a2b3c4d', 'osm', 'n1', 1.5, 2.5) ON CONFLICT DO NOTHING,
                    (2, 'B', 'acme-beta-2b3c4d5e', 'PeeringDB', 'pdb_123', 1.5, 2.5),
                    (3, 'C', 'acme-gamma-3c4d5e6f', 'osm', 'n3', 1.5, 2.5);
             INSERT INTO facilities (id, name, canonical_slug, source, source_id, source_url, latitude, longitude)
-            VALUES ('legacy-7', 'D', NULL, 'osm', 'n7', NULL, 1.5, 2.5),
+            VALUES ('legacy-7', 'D', NULL, 'osm', 'n7', NULL, 1.5, 2.5) ON CONFLICT DO NOTHING,
                    ('legacy-8', 'E', NULL, 'osm', 'n8', 'https://example.invalid/withheld', 1.5, 2.5),
                    ('legacy-9', 'F', NULL, 'osm', 'n9', 'https://example.invalid/ok', 1.5, 2.5);
         """)
