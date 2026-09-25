@@ -1,7 +1,7 @@
 {
   "schema": "dchub.agent_brief/v1",
   "status": "published",
-  "as_of": "2026-09-24T22:00:00Z",
+  "as_of": "2026-09-25T01:00:00Z",
   "public_path": "https://dchub.cloud/api/v1/ops/brief",
   "purpose": "Read this before proposing any change to DC Hub. It lists what has been measured, what has been refuted, which surfaces are frozen, what has been decided, and what is open. Cite the entry id when a proposal relies on or disagrees with one.",
   "how_it_changes": "This brief is the file data/agent_brief.json in the dchub-backend repo. It changes only by pull request, so every edit is reviewed and dated. `as_of` is when it was last reviewed, not when it was served.",
@@ -110,6 +110,21 @@
       "id": "m-registry-probe-timeout",
       "fact": "The official MCP registry probe already uses timeout=25s. The API answers in <0.5s from outside Railway.",
       "date": "2026-09-24"
+    },
+    {
+      "id": "m-trial-path-side-effects-fixed",
+      "fact": "mcp#546 (live 2026-09-24 23:21Z): on the anonymous trial path, trackPaidHit, mintAutoTrial and shouldMintClaim now start only after _noDataGuard passes, so a no-data answer counts no paid hit and mints no trial key. Organic check after deploy: 20/20 trial pairs that got data have a mcp_high_intent_sessions row, and 0/4 all-error pairs do (get_water_risk, a counting tool, errored twice in a tracked ChatGPT session with no row). Paid-hit and mint counts from before 2026-09-24 23:21Z include no-data calls.",
+      "date": "2026-09-25"
+    },
+    {
+      "id": "m-energy-unknown-state",
+      "fact": "be#5515 (live 2026-09-25 00:34Z): /api/v1/energy/summary (MCP get_energy_prices) refuses an unknown state or iso with a 400 and a hint, instead of serving the national average (ZZQX) or 0 (PJM passed as state). An ISO name in the state slot is read as the ISO: region=PJM now returns the PJM footprint average (0.1267 $/kWh). A real state with no rows returns 404 source_unavailable.",
+      "date": "2026-09-25"
+    },
+    {
+      "id": "m-gridstatus-budget",
+      "fact": "GRIDSTATUS_DATASET_ALLOWLIST is live at its 4-id PJM default. No gridstatus dataset has reached grid_ext_metrics since 2026-07-20. The 200/month budget was spent by 2026-09-09 at the latest, by the PJM-DOM lookup (caller=pjm_dataminer: pjm_load + pjm_lmp_real_time_5_min), which the allowlist does not gate. Its 6h cache was per-process, so each worker paid separately. gridstatus_call_ledger 2026-09 = 1,543 counts refused attempts too, not provider requests. pjm_node_lmp is already key-gated, 12h-cached and ledgered.",
+      "date": "2026-09-25"
     }
   ],
   "refuted": [
@@ -175,14 +190,15 @@
       "owner": "DC Hub"
     },
     {
-      "id": "o-trial-path-side-effects",
-      "item": "A no-data call on the trial path still counts a paid hit and mints a trial key (they run concurrently with the handler).",
-      "owner": "DC Hub"
-    },
-    {
       "id": "o-docker-registry",
       "item": "Docker MCP registry listing returns http_404, waiting on docker/mcp-registry#4644.",
       "owner": "external"
+    },
+    {
+      "id": "o-gridstatus-shared-cache",
+      "item": "be#5522: shared Postgres cache for the PJM-DOM gridstatus lookup, and a ledger that counts provider requests only. After deploy, confirm in October that the ledger stays at or below 200 and that the allowlisted PJM datasets reach grid_ext_metrics again (September's budget is already spent).",
+      "owner": "DC Hub",
+      "due": "2026-10-03"
     }
   ]
 }
