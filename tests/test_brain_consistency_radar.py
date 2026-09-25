@@ -350,3 +350,58 @@ def test_the_repo_walking_detectors_reach_the_repo():
             f"{r.__name__}.__file__, and that root ({here}) does not contain "
             f"{landmark}. Both of them now scan a tree with none of the code "
             f"they exist to read, and both report clean.")
+
+
+# ════════════════════════════════════════════════════════════════════
+# check_press_stale_vs_citations — the 9999h sentinel bug
+# ════════════════════════════════════════════════════════════════════
+
+_CITATION_HISTORY_BODY = (
+    '{"history": [{"dchub_cited": true, "observed_at": '
+    '"2026-09-22T00:00:00Z"}]}'
+)
+
+# /api/v1/press-releases (main.py list_press_releases) serves a BARE JSON
+# array, not {"items": [...]}, and its rows key the date as "date".
+_FRESH_PRESS_RELEASES_BODY = '[{"id": 2, "date": "2026-09-21"}, {"id": 1, "date": "2026-08-01"}]'
+_STALE_PRESS_RELEASES_BODY = '[{"id": 2, "date": "2026-06-01"}, {"id": 1, "date": "2026-05-01"}]'
+
+
+def test_press_stale_check_parses_the_real_bare_list_shape(monkeypatch):
+    """RED/GREEN on the bug: d3.get("items") raised AttributeError on the
+    list main.py actually returns, was swallowed by `except Exception: pass`,
+    and left newest_press permanently None — every citation, however recent
+    the matching press release, got misreported as a 9999h ("no press row
+    found") lag instead of the true ~1 day gap."""
+    r = _radar()
+
+    def _fake_http_get(url, timeout=8):
+        if "ai-citations/history" in url:
+            return _CITATION_HISTORY_BODY, None
+        if "press-releases" in url:
+            return _FRESH_PRESS_RELEASES_BODY, None
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(r, "_http_get", _fake_http_get)
+    assert r.check_press_stale_vs_citations() == []
+
+
+def test_press_stale_check_still_fires_on_a_real_gap(monkeypatch):
+    """The fix must not blind the detector: a citation genuinely newer than
+    the latest press row by >24h should still produce a finding, with a real
+    lag_hours rather than the 9999 sentinel."""
+    r = _radar()
+
+    def _fake_http_get(url, timeout=8):
+        if "ai-citations/history" in url:
+            return _CITATION_HISTORY_BODY, None
+        if "press-releases" in url:
+            return _STALE_PRESS_RELEASES_BODY, None
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(r, "_http_get", _fake_http_get)
+    out = r.check_press_stale_vs_citations()
+    assert len(out) == 1
+    assert out[0]["issue"] == "press_drafting_lag"
+    assert out[0]["lag_hours"] != 9999
+    assert 24 < out[0]["lag_hours"] < 24 * 200
