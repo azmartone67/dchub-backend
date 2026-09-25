@@ -16826,7 +16826,7 @@
    ]
   },
   "GET /api/v1/mcp/anon-usage": {
-   "source": "routes/mcp_anon_usage.py:119",
+   "source": "routes/mcp_anon_usage.py:139",
    "handler": "mcp_anon_usage",
    "resolution": "resolved",
    "open_at": [
