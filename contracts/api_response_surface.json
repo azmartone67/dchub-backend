@@ -20883,7 +20883,7 @@
    "keys": []
   },
   "GET /api/v1/reports/quarterly": {
-   "source": "routes/quarterly_report.py:1903",
+   "source": "routes/quarterly_report.py:1917",
    "handler": "report_json",
    "resolution": "opaque",
    "open_at": [],
@@ -20927,14 +20927,14 @@
    ]
   },
   "GET /api/v1/reports/quarterly/<quarter>.csv": {
-   "source": "routes/quarterly_report.py:1133",
+   "source": "routes/quarterly_report.py:1147",
    "handler": "quarterly_csv",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/quarterly/<quarter>.json": {
-   "source": "routes/quarterly_report.py:1115",
+   "source": "routes/quarterly_report.py:1129",
    "handler": "quarterly_json",
    "resolution": "resolved",
    "open_at": [
