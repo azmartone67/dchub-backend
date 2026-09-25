@@ -972,6 +972,20 @@ def why_dchub():
                            "claims. Safe to embed in llms.txt / "
                            "agent-broadcast."),
     }
+    # Named HUMAN customer testimonials, read from the one shared source
+    # (https://dchub.cloud/testimonials.json via util/customer_testimonials).
+    # Kept apart from AI-assistant quotes (/api/v1/testimonials) and labelled
+    # as people. [] when the source has never loaded; never raises.
+    try:
+        from util import customer_testimonials as _ct
+        payload["customer_testimonials"] = [
+            _ct.public_fields(r) for r in _ct.get_customer_testimonials()
+        ]
+        payload["customer_testimonials_note"] = _ct.HUMAN_CUSTOMER_NOTE
+        payload["testimonials_page"] = _ct.TESTIMONIALS_PAGE_URL
+    except Exception:
+        payload["customer_testimonials"] = []
+        payload["testimonials_page"] = "https://dchub.cloud/testimonials"
     resp = jsonify(payload)
     for k, v in _cors_headers().items():
         resp.headers[k] = v

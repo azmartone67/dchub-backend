@@ -7856,6 +7856,14 @@ def handle_well_known():
             _ai_mcp_tools = [t["name"] for t in _fcard()]
         except Exception:
             _ai_mcp_tools = []
+        try:
+            from util.customer_testimonials import testimonials_pointer as _tptr
+            _ai_customer_testimonials = _tptr()
+        except Exception:
+            _ai_customer_testimonials = {
+                "page": "https://dchub.cloud/testimonials",
+                "json": "https://dchub.cloud/testimonials.json",
+            }
         # ★2026-09-15 — Capacity Source liveness for the canonical_endpoints
         # block below. This manifest is the FIRST surface an agent reads, and it
         # named every agent-facing endpoint except the one an agent is sent to
@@ -8512,6 +8520,11 @@ def handle_well_known():
                 "sitemap":    "https://dchub.cloud/sitemap.xml",
                 "sitemap_ai": "https://dchub.cloud/sitemap-ai.xml"
             },
+
+            # Named HUMAN customer testimonials — pointer only, from the one
+            # shared source (util/customer_testimonials). Distinct from the
+            # AI-assistant quotes at /api/v1/testimonials.
+            "customer_testimonials": _ai_customer_testimonials,
 
             "related_files": {
                 "mcp_server_card": "/.well-known/mcp/server-card.json",

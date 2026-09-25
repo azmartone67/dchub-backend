@@ -44,6 +44,8 @@ from datetime import datetime, timezone
 from html import escape as _h
 from flask import Blueprint, Response, request, jsonify
 
+from util import customer_testimonials as _ct
+
 logger = logging.getLogger(__name__)
 
 enterprise_bp = Blueprint("enterprise", __name__)
@@ -425,15 +427,7 @@ textarea{min-height:110px;resize:vertical;}
     </div>
   </div>
 
-  <figure class="cq" aria-label="What customers say">
-    <blockquote>&ldquo;DC Hub is now integral to how we evaluate every site. For so long, we&rsquo;ve had to piecemeal information from multiple sources. DC Hub has it all in one place and provides the clearest picture of infrastructure that we&rsquo;ve found.&rdquo;</blockquote>
-    <figcaption>
-      <span class="cq-avatar" aria-hidden="true">RB</span>
-      <span><span class="cq-name">Rich Bray</span><br><span class="cq-role">Development Manager, LPI Group</span></span>
-      <a class="cq-more" href="/testimonials">More from people and AI agents &rarr;</a>
-    </figcaption>
-  </figure>
-
+{{CUSTOMER_QUOTE}}
   <p class="foot">DC Hub · the canonical data-center intelligence layer for AI agents.<br>Already on free tier? Your existing API key works here once you're upgraded — no migration.</p>
 </div>
 
@@ -490,6 +484,42 @@ textarea{min-height:110px;resize:vertical;}
 </html>"""
 
 
+def _initials(name: str) -> str:
+    parts = [p for p in name.split() if p[:1].isalpha()]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0][0].upper()
+    return (parts[0][0] + parts[-1][0]).upper()
+
+
+def _customer_quote_block() -> str:
+    """The featured named-customer quote, from util/customer_testimonials.
+
+    Single source: https://dchub.cloud/testimonials.json (the frontend's file).
+    Every field is HTML-escaped. With no testimonial loaded the whole figure is
+    omitted rather than rendered empty. Never raises.
+    """
+    try:
+        row = _ct.featured_testimonial(_ct.get_customer_testimonials())
+        if not row:
+            return ""
+        return (
+            '  <figure class="cq" aria-label="What customers say">\n'
+            f'    <blockquote>&ldquo;{_h(row["quote"])}&rdquo;</blockquote>\n'
+            '    <figcaption>\n'
+            f'      <span class="cq-avatar" aria-hidden="true">{_h(_initials(row["name"]))}</span>\n'
+            f'      <span><span class="cq-name">{_h(row["name"])}</span><br>'
+            f'<span class="cq-role">{_h(row["title"])}, {_h(row["company"])}</span></span>\n'
+            '      <a class="cq-more" href="/testimonials">More from people and AI agents &rarr;</a>\n'
+            '    </figcaption>\n'
+            '  </figure>\n'
+        )
+    except Exception:
+        logger.debug("enterprise customer quote render failed", exc_info=True)
+        return ""
+
+
 @enterprise_bp.route("/enterprise", methods=["GET"])
 def enterprise_page():
     cal_block = ""
@@ -501,7 +531,8 @@ def enterprise_page():
         )
     html = (_ENTERPRISE_PAGE_TEMPLATE
             .replace("{{SALES_EMAIL}}", _h(SALES_EMAIL))
-            .replace("{{CALENDLY_BLOCK}}", cal_block))
+            .replace("{{CALENDLY_BLOCK}}", cal_block)
+            .replace("{{CUSTOMER_QUOTE}}", _customer_quote_block()))
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return resp

@@ -484,3 +484,33 @@ def _no_module_is_left_swapped_or_deleted(request):
     if changes:
         pytest.fail(_stub_sentinel.describe_identity_changes(
             changes, request.node.nodeid), pytrace=False)
+
+
+# ── no fetch of testimonials.json under the suite (2026-09-24) ───────────
+# util/customer_testimonials fetches https://dchub.cloud/testimonials.json the
+# first time /enterprise, why_dchub, /llms.txt or /llms-full.txt renders. Many
+# tests GET those, and with the network refused each render would log a
+# dchub.cloud refusal against a test file the no-network register does not
+# list. DCHUB_CUSTOMER_TESTIMONIALS_FETCH=0 makes the module take its own
+# never-loaded path ([]) instead of opening a socket.
+#
+# ★ An ENV VAR, set at conftest import, not a monkeypatch: the app booted in a
+#   SUBPROCESS by scripts/app_contract_gate.py (test_llms_cite_without_mcp.py's
+#   real-app comparison) renders /llms.txt too, and only the environment
+#   crosses that boundary. It also covers module-scoped fixtures, which run
+#   before any function-scoped one. A test that wants testimonials monkeypatches
+#   get_customer_testimonials or _fetch_raw itself (the check lives inside
+#   _fetch_raw, so replacing it bypasses the switch).
+os.environ["DCHUB_CUSTOMER_TESTIMONIALS_FETCH"] = "0"
+
+
+# The cache is cleared around every test so no test inherits a list another
+# test's own stub loaded.
+@pytest.fixture(autouse=True)
+def _customer_testimonials_cache_is_per_test():
+    _ct = sys.modules.get("util.customer_testimonials")
+    if _ct is not None:
+        _ct._reset_cache_for_tests()
+    yield
+    if _ct is not None:
+        _ct._reset_cache_for_tests()
