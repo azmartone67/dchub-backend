@@ -226,11 +226,13 @@ def _fetch_json(path, timeout=15):
     drift (a non-2xx is an error, not a body)."""
     try:
         import requests as _rq
+        from internal_auth import self_call_headers as _self_call_headers
         sep = "&" if "?" in path else "?"
         r = _rq.get(
             f"{_EDGE_BASE}{path}{sep}cb=mi44",
             headers={"User-Agent": "dchub-metric-integrity-shell/1.0",
-                     "Cache-Control": "no-cache"},
+                     "Cache-Control": "no-cache",
+                     **_self_call_headers(path)},
             timeout=timeout)
         if r.status_code >= 400:
             logger.debug("[metric-integrity] fetch %s -> HTTP %d",

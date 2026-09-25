@@ -501,8 +501,13 @@ def main():
 
     # 4: backend-scheduler feeds that beat the ledger directly (not GitHub workflows)
     try:
+        # X-Admin-Key: the ops read gate refuses a keyless read of
+        # /api/v1/ops/* once enforced, and this except below would swallow
+        # that 401 as "non-fatal" — the watcher would go blind to every
+        # backend-scheduler feed without a single red run.
         greq = urllib.request.Request(
-            f"{API}/api/v1/ops/deadman", headers={"User-Agent": UA})
+            f"{API}/api/v1/ops/deadman",
+            headers={"User-Agent": UA, **({"X-Admin-Key": ADMIN} if ADMIN else {})})
         with urllib.request.urlopen(greq, timeout=20) as r:
             d = json.loads(r.read())
         # ★2026-09-02 (D2): the board now splits LATE (`overdue`) from RED

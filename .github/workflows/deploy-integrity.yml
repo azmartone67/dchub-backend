@@ -50,16 +50,39 @@ jobs:
       # fails if a mirror is ever committed back.
 
       - name: Live route smoke (200 + non-blank)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
+          # /api/v1/admin/* is behind the ops read gate once it is enforced.
+          # Before this, the job sent no key: a 401 body has no broken_count,
+          # which the reader below took as 0 and passed — a check that could go
+          # blind and stay green. Now: no key, 401 or 403 FAIL the job, and a
+          # 200 without the fields this job judges is FAIL too. Only a transport
+          # error or a 5xx stays a warning (a transient origin problem is not
+          # proof the routes are broken).
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret is not available — deploy integrity NOT checked"
+            exit 1
+          fi
           code=$(curl -sS -m 30 -o integrity.json -w "%{http_code}" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
             https://api.dchub.cloud/api/v1/admin/deploy-integrity || echo 000)
           echo "endpoint HTTP $code"; cat integrity.json || true
-          python3 - <<'PY'
-          import json, sys
+          CODE="$code" python3 - <<'PY'
+          import json, os, sys
+          code = os.environ.get("CODE", "000")
+          if code in ("401", "403"):
+              print(f"::error::deploy-integrity endpoint refused the key (HTTP {code}) — routes NOT checked")
+              sys.exit(1)
           try:
               d = json.load(open("integrity.json"))
           except Exception as e:
-              print("::warning::could not read integrity result:", e); sys.exit(0)
+              print(f"::warning::could not read integrity result (HTTP {code}):", e); sys.exit(0)
+          if code == "200" and ("broken_count" not in d or "checked" not in d):
+              print(f"::error::HTTP 200 but no broken_count/checked in the body — routes NOT checked")
+              sys.exit(1)
+          if code != "200":
+              print(f"::warning::deploy-integrity endpoint answered HTTP {code} — not checked this run"); sys.exit(0)
           broken = d.get("broken_count", 0)
           for b in (d.get("broken") or []):
               print(f"::error title=Route broken::{b.get('path')} → {b.get('status') or b.get('error')} ({b.get('bytes')} bytes)")

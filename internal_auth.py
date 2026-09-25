@@ -183,3 +183,63 @@ def accepted_internal_keys() -> set:
         if v:
             keys.add(v)
     return keys
+
+
+# ── Credentials for the app's OWN reads of its ops/admin read surfaces ────
+#
+# The ops read gate (ops_viewer_gate, dchub-backend #5510) refuses keyless
+# reads of these paths once it is switched to enforce. Several of this app's
+# own checks read them through the PUBLIC edge (dchub.cloud / the Railway
+# origin), not over loopback, so they arrive as an anonymous external caller
+# and would go blind. They send X-Internal-Key for exactly these paths and
+# nothing else: a probe of a PUBLIC page must keep seeing what an anonymous
+# visitor sees, and a credential would change that (tier teasers, rate
+# limits and the edge's credentialed-cache bypass all key on it).
+#
+# Harmless with no gate present: every one of these paths accepts the
+# internal key today, or ignores it.
+OPS_READ_PREFIXES = (
+    "/api/v1/admin/",
+    "/api/admin/",
+    "/api/v1/ops/",
+    "/api/v1/mcp/funnel",
+    "/api/v1/mcp/retention",
+    "/admin/",
+    "/ops/",
+)
+
+
+def _path_of(path_or_url) -> str:
+    s = str(path_or_url or "")
+    if "://" in s:
+        s = "/" + s.split("://", 1)[1].partition("/")[2]
+    return s.split("?", 1)[0].split("#", 1)[0]
+
+
+def is_ops_read_path(path_or_url) -> bool:
+    """True if a path (or full URL) is one of the ops/admin read surfaces."""
+    p = _path_of(path_or_url)
+    return any(p == pre.rstrip("/") or p.startswith(pre) for pre in OPS_READ_PREFIXES)
+
+
+def self_call_key() -> str:
+    """The key the app sends on its own ops reads: the client internal key
+    (DCHUB_INTERNAL_KEY / DCHUB_SYNC_KEY / INTERNAL_WORKER_SECRET), else
+    DCHUB_ADMIN_KEY — which is_valid_internal_key also accepts (see above).
+    Empty when neither is configured: send nothing rather than a blank."""
+    for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY", "INTERNAL_WORKER_SECRET",
+                    "DCHUB_ADMIN_KEY"):
+        v = _clean_key(os.environ.get(env_var, ""))
+        if v:
+            return v
+    return ""
+
+
+def self_call_headers(path_or_url) -> dict:
+    """{'X-Internal-Key': ...} when path_or_url is an ops/admin read surface
+    and a key is configured; {} otherwise. Merge it into the request's
+    headers: `headers={**base, **self_call_headers(url)}`."""
+    if not is_ops_read_path(path_or_url):
+        return {}
+    k = self_call_key()
+    return {"X-Internal-Key": k} if k else {}

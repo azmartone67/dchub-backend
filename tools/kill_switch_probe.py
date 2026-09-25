@@ -383,7 +383,8 @@ def observe_squasher_queue(now=None):
 
 
 def observe_quota_wall(now=None):
-    status, body = _get("/api/v1/mcp/funnel", timeout=TIMEOUT_PUBLIC_S)
+    # admin=True: /api/v1/mcp/funnel is behind the ops read gate once enforced.
+    status, body = _get("/api/v1/mcp/funnel", admin=True, timeout=TIMEOUT_PUBLIC_S)
     if status != 200 or not isinstance(body, dict):
         return None
     qw = body.get("quota_wall")

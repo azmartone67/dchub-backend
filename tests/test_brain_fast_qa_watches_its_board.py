@@ -51,7 +51,9 @@ class _Session:
         self.seen = {}
         self.behaviour = behaviour or {}
 
-    def get(self, url, timeout=None, allow_redirects=True):
+    def get(self, url, timeout=None, allow_redirects=True, headers=None):
+        # `headers`: _check_urls passes per-request headers (the ops read
+        # key on /api/v1/mcp/funnel), which a real Session.get accepts.
         path = url.replace("https://dchub.cloud", "", 1)
         self.seen[path] = timeout
         b = self.behaviour.get(path, 200)

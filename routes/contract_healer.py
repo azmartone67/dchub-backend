@@ -160,7 +160,9 @@ def _fetch(url: str, accept: str = "application/json"):
     import requests
     full = url if url.startswith("http") else BASE + url
     try:
-        r = requests.get(full, headers={"User-Agent": UA, "Accept": accept},
+        from internal_auth import self_call_headers
+        r = requests.get(full, headers={"User-Agent": UA, "Accept": accept,
+                                        **self_call_headers(full)},
                          timeout=_FETCH_TIMEOUT)
     except Exception as e:
         return None, f"{type(e).__name__}"

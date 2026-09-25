@@ -127,6 +127,7 @@ def _check_urls() -> tuple[list[dict], list[dict]]:
     except Exception as e:  # pragma: no cover
         logger.warning("fast_qa: requests import failed: %s", e)
         return problems, rate_limited
+    from internal_auth import self_call_headers
     sess = requests.Session()
     # 2026-07-01: identify as an internal probe on BOTH rails the rate
     # limiter recognises (rate_limiter.rate_limit_before): the dchub.cloud
@@ -144,7 +145,11 @@ def _check_urls() -> tuple[list[dict], list[dict]]:
     for path in _PUBLIC_URLS:
         url = _BASE + path
         try:
-            r = sess.get(url, timeout=url_timeout(path), allow_redirects=True)
+            # The ops read surfaces on this list (/api/v1/mcp/funnel) carry
+            # X-Internal-Key so the ops read gate does not turn them into a
+            # false fast_qa_url_down; public pages stay anonymous.
+            r = sess.get(url, timeout=url_timeout(path), allow_redirects=True,
+                         headers=self_call_headers(path))
             status = r.status_code
             if status == 429:
                 # Defense in depth: even if the exemption headers stop
