@@ -176,3 +176,65 @@ def test_crm_paid_conversion_backfill_reads_text_created_at(conn, monkeypatch):
     assert sorted(e for et, e in captured if et == "paid_conversion") == [
         "recentnaive@t.test", "recentpg@t.test"]
     assert out["counts"]["paid_conversion"] == 2
+
+
+def _load_blast_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "email_blast_developer_launch", ROOT / "tools" / "email_blast_developer_launch.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("last_used_type", ["TIMESTAMPTZ", "TEXT"])
+def test_email_blast_fetch_targets_runs_on_text_created_at(conn, last_used_type):
+    # tools/email_blast_developer_launch.py filtered `u.created_at > NOW() - …`
+    # in HAVING (and had bare '%' in its LIKEs), so it raised before sending
+    # anything. api_keys.last_used_at's type differs between the DDLs that
+    # create api_keys, so both are covered.
+    blast = _load_blast_tool()
+    now = dt.datetime.now(UTC)
+
+    def ago(days, fmt="naive"):
+        t = now - dt.timedelta(days=days)
+        return (t.replace(tzinfo=None).isoformat() if fmt == "naive"
+                else t.strftime("%Y-%m-%d %H:%M:%S.%f+00"))
+
+    with conn.cursor() as cur:
+        cur.execute(f"ALTER TABLE api_keys ADD COLUMN last_used_at {last_used_type}")
+        blast.ensure_audit_table(conn)
+
+        def user(uid, created_at, plan="free", email=None, used_days_ago=None):
+            cur.execute("INSERT INTO users (id, email, password_hash, plan, created_at) "
+                        "VALUES (%s, %s, 'x', %s, %s)",
+                        (uid, email or f"{uid}@corp.io", plan, created_at))
+            if used_days_ago is not None:
+                cur.execute("INSERT INTO api_keys (user_id, last_used_at) VALUES (%s, %s)",
+                            (uid, (now - dt.timedelta(days=used_days_ago)).isoformat()))
+
+        user("recentnaive", ago(1))
+        user("recentpg", ago(5, "pg"))
+        user("oldused", ago(90), used_days_ago=10)       # old signup, recent use
+        user("nulledused", None, used_days_ago=3)        # no signup date, recent use
+        user("oldunused", ago(90), used_days_ago=100)
+        user("stale31", ago(31))
+        user("garbage", "not-a-date")
+        user("blank", "")
+        user("nulled", None)
+        user("paid", ago(1), plan="developer")
+        user("example", ago(1), email="a@example.com")
+        user("testy", ago(1), email="qa-test@corp.io")
+        user("mailed", ago(1))
+        cur.execute("INSERT INTO email_blasts (user_id, email, campaign, status) "
+                    "VALUES ('mailed', 'mailed@corp.io', 'c1', 'sent')")
+
+    got = blast.fetch_targets(conn, "c1", 50, now=now)
+    assert [t["user_id"] for t in got] == [
+        "recentnaive", "recentpg", "oldused", "nulledused"]
+    assert blast.humanize_signup(got[0]["created_at"]) == "1 days ago"
+
+    assert [t["user_id"] for t in blast.fetch_targets(conn, "c1", 2, now=now)] == [
+        "recentnaive", "recentpg"]
+    # Another campaign's ledger does not exclude 'mailed'.
+    assert "mailed" in [t["user_id"] for t in blast.fetch_targets(conn, "c2", 50, now=now)]
