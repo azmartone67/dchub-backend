@@ -1264,6 +1264,84 @@ def execute_one(conn, cur, row: dict, cls_row: dict, *, dry_run: bool = False,
     return res
 
 
+# ★★★ 2026-09-25 — A GRANTED CLASS WITH WORK AND NO ROW NEVER RAN.
+#
+# Measured live that day: news_entity_reresolve GRANTED, breaker clear, its
+# verifier reading blindspot=12 — and 0 runs in 7d, because candidates() reads
+# only awaiting_ops QUEUE ROWS naming the class, and the only writers of queue
+# rows are the portal button, graduation proposals and the QA feed. A
+# class-scoped class ("the class IS the work item") had no finding to hang a
+# row on, so a human grant plus a non-zero trigger still waited on a click.
+#
+# The fix files the row itself — only for a class that is GRANTED and eligible
+# (the grant is the human's authorisation), only when its own verifier reads a
+# positive count (0 or unreadable files nothing), and only when no open row
+# for it exists (one open row per class via the open-key unique index).
+# Everything downstream is unchanged: caps, the 24h per-row retry, the breaker,
+# the actuator's own budget, verify-before-resolve, and noop_clean resolving
+# the row when the count reaches 0 by any other path.
+#
+# source='action_class' is deliberately NOT in squasher_queue's sweepable
+# sources: the heal detector does not speak for these rows, the verifier does.
+SELF_FILE_SOURCE = "action_class"
+
+
+def self_file_key(cls: str) -> str:
+    return f"action-class:{cls}"
+
+
+def self_file_class_rows(cur, classes: dict, *, fetch=None) -> dict:
+    """File one awaiting_ops row per granted, class-scoped class whose verifier
+    reads work. -> {"filed": [...], "skipped": [...]}."""
+    fetch = fetch or _loopback
+    out: dict = {"filed": [], "skipped": []}
+    for cls, spec in ACTION_CLASSES.items():
+        if spec.get("row_param") is not None:
+            continue            # per-row classes need a finding to scope them
+        c = classes.get(cls)
+        ok, why = eligible(c)
+        if not ok:
+            out["skipped"].append({"class": cls, "why": why})
+            continue
+        key = self_file_key(cls)
+        # Any open row naming the class already carries its work — a
+        # human-queued one included — so a second would be a duplicate.
+        cur.execute(
+            "SELECT id FROM squasher_work_queue WHERE (action_class = %s "
+            "OR finding_key = %s) AND status IN %s LIMIT 1",
+            (cls, key, _OPEN_STATUSES))
+        if cur.fetchone():
+            out["skipped"].append({"class": cls, "why": "open row exists"})
+            continue
+        pre, ev = _read_metric(fetch, build_verifier_url(cls, {}),
+                               spec["metric"])
+        if pre is None or pre <= 0:
+            out["skipped"].append({
+                "class": cls,
+                "why": ("verifier unreadable" if pre is None
+                        else f"verifier reads {spec['metric']}=0"),
+                "evidence": ev})
+            continue
+        cur.execute(
+            """INSERT INTO squasher_work_queue
+                   (finding_key, title, source, status, reason, action_class,
+                    action_url, action_method, requested_at, finished_at,
+                    last_seen)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                       NOW(), NOW(), NOW())
+               ON CONFLICT DO NOTHING RETURNING id""",
+            (key, f"{cls}: {spec['metric']}={pre}", SELF_FILE_SOURCE,
+             "awaiting_ops",
+             (f"self-filed: class {cls} is granted and its verifier reads "
+              f"{spec['metric']}={pre} — the class is the work item")[:600],
+             cls, build_action_url(cls, {}), spec["method"]))
+        r = cur.fetchone()
+        if r:
+            out["filed"].append({"class": cls, "queue_id": r[0],
+                                 spec["metric"]: pre})
+    return out
+
+
 def candidates(cur, limit: int) -> list[dict]:
     """Oldest awaiting_ops rows of a granted, un-tripped class that have not
     been attempted in the last 24h. The SQL keeps the scan bounded; every
@@ -1308,6 +1386,22 @@ def run_granted_actions(dry_run: bool = False, fetch=None, clock=None) -> dict:
             else:
                 out["classified"] = classify_open_rows(cur)
                 out["candidate_columns_backfilled"] = backfill_candidate_columns(cur)
+                # Under a SAVEPOINT: a failed self-file must not cost the
+                # classify pass above, nor the runs below.
+                try:
+                    cur.execute("SAVEPOINT action_class_self_file")
+                    out["self_filed"] = self_file_class_rows(
+                        cur, {r["class"]: r for r in class_rows(cur)},
+                        fetch=fetch)
+                    cur.execute("RELEASE SAVEPOINT action_class_self_file")
+                except Exception as e:  # noqa: BLE001
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT "
+                                    "action_class_self_file")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    out["self_filed"] = {
+                        "error": f"{type(e).__name__}: {str(e)[:120]}"}
             conn.commit()
             cap_day, cap_drain = max_per_day(), max_per_drain()
             used = day_used(cur)
