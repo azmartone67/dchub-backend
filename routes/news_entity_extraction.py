@@ -427,24 +427,47 @@ def entity_blindspot_count(cur_or_conn):
     return _entity_blindspot_count(cur_or_conn)
 
 
+def _blindspot_where() -> str:
+    """THE blind-spot predicate over alias `e` — the one definition the
+    count, the re-resolve's prefix pass and the squasher rollback pre-image
+    all read. ★ 2026-09-25: the count covers EVERY unresolved row while the
+    re-resolve only scanned the 300 most recently seen — so rows the count
+    held could sit outside the window forever. The actuator fired daily,
+    healed 0 rows, and blindspot sat at 12: a trigger its own fire could not
+    reach. One predicate, three readers."""
+    stop_sql = ", ".join("'" + w.replace("'", "''") + "'"
+                         for w in sorted(_GENERIC_PREFIX_STOP)) or "''"
+    return ("e.in_facilities = FALSE"
+            " AND length(trim(e.entity_name)) >= 4"
+            " AND lower(trim(e.entity_name)) NOT IN (" + stop_sql + ")"
+            " AND EXISTS (SELECT 1 FROM facilities f"
+            "             WHERE lower(f.name) >="
+            "                   lower(trim(e.entity_name)) || ' '"
+            "               AND lower(f.name) <"
+            "                   lower(trim(e.entity_name)) || '!'"
+            "               AND lower(f.name) LIKE"
+            "                   lower(trim(e.entity_name)) || ' '"
+            "                   || chr(37))")
+
+
+def blindspot_entity_rows(cur, cap: int = 300) -> list:
+    """[(id, status)] of the rows the count counts, oldest id first, capped.
+    [] when the collation is unwitnessed — the range trick is only exact
+    under byte ordering, and a pass that cannot be exact must not act."""
+    if _collation_is_byte_ordered(cur) is not True:
+        return []
+    cur.execute("SELECT e.id, e.status FROM news_discovered_entities e"
+                " WHERE " + _blindspot_where() +
+                " ORDER BY e.id ASC LIMIT %s", (int(cap),))
+    return [(r[0], r[1]) for r in (cur.fetchall() or [])]
+
+
 def _entity_blindspot_count(cur):
     if _collation_is_byte_ordered(cur) is not True:
         return None
-    stop_sql = ", ".join("'" + w.replace("'", "''") + "'"
-                         for w in sorted(_GENERIC_PREFIX_STOP)) or "''"
     try:
         cur.execute("SELECT count(*) FROM news_discovered_entities e"
-                    " WHERE e.in_facilities = FALSE"
-                    "   AND length(trim(e.entity_name)) >= 4"
-                    "   AND lower(trim(e.entity_name)) NOT IN (" + stop_sql + ")"
-                    "   AND EXISTS (SELECT 1 FROM facilities f"
-                    "               WHERE lower(f.name) >="
-                    "                     lower(trim(e.entity_name)) || ' '"
-                    "                 AND lower(f.name) <"
-                    "                     lower(trim(e.entity_name)) || '!'"
-                    "                 AND lower(f.name) LIKE"
-                    "                     lower(trim(e.entity_name)) || ' '"
-                    "                     || chr(37))")
+                    " WHERE " + _blindspot_where())
         r = cur.fetchone()
     except Exception as e:
         logger.debug("[entity-blindspot] count failed: %s", str(e)[:140])
@@ -558,6 +581,23 @@ def _reresolve_unmatched(c, cap: int = 200) -> dict:
                         "                   THEN 'known' ELSE status END"
                         " WHERE id = %s", (eid,))
                     out["resolved"] += 1
+            # ★ The blind-spot pass: exactly the rows the trigger counts,
+            #   WHATEVER their recency. _already_known already accepts this
+            #   token-boundary prefix match (r-ner-prefix), but the window
+            #   above only reaches recently seen rows — an entity no longer in
+            #   the news is never re-checked. Same FALSE→TRUE-only write.
+            out["resolved_prefix"] = 0
+            for eid, _st in blindspot_entity_rows(cur, cap=cap):
+                cur.execute(
+                    "UPDATE news_discovered_entities"
+                    " SET in_facilities = TRUE,"
+                    "     status = CASE WHEN COALESCE(status,'')"
+                    "                        IN ('', 'unknown', 'rejected')"
+                    "                   THEN 'known' ELSE status END"
+                    " WHERE id = %s AND NOT in_facilities", (eid,))
+                n = max(0, cur.rowcount or 0)
+                out["resolved"] += n
+                out["resolved_prefix"] += n
         try: c.commit()
         except Exception: pass
     except Exception as e:
