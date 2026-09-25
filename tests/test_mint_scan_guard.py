@@ -434,3 +434,47 @@ def test_a_direct_caller_is_limited_exactly_as_before():
     class R:
         headers = {"User-Agent": "node"}
     assert trial_mint_scopes(R(), "node", "") == (True, True)
+
+
+# ── the platform stamp (2026-09-25): our MCP harness is labelled at mint ─────
+
+def _insert_sql(cur):
+    return [q for q, _ in cur.queries if q.startswith("insert into auto_trial_keys")]
+
+
+def test_the_gateway_stamps_the_agents_mcp_platform():
+    out, cur = _mint(_row(), headers={"X-Internal-Key": "k-int",
+                                      "X-MCP-Platform": "DCHub-Internal"},
+                     env={"DCHUB_INTERNAL_KEY": "k-int"})
+    assert out["ok"] is True, out
+    assert "mcp_platform" in _insert_sql(cur)[0]
+    assert cur.inserted[0][-1] == "dchub-internal"
+
+
+def test_a_direct_caller_cannot_label_its_own_mint():
+    out, cur = _mint(_row(), headers={"X-MCP-Platform": "dchub-internal"})
+    assert out["ok"] is True, out
+    assert cur.inserted[0][-1] is None, "only the gateway's header is trusted"
+
+
+class _NoPlatformColumnCur(_TrialCur):
+    """auto_trial_keys before _ensure_schema managed to add mcp_platform."""
+    def execute(self, sql, params=None):
+        q = " ".join(sql.split()).lower()
+        if q.startswith("insert into auto_trial_keys") and "mcp_platform" in q:
+            self.queries.append((q, params))
+            raise Exception('column "mcp_platform" of relation "auto_trial_keys" does not exist')
+        return super().execute(sql, params)
+
+
+def test_a_missing_platform_column_never_fails_the_mint():
+    import routes.auto_trial as at
+    cur = _NoPlatformColumnCur(_row())
+    h = {"CF-Connecting-IP": "203.0.113.9", "User-Agent": "Grok/1.0"}
+    with mock.patch.object(at, "_conn", lambda: _TrialConn(cur)), \
+         mock.patch.object(at, "_ensure_schema", lambda c: None):
+        out = at.mint_trial_for_request(_Req(h), "get_market_intel")
+    assert out["ok"] is True and out["api_key"].startswith("dch_trial_"), out
+    ins = _insert_sql(cur)
+    assert len(ins) == 2 and "mcp_platform" in ins[0] and "mcp_platform" not in ins[1]
+    assert len(cur.inserted) == 1

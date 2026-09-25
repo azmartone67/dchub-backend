@@ -51,6 +51,15 @@ log = logging.getLogger("mint_guard")
 SCAN_UA_RE = (r"(loop|dchub-|selfheal|probe|health|scanner|regression|mcp-test|"
               r"sweep|clawith|anthropicapi|zgrab|masscan|nuclei|nmap)")
 
+# Our own MCP harness traffic. The MCP server tags it platform='dchub-internal'
+# (server.mjs _INTERNAL_SELF_TAG) and every backend read predicate already
+# excludes %dchub%. Its UA is plain `node`, which SCAN_UA_RE deliberately does
+# not match, and it mints fewer than pair_per_day keys per caller, so until
+# 2026-09-25 it counted as real agents. Measured that day over the non-scan
+# mints of weeks 08-24..09-14: 224 of 970 keys were internal, and they carried
+# 105k of the 105k logged calls on those keys (external keys: 24 calls).
+INTERNAL_PLATFORM_LIKE = "%dchub%"
+
 # notes on a born-gated mint: "gate_carry:<seed> (...)" — see auto_trial.py.
 _SEED_SQL = r"COALESCE(substring(t.notes from '^gate_carry:([0-9]+)')::int, 0)"
 
@@ -102,11 +111,19 @@ def scored_trial_keys_cte(window_sql: str) -> tuple[str, tuple]:
         scored AS (
             SELECT base.*,
                    (_pair_day_n > %s OR _ip_day_n > %s
-                    OR COALESCE(request_ua, '') ~* %s) AS is_scan,
+                    OR COALESCE(request_ua, '') ~* %s
+                    -- internal harness: tagged at mint (mcp_platform, read
+                    -- tolerantly so a table without the column still works),
+                    -- or recognised by the platform its calls were logged under
+                    OR COALESCE(to_jsonb(base) ->> 'mcp_platform', '') ILIKE %s
+                    OR EXISTS (SELECT 1 FROM mcp_call_log l
+                                WHERE l.api_key = base.api_key
+                                  AND l.platform ILIKE %s)) AS is_scan,
                    GREATEST(COALESCE(call_count, 0) - _seed, 0) AS real_calls
               FROM base
         )"""
-    return sql, (th["pair_per_day"], th["ip_per_day"], th["ua_regex"])
+    return sql, (th["pair_per_day"], th["ip_per_day"], th["ua_regex"],
+                 INTERNAL_PLATFORM_LIKE, INTERNAL_PLATFORM_LIKE)
 
 
 def scan_definition_note() -> dict:
@@ -116,12 +133,15 @@ def scan_definition_note() -> dict:
             f"A trial-key mint is SCAN traffic when, in its UTC day, its "
             f"(request_ip_hash, request_ua) pair minted more than "
             f"{th['pair_per_day']} keys, OR its request_ip_hash minted more than "
-            f"{th['ip_per_day']} keys, OR its UA matches a probe marker. Rows are "
+            f"{th['ip_per_day']} keys, OR its UA matches a probe marker, OR it is "
+            f"DC Hub's own MCP harness (minted with, or called under, an MCP "
+            f"platform matching '{INTERNAL_PLATFORM_LIKE}'). Rows are "
             f"never deleted: they are filtered at query time and counted in "
             f"excluded_scan_mints."),
         "pair_per_day": th["pair_per_day"],
         "ip_per_day": th["ip_per_day"],
         "ua_regex": th["ua_regex"],
+        "internal_platform_like": INTERNAL_PLATFORM_LIKE,
         "reuse_basis": (
             "reused = real_calls > 1, where real_calls = call_count minus the "
             "gate_carry seed a born-gated mint is INSERTed with. Without the "
@@ -210,6 +230,17 @@ def gateway_caller_ip(req) -> str:
 def ua_names_a_client(ua: str) -> bool:
     u = (ua or "").strip().lower()
     return bool(u) and u not in POOLED_UAS and not u.startswith(("node/", "undici/", "node-fetch/"))
+
+
+def gateway_platform(req) -> str:
+    """X-MCP-Platform, but only from our own gateway (an internal request) —
+    a direct caller cannot label its mint. '' otherwise."""
+    try:
+        if not is_internal_request(req):
+            return ""
+        return (req.headers.get("X-MCP-Platform") or "").strip().lower()[:40]
+    except Exception:
+        return ""
 
 
 def trial_mint_scopes(req, ua: str, forwarded_ip: str) -> tuple[bool, bool]:
