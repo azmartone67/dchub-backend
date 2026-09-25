@@ -1,0 +1,76 @@
+name: Web image build
+
+# Builds Dockerfile.web — the image railway.toml deploys for dchub-backend (web)
+# and dchub-worker — and checks, inside the built container, the things that
+# broke under Railpack: the venv interpreter resolves, gunicorn starts, the
+# start scripts' system binaries exist, and weasyprint can render a PDF.
+# Railway only finds these out after the build, on a failed healthcheck.
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile.web
+      - .dockerignore
+      - railway.toml
+      - requirements.txt
+      - runtime.txt
+      - start_web.sh
+      - start_mcp.sh
+      - .github/workflows/web-image-build.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.web
+      - .dockerignore
+      - requirements.txt
+      - runtime.txt
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build Dockerfile.web
+        run: docker build -f Dockerfile.web -t dchub-web:ci .
+
+      - name: Interpreter, venv and system binaries
+        run: |
+          docker run --rm dchub-web:ci bash -euc '
+            want="$(sed "s/^python-//" runtime.txt)"
+            got="$(/app/.venv/bin/python -c "import platform; print(platform.python_version())")"
+            echo "runtime.txt=$want venv python=$got -> $(readlink -f /app/.venv/bin/python)"
+            [ "$want" = "$got" ]
+            [ "$(command -v gunicorn)" = /app/.venv/bin/gunicorn ]
+            gunicorn --version
+            for b in curl pkill fuser bash; do command -v "$b"; done
+          '
+
+      - name: Third-party imports and a real PDF render
+        run: |
+          docker run --rm dchub-web:ci python -c '
+          import flask, gunicorn, psycopg2, psycopg, lxml, reportlab, matplotlib
+          import weasyprint
+          pdf = weasyprint.HTML(string="<h1>DC Hub</h1><p>smoke</p>").write_pdf()
+          assert pdf[:5] == b"%PDF-", pdf[:16]
+          print("weasyprint", weasyprint.__version__, "pdf bytes", len(pdf))
+          '
+
+      - name: start_web.sh boots gunicorn past the venv guard
+        # No database here, so the app may fail after import; what this proves
+        # is the part Railpack broke: start_web.sh reaches gunicorn and gunicorn
+        # binds. The VENV INTERPRETER UNRESOLVABLE line must never appear.
+        run: |
+          docker run -d --name web -e PORT=8080 -e DCHUB_ROLE=worker dchub-web:ci
+          for i in $(seq 1 30); do
+            if docker logs web 2>&1 | grep -q "Listening at: http://\[::\]:8080"; then break; fi
+            sleep 2
+          done
+          docker logs web 2>&1 | tail -40
+          ! docker logs web 2>&1 | grep -q "VENV INTERPRETER UNRESOLVABLE"
+          docker logs web 2>&1 | grep -q "Listening at: http://\[::\]:8080"
