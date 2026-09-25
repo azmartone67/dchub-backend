@@ -501,8 +501,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                 args = _ins_args + ([_mint_platform or None] if with_platform else [])
                 ph = ", ".join(["%s"] * 4 + [f"NOW() + INTERVAL '{TRIAL_DAYS} days'"]
                                + ["%s"] * (len(args) - 4))
-                cur.execute(f"INSERT INTO auto_trial_keys ({cols}) VALUES ({ph}) "
-                            "ON CONFLICT (api_key) DO NOTHING RETURNING expires_at", args)
+                sql = (f"INSERT INTO auto_trial_keys ({cols}) VALUES ({ph}) ON CONFLICT (api_key) DO NOTHING "
+                       "RETURNING expires_at")
+                cur.execute(sql, args)
 
             try:
                 try:
