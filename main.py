@@ -11103,7 +11103,31 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
         except Exception as ac_err:
             logger.error(f"AUTO-CAPTURE FAILED: {ac_err}")
 
+# ★ 2026-09-24: every ai_testimonials WRITE route below requires the admin key.
+# The table holds AI-assistant quotes AND human customer quotes
+# (source='claim_quote'), which /cited-by shows as named DC Hub customers, so
+# creating, approving, deleting or bulk-editing rows is an admin action. Same
+# header as routes/testimonial_probe.py (/pending, /approve). Fail-closed: no
+# accepted DCHUB_ADMIN_KEY (unset or too weak) means every call is refused.
+# The public reads (GET /api/v1/testimonials, /stats, /live) stay open.
+def _require_testimonial_admin(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        from util.admin_auth import accepted_admin_keys
+        valid = accepted_admin_keys(('DCHUB_ADMIN_KEY',))
+        provided = (request.headers.get('X-Admin-Key') or '').strip()
+        if not (valid and provided
+                and any(hmac.compare_digest(provided, k) for k in valid)):
+            resp = jsonify({'success': False, 'error': 'unauthorized',
+                            'hint': 'X-Admin-Key header required'})
+            resp.headers['Cache-Control'] = 'no-store, max-age=0'
+            return resp, 401
+        return fn(*args, **kwargs)
+    return wrapped
+
+
 @app.route('/api/v1/testimonials/test-capture', methods=['POST'])
+@_require_testimonial_admin
 def test_auto_capture():
     try:
         with pg_connection() as pgconn:
@@ -33091,6 +33115,7 @@ def get_testimonials():  # v2 neon-backed
 
 
 @app.route('/api/v1/testimonials', methods=['POST'])
+@_require_testimonial_admin
 def add_testimonial():
     """Auto-capture or manual add -- stores for admin approval"""
     data = request.get_json() or {}
@@ -33129,6 +33154,7 @@ def add_testimonial():
 
 
 @app.route('/api/v1/testimonials/<int:tid>/approve', methods=['POST'])
+@_require_testimonial_admin
 def approve_testimonial(tid):
     """Admin: approve a testimonial"""
     data = request.get_json() or {}
@@ -33152,6 +33178,7 @@ def approve_testimonial(tid):
 
 
 @app.route('/api/v1/testimonials/<int:tid>', methods=['DELETE'])
+@_require_testimonial_admin
 def delete_testimonial(tid):
     """Admin: delete a testimonial"""
     try:
@@ -33203,6 +33230,7 @@ def testimonial_stats():
 
 
 @app.route('/api/v1/testimonials/seed', methods=['POST'])
+@_require_testimonial_admin
 def seed_testimonials():
     """One-time seed -- creates table if needed and populates initial AI agent citations"""
     SEED_DATA = [
@@ -33259,6 +33287,7 @@ def seed_testimonials():
 
 
 @app.route('/api/v1/testimonials/bulk-approve', methods=['POST'])
+@_require_testimonial_admin
 def bulk_approve_testimonials():
     """Approve all unapproved mcp-auto testimonials (admin use)"""
     try:
@@ -33280,6 +33309,7 @@ def bulk_approve_testimonials():
 
 
 @app.route('/api/v1/testimonials/cleanup', methods=['POST'])
+@_require_testimonial_admin
 def cleanup_testimonials():
     """Deduplicate and prune stale auto-captured testimonials"""
     try:
@@ -33335,6 +33365,7 @@ def cleanup_testimonials():
 
 
 @app.route('/api/v1/testimonials/refresh-timestamps', methods=['POST'])
+@_require_testimonial_admin
 def refresh_testimonial_timestamps():
     """Update seed and manual testimonial timestamps to now so they don't show as stale"""
     try:
