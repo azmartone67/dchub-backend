@@ -484,40 +484,11 @@ textarea{min-height:110px;resize:vertical;}
 </html>"""
 
 
-def _initials(name: str) -> str:
-    parts = [p for p in name.split() if p[:1].isalpha()]
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return parts[0][0].upper()
-    return (parts[0][0] + parts[-1][0]).upper()
-
-
 def _customer_quote_block() -> str:
-    """The featured named-customer quote, from util/customer_testimonials.
-
-    Single source: https://dchub.cloud/testimonials.json (the frontend's file).
-    Every field is HTML-escaped. With no testimonial loaded the whole figure is
-    omitted rather than rendered empty. Never raises.
-    """
-    try:
-        row = _ct.featured_testimonial(_ct.get_customer_testimonials())
-        if not row:
-            return ""
-        return (
-            '  <figure class="cq" aria-label="What customers say">\n'
-            f'    <blockquote>&ldquo;{_h(row["quote"])}&rdquo;</blockquote>\n'
-            '    <figcaption>\n'
-            f'      <span class="cq-avatar" aria-hidden="true">{_h(_initials(row["name"]))}</span>\n'
-            f'      <span><span class="cq-name">{_h(row["name"])}</span><br>'
-            f'<span class="cq-role">{_h(row["title"])}, {_h(row["company"])}</span></span>\n'
-            '      <a class="cq-more" href="/testimonials">More from people and AI agents &rarr;</a>\n'
-            '    </figcaption>\n'
-            '  </figure>\n'
-        )
-    except Exception:
-        logger.debug("enterprise customer quote render failed", exc_info=True)
-        return ""
+    """The featured named-customer quote. Rendered by the shared
+    util.customer_testimonials.featured_quote_figure_html (also used by
+    /connect); "" when nothing is loaded. Never raises."""
+    return _ct.featured_quote_figure_html(indent="  ")
 
 
 @enterprise_bp.route("/enterprise", methods=["GET"])

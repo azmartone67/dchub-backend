@@ -29,6 +29,7 @@ BEHAVIOUR
 from __future__ import annotations
 
 import json
+from html import escape as _h
 import logging
 import os
 import threading
@@ -190,3 +191,43 @@ def llms_txt_block() -> str:
         lines.append("> “" + quote + "”")
         lines.append("> — " + row["name"] + ", " + row["title"] + ", " + row["company"])
     return "\n".join(lines) + "\n"
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in name.split() if p[:1].isalpha()]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0][0].upper()
+    return (parts[0][0] + parts[-1][0]).upper()
+
+
+def featured_quote_figure_html(indent: str = "  ") -> str:
+    """The featured customer quote as a <figure class="cq">, for HTML pages.
+
+    One renderer for every backend page that shows the quote (/enterprise,
+    /connect); each page brings its own .cq CSS. Every field is HTML-escaped.
+    Returns "" when nothing is loaded, so the caller omits the figure rather
+    than render it empty. Insert it AFTER any canon rendering, so quote text is
+    never scanned or rewritten as a figure. Never raises.
+    """
+    try:
+        row = featured_testimonial(get_customer_testimonials())
+        if not row:
+            return ""
+        i = indent
+        return (
+            f'{i}<figure class="cq" aria-label="What customers say">\n'
+            f'{i}  <blockquote>&ldquo;{_h(row["quote"])}&rdquo;</blockquote>\n'
+            f'{i}  <figcaption>\n'
+            f'{i}    <span class="cq-avatar" aria-hidden="true">{_h(_initials(row["name"]))}</span>\n'
+            f'{i}    <span><span class="cq-name">{_h(row["name"])}</span><br>'
+            f'<span class="cq-role">{_h(row["title"])}, {_h(row["company"])}</span></span>\n'
+            f'{i}    <a class="cq-more" href="/testimonials">More from people and AI agents &rarr;</a>\n'
+            f'{i}  </figcaption>\n'
+            f'{i}</figure>\n'
+        )
+    except Exception:
+        logger.debug("customer quote figure render failed", exc_info=True)
+        return ""
+
