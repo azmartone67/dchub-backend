@@ -87,9 +87,14 @@ jobs:
           AT_RISK=$(cat /tmp/at_risk)
           if [ "${AT_RISK:-0}" -gt 0 ]; then
             # Only open if no open issue exists
-            EXISTING=$(gh issue list --label "churn-watch" --state open --json number --jq 'length')
+            # No checkout in this job, so every gh call names the repo; and the
+            # label did not exist — the first run that got this far (2026-09-25,
+            # 36087906484) failed here, since no earlier run ever read a count.
+            gh label create churn-watch --repo "$GITHUB_REPOSITORY" --color d93f0b \
+              --description "Weekly churn-watcher summary" 2>/dev/null || true
+            EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --label "churn-watch" --state open --json number --jq 'length')
             if [ "${EXISTING:-0}" = "0" ]; then
-              gh issue create \
+              gh issue create --repo "$GITHUB_REPOSITORY" \
                 --title "Churn watch: ${AT_RISK} customers at risk this week" \
                 --label "churn-watch" \
                 --body-file /tmp/issue_body.md
