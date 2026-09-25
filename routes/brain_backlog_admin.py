@@ -1529,7 +1529,7 @@ async function loadStrategic(){
   }
   // Trends — load funnel snapshot
   try {
-    const f = await fetch('/api/v1/mcp/funnel');
+    const f = await fetch('/api/v1/mcp/funnel', {headers: HDR});
     if (f.ok) {
       const fd = await f.json();
       const totals = fd.totals || fd.summary || {};

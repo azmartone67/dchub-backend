@@ -114,7 +114,9 @@ _UA = {"User-Agent": "dchub-conversion-loop-shell"}
 def _get_json(path: str, timeout: float = 8.0) -> dict:
     url = _PUBLIC.rstrip("/") + path
     try:
-        r = requests.get(url, headers=_UA, timeout=timeout)
+        from internal_auth import self_call_headers
+        r = requests.get(url, headers={**_UA, **self_call_headers(path)},
+                         timeout=timeout)
         if r.status_code >= 400:
             return {"ok": False, "status": r.status_code, "error": (r.text or "")[:400]}
         return {"ok": True, "status": r.status_code, "json": r.json()}

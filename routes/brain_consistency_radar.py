@@ -12306,9 +12306,11 @@ def check_addressable_demand_unconverted() -> list[dict]:
     findings: list[dict] = []
     try:
         import requests as _req
+        from internal_auth import self_call_headers
         r = _req.get("https://dchub.cloud/api/v1/mcp/funnel",
                      timeout=8,
-                     headers={"User-Agent": "dchub-brain-demand/1.0"})
+                     headers={"User-Agent": "dchub-brain-demand/1.0",
+                              **self_call_headers("/api/v1/mcp/funnel")})
         if r.status_code != 200:
             return findings
         d = r.json() or {}
@@ -12353,7 +12355,10 @@ def check_trial_to_paid_stagnation() -> list[dict]:
     findings: list[dict] = []
     try:
         import requests as _req
-        r = _req.get("https://dchub.cloud/api/v1/mcp/funnel", timeout=8)
+        from internal_auth import self_call_headers
+        r = _req.get("https://dchub.cloud/api/v1/mcp/funnel", timeout=8,
+                     headers={"User-Agent": "dchub-brain-trial-stagnation/1.0",
+                              **self_call_headers("/api/v1/mcp/funnel")})
         if r.status_code != 200:
             return findings
         d = r.json() or {}
@@ -12554,9 +12559,11 @@ def check_tool_signal_to_conversion_leak() -> list[dict]:
     except Exception:
         return findings
     try:
+        from internal_auth import self_call_headers
         r = _req.get("https://dchub.cloud/api/v1/mcp/funnel",
                      timeout=8,
-                     headers={"User-Agent": "dchub-brain-conversion-leak/1.0"})
+                     headers={"User-Agent": "dchub-brain-conversion-leak/1.0",
+                              **self_call_headers("/api/v1/mcp/funnel")})
         if r.status_code != 200:
             return findings
         d = r.json() or {}

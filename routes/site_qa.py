@@ -215,9 +215,11 @@ def _fetch(url, timeout=15):
     # probe to the rate-limiter so /markets/chicago etc. don't 429 on
     # our own health checks. Pre-fix sentinel had the same bug — UA
     # alone wasn't recognized.
+    from internal_auth import self_call_headers
     req = urllib.request.Request(full_url, headers={
         "User-Agent": "dchub-site-qa/1.0",
         "X-DC-Probe": "self-heal",
+        **self_call_headers(full_url),
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

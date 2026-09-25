@@ -44,6 +44,17 @@ EDGE_ORIGIN_PATHS = ["/api/health", "/robots.txt", "/sitemap.xml",
                      # cache for 15 minutes of polling.
                      "/api/v1/health", "/api/v1/ops/origin-freshness"]
 
+# The one EDGE_ORIGIN_PATHS entry behind the ops read gate. Only this path
+# carries a credential; every other path is asked as the anonymous visitor.
+_KEYED_PATHS = frozenset({"/api/v1/ops/deadman"})
+
+
+def _edge_origin_headers(path: str):
+    if path in _KEYED_PATHS and C.ADMIN_KEY:
+        return {"X-Admin-Key": C.ADMIN_KEY}
+    return None
+
+
 # Directives that mean "do not keep a copy of this". If a response carries one
 # of these and the edge still hands back a stored copy, the platform is
 # contradicting itself — see _check_stale_edge_cache.
@@ -188,9 +199,17 @@ def _probe_edge_vs_origin(findings: list[Finding]) -> None:
     disagreements, checked = [], 0
     observed = []   # (path, edge_headers, edge_bytes, origin_bytes) for the cache check
     for path in EDGE_ORIGIN_PATHS:
+        # /api/v1/ops/deadman sits behind the ops read gate once it is
+        # enforced; both doors would 401 alike and the comparison would learn
+        # nothing. It is asked WITH the admin key at both doors. (A keyed
+        # request bypasses the edge cache, so the stale-copy check below says
+        # nothing about this one path; the rest stay anonymous.)
+        hdrs = _edge_origin_headers(path)
         try:
-            e_status, e_h, e_body = fetch(f"{C.EDGE}{path}", timeout=C.HTTP_TIMEOUT)
-            o_status, _oh, o_body = fetch(f"{C.ORIGIN}{path}", timeout=C.HTTP_TIMEOUT)
+            e_status, e_h, e_body = fetch(f"{C.EDGE}{path}", headers=hdrs,
+                                          timeout=C.HTTP_TIMEOUT)
+            o_status, _oh, o_body = fetch(f"{C.ORIGIN}{path}", headers=hdrs,
+                                          timeout=C.HTTP_TIMEOUT)
         except Unreachable as ex:
             findings.append(blind(
                 key=stable_key("web", "edge-origin", path), surface="web",

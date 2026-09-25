@@ -104,8 +104,10 @@ def _get_json(path: str, base: str = _PUBLIC):
     try:
         import requests
         sep = "&" if "?" in path else "?"
+        from internal_auth import self_call_headers
         r = requests.get(f"{base}{path}{sep}_cb=shell52",
-                         headers={"User-Agent": "dchub-growth-integrity-shell/1.0"},
+                         headers={"User-Agent": "dchub-growth-integrity-shell/1.0",
+                                  **self_call_headers(path)},
                          timeout=_TIMEOUT)
         if r.status_code != 200:
             return None

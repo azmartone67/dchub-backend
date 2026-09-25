@@ -77,8 +77,10 @@ def _self_get(path: str, timeout: float = 8.0, retries: int = 1):
     empty result, NOT silently treat a failed fetch as 'all good'."""
     for _ in range(retries + 1):
         try:
+            from internal_auth import self_call_headers
             req = urllib.request.Request(_API + path,
-                                         headers={"User-Agent": "dchub-site-automation/1.0"})
+                                         headers={"User-Agent": "dchub-site-automation/1.0",
+                                                  **self_call_headers(path)})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode())
         except Exception:

@@ -23,13 +23,29 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Warm the Railway-failover KV cache
+        env:
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           set +e
-          BODY=$(curl -sS -m 90 -X POST \
-            -H "X-DC-Probe: failover-warm" \
+          # Authenticate with a real credential. This used to send only the
+          # `X-DC-Probe: failover-warm` marker, which routes/failover_warm.py
+          # accepts as auth — a header anyone can send. X-Internal-Key is what
+          # the route checks first; X-Admin-Key is the fallback it also takes.
+          AUTH=()
+          if [ -n "${INTERNAL_KEY:-}" ]; then AUTH=(-H "X-Internal-Key: $INTERNAL_KEY")
+          elif [ -n "${ADMIN_KEY:-}" ]; then AUTH=(-H "X-Admin-Key: $ADMIN_KEY")
+          else echo "::error::neither DCHUB_INTERNAL_KEY nor DCHUB_ADMIN_KEY is available"; exit 1; fi
+          BODY=$(curl -sS -m 90 -X POST "${AUTH[@]}" \
             -H "User-Agent: DCHub-FailoverWarmCron/1.0" \
             https://dchub-backend-production.up.railway.app/api/v1/admin/failover/warm)
           RC=$?
+          # A refused credential is not a transient miss: say so, loudly, so a
+          # secret that drifted from the Railway value cannot hide behind exit 0.
+          if echo "$BODY" | grep -q '"admin_required"\|"unauthorized"'; then
+            echo "::error::failover warm refused the credential — cache NOT warmed"
+            exit 1
+          fi
           echo "curl rc=$RC"
           echo "$BODY" | head -c 500
           echo ""

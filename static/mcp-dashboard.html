@@ -51,13 +51,18 @@
 </div>
 <div class="footer">DC Hub · live MCP analytics. Source: Neon → Flask blueprint → this page.</div>
 <script>
+// Forward ?admin_key= (the admin key or a read-only viewer key) to the ops
+// reads this page makes, the same way the admin shells do (brain_backlog_admin
+// HDR). Without it these reads 401 once the ops read gate is enforced.
+const OPS_KEY = new URLSearchParams(location.search).get("admin_key") || "";
+const OPS_HDR = OPS_KEY ? {"X-Admin-Key": OPS_KEY} : {};
 async function load() {
   try {
     // r-fresh (2026-06-17): cache-bust + no-store. /api/v1/mcp/funnel ships
     // Cache-Control: max-age=3600, so a plain fetch served the browser-cached
     // copy on every "Refresh" — the dashboard looked frozen (stuck at an old
     // tool_calls_7d) even though the live endpoint had moved. Force a fresh read.
-    const d = await (await fetch('/api/v1/mcp/funnel?_cb=' + Date.now(), { cache: 'no-store' })).json();
+    const d = await (await fetch('/api/v1/mcp/funnel?_cb=' + Date.now(), { cache: 'no-store', headers: OPS_HDR })).json();
     const kt = d.keys_by_tier || {};
     // ★ 2026-08-10: this summed three NAMED tiers and dropped every other one,
     // so the tile read "160" against 536 active keys — it was silently hiding
@@ -317,7 +322,7 @@ async function load() {
       // CF edge-caches /api/v1/mcp/retention (~1h HIT despite origin no-store),
       // so a frame cached during a deploy/error window pinned the weekly table
       // EMPTY for everyone until TTL. Same fix as the funnel fetch above.
-      const rt = await (await fetch('/api/v1/mcp/retention?weeks=10&_=' + Date.now(), {cache: 'no-store'})).json();
+      const rt = await (await fetch('/api/v1/mcp/retention?weeks=10&_=' + Date.now(), {cache: 'no-store', headers: OPS_HDR})).json();
       const s = rt.summary || {};
       // r-agent-tile (2026-08-18): this tile led with `latest_returning_ips`
       // (ip_cohort, live 90) while the weekly table DIRECTLY BELOW it renders

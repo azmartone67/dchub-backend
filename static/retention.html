@@ -26,6 +26,11 @@
   <table id="retention"><thead><tr><th>Week</th><th>New agents</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
 </div>
 <script>
+// Forward ?admin_key= (the admin key or a read-only viewer key) to the ops
+// reads this page makes, the same way the admin shells do (brain_backlog_admin
+// HDR). Without it these reads 401 once the ops read gate is enforced.
+const OPS_KEY = new URLSearchParams(location.search).get("admin_key") || "";
+const OPS_HDR = OPS_KEY ? {"X-Admin-Key": OPS_KEY} : {};
 async function load(){
   try{
     // r-agent-tile (2026-08-18): this page is the UNREACHABLE TWIN of the
@@ -35,7 +40,7 @@ async function load(){
     // denominator — in both the tile and every table row. Migrated to the
     // canonical agent grain so re-routing this page can never resurrect the
     // number the dashboard was just corrected away from.
-    const rt = await (await fetch('/api/v1/mcp/retention?weeks=12&_=' + Date.now(), {cache: 'no-store'})).json();
+    const rt = await (await fetch('/api/v1/mcp/retention?weeks=12&_=' + Date.now(), {cache: 'no-store', headers: OPS_HDR})).json();
     const s = rt.summary||{};
     const acRows = rt.agent_cohort || null;
     const wkISO = s.latest_complete_week_agents || s.latest_complete_week || s.latest_week || null;

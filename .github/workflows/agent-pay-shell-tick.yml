@@ -96,8 +96,14 @@ jobs:
           PY
 
       - name: Prove the beat actually landed
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           set -euo pipefail
+          # /api/v1/ops/deadman is behind the ops read gate once it is enforced;
+          # a keyless read would 401 and the board below would be unreadable.
+          AUTH=()
+          if [ -n "${ADMIN_KEY:-}" ]; then AUTH=(-H "X-Admin-Key: $ADMIN_KEY"); fi
           # _beat_ledger() swallows every failure at logger.debug
           # (routes/agent_pay_master_shell.py:707). A 200 from the tick therefore does
           # NOT prove the ledger was written — a bad loopback port or admin key would
@@ -121,6 +127,7 @@ jobs:
           # dispatched run died on curl exit 28 here and reported "the beat did not
           # land" when the beat had in fact landed 0.7s earlier.
           if ! curl -sS --max-time 60 --retry 3 --retry-delay 5 --retry-all-errors \
+                 "${AUTH[@]}" \
                  "$BASE/api/v1/ops/deadman?_=$(date +%s)" -o /tmp/board.json; then
             echo "::warning ::could not read the dead-man board after 3 retries — beat state UNKNOWN, not failed. The tick itself returned 200."
             exit 0
