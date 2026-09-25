@@ -468,6 +468,48 @@ def main_() -> int:
                 f"serve."
             )
 
+    # 4b. THE OPS READ GATE RUNS FIRST AND REFUSES A KEYLESS EXTERNAL READ.
+    #
+    # ops_viewer_gate is path-keyed so that it covers every handler of a gated
+    # path; that only holds if it runs before every other before_request hook
+    # (the worker relay among them) and if main.py installs it at all. Unit
+    # tests use a bare app, so this is the one place the REAL app is asked.
+    # The mode is read per request, so it is flipped to enforce for these two
+    # probes only. REMOTE_ADDR is external: the test client's default
+    # 127.0.0.1 is a trusted self-call and would pass on a broken gate.
+    try:
+        import ops_viewer_gate as _ovg
+        _first = (app.before_request_funcs.get(None) or [None])[0]
+        if _first is not _ovg.ops_gate:
+            failures.append(
+                "OPS GATE NOT FIRST: before_request[0] is %r, not "
+                "ops_viewer_gate.ops_gate — a hook ahead of it can answer a "
+                "gated path before the gate sees it."
+                % getattr(_first, "__name__", _first))
+        _prev_mode = os.environ.get(_ovg.MODE_ENV)
+        os.environ[_ovg.MODE_ENV] = "enforce"
+        try:
+            _ext = {"REMOTE_ADDR": "203.0.113.9"}
+            _rv = client.get("/api/v1/ops/deadman", environ_base=_ext)
+            if _rv.status_code != 401 or _rv.get_json() != {"error": "unauthorized"}:
+                failures.append(
+                    "OPS GATE OPEN: keyless external GET /api/v1/ops/deadman in "
+                    "enforce mode returned %s %r, expected 401 "
+                    "{'error': 'unauthorized'}." % (_rv.status_code,
+                                                    _rv.get_data()[:120]))
+            _rv = client.get("/api/v1/ops/brief", environ_base=_ext)
+            if _rv.status_code in (401, 403):
+                failures.append(
+                    "OPS GATE OVERREACH: /api/v1/ops/brief is public by owner "
+                    "decision and returned %s in enforce mode." % _rv.status_code)
+        finally:
+            if _prev_mode is None:
+                os.environ.pop(_ovg.MODE_ENV, None)
+            else:
+                os.environ[_ovg.MODE_ENV] = _prev_mode
+    except Exception as e:
+        failures.append(f"OPS GATE CHECK RAISED: {type(e).__name__}: {str(e)[:200]}")
+
     # 5. THE EVIDENCE-STATUS CONVENTION IS ON THE WIRE.
     #
     # Seven AI partners agreed this on 2026-08-17 and it reached nothing for

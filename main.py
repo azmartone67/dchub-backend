@@ -1724,6 +1724,15 @@ def _make_fast_health_wsgi(downstream):
 
 app.wsgi_app = _make_fast_health_wsgi(app.wsgi_app)
 
+# Ops/admin read gate (named, revocable, read-only viewer keys). Installed
+# BEFORE every other before_request hook — including the worker-delegation
+# relay below — so it sees each request to a gated path first, whichever
+# handler serves it. Default mode is LOG-ONLY (DCHUB_OPS_GATE_MODE unset):
+# it serves exactly as before and records would-be denials; `enforce` is a
+# separate, deliberate flip. See ops_viewer_gate.py.
+import ops_viewer_gate as _ops_viewer_gate
+_ops_viewer_gate.install(app)
+
 
 # =================================================================
 # r-workerproxy (2026-07-02): heavy HTTP-TRIGGERED jobs must EXECUTE

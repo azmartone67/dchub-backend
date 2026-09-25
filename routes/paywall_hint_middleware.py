@@ -538,6 +538,15 @@ def register_paywall_hint_middleware(app):
             # than no metric: it moves, so it looks alive.
             if path.startswith(_ADMIN_PREFIXES):
                 return response
+            # Same reasoning for the ops read gate's own refusals
+            # (ops_viewer_gate): a keyless read of /api/v1/ops/* or the MCP
+            # funnel is not a blocked prospect, so no pitch and no A/B event.
+            try:
+                from flask import g as _g
+                if getattr(_g, "ops_gate_denied", False):
+                    return response
+            except Exception:
+                pass
 
             # Only enrich 401/403/429
             if response.status_code not in (401, 403, 429):
