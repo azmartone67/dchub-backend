@@ -138,3 +138,14 @@ def test_dom_lookup_uses_the_shared_cache_for_both_datasets(monkeypatch):
     assert pjm._gridstatus_dom({"region": "PJM-DOM"}) is not None
     assert seen == {"pjm_load": pjm._PJM_TTL, "pjm_lmp_real_time_5_min": pjm._PJM_TTL}
     assert pjm._PJM_TTL > 0
+
+
+def test_dom_ttl_default_fits_the_monthly_budget(monkeypatch):
+    """2 datasets, refetched once per TTL, for a 31-day month, must fit the budget."""
+    import importlib
+    import pjm_dataminer as pjm
+    monkeypatch.delenv("PJM_DOM_CACHE_TTL_S", raising=False)
+    pjm = importlib.reload(pjm)
+    assert pjm._PJM_TTL == 43200
+    worst = 2 * (31 * 86400 // pjm._PJM_TTL)
+    assert worst <= gsc.MONTHLY_BUDGET, f"{worst} requests/month > budget {gsc.MONTHLY_BUDGET}"

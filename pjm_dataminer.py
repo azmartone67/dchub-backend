@@ -42,7 +42,10 @@ _PJM_CACHE = {}
 # shell#35 WS8 (2026-07-26): gridstatus free tier = 250 req/MONTH (July blew
 # it: 375). 5-min TTL burned ~143 calls/mo on DOM alone — 6h TTL ≈ 12/day max
 # worst-case, and the budget ledger below hard-caps the month regardless.
-_PJM_TTL = int(os.environ.get("PJM_DOM_CACHE_TTL_S", "21600"))  # 6h default
+# 2026-09-25: 12h, and the DOM answer is now cached across workers
+# (gridstatus_client shared cache). 2 datasets x 2 fetches/day x 31 = 124
+# requests/month worst case, under the 200 budget; 6h would be 248.
+_PJM_TTL = int(os.environ.get("PJM_DOM_CACHE_TTL_S", "43200"))  # 12h default
 
 
 def pjm_key():
