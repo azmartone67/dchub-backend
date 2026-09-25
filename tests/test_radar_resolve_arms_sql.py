@@ -138,7 +138,7 @@ def cur():
             c.execute("""
                 INSERT INTO brain_findings
                        (issue, url, detector, detector_fn, status, last_seen, resolved_at)
-                VALUES (%s, %s, %s, %s, %s, NOW() - %s::interval,
+                VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING - %s::interval,
                         CASE WHEN %s = 'resolved' THEN NOW() - INTERVAL '1 day' END)
                 ON CONFLICT (issue, url) DO NOTHING
             """, (issue, url, detector, fn, status, ago, status))
@@ -147,7 +147,7 @@ def cur():
                 INSERT INTO brain_detector_runs
                        (sweep_id, swept_at, detector_fn, outcome, reported,
                         reported_count, reported_truncated)
-                VALUES (%s, NOW() - %s::interval, %s, %s, %s::jsonb, %s, %s)
+                VALUES (%s, NOW() ON CONFLICT DO NOTHING - %s::interval, %s, %s, %s::jsonb, %s, %s)
                 ON CONFLICT (sweep_id, detector_fn) DO NOTHING
             """, (sweep_id, ago, fn, outcome, json.dumps(keys), len(keys), truncated))
         yield c

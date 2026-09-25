@@ -184,7 +184,7 @@ class _RecordingCursor:
 
 @pytest.mark.parametrize("sql", [
     "UPDATE market_power_scores SET verdict = 'PASS'",
-    "INSERT INTO mcp_call_log (status) VALUES ('mpp_paid')",
+    "INSERT INTO mcp_call_log (status) VALUES ('mpp_paid') ON CONFLICT DO NOTHING",
     "DELETE FROM deals WHERE id = 1",
     "DROP TABLE discovered_facilities",
     "TRUNCATE dcpi_daily_snapshots",
@@ -199,7 +199,7 @@ def test_guard_rejects_foreign_table_write(sql):
 
 
 @pytest.mark.parametrize("sql", [
-    "INSERT INTO pm_brief_snapshots (snapshot_date, boards) VALUES (1, 2)",
+    "INSERT INTO pm_brief_snapshots (snapshot_date, boards) VALUES (1, 2) ON CONFLICT DO NOTHING",
     "CREATE TABLE IF NOT EXISTS pm_brief_dismissals (item TEXT)",
     "SELECT snapshot_date FROM pm_brief_snapshots",
     "SELECT pg_try_advisory_xact_lock(814202602)",

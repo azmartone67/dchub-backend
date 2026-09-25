@@ -415,7 +415,7 @@ def refresh(days: int = WINDOW_DAYS) -> dict:
                 cur.execute("""
                     INSERT INTO brain_lessons (family, verdict, graded,
                         success_rate, counts, guidance, detail, compiled_at)
-                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, NOW())
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (family) DO UPDATE SET
                         verdict = EXCLUDED.verdict, graded = EXCLUDED.graded,
                         success_rate = EXCLUDED.success_rate,

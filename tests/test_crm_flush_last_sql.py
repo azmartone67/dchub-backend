@@ -49,7 +49,7 @@ def m(monkeypatch):
     assert mod._SCHEMA_READY, "the schema script did not run on Postgres"
     with c.cursor() as cur:
         cur.execute("""INSERT INTO crm_outbound_queue (event_type, lead_email, status)
-                       VALUES ('paid_conversion', 'a@example.com', 'queued'),
+                       VALUES ('paid_conversion', 'a@example.com', 'queued') ON CONFLICT DO NOTHING,
                               ('paid_conversion', 'b@example.com', 'queued_export'),
                               ('newsletter_signup', 'c@example.com', 'pushed')""")
     c.commit()

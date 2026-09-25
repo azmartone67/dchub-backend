@@ -44,20 +44,20 @@ HOST = _file("""
     def run(conn):
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO t (a) VALUES (%s)",
+                "INSERT INTO t (a) VALUES (%s) ON CONFLICT DO NOTHING",
                 (1,)
             )
         return True
     """)
 
 SEARCH = ('cur.execute(\n'
-          '            "INSERT INTO t (a) VALUES (%s)",\n'
+          '            "INSERT INTO t (a) VALUES (%s) ON CONFLICT DO NOTHING",\n'
           '            (1,)\n'
           '        )')
 
 # what the proposer emits: first line carries the host's 12 spaces
 REPLACE_BAD = ('        cur.execute(\n'
-               '            "INSERT INTO t (a) VALUES (%s)",\n'
+               '            "INSERT INTO t (a) VALUES (%s) ON CONFLICT DO NOTHING",\n'
                '            (1,)\n'
                '        )\n'
                '        conn.commit()')

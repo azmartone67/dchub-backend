@@ -263,7 +263,7 @@ def ingest_henry_hub(length=120, full=False):
             _ensure_schema(cur)
             cur.executemany("""
                 INSERT INTO henry_hub_spot (period, price_usd_mmbtu, source_url, ingested_at)
-                VALUES (%s, %s, %s, NOW())
+                VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (period) DO UPDATE
                 SET price_usd_mmbtu = EXCLUDED.price_usd_mmbtu,
                     source_url      = EXCLUDED.source_url,
@@ -443,7 +443,7 @@ def ingest_lng_terminals():
                         (project_name, category, operator, state, trains,
                          baseload_bcfd, baseload_mtpa, peak_bcfd, peak_mtpa,
                          status, in_service, as_of, source_url, ingested_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (project_name, category) DO UPDATE
                     SET operator = EXCLUDED.operator, state = EXCLUDED.state,
                         trains = EXCLUDED.trains,

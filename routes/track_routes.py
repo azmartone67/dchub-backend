@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 track_bp = Blueprint('track', __name__)
 
 
+# AUTO-REPAIR: duplicate route '/api/track/visit' also in static/auto_pilot.py:904 — review and remove one
 @track_bp.route('/api/track/visit', methods=['POST'])
 def track_visit():
     """Record a page visit for analytics. Fire-and-forget."""
