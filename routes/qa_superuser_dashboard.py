@@ -991,6 +991,27 @@ AUTO_PROPOSE_DEFAULT_LIMIT = 1
 AUTO_PROPOSE_MAX_LIMIT = 3
 
 
+def squasher_owns_qa_reds() -> bool:
+    """Is the squasher agent lane the actor for QA reds? (2026-09-25)
+
+    That lane files every red whose investigation passes the SAME gate this
+    endpoint uses (routes/squasher_agent_lane.qa_ready_basis) and fixes it
+    with a tool-using agent that can edit any file in dchub-backend or
+    dchub-mcp-server; this endpoint's proposer makes one find-and-replace in
+    one backend file. Two actors on one red is two PRs for one defect, so this
+    lane stands down while that one is enabled, and resumes by itself when it
+    is disabled (SQUASHER_AGENT_DISABLE / SQUASHER_QUEUE_DISABLE).
+    QA_AUTO_PROPOSE_ALONGSIDE_SQUASHER=1 restores the old both-lanes shape.
+    The dashboard's human "Propose fix" button is not affected."""
+    if (os.environ.get("QA_AUTO_PROPOSE_ALONGSIDE_SQUASHER") or "").strip() == "1":
+        return False
+    try:
+        from routes.squasher_agent_lane import _disabled
+    except Exception:  # noqa: BLE001 — no lane to defer to
+        return False
+    return not _disabled()
+
+
 def auto_propose_candidates(findings: list[dict], gate) -> tuple[list, list]:
     """Split findings into (to propose, skipped-with-reason). Pure.
 
@@ -1131,6 +1152,14 @@ def qa_superuser_auto_propose():
     _attach_investigations(latest)
     todo, skipped = auto_propose_candidates(latest.get("findings") or [],
                                             P.gate_investigation)
+    handed_to = None
+    if todo and squasher_owns_qa_reds():
+        handed_to = "squasher_agent_lane"
+        skipped += [{"key": f.get("key"),
+                     "why": "handed to the squasher agent lane, which files "
+                            "this red on its next claim — one actor per red"}
+                    for f in todo]
+        todo = []
     deferred = todo[limit:]
     todo = todo[:limit]
 
@@ -1139,6 +1168,7 @@ def qa_superuser_auto_propose():
             "ok": True, "dry_run": True,
             "would_dispatch": [f.get("key") for f in todo],
             "deferred_to_next_run": [f.get("key") for f in deferred],
+            "handed_to": handed_to,
             "skipped": skipped})
 
     dispatched = []
@@ -1175,6 +1205,7 @@ def qa_superuser_auto_propose():
         "ok": True,
         "dispatched": dispatched,
         "deferred_to_next_run": [f.get("key") for f in deferred],
+        "handed_to": handed_to,
         "skipped": skipped,
         "note": "DISPATCHED, not finished. Each writes a patch, validates it "
                 "against the real file and opens a DRAFT pull request. This "
@@ -2349,9 +2380,11 @@ function render(d){
     from reach and usage metrics by <b>User-Agent</b>, never by platform tag (the
     MCP server overwrites the platform field).<br>
     The board never merges, deploys or executes. When a red's cause is
-    already established it will open a <b>draft</b> pull request for you to
-    review — draft specifically, because this repo arms auto-merge on every
-    non-draft PR the moment it opens.
+    already established it is handed to the bug squasher's agent lane, which
+    opens a <b>draft</b> pull request for you to review — draft specifically,
+    because this repo arms auto-merge on every non-draft PR the moment it opens
+    (the repo variable <code>SQUASHER_AGENT_AUTOMERGE=1</code> is the only
+    thing that changes that).
   </div>`;
 }
 

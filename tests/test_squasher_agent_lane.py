@@ -744,6 +744,7 @@ def test_claim_next_hands_the_live_detector_items_to_the_exclusion(monkeypatch):
         def __exit__(self, *a): return False
         def execute(self, *a, **k): self.last = a
         def fetchone(self): return (7,)
+        def fetchall(self): return []
 
     class _Conn:
         def __enter__(self): return self
@@ -803,6 +804,61 @@ def QA_OK(reds, passed=(), red=None):
 ], ids=["parked", "refused", "error", "untouched", "running", "opened", "parked-with-pr"])
 def test_qa_handed_off(f, handed_off):
     assert al.qa_handed_off(f) is handed_off
+
+
+from tools.qa_superuser.propose import gate_investigation_detail as GATE  # noqa: E402
+
+INV_OK = {"state": "current", "survived": True, "recommendation": "fix the route"}
+
+
+@pytest.mark.parametrize("f, basis", [
+    (_red(investigation=INV_OK), "investigated"),
+    (_red(investigation=dict(INV_OK, survived=False)), None),     # refuted, not parked yet
+    (_red(investigation=dict(INV_OK, state="stale")), None),      # investigate lane re-runs it
+    (_red(investigation=dict(INV_OK, recommendation="")), None),
+    (_red(), None),                                               # not investigated yet
+    (_red(investigation=INV_OK, proposal={"state": "running"}), None),
+    (_red(investigation=INV_OK, proposal={"state": "opened", "pr_url": "u"}), None),
+    (_red(parked={"why": "refuted"}), "handed_off"),
+    (_red(investigation=INV_OK, proposal={"state": "refused"}), "handed_off"),
+], ids=["current-survived", "refuted", "stale", "no-rec", "none", "qa-running",
+        "qa-pr-open", "parked", "qa-refused"])
+def test_qa_ready_basis_files_a_current_investigation_without_waiting(f, basis):
+    """2026-09-25: a red no longer waits for QA's own proposer to fail."""
+    assert al.qa_ready_basis(f, GATE) == basis
+
+
+def test_qa_ready_without_the_gate_is_the_old_handed_off_rule():
+    assert al.qa_ready_basis(_red(investigation=INV_OK), None) is None
+    assert al.qa_ready_basis(_red(parked={"why": "x"}), None) == "handed_off"
+
+
+def test_qa_feed_plan_takes_investigated_reds_when_given_the_gate():
+    reds = {al.QA_PREFIX + "inv": _red("inv", "critical", investigation=INV_OK)}
+    assert al.qa_feed_plan(reds, open_keys=set()) == []
+    assert [k for k, _ in al.qa_feed_plan(reds, set(), GATE)] == [al.QA_PREFIX + "inv"]
+
+
+def test_qa_board_carries_the_real_gate(monkeypatch):
+    b = _qa_board_with(monkeypatch, _fresh())
+    assert b["gate"] is GATE
+
+
+def test_feed_qa_labels_why_a_row_was_filed(monkeypatch):
+    sent = []
+
+    class Cur:
+        connection = type("C", (), {"autocommit": True})()
+        def execute(self, sql, params=()): sent.append((sql, params))
+        def fetchone(self): return (1,)
+        def fetchall(self): return []
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [])
+    qa = dict(QA_OK([_red("inv", "critical", investigation=INV_OK),
+                     _red("park", "major", parked={"why": "refuted"})]), gate=GATE)
+    assert al.feed_qa(Cur(), qa)["filed"] == 2
+    reasons = [p[4] for sql, p in sent if "INSERT INTO squasher_work_queue" in sql]
+    assert reasons[0].startswith("QA red, brain investigation current")
+    assert reasons[1].startswith("QA lane handed off: refuted")
 
 
 def test_qa_feed_plan_files_only_new_handed_off_reds_critical_first_capped():
@@ -1430,3 +1486,106 @@ def test_drain_calls_the_expiry_after_the_sweep():
     src = inspect.getsource(sq.drain)
     assert "expire_stale_decisions(cur)" in src
     assert src.index("sweep_self_cleared(cur)") < src.index("expire_stale_decisions(cur)")
+
+
+# ══ · one agent fix per finding at a time (2026-09-25) ═══════════════════════
+# Row 7 (/dc-hub-media) was fixed by be#5561; the finding came back as row 18
+# and the lane spent two claims on it, opening be#5563 — a duplicate, closed.
+
+PR2 = "https://github.com/azmartone67/dchub-backend/pull/5561"
+
+
+def _holder(state, hours=2, key="/dc-hub-media", **kw):
+    r = {"id": 7, "finding_key": key, "agent_state": state, "agent_pr_url": PR2,
+         "at": NOW - timedelta(hours=hours)}
+    r.update(kw)
+    return r
+
+
+@pytest.mark.parametrize("state", ["fixed", "merged_unverified", "merged_after_clear",
+                                   "cleared_unverified", "pr_closed"])
+def test_a_recently_answered_finding_is_not_claimed_again(state):
+    holds = al.fix_holds([_holder(state)], NOW)
+    row = _row(id=18, finding_key="/dc-hub-media")
+    assert al.pick_candidate([row], {"/dc-hub-media"}, NOW, holds=holds) is None
+    other = _row(id=19, finding_key="/elsewhere")
+    assert al.pick_candidate([row, other], {"/dc-hub-media", "/elsewhere"}, NOW,
+                             holds=holds)["id"] == 19
+
+
+def test_the_hold_expires_but_an_open_pr_holds_at_any_age():
+    row = _row(id=18, finding_key="/dc-hub-media")
+    old = al.fix_holds([_holder("fixed", hours=al._RECENT_FIX_HOLD_H + 1)], NOW)
+    assert al.pick_candidate([row], {"/dc-hub-media"}, NOW, holds=old)["id"] == 18
+    still_open = al.fix_holds([_holder("pr_open", hours=500, at=None)], NOW)
+    assert al.pick_candidate([row], {"/dc-hub-media"}, NOW, holds=still_open) is None
+
+
+def test_hold_ignores_rows_without_a_pr_or_an_unanswering_state():
+    for h in (_holder("fixed", agent_pr_url=None), _holder("needs_human"),
+              _holder("failed"), _holder("fixed", at=None)):
+        assert al.fix_holds([h], NOW) == {}
+
+
+def test_a_row_never_holds_itself():
+    holds = al.fix_holds([_holder("fixed", id=18)], NOW)
+    assert al.held_by(_row(id=18, finding_key="/dc-hub-media"), holds) is None
+
+
+def test_a_qa_fix_holds_its_whole_family():
+    q = al.QA_PREFIX + "mcp::anon::quota-contradiction::"
+    holds = al.fix_holds([_holder("fixed", key=q + "get_fiber_intel#000001")], NOW)
+    sib = _row(id=18, finding_key=q + "ai_capacity_index#000002", source="qa")
+    assert al.pick_candidate([sib], {sib["finding_key"]}, NOW, holds=holds) is None
+
+
+def test_hold_naive_timestamps_are_utc():
+    h = _holder("fixed")
+    h["at"] = h["at"].replace(tzinfo=None)
+    assert al.fix_holds([h], NOW)
+
+
+def test_claim_next_reads_holds_and_reports_them(monkeypatch):
+    row = _row(id=18, finding_key="/dc-hub-media")
+
+    class Cur(_FakeCur):
+        def execute(self, sql, params=()):
+            self.sql = sql
+        def fetchall(self):
+            if "COALESCE(agent_verified_at, agent_finished_at)" in self.sql:
+                return [(7, "/dc-hub-media", "fixed", PR2,
+                         datetime.now(timezone.utc) - timedelta(hours=1))]
+            return []
+
+    class Conn(_FakeConn):
+        def cursor(self): return Cur()
+    monkeypatch.setattr(al, "_conn", lambda: Conn())
+    monkeypatch.setattr(al, "_ensure_columns", lambda cur: True)
+    monkeypatch.setattr(al, "reclaim_stale", lambda cur, now=None: 0)
+    monkeypatch.setattr(al, "_used_24h", lambda cur: 0)
+    monkeypatch.setattr(al, "feed_qa", lambda cur, qa: {"filed": 0})
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [row])
+    d = al.claim_next(live={"ok": True, "items": {"/dc-hub-media": {}}},
+                      qa={"ok": False, "reds": {}})
+    assert "brief" not in d and d["held"] == 1, d
+    assert "held" in d["idle"]
+
+
+def test_lifecycle_fix_hold_on_postgres(pg, monkeypatch):
+    """The _fix_holds SQL on real Postgres: a finding whose agent PR merged
+    an hour ago is not claimed again as a new row; after the window it is."""
+    old = _insert(pg, "/dc-hub-media", status="resolved")
+    with pg.cursor() as cur:
+        cur.execute("UPDATE squasher_work_queue SET agent_state = 'fixed',"
+                    " agent_pr_url = %s, agent_finished_at = NOW() - INTERVAL"
+                    " '3 hours', agent_verified_at = NOW() - INTERVAL '1 hour'"
+                    " WHERE id = %s", (PR2, old))
+    new = _insert(pg, "/dc-hub-media")
+    live = {"ok": True, "items": {"/dc-hub-media": {"url": "/dc-hub-media"}}}
+    d = al.claim_next(live=live, qa={"ok": False, "reds": {}})
+    assert "brief" not in d and d.get("held") == 1, d
+    with pg.cursor() as cur:
+        cur.execute("UPDATE squasher_work_queue SET agent_verified_at = NOW() -"
+                    " INTERVAL '30 hours' WHERE id = %s", (old,))
+    d = al.claim_next(live=live, qa={"ok": False, "reds": {}})
+    assert d["brief"]["queue_id"] == new, d
