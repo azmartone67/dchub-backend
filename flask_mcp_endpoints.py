@@ -8305,7 +8305,8 @@ def trial_check():
 #   distinct_platforms   : COUNT(DISTINCT platform) minus internal/probe/
 #                          generic buckets (honest external-vendor count)
 #   approved_testimonials_count : COUNT(*) FROM ai_testimonials
-#                                 WHERE approved = TRUE
+#                                 WHERE approved = TRUE, human customer
+#                                 quotes (source='claim_quote') excluded
 #
 # This is the source of truth for the frontend "N agents use DC Hub" headline
 # and for /api/agents/registry's de-hardcoded counts.
@@ -8405,7 +8406,7 @@ def stats_live_proof():
             "distinct_callers_7d":         "COUNT(DISTINCT agent_id) mcp_calls_identity (7d) WHERE is_public_ip AND is_real_external — canonical identity view; NEVER session_id (it rotates per MCP connection)",
             "distinct_ips_7d":             "COUNT(DISTINCT client_ip) mcp_calls_identity (7d) WHERE is_public_ip — all traffic incl. probes, secondary signal",
             "distinct_platforms":          "COUNT(DISTINCT recognized vendor) mcp_calls_identity (30d) WHERE is_public_ip AND is_real_external, minus declared operator self-traffic — was raw mcp_tool_calls with neither filter until 2026-09-03",
-            "approved_testimonials_count": "COUNT(*) ai_testimonials WHERE approved = TRUE",
+            "approved_testimonials_count": "COUNT(*) ai_testimonials WHERE approved = TRUE AND source <> 'claim_quote' (AI quotes only; human customer quotes are excluded)",
         },
         "note": ("All counts are live reads from mcp_tool_calls, "
                  "mcp_calls_identity + ai_testimonials. A value of 0 with its "
@@ -8541,11 +8542,15 @@ def stats_live_proof():
     except Exception as e:
         out["flags"]["platforms_error"] = str(e)[:120]
 
-    # 4) Approved public testimonials — the only ones safe to show.
+    # 4) Approved public testimonials — the only ones safe to show. This
+    #    block proves AI-agent reach, so human customer quotes
+    #    (source='claim_quote') are not counted. See util/testimonial_sources.py.
     try:
+        from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM ai_testimonials WHERE approved = TRUE"
+                "SELECT COUNT(*) FROM ai_testimonials WHERE approved = TRUE "
+                f"AND {NOT_CLAIM_QUOTE_SQL}"
             )
             out["approved_testimonials_count"] = int((cur.fetchone() or [0])[0] or 0)
         out["flags"]["testimonials_available"] = True

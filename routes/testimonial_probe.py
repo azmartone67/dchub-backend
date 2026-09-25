@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import psycopg2
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
 
 testimonial_probe_bp = Blueprint("testimonial_probe", __name__)
 
@@ -470,9 +471,13 @@ def dedup_testimonials():
     conn = _conn()
     if conn is None:
         return jsonify({"ok": False, "error": "no_database"}), 500
-    _bp_sql = ("""SELECT COALESCE(NULLIF(TRIM(platform), ''), '(none)') AS p,
+    # This trims the AI-quote wall. Human customer quotes (source=
+    # 'claim_quote') are out of its scope: never counted, never demoted.
+    # See util/testimonial_sources.py.
+    _bp_sql = (f"""SELECT COALESCE(NULLIF(TRIM(platform), ''), '(none)') AS p,
                          COUNT(*)
                     FROM ai_testimonials WHERE approved = TRUE
+                     AND {NOT_CLAIM_QUOTE_SQL}
                    GROUP BY p ORDER BY COUNT(*) DESC""")
     try:
         with conn, conn.cursor() as cur:
@@ -482,7 +487,7 @@ def dedup_testimonials():
             before_total = sum(x["approved"] for x in before)
             # Demote set = everything beyond the N freshest approved per platform.
             cur.execute(
-                """WITH ranked AS (
+                f"""WITH ranked AS (
                        SELECT id,
                               ROW_NUMBER() OVER (
                                 PARTITION BY LOWER(COALESCE(platform, ''))
@@ -491,6 +496,7 @@ def dedup_testimonials():
                               ) AS rn
                          FROM ai_testimonials
                         WHERE approved = TRUE
+                          AND {NOT_CLAIM_QUOTE_SQL}
                    )
                    SELECT id FROM ranked WHERE rn > %s""", (per_platform,))
             demote_ids = [r[0] for r in cur.fetchall()]

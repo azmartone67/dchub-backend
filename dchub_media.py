@@ -12,6 +12,8 @@ import logging
 import datetime
 import io
 
+from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
+
 
 # Phase 232: surface per-source errors so /api/v1/media/diagnose can show them
 _agg_errors = {}
@@ -280,12 +282,15 @@ def aggregate_announcements(limit_per_source=20):
             WHERE category IN ('press','press_release','daily_brief')
             ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
+        # AI quotes only: human customer quotes (source='claim_quote') are
+        # not AI testimonials. See util/testimonial_sources.py.
         ("testimonial",
-         """SELECT COALESCE(title, quote) AS title, COALESCE(url,'') AS url,
+         f"""SELECT COALESCE(title, quote) AS title, COALESCE(url,'') AS url,
                    COALESCE(quote, body, '') AS summary,
                    COALESCE(author, source, 'AI Industry') AS source,
                    COALESCE(created_at, NOW()) AS ts
             FROM ai_testimonials
+            WHERE {NOT_CLAIM_QUOTE_SQL}
             ORDER BY created_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("alert",
@@ -538,14 +543,17 @@ def aggregate_announcements_v2(limit_per_source=20):
             WHERE category IN ('press','press_release','daily_brief')
             ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
+        # AI quotes only: human customer quotes (source='claim_quote') are
+        # not AI testimonials. See util/testimonial_sources.py.
         ("testimonial",
-         """SELECT COALESCE(NULLIF(agent_name,''), 'AI Testimonial') AS title,
+         f"""SELECT COALESCE(NULLIF(agent_name,''), 'AI Testimonial') AS title,
                    COALESCE(url, '') AS url,
                    quote AS summary,
                    COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
                    COALESCE(approved_at, created_at) AS ts
             FROM ai_testimonials
             WHERE COALESCE(approved, true) = true
+              AND {NOT_CLAIM_QUOTE_SQL}
             ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
             LIMIT %s""",
          (limit_per_source,)),
@@ -789,7 +797,10 @@ def aggregate_announcements_v3(limit_per_source=20):
         # Build the source-exclusion clause defensively based on actual columns
         source_filter = "AND TRUE"
         if 'source' in tt_cols:
-            source_filter = "AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto'))"
+            # Human customer quotes (source='claim_quote') are not AI
+            # testimonials either. See util/testimonial_sources.py.
+            source_filter = ("AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto')) "
+                             f"AND {NOT_CLAIM_QUOTE_SQL}")
 
         # Original single-arm query (always emitted — known to work in prod
         # and returned 20 testimonials before Phase MM).
@@ -821,7 +832,9 @@ def aggregate_announcements_v3(limit_per_source=20):
         # near-duplicates (LEFT(quote,80) let those through — e.g. 6 variants
         # of the same Claude DCPI quote). Diverse once the Perplexity/Gemini
         # probe keys are valid. Fails alone (separate query); consumer de-dupes.
-        probe_sql = """SELECT title, url, summary, source, ts FROM (
+        # The probe_% match already excludes claim_quote; the fence is kept
+        # so every AI read carries it (tests/test_claim_quote_fence_guard.py).
+        probe_sql = f"""SELECT title, url, summary, source, ts FROM (
             SELECT DISTINCT ON (agent_name)
                    COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
                    COALESCE(url, '') AS url,
@@ -831,6 +844,7 @@ def aggregate_announcements_v3(limit_per_source=20):
                    created_at
             FROM ai_testimonials
             WHERE source LIKE 'probe_%%'
+              AND {NOT_CLAIM_QUOTE_SQL}
               AND created_at > NOW() - INTERVAL '45 days'
               AND quote IS NOT NULL AND length(quote) > 40
               AND agent_name IS NOT NULL AND agent_name <> 'unknown'

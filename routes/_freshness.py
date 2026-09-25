@@ -1,6 +1,8 @@
 """routes/_freshness.py — Brain v2 · Layer 3 support (real schema)"""
 import os, logging
 from datetime import datetime, timezone
+
+from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
 log = logging.getLogger(__name__)
 
 def _age(conn, sql):
@@ -53,7 +55,11 @@ QUERIES = {
     # for weeks after the loader died — false calm, the same class of bug
     # pointing the wrong way. fetched_at is the loader's own heartbeat.
     "news_age_seconds":         "SELECT MAX(fetched_at) FROM news_articles",
-    "testimonials_age_seconds": "SELECT MAX(created_at) FROM ai_testimonials",
+    # Heartbeat of the AI-quote capture writers. A hand-inserted human
+    # customer quote (source='claim_quote') must not make them read fresh.
+    # See util/testimonial_sources.py.
+    "testimonials_age_seconds": ("SELECT MAX(created_at) FROM ai_testimonials "
+                                 f"WHERE {NOT_CLAIM_QUOTE_SQL}"),
     "stats_snapshot_age_seconds":"SELECT MAX(snapshot_at) FROM db_health_snapshots",
     # customer white-glove loop heartbeat — last time the tick touched a
     # paying customer's lifecycle_stage. Goes stale iff the loop stops; the

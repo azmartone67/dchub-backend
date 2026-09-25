@@ -27,6 +27,7 @@ from flask import Blueprint, jsonify
 from util.capacity_pipeline import CP_OK
 from util.db_honesty import try_fetchall
 from util.deals import DEALS_OK
+from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
 
 site_stats_bp = Blueprint("site_stats", __name__)
 
@@ -231,8 +232,12 @@ def _build_stats() -> dict:
                 pass
 
             # ── Trust signals ──────────────────────────────────────
+            # AI-agent testimonials: human customer quotes (source=
+            # 'claim_quote') are counted nowhere as AI proof. See
+            # util/testimonial_sources.py.
             st.num("testimonials",
-                   "SELECT COUNT(*) FROM ai_testimonials WHERE approved = true")
+                   "SELECT COUNT(*) FROM ai_testimonials WHERE approved = true "
+                   f"AND {NOT_CLAIM_QUOTE_SQL}")
             st.num("press_releases",
                    "SELECT COUNT(*) FROM press_releases WHERE published = true")
 

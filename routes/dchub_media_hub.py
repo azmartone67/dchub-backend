@@ -66,6 +66,8 @@ import time
 from datetime import datetime, timezone, timedelta
 import logging
 from flask import Blueprint, jsonify, request, Response
+
+from util.testimonial_sources import NOT_CLAIM_QUOTE_SQL
 from ai_surface_canon import canon_text
 _CANON_FAC = canon_text("{canon_facilities}")
 
@@ -333,9 +335,11 @@ def media_aggregate():
             except Exception: c.rollback()
 
         # ── Rail: testimonials (merged ai_testimonials + auto) ──────
+        # "Recent AI citations": human customer quotes (source='claim_quote')
+        # never render here. See util/testimonial_sources.py.
         with c.cursor() as cur:
             try:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT 'canonical' AS src, agent_name, platform, quote,
                            url, approved_at AS ts
                     FROM ai_testimonials
@@ -343,6 +347,7 @@ def media_aggregate():
                       AND agent_name IS NOT NULL AND agent_name != 'unknown'
                       AND agent_name != 'Claude'
                       AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto'))
+                      AND {NOT_CLAIM_QUOTE_SQL}
                       AND quote IS NOT NULL AND length(quote) > 10
                     ORDER BY approved_at DESC NULLS LAST LIMIT 6
                 """)
@@ -380,8 +385,10 @@ def media_aggregate():
             # 2026-06-12 05:07). Surface recent probe_% rows incl. Claude;
             # DISTINCT ON (agent, quote-prefix) collapses near-duplicate runs.
             # The merge-sort below puts the freshest first.
+            # probe_% already excludes claim_quote; the fence is kept so
+            # every AI read carries it (tests/test_claim_quote_fence_guard.py).
             try:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT src, agent_name, platform, quote, url, ts FROM (
                         SELECT DISTINCT ON (agent_name, LEFT(quote, 80))
                                COALESCE(NULLIF(source,''), 'probe') AS src,
@@ -390,6 +397,7 @@ def media_aggregate():
                                created_at
                         FROM ai_testimonials
                         WHERE source LIKE 'probe_%'
+                          AND {NOT_CLAIM_QUOTE_SQL}
                           AND created_at > NOW() - INTERVAL '45 days'
                           AND quote IS NOT NULL AND length(quote) > 40
                           AND agent_name IS NOT NULL AND agent_name <> 'unknown'
@@ -1557,8 +1565,11 @@ def testimonials_live():
     out = []
     try:
         with c.cursor() as cur:
+            # AI testimonials only: human customer quotes (source=
+            # 'claim_quote') publish on /cited-by, never in this feed.
+            # See util/testimonial_sources.py.
             try:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT agent_name, platform, quote, url,
                            approved_at, source
                     FROM ai_testimonials
@@ -1566,6 +1577,7 @@ def testimonials_live():
                       AND agent_name IS NOT NULL AND agent_name != 'unknown'
                       AND agent_name != 'Claude'
                       AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto'))
+                      AND {NOT_CLAIM_QUOTE_SQL}
                       AND quote IS NOT NULL AND length(quote) > 10
                     ORDER BY approved_at DESC NULLS LAST LIMIT 30
                 """)
