@@ -28408,7 +28408,17 @@ def connect_page():
                 from ai_surface_canon import canon_text_as_phrases as _door_canon
             except Exception:  # noqa: BLE001
                 _door_canon = _canon_text
-            return Response(_ladder_links(_door_canon(_f.read())), mimetype='text/html')
+            _html = _ladder_links(_door_canon(_f.read()))
+            # ★2026-09-25: the featured customer quote, from the one source
+            # (https://dchub.cloud/testimonials.json via util.customer_testimonials).
+            # Inserted AFTER canon rendering so quote text is never rewritten as
+            # a figure; "" when nothing is loaded, so the slot just disappears.
+            try:
+                from util.customer_testimonials import featured_quote_figure_html as _cq_html
+                _html = _html.replace('<!-- CUSTOMER_QUOTE -->', _cq_html(indent='        '))
+            except Exception:  # noqa: BLE001
+                _html = _html.replace('<!-- CUSTOMER_QUOTE -->', '')
+            return Response(_html, mimetype='text/html')
     except Exception as _e:  # noqa: BLE001
         # Fail OPEN to the raw file: a canon-resolution hiccup must never 500
         # the connector how-to. A stale number beats a dead page.
