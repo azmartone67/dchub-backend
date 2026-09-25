@@ -49,6 +49,23 @@ except Exception:  # pragma: no cover
 # /llms.txt and /llms-full.txt cannot drift apart a directory name at a time.
 from agent_door_policy import policy_block
 
+
+def _customer_testimonials_section():
+    """'Customer testimonials' section for /llms.txt and /llms-full.txt.
+
+    Named human customers only, from the one shared source
+    (util/customer_testimonials -> https://dchub.cloud/testimonials.json).
+    Appended AFTER canon_text so quote text is never scanned for {canon_*}
+    placeholders, and BEFORE the sponsor block, which stays last. Pointer-only
+    when nothing has loaded; '' only if the module itself cannot be imported.
+    """
+    try:
+        from util import customer_testimonials as _ct
+        return _ct.llms_txt_block()
+    except Exception:
+        return ""
+
+
 def _llms_paid_heading() -> str:
     """The llms.txt paid-API heading, rendered from the pricing canon.
 
@@ -1526,6 +1543,7 @@ learn the tools existed but not how to install them anywhere.
         # Capacity Source availability, only while listings are live; the
         # block above is served as written otherwise.
         content = _with_capacity_source_availability(content)
+        content += _customer_testimonials_section()
         # P2-1 (2026-08-28): Product 2's labelled sponsor block. Appended AFTER
         # canon_text() so sponsor copy is never scanned for {canon_*}
         # placeholders, and LAST in the document so a paid placement can never
@@ -1950,6 +1968,7 @@ Most endpoints in this table are keyless. /api/site-score, /api/grid/fuel-mix,
 /api/energy/prices/* and /api/v1/pipeline need an API key — see "Key required"
 above for the one-POST claim.
 """)
+        content += _customer_testimonials_section()
         # P2-1 (2026-08-28): same labelled sponsor block as serve_llms_txt
         # above, and for the same reason — this is a surface AI engines
         # fetch. It was missed when the block first shipped, which left the
