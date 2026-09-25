@@ -24,8 +24,10 @@ jobs:
     steps:
       # 2026-09-25: both admin routes 401 a keyless read, so this job had been
       # reading {"error": ...} as total_at_risk=0 every week and reporting
-      # success. It now sends the internal key (admin key as fallback) and
-      # fails when either read is refused.
+      # success. It now sends the admin key and fails when either read is
+      # refused. Both routes read ONLY X-Admin-Key (or ?admin_key=) and compare
+      # it to the server's DCHUB_ADMIN_KEY — X-Internal-Key is ignored there, so
+      # the first keyed run (2026-09-25, run 36079690197) still got 401.
       #
       # This repo is PUBLIC: the run log and the issue must never carry a
       # customer email, nor anything derived from one (an unsalted hash lets
@@ -34,12 +36,10 @@ jobs:
       # admin route itself, read with a key.
       - name: Fetch churn-risk + welcome lists
         env:
-          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
-          if [ -n "${INTERNAL_KEY:-}" ]; then AUTH=(-H "X-Internal-Key: $INTERNAL_KEY")
-          elif [ -n "${ADMIN_KEY:-}" ]; then AUTH=(-H "X-Admin-Key: $ADMIN_KEY")
-          else echo "::error::neither DCHUB_INTERNAL_KEY nor DCHUB_ADMIN_KEY is set"; exit 1; fi
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::error::DCHUB_ADMIN_KEY is not set"; exit 1; fi
+          AUTH=(-H "X-Admin-Key: $ADMIN_KEY")
           for pair in "churn:churn-risk" "welcome:welcome-sequence"; do
             name=${pair%%:*}; route=${pair#*:}
             code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "${AUTH[@]}" \
