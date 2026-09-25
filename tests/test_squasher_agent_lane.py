@@ -1346,3 +1346,87 @@ def test_the_note_a_pass_clear_writes_is_what_reconcile_credits(monkeypatch):
                    agent_state="pr_open", agent_pr_url=PR,
                    finished_at=datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc))
     assert al.reconcile_plan(cleared, MERGED, set(), NOW)["agent_state"] == "fixed"
+
+
+# ── expiry of unanswered hand-offs (2026-09-25) ───────────────────────────
+
+def _age(c, rid, days, *, agent_state=None, source=None):
+    with c.cursor() as cur:
+        cur.execute("UPDATE squasher_work_queue SET"
+                    " requested_at = NOW() - (%s * INTERVAL '1 day'),"
+                    " finished_at  = NOW() - (%s * INTERVAL '1 day'),"
+                    " agent_state = %s, source = COALESCE(%s, source)"
+                    " WHERE id = %s", (days + 1, days, agent_state, source, rid))
+
+
+def test_stale_decisions_expire_on_postgres(pg):
+    """Live 2026-09-25: 13 awaiting_decision rows, oldest 48 days, none able
+    to leave. Each exclusion below is a row something ELSE owns."""
+    stale = _insert(pg, "stale")
+    _age(pg, stale, 10)
+    norepro = _insert(pg, "norepro")
+    _age(pg, norepro, 10, agent_state="not_reproducible")
+    young = _insert(pg, "young")
+    _age(pg, young, 2)
+    classed = _insert(pg, "classed", action_class="facility_dedup_apply")
+    _age(pg, classed, 30)
+    grad = _insert(pg, "grad")
+    _age(pg, grad, 30, source="graduation")
+    pr_open = _insert(pg, "pr_open")
+    _age(pg, pr_open, 30, agent_state="pr_open")
+    running_agent = _insert(pg, "agent_running")
+    _age(pg, running_agent, 30, agent_state="running")
+    ops = _insert(pg, "ops", status="awaiting_ops")
+    _age(pg, ops, 30)
+
+    # A transaction, as in drain(): the per-row SAVEPOINT needs one.
+    import psycopg2
+    with psycopg2.connect(DSN) as tx, tx.cursor() as cur:
+        out = sq.expire_stale_decisions(cur)
+        tx.commit()
+    assert "errors" not in out, out
+    assert sorted(out["expired"]) == sorted([stale, norepro]), out
+    assert out["by_agent_state"] == {"none": 1, "not_reproducible": 1}
+    for rid in (stale, norepro):
+        st, reason = _status_reason(pg, rid)
+        assert st == "expired" and "Not a fix" in reason
+    assert "could not reproduce" in _status_reason(pg, norepro)[1]
+    for rid in (young, classed, grad, pr_open, running_agent):
+        assert _status_reason(pg, rid)[0] == "awaiting_decision"
+    assert _status_reason(pg, ops)[0] == "awaiting_ops"
+
+    # expired is not OPEN: the same finding may be filed fresh.
+    with pg.cursor() as cur:
+        cur.execute("INSERT INTO squasher_work_queue (finding_key, status)"
+                    " VALUES ('stale', 'awaiting_decision') RETURNING id")
+        assert cur.fetchone()[0]
+
+
+def test_expiry_dry_run_writes_nothing_on_postgres(pg):
+    rid = _insert(pg, "stale")
+    _age(pg, rid, 10)
+    with pg.cursor() as cur:
+        out = sq.expire_stale_decisions(cur, dry_run=True)
+    assert out["would_expire"] == [rid] and out["expired"] == []
+    assert _status_reason(pg, rid)[0] == "awaiting_decision"
+
+
+def _status_reason(c, rid):
+    with c.cursor() as cur:
+        cur.execute("SELECT status, COALESCE(reason, '') FROM squasher_work_queue"
+                    " WHERE id = %s", (rid,))
+        return cur.fetchone()
+
+
+def test_expired_is_declared_closed_and_not_a_closure():
+    assert "expired" in sq.STATUSES
+    assert "expired" not in sq._OPEN_STATUSES
+    closed = sq._CONVERGENCE_SQL[: sq._CONVERGENCE_SQL.index("recurred AS")]
+    assert "status <> 'expired'" in closed
+
+
+def test_drain_calls_the_expiry_after_the_sweep():
+    import inspect
+    src = inspect.getsource(sq.drain)
+    assert "expire_stale_decisions(cur)" in src
+    assert src.index("sweep_self_cleared(cur)") < src.index("expire_stale_decisions(cur)")
