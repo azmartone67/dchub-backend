@@ -170,12 +170,25 @@ def my_entitlements():
         known = (_tctx or {}).get("source") not in (None, "anonymous")
         plan = ((_tctx or {}).get("plan") or "").lower()
         tier_name = ("free" if gate == "anonymous" and known else gate)
+        unlocks = _PLAN_TOOL_SUMMARY.get(tier_name, _PLAN_TOOL_SUMMARY["free"])
+        # 2026-09-24 (live gate run 3): a bound free key read "50 calls/day
+        # once email-bound" beside email_bound=true. Say what it HAS.
+        src = out["sources"]
+        bound = bool((src.get("mcp_dev_keys") or {}).get("email_bound")
+                     or (src.get("api_keys") or {}).get("user_email"))
+        if tier_name == "free" and bound:
+            try:
+                from tier_registry import calls_per_day
+                unlocks = ("free plan, email-bound · free-tier depth on all "
+                           "tools · %s calls/day" % f"{calls_per_day('identified'):,}")
+            except Exception:  # noqa: BLE001
+                unlocks = "free plan, email-bound · free-tier depth on all tools"
         out["resolved"] = {
             "tier": tier_name,
             "gate_level": gate,
             "plan": plan or None,
-            "unlocks": _PLAN_TOOL_SUMMARY.get(
-                tier_name, _PLAN_TOOL_SUMMARY["free"]),
+            "email_bound": bound,
+            "unlocks": unlocks,
         }
     except Exception as e:  # noqa: BLE001
         out["resolved"] = {"tier": None, "note": "resolver unavailable: %s"

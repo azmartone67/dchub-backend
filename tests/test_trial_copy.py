@@ -243,6 +243,20 @@ def test_entitlements_bound_free_key_reads_bound_and_free(monkeypatch):
     assert out["sources"]["mcp_dev_keys"]["tier"] == "free"
     assert out["resolved"]["tier"] == "free" and out["resolved"]["gate_level"] == "anonymous"
     assert out["resolved"]["plan"] == "free"
+    # a BOUND free key says what it has, not what binding would give it
+    from tier_registry import calls_per_day
+    assert out["resolved"]["email_bound"] is True
+    assert "email-bound" in out["resolved"]["unlocks"]
+    assert "once email-bound" not in out["resolved"]["unlocks"]
+    assert f"{calls_per_day('identified'):,} calls/day" in out["resolved"]["unlocks"]
+
+
+def test_entitlements_unbound_free_key_keeps_the_binding_offer(monkeypatch):
+    from util.tier_gate import Tier
+    out, _ = _entitlements(monkeypatch, ("active", None, "2026-09-24", "free"),
+                           Tier.ANONYMOUS, {"source": "api_key", "plan": "free"})
+    assert out["resolved"]["tier"] == "free" and out["resolved"]["email_bound"] is False
+    assert "once email-bound" in out["resolved"]["unlocks"]
 
 
 def test_entitlements_unknown_key_still_reads_anonymous(monkeypatch):
