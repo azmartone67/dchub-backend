@@ -22,38 +22,67 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # 2026-09-25: both admin routes 401 a keyless read, so this job had been
+      # reading {"error": ...} as total_at_risk=0 every week and reporting
+      # success. It now sends the internal key (admin key as fallback) and
+      # fails when either read is refused.
+      #
+      # This repo is PUBLIC: the run log and the issue must never carry a
+      # customer email, nor anything derived from one (an unsalted hash lets
+      # anyone confirm a guessed address). Rows are shown by position in the
+      # admin route's own order, with plan and risk only; the full list is the
+      # admin route itself, read with a key.
       - name: Fetch churn-risk + welcome lists
+        env:
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
-          CHURN=$(curl -sS "https://dchub.cloud/api/v1/admin/churn-risk?days=7")
-          WELCOME=$(curl -sS "https://dchub.cloud/api/v1/admin/welcome-sequence?days=7")
-          echo "$CHURN" > /tmp/churn.json
-          echo "$WELCOME" > /tmp/welcome.json
-          AT_RISK=$(echo "$CHURN" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('total_at_risk',0))")
-          NEW_NEEDS_WELCOME=$(echo "$WELCOME" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('still_zero_calls_count',0))")
-          echo "::notice::AT_RISK=$AT_RISK NEW_NEEDS_WELCOME=$NEW_NEEDS_WELCOME"
+          if [ -n "${INTERNAL_KEY:-}" ]; then AUTH=(-H "X-Internal-Key: $INTERNAL_KEY")
+          elif [ -n "${ADMIN_KEY:-}" ]; then AUTH=(-H "X-Admin-Key: $ADMIN_KEY")
+          else echo "::error::neither DCHUB_INTERNAL_KEY nor DCHUB_ADMIN_KEY is set"; exit 1; fi
+          for pair in "churn:churn-risk" "welcome:welcome-sequence"; do
+            name=${pair%%:*}; route=${pair#*:}
+            code=$(curl -sS -o "/tmp/$name.json" -w '%{http_code}' "${AUTH[@]}" \
+              "https://dchub.cloud/api/v1/admin/$route?days=7")
+            if [ "$code" != "200" ]; then
+              echo "::error::/api/v1/admin/$route returned HTTP $code — refusing to read it as zero at-risk"
+              exit 1
+            fi
+          done
 
-          if [ "${AT_RISK:-0}" -gt 0 ] || [ "${NEW_NEEDS_WELCOME:-0}" -gt 0 ]; then
-            python3 <<'PYEOF'
-          import json, os
+          python3 <<'PYEOF'
+          import json
           churn = json.load(open('/tmp/churn.json'))
           welcome = json.load(open('/tmp/welcome.json'))
-          lines = ["DC Hub Churn Watcher — Weekly Summary\n"]
-          lines.append(f"## {churn.get('total_at_risk',0)} customers at churn risk (>7d inactive or zero calls):\n")
-          for c in churn.get('customers', [])[:10]:
-              lines.append(f"  • {c.get('email')} ({c.get('plan')}) — risk {c.get('risk_score')}, reasons: {c.get('risk_reasons')}")
-          lines.append(f"\n## {welcome.get('still_zero_calls_count',0)} new customers need welcome:\n")
-          for c in welcome.get('still_zero_calls', [])[:10]:
-              lines.append(f"  • {c.get('email')} ({c.get('plan')}) — signed up {c.get('user_created','?')[:10]}")
+          if 'total_at_risk' not in churn or 'still_zero_calls_count' not in welcome:
+              raise SystemExit('::error::admin response is missing total_at_risk / still_zero_calls_count')
+          at_risk = churn['total_at_risk']
+          need_welcome = welcome['still_zero_calls_count']
+          print(f"::notice::AT_RISK={at_risk} NEW_NEEDS_WELCOME={need_welcome}")
+          lines = ["DC Hub Churn Watcher — Weekly Summary (emails redacted; full list: GET /api/v1/admin/churn-risk with a key)\n"]
+          lines.append(f"## {at_risk} customers at churn risk (>7d inactive or zero calls):\n")
+          body = []
+          for n, c in enumerate(churn.get('customers', [])[:10], 1):
+              row = f"#{n} ({c.get('plan')}) — risk {c.get('risk_score')}, reasons: {', '.join(c.get('risk_reasons') or [])}"
+              lines.append('  • ' + row)
+              body.append('- ' + row)
+          lines.append(f"\n## {need_welcome} new customers need welcome:\n")
+          for n, c in enumerate(welcome.get('still_zero_calls', [])[:10], 1):
+              lines.append(f"  • #{n} ({c.get('plan')}) — signed up {(c.get('user_created') or '?')[:10]}")
           print('\n'.join(lines))
+          open('/tmp/at_risk', 'w').write(str(int(at_risk or 0)))
+          open('/tmp/issue_body.md', 'w').write(
+              '\n'.join(body) + '\n\nEmails are redacted (public repo); #N is the row position in the admin route. '
+              'Full list: `GET /api/v1/admin/churn-risk?days=7` with an admin or viewer key.\n')
           PYEOF
-          fi
+          rm -f /tmp/churn.json /tmp/welcome.json
 
       - name: Open GitHub issue if action needed
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          AT_RISK=$(cat /tmp/churn.json | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('total_at_risk',0))")
+          AT_RISK=$(cat /tmp/at_risk)
           if [ "${AT_RISK:-0}" -gt 0 ]; then
             # Only open if no open issue exists
             EXISTING=$(gh issue list --label "churn-watch" --state open --json number --jq 'length')
@@ -61,6 +90,6 @@ jobs:
               gh issue create \
                 --title "Churn watch: ${AT_RISK} customers at risk this week" \
                 --label "churn-watch" \
-                --body "$(cat /tmp/churn.json | jq -r '.customers[] | "- " + .email + " — " + (.risk_score|tostring) + " risk — " + (.risk_reasons|join(\", \"))' | head -10)"
+                --body-file /tmp/issue_body.md
             fi
           fi
