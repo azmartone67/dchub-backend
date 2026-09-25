@@ -1479,17 +1479,19 @@ jobs:
       # filter; the column defaults to false and production holds unpublished
       # BUILD/AVOID alias twins. A NULL/false flag is a data fact no fake
       # cursor holds, so the shipped route reads a real table here. Owns and
-      # recreates market_power_scores and dcpi_daily_snapshots.
+      # recreates market_power_scores and dcpi_daily_snapshots. The citations
+      # file owns ai_testimonials: approved AI rows only, never claim_quote.
       - name: agent_broadcast published-only SQL against a real Postgres
         env:
           AGENT_BROADCAST_PUBLISHED_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
-        run: python3 -m pytest tests/test_agent_broadcast_published_sql.py -v --tb=short
+        run: python3 -m pytest tests/test_agent_broadcast_published_sql.py tests/test_agent_broadcast_citations_sql.py -v --tb=short
 
       - name: Prove the agent_broadcast published-only SQL test actually RAN
         env:
           AGENT_BROADCAST_PUBLISHED_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
         run: |
           python3 -m pytest tests/test_agent_broadcast_published_sql.py \
+            tests/test_agent_broadcast_citations_sql.py \
             -q -rs --tb=no > abp.txt 2>&1 || { cat abp.txt; exit 1; }
           cat abp.txt
           if grep -qi "skipped" abp.txt; then
