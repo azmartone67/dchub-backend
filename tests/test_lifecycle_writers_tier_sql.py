@@ -225,8 +225,13 @@ class _Harness:
 
         sub_ns = dict(ns, _handle_subscription_plan_change=lambda *a, **k: None)
         sub_ns["_demote_customer_mcp_keys"] = _compile("_demote_customer_mcp_keys", sub_ns)
+        # #5555: the real cancel-scope helpers (STRIPE_AVAILABLE=False -> no
+        # other live subscription is ever found: today's demote).
+        sub_ns["_cancel_keeps_access"] = _compile("_cancel_keeps_access", sub_ns)
+        sub_ns["_repoint_to_live_subscription"] = _compile("_repoint_to_live_subscription", sub_ns)
         self.sub_updated_fn = _compile("handle_subscription_updated", sub_ns)
         self.sub_deleted_fn = _compile("handle_subscription_deleted", sub_ns)
+        self._sub_ns = sub_ns
 
         def _pg_execute_many(stmts):
             for q, p in stmts:
@@ -248,7 +253,9 @@ class _Harness:
         co_ns["_plan_from_checkout_offer"] = _compile(
             "_plan_from_checkout_offer",
             dict(co_ns, _CHECKOUT_OFFER_PLAN=ast.literal_eval(offer_map)))
+        co_ns["_checkout_customer_to_store"] = _compile("_checkout_customer_to_store", co_ns)
         self.checkout_fn = _compile("handle_checkout_completed", co_ns)
+        self._co_ns = co_ns
 
         monkeypatch.setattr(api_tier_gating, "get_db",
                             lambda *a, **k: db_utils.PGConnectionWrapper(
@@ -271,11 +278,30 @@ class _Harness:
             conn.close()
 
     def user(self, uid="u1", email=EMAIL, plan="founding", cus=CUS, status="active",
-             paid=1, failed=0):
+             paid=1, failed=0, role="pro"):
         self.sql("INSERT INTO users (id, email, password_hash, role, plan, stripe_customer_id, "
                  "subscription_status, invoices_paid_count, payment_failed_count) "
-                 "VALUES (%s,%s,'x','pro',%s,%s,%s,%s,%s)",
-                 (uid, email, plan, cus, status, paid, failed))
+                 "VALUES (%s,%s,'x',%s,%s,%s,%s,%s,%s)",
+                 (uid, email, role, plan, cus, status, paid, failed))
+
+    def user_row(self, uid="u1"):
+        return tuple(self.sql("SELECT plan, role, stripe_customer_id, subscription_status "
+                              "FROM users WHERE id = %s", (uid,), fetch=True)[0])
+
+    def with_stripe(self, fake):
+        """#5555: the cancel-scope and stored-customer helpers see `fake` as
+        Stripe; the handlers themselves are recompiled against them."""
+        helper_ns = dict(self._sub_ns, STRIPE_AVAILABLE=True, stripe=fake)
+        sub_ns = dict(self._sub_ns)
+        sub_ns["_cancel_keeps_access"] = _compile("_cancel_keeps_access", helper_ns)
+        sub_ns["_repoint_to_live_subscription"] = _compile(
+            "_repoint_to_live_subscription", helper_ns)
+        self.sub_updated_fn = _compile("handle_subscription_updated", sub_ns)
+        self.sub_deleted_fn = _compile("handle_subscription_deleted", sub_ns)
+        co_ns = dict(self._co_ns)
+        co_ns["_checkout_customer_to_store"] = _compile(
+            "_checkout_customer_to_store", dict(self._co_ns, STRIPE_AVAILABLE=True, stripe=fake))
+        self.checkout_fn = _compile("handle_checkout_completed", co_ns)
 
     def api_key(self, uid="u1", key_hash=HASH, rate_limit_tier="pro", plan="pro", is_active=1):
         self.sql("INSERT INTO api_keys (user_id, key_hash, key_prefix, rate_limit_tier, "
@@ -318,13 +344,17 @@ class _Harness:
     # The subscription handlers open their mirror block with get_db() outside
     # a try, after every Postgres write. The mirror is not under test, so the
     # stub raises there; reaching it means the Postgres writes all ran.
-    def sub_updated(self, status, customer=CUS):
+    def sub_updated(self, status, customer=CUS, sub_id=None):
         with pytest.raises(RuntimeError, match="no SQLite mirror"):
-            self.sub_updated_fn({"customer": customer, "status": status})
+            self.sub_updated_fn({"customer": customer, "status": status, "id": sub_id})
 
-    def sub_deleted(self, customer=CUS):
+    def sub_deleted(self, customer=CUS, sub_id=None, demotes=True):
+        event = {"customer": customer, "id": sub_id}
+        if not demotes:                  # #5555: a kept account returns early
+            self.sub_deleted_fn(event)
+            return
         with pytest.raises(RuntimeError, match="no SQLite mirror"):
-            self.sub_deleted_fn({"customer": customer})
+            self.sub_deleted_fn(event)
 
     def v2_deleted(self):
         api_tier_gating._handle_sub_deleted_v2({"customer": CUS})
@@ -667,3 +697,130 @@ def test_a_k_checkout_leaves_an_enterprise_key_unrecorded_so_its_cancel_does_too
     assert h.mcp_row() == ("enterprise", None)
     h.sub_deleted()
     assert h.mcp_row()[0] == "enterprise"
+
+
+
+# ═══ #5555 (P1): one person, two subscriptions ═══════════════════════════════
+# Payment Links make a NEW Stripe customer per checkout. Measured 2026-09-25
+# 04:18:59Z: a second (test) checkout re-pointed admin001 at its customer and
+# set role from the plan; cancelling it demoted the account and 21 MCP keys
+# although the account's first subscription was still paid.
+
+FIRST, SECOND = "cus_first_t", "cus_second_t"
+
+
+class _List:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeStripe:
+    """Stripe as the handlers see it: customers by email, subscriptions by customer."""
+    def __init__(self, subs, boom=False):
+        self._subs = subs                # customer -> [(sub_id, status, created)]
+        self.boom = boom
+        outer = self
+
+        class Customer:
+            @staticmethod
+            def list(email=None, limit=None):
+                if outer.boom:
+                    raise RuntimeError("stripe down")
+                return _List([{"id": c} for c in outer._subs if email == EMAIL])
+
+        class Subscription:
+            @staticmethod
+            def list(customer=None, status=None, limit=None):
+                if outer.boom:
+                    raise RuntimeError("stripe down")
+                return _List([{"id": i, "status": st, "created": cr}
+                              for i, st, cr in outer._subs.get(customer, [])])
+
+        self.Customer, self.Subscription = Customer, Subscription
+
+
+BOTH_LIVE_THEN_SECOND_ENDS = {FIRST: [("sub_first", "active", 100)],
+                              SECOND: [("sub_second", "canceled", 200)]}
+
+
+def test_cancelling_a_second_subscription_keeps_the_first(h):
+    h.with_stripe(_FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS))
+    h.user(plan="pro", cus=SECOND, role="admin")       # the checkout re-pointed it
+    h.api_key(rate_limit_tier="pro", plan="pro")
+    h.mcp_key(tier="paid")
+    h.sub_deleted(customer=SECOND, sub_id="sub_second", demotes=False)
+    assert h.user_row() == ("pro", "admin", FIRST, "active")
+    assert h.api_row()[0] == "pro"
+    assert h.mcp_row()[0] == "paid"
+    assert h.node_tier() == "enterprise"                 # role admin resolves above paid
+
+
+def test_an_update_to_canceled_of_a_second_subscription_keeps_the_first(h):
+    h.with_stripe(_FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS))
+    h.user(plan="pro", cus=SECOND)
+    h.api_key(rate_limit_tier="pro", plan="pro")
+    h.mcp_key(tier="paid")
+    h.sub_updated("canceled", customer=SECOND, sub_id="sub_second")
+    assert h.user_row() == ("pro", "pro", FIRST, "active")
+    assert h.api_row()[0] == "pro" and h.mcp_row()[0] == "paid"
+
+
+def test_a_key_the_second_customers_k_checkout_raised_still_drops(h):
+    h.with_stripe(_FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS))
+    h.user(plan="pro", cus=SECOND)
+    h.mcp_key(api_key=OTHER, email="holder@else.example", tier="paid",
+              metadata={"stripe_customer_id": SECOND})
+    h.sub_deleted(customer=SECOND, sub_id="sub_second", demotes=False)
+    assert h.mcp_row(OTHER)[0] == "free"
+
+
+def test_with_no_other_live_subscription_the_cancel_still_demotes(h):
+    h.with_stripe(_FakeStripe({FIRST: [("sub_first", "canceled", 100)],
+                               SECOND: [("sub_second", "canceled", 200)]}))
+    h.user(plan="pro", cus=SECOND, role="admin")
+    h.api_key(rate_limit_tier="pro", plan="pro")
+    h.mcp_key(tier="paid")
+    h.sub_deleted(customer=SECOND, sub_id="sub_second")
+    plan, role, cus, status = h.user_row()
+    assert (plan, cus, status) == ("free", SECOND, "canceled")
+    assert role == "admin"                                # a role, not a plan
+    assert h.api_row()[0] == "free" and h.mcp_row()[0] == "free"
+
+
+def test_a_stripe_failure_demotes_as_before(h):
+    h.with_stripe(_FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS, boom=True))
+    h.user(plan="pro", cus=SECOND)
+    h.mcp_key(tier="paid")
+    h.sub_deleted(customer=SECOND, sub_id="sub_second")
+    assert h.user_row()[0] == "free" and h.mcp_row()[0] == "free"
+
+
+def test_a_second_checkout_keeps_a_stored_customer_that_still_pays(h):
+    h.with_stripe(_FakeStripe({FIRST: [("sub_first", "active", 100)]}))
+    h.user(plan="pro", cus=FIRST, role="admin")
+    h.mcp_key(tier="paid")
+    h.k_checkout(customer=SECOND)
+    plan, role, cus, status = h.user_row()
+    assert (plan, role, cus) == ("pro", "admin", FIRST)
+
+
+def test_a_checkout_replaces_a_stored_customer_that_no_longer_pays(h):
+    h.with_stripe(_FakeStripe({FIRST: [("sub_first", "canceled", 100)]}))
+    h.user(plan="free", cus=FIRST, status="canceled")
+    h.mcp_key(tier="free")
+    h.k_checkout(customer=SECOND)
+    plan, role, cus, status = h.user_row()
+    assert (plan, cus, status) == ("pro", SECOND, "active")
+    assert role == "pro"                                  # non-admin role still follows the plan
+
+
+def test_the_v2_cancel_route_keeps_the_first_subscription_too(h, monkeypatch):
+    from routes import subscription_scope
+    fake = _FakeStripe(BOTH_LIVE_THEN_SECOND_ENDS)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(subscription_scope, "_stripe", lambda stripe_mod=None: fake)
+    h.user(plan="pro", cus=SECOND)
+    h.mcp_key(tier="paid")
+    api_tier_gating._handle_sub_deleted_v2({"customer": SECOND, "id": "sub_second"})
+    assert h.user_row() == ("pro", "pro", FIRST, "active")
+    assert h.mcp_row()[0] == "paid"

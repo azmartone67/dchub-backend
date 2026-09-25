@@ -2019,6 +2019,28 @@ def _handle_sub_deleted_v2(subscription):
 
     conn = get_db()
     c = conn.cursor()
+    # #5555 (P1): an account holding ANOTHER live subscription is re-pointed at
+    # it, not demoted. Stripe unavailable or erroring: demote as before.
+    keep = None
+    if customer_id and (os.environ.get('STRIPE_SECRET_KEY') or '').strip():
+        try:
+            c.execute("SELECT email FROM users WHERE stripe_customer_id = %s", (customer_id,))
+            emails = [(r['email'] if isinstance(r, dict) else r[0]) for r in (c.fetchall() or [])]
+            emails = [e for e in emails if e]
+            if emails:
+                from routes.subscription_scope import other_live_subscription
+                keep = other_live_subscription(emails, subscription.get('id'))
+        except Exception as e:
+            print(f"[#5555] v2 live-subscription check failed (demoting as before): {e}")
+            keep = None
+    if keep:
+        c.execute("UPDATE users SET stripe_customer_id = %s, subscription_status = %s "
+                  "WHERE stripe_customer_id = %s", (keep[0], keep[1], customer_id))
+        conn.commit()
+        conn.close()
+        print(f"🔁 v2: subscription on {customer_id} ended; account re-pointed to "
+              f"{keep[0]} ({keep[1]}), not demoted (#5555)")
+        return
     c.execute("""
         UPDATE users SET plan = 'free', subscription_status = 'canceled'
         WHERE stripe_customer_id = %s
