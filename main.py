@@ -16462,9 +16462,11 @@ def stripe_webhook():
             # ended now, so Stripe charges the first $99 instead of another free
             # week. Only the offer=pro_trial_7d checkout; fail-safe inside (an
             # unreadable ledger ends nothing). See routes/pro_trial_guard.py.
+            _trial_guard = {}
             try:
                 from routes.pro_trial_guard import enforce_one_trial
                 _ot = enforce_one_trial(data)
+                _trial_guard = _ot
                 if _ot.get("repeat"):
                     print(f"🔁 Repeat Pro trial: {_ot}")
                     try:
@@ -16843,13 +16845,23 @@ def stripe_webhook():
                 _trial_end = _tefc(data)
             except Exception:
                 _trial_end = None
+            # r-repeat-receipt: a repeat trial ended now was charged on its
+            # own invoice; the receipt states that charge, not the $0 checkout.
+            _repeat_charge = None
+            try:
+                if (locals().get('_trial_guard') or {}).get('action') == 'trial_ended_now':
+                    from routes.trial_copy import repeat_charge_for as _rcf
+                    _repeat_charge = _rcf(_trial_guard.get('identity', {}).get('sub'))
+            except Exception:
+                _repeat_charge = None
             if customer_email and data.get('payment_status') == 'paid':
                 try:
                     _send_payment_receipt(customer_email,
                                           data.get('amount_total'),
                                           data.get('currency'),
                                           data.get('id') or '',
-                                          trial_end=_trial_end)
+                                          trial_end=_trial_end,
+                                          repeat_charge=_repeat_charge)
                 except Exception as _re:
                     print(f"⚠️ receipt send error (non-fatal): {_re}")
 
@@ -17906,7 +17918,7 @@ def _claim_welcome_send(to_email, plan_name):
 
 
 def _send_payment_receipt(to_email, amount_cents, currency, session_id,
-                          trial_end=None):
+                          trial_end=None, repeat_charge=None):
     """Email a payment receipt for a completed checkout (r-receipt 2026-08-17).
 
     Onboarding shell lane 2: every recent payer had 2-4 welcome emails and NO
@@ -17927,10 +17939,29 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id,
         return
     plan_tag = "receipt:" + (session_id or "")[:40]
     _trial_html = ""
-    if trial_end:
+    _heading, _subject = "Thanks — payment received", "Your DC Hub receipt"
+    _amount_label = "Amount"
+    # r-repeat-receipt (2026-09-24, live gate run 3): a REPEAT trial is ended
+    # now by routes/pro_trial_guard and Stripe charges the first month on its
+    # own invoice, so the checkout's own amount_total is $0. The receipt said
+    # "payment received, 0.00 USD" beside a $99 card charge, which invites a
+    # dispute. repeat_charge = {'amount_cents', 'currency'} of that invoice.
+    if repeat_charge:
+        try:
+            from routes.trial_copy import repeat_block_html
+            _trial_html = repeat_block_html(repeat_charge)
+            _heading = _subject = "Your DC Hub Pro subscription has started"
+            _amount_label = "Charged today"
+            amount_cents = repeat_charge.get("amount_cents", amount_cents)
+            currency = repeat_charge.get("currency") or currency
+        except Exception:
+            _trial_html = ""
+    elif trial_end:
         try:
             from routes.trial_copy import trial_block_html
             _trial_html = trial_block_html(trial_end)
+            _heading = _subject = "Your DC Hub Pro trial has started"
+            _amount_label = "Charged today"
         except Exception:
             _trial_html = ""
 
@@ -17954,11 +17985,11 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id,
             except Exception:
                 pass
             html = f"""<div style="font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;">
-  <h2 style="margin:24px 0 8px;">{'Your DC Hub Pro trial has started' if _trial_html else 'Thanks — payment received'}</h2>
+  <h2 style="margin:24px 0 8px;">{_heading}</h2>
   <p style="color:#4a4a5a;">This is your receipt from DC Hub.</p>
   {_trial_html}
   <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:15px;">
-    {f'<tr><td style="padding:8px 0;color:#6a6a7a;">{"Charged today" if _trial_html else "Amount"}</td><td style="text-align:right;font-weight:600;">{amount_line}</td></tr>' if amount_line else ''}
+    {f'<tr><td style="padding:8px 0;color:#6a6a7a;">{_amount_label}</td><td style="text-align:right;font-weight:600;">{amount_line}</td></tr>' if amount_line else ''}
     <tr><td style="padding:8px 0;color:#6a6a7a;">Reference</td><td style="text-align:right;font-family:monospace;font-size:12px;word-break:break-all;">{session_id or ''}</td></tr>
   </table>
   <p style="color:#6a6a7a;font-size:13px;">Your API key and getting-started guide arrive in a separate welcome email. Questions or billing changes: reply to this email or write jonathan@dchub.cloud.</p>
@@ -17972,8 +18003,7 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id,
                     "https://api.resend.com/emails",
                     json={"from": f"DC Hub <{os.environ.get('DCHUB_FROM_EMAIL', 'jonathan@dchub.cloud')}>",
                           "to": [to_email],
-                          "subject": ("Your DC Hub Pro trial has started"
-                                      if _trial_html else "Your DC Hub receipt"),
+                          "subject": _subject,
                           "html": html},
                     headers={"Authorization": f"Bearer {rk}"}, timeout=20)
                 ok = resp.status_code in (200, 201)

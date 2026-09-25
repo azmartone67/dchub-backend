@@ -271,3 +271,42 @@ def test_entitlements_paid_key_is_unchanged(monkeypatch):
     out, _ = _entitlements(monkeypatch, ("active", "p@x.com", "2026-09-01", "paid"),
                            Tier.PRO, {"source": "api_key", "plan": "pro"})
     assert out["resolved"]["tier"] == "pro" and out["resolved"]["gate_level"] == "pro"
+
+
+# ── r-repeat-receipt (2026-09-24, live gate run 3) ──────────────────────
+# A repeat trial is ended now and charged on its own invoice; the receipt said
+# "payment received, 0.00 USD" beside a $99 card charge.
+
+def test_repeat_receipt_states_the_real_charge(monkeypatch):
+    msg = _render_receipt(monkeypatch, repeat_charge={"amount_cents": 9900, "currency": "usd"})
+    h = msg["html"]
+    assert msg["subject"] == "Your DC Hub Pro subscription has started"
+    assert "already used your free trial" in h
+    assert "$99.00 charged today, renews monthly" in h
+    assert "Charged today" in h and "99.00 USD" in h
+    assert "0.00 USD" not in h and "payment received" not in h.lower()
+    assert "https://dchub.cloud/dashboard" in h
+
+
+def test_repeat_receipt_without_a_known_amount_claims_no_number(monkeypatch):
+    from tier_registry import price_display
+    msg = _render_receipt(monkeypatch, repeat_charge={"x": 1})
+    assert "billed at %s, renews monthly" % price_display("pro") in msg["html"].replace("Billed", "billed")
+    assert "charged today, renews" not in msg["html"]
+
+
+def test_repeat_block_formats_other_amounts():
+    assert "$1,188.00 charged today" in tc.repeat_block_html({"amount_cents": 118800})
+
+
+def test_repeat_charge_for_without_a_sub_is_empty():
+    assert tc.repeat_charge_for(None) == {} and tc.repeat_charge_for("") == {}
+
+
+def test_webhook_passes_the_guard_result_to_the_receipt():
+    hook = _fn("stripe_webhook")
+    src = ast.get_source_segment(MAIN_SRC, hook)
+    guard_at = src.index("_trial_guard = _ot")
+    receipt_at = src.index("repeat_charge=_repeat_charge")
+    assert guard_at < receipt_at, "the receipt must run after the guard"
+    assert "== 'trial_ended_now'" in src and "repeat_charge_for" in src
