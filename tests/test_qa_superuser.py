@@ -3612,3 +3612,68 @@ class TestQuotaCheckOnGatedAndContradictoryEnvelopes:
         _m, out = self._run(monkeypatch, self._served(2), self._served(1))
         assert any(f.verdict == PASS for f in out), [
             (f.title, f.verdict) for f in out]
+
+
+import json as _json_for_fold  # noqa: E402
+_REAL_JSON_DUMPS = _json_for_fold.dumps
+
+
+class TestStaleBlocksFold(TestProposalStalenessReachesThePage):
+    """2026-09-25: an ack, analysis or proposal about EARLIER evidence renders
+    as one closed <details> line, not a full block above the current reading.
+    Rendered in node through the real card()."""
+
+    def _render(self, monkeypatch, tmp_path, **extra):
+        import json
+        # Reuse the parent harness, then patch the finding it renders.
+        real = self._card.__func__
+
+        def card_with(self_, mp, tp, proposal):
+            return real(self_, mp, tp, proposal)
+        orig_dumps = _REAL_JSON_DUMPS
+
+        def dumps(obj, *a, **k):
+            if isinstance(obj, dict) and obj.get("key") == "k":
+                obj = dict(obj, **extra)
+            return orig_dumps(obj, *a, **k)
+        monkeypatch.setattr(json, "dumps", dumps)
+        return card_with(self, monkeypatch, tmp_path, extra.pop("proposal", None))
+
+    INV = {"state": "stale", "at": "2026-09-19T00:00:00+00:00", "survived": False,
+           "recommendation": "compute remaining inline", "confidence": 0.4}
+
+    def test_a_stale_refuted_analysis_on_a_blind_card_is_folded(self, monkeypatch, tmp_path):
+        html = self._render(monkeypatch, tmp_path, verdict="BLIND", severity="major",
+                            investigation=dict(self.INV))
+        assert '<details class="acked stale folded"><summary>🧠 Older analysis' in html
+        assert ", refuted)" in html
+        assert "will not re-analyse it" in html
+        assert "compute remaining inline" in html          # history kept, one click away
+        assert "🧠 Analysed" not in html
+
+    def test_a_stale_analysis_on_a_red_says_it_will_be_reanalysed(self, monkeypatch, tmp_path):
+        html = self._render(monkeypatch, tmp_path, investigation=dict(self.INV))
+        assert "re-analyses a red on its next run" in html
+        assert "will not re-analyse it" not in html
+
+    def test_a_current_analysis_is_not_folded(self, monkeypatch, tmp_path):
+        html = self._render(monkeypatch, tmp_path,
+                            investigation=dict(self.INV, state="current", survived=True))
+        assert "🧠 Analysed" in html and "Older analysis" not in html
+        assert "<details" not in html
+
+    def test_a_stale_ack_is_folded_and_a_current_one_is_not(self, monkeypatch, tmp_path):
+        html = self._render(monkeypatch, tmp_path,
+                            ack={"state": "stale", "at": self.OLD, "note": "fine"})
+        assert "<summary>Older acknowledgement" in html and "fine" in html
+        html = self._render(monkeypatch, tmp_path,
+                            ack={"state": "current", "at": self.OLD})
+        assert "<b>Acknowledged" in html and "<details" not in html
+
+    def test_a_stale_proposal_is_folded_a_current_one_is_not(self, monkeypatch, tmp_path):
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "refused", "evidence_state": "stale", "at": self.OLD, "detail": "d"})
+        assert "<summary>🔧 Older proposal outcome (refused" in html
+        html = self._card(monkeypatch, tmp_path, {
+            "state": "refused", "evidence_state": "current", "at": self.OLD, "detail": "d"})
+        assert "<details" not in html and "No PR — refused" in html

@@ -1954,6 +1954,8 @@ h2 .cnt{font-family:var(--mono);background:var(--surface);border:1px solid var(-
   color:#a7f3d0}
 .acked.stale{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.07);
   color:#fde68a}
+details.folded summary{cursor:pointer;color:var(--muted,#9a9a9a)}
+details.folded[open] summary{margin-bottom:.35rem}
 code{font-family:var(--mono);font-size:.8rem;background:var(--surface2);
   border:1px solid var(--bd);border-radius:5px;padding:.05rem .3rem}
 table{width:100%;border-collapse:collapse;font-size:.84rem}
@@ -2000,6 +2002,25 @@ function hoursSince(iso){
   return Number.isFinite(t) ? (Date.now() - t) / 3600000 : null;
 }
 
+// ★ 2026-09-25 — WHAT NO LONGER DESCRIBES THE CARD IS FOLDED, NOT DELETED.
+//   The owner's board carried a 49-day-old acknowledgement, a 6.5-day-old
+//   REFUTED analysis and a 18.7-day-old refusal, all about earlier evidence,
+//   rendered at full size above a finding that is only BLIND — three paragraphs
+//   of answers to questions the card is no longer asking. Each already said
+//   "the evidence has CHANGED"; the reader still had to read past all three.
+//   A stale block now renders as one closed <details> line: the history is one
+//   click away, and the card's first screen is about what it reports NOW.
+function fold(summary, body){
+  return `<details class="acked stale folded"><summary>${summary}</summary>${body}</details>`;
+}
+
+// The two classes the server's lanes treat as work (is_actionable_finding).
+// Anything else — BLIND, GAUGE, PASS — is never re-analysed by the brain.
+function isActionable(f){
+  return (f.verdict === 'RED' && (f.severity === 'critical' || f.severity === 'major'))
+    || !!f.instrument_fault;
+}
+
 function card(f, cls){
   const sev = f.severity && f.severity !== 'info'
     ? `<span class="chip sev">${esc(f.severity)}</span>` : '';
@@ -2007,31 +2028,37 @@ function card(f, cls){
     ? `<span class="chip unstable">UNSTABLE ${f.transitions}x</span>` : '';
   const age = f.failing_since
     ? `<span class="chip age">red for ${span(f.failing_since)}</span>` : '';
-  const ack = f.ack ? `<div class="acked ${f.ack.state==='stale'?'stale':''}">
-      ${f.ack.state === 'stale'
-        ? `<b>Acknowledged ${ago(f.ack.at)} — but the evidence has CHANGED since.</b>
-           What you signed off on is not what this check is reporting now.`
-        : `<b>Acknowledged ${ago(f.ack.at)}.</b>`}
-      ${f.ack.note ? ' ' + esc(f.ack.note) : ''}</div>` : '';
+  const ack = !f.ack ? '' : f.ack.state === 'stale'
+    ? fold(`Older acknowledgement (${ago(f.ack.at)}) — the evidence has CHANGED since`,
+        `<div class="row">What you signed off on is not what this check is
+           reporting now.${f.ack.note ? ' ' + esc(f.ack.note) : ''}</div>`)
+    : `<div class="acked"><b>Acknowledged ${ago(f.ack.at)}.</b>
+      ${f.ack.note ? ' ' + esc(f.ack.note) : ''}</div>`;
 
   // The brain's analysis, shown where the finding is — with the same stale rule
   // as an ack, and with the refutation verdict FIRST. A recommendation the
   // investigator itself knocked down must not read like an answer.
   const iv = f.investigation;
-  const inv = !iv ? '' : `<div class="acked ${iv.state==='stale'?'stale':''}">
-      ${iv.state === 'stale'
-        ? `<b>🧠 Analysis from ${ago(iv.at)} — the evidence has CHANGED since.</b>
-           It explains an older observation than the one above.`
-        : `<b>🧠 Analysed ${ago(iv.at)}${iv.confidence!=null
-             ? ' · confidence ' + iv.confidence.toFixed(2) : ''}.</b>`}
-      ${iv.survived === false
+  const ivRefuted = !!iv && iv.survived === false;
+  const ivBody = !iv ? '' : `
+      ${ivRefuted
         ? ` <b style="color:var(--amber)">Did NOT survive the brain's own
             refutation — treat as a lead, not an answer.</b>` : ''}
       ${iv.recommendation ? `<div class="row">${esc(iv.recommendation)}</div>` : ''}
       ${iv.commented && iv.issue_number
         ? `<div class="row"><a target="_blank" rel="noopener"
              href="https://github.com/${REPO}/issues/${iv.issue_number}"
-             >posted to issue #${iv.issue_number} ↗</a></div>` : ''}
+             >posted to issue #${iv.issue_number} ↗</a></div>` : ''}`;
+  const inv = !iv ? '' : iv.state === 'stale'
+    ? fold(`🧠 Older analysis (${ago(iv.at)}${ivRefuted ? ', refuted' : ''}) — it
+             explains an earlier observation, not this one`,
+        `<div class="row">The evidence has CHANGED since this was written.${
+           isActionable(f) ? ' The investigate lane re-analyses a red on its next run.'
+           : ' This check is not red now, so the brain will not re-analyse it —'
+             + ' kept for history only.'}</div>${ivBody}`)
+    : `<div class="acked">
+      <b>🧠 Analysed ${ago(iv.at)}${iv.confidence!=null
+         ? ' · confidence ' + iv.confidence.toFixed(2) : ''}.</b>${ivBody}
     </div>`;
 
   // The outcome of a proposal, delivered here rather than in the HTTP response
@@ -2082,8 +2109,7 @@ function card(f, cls){
   // on screen forever. Past this the thread is gone, not slow.
   const ppRunStuck = pp && pp.state === 'running'
     && (hoursSince(pp.at) === null || hoursSince(pp.at) > 1);
-  const prop = !pp ? '' : `<div class="acked ${
-      pp.state === 'refused' || ppStale || ppRunStuck ? 'stale' : ''}">
+  const propInner = !pp ? '' : `
       ${pp.state === 'opened'
         ? `<b>🔧 PR opened ${ago(pp.at)} — not merged.</b>
            <a target="_blank" rel="noopener" href="${esc(pp.pr_url)}"
@@ -2097,8 +2123,12 @@ function card(f, cls){
         : pp.state === 'refused'
         ? `<b>🔧 No PR — refused ${ago(pp.at)}.</b> ${esc(pp.detail)}`
         : `<b>🔧 Proposal errored ${ago(pp.at)}.</b> ${esc(pp.detail)}`}
-      ${ppNote}
-    </div>`;
+      ${ppNote}`;
+  const prop = !pp ? '' : ppStale
+    ? fold(`🔧 Older proposal outcome (${esc(pp.state)}, ${ago(pp.at)}) — made
+             against earlier evidence`, propInner)
+    : `<div class="acked ${pp.state === 'refused' || ppRunStuck ? 'stale' : ''}">${
+        propInner}</div>`;
 
   // Actions exist on RED — and on an INSTRUMENT FAULT. A gauge makes no claim
   // to act on, and an unobserved finding is a request to look again, not a

@@ -90,6 +90,7 @@ jobs:
                   print(f"QA feed: skipped ({q['skipped']})")
               else:
                   print(f"QA feed: filed={q.get('filed', 0)} cleared={q.get('cleared', 0)}")
+                  print(f"QA chronic-blind feed: filed={q.get('blind_filed', 0)} {q.get('blind_skipped', '')}".rstrip())
           else:
               print("QA feed: not reported by /agent/next")
           b = d.get("brief")

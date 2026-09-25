@@ -1589,3 +1589,159 @@ def test_lifecycle_fix_hold_on_postgres(pg, monkeypatch):
                     " INTERVAL '30 hours' WHERE id = %s", (old,))
     d = al.claim_next(live=live, qa={"ok": False, "reds": {}})
     assert d["brief"]["queue_id"] == new, d
+
+
+# ══ · chronically blind QA checks become probe fixes (2026-09-25) ═══════════
+# quota-meter (UNSTABLE 39x), paid-vs-anon (anon control spent) and glama were
+# blind run after run; BLIND is never a product failure, so nothing routed them.
+
+QM = "mcp::anon::quota-meter"
+
+
+def _run(verdicts, canary=True):
+    """One board run: {family-variant: verdict}."""
+    return {"canary_fired": canary,
+            "findings": [{"key": f"{k}#abc", "verdict": v, "title": f"t {k}",
+                          "surface": "mcp", "seat": "anon",
+                          "evidence": f"could not observe {k}"}
+                         for k, v in verdicts.items()]}
+
+
+def test_chronic_blind_needs_the_share_and_the_run_count():
+    runs = [_run({QM: "BLIND"})] * 6 + [_run({QM: "PASS"})] * 6
+    got = al.chronic_blind(runs)
+    assert list(got) == [al.QA_BLIND_PREFIX + QM]
+    assert (got[al.QA_BLIND_PREFIX + QM]["blind"], got[al.QA_BLIND_PREFIX + QM]["runs"]) == (6, 12)
+    # 5 of 12 is under half
+    assert al.chronic_blind([_run({QM: "BLIND"})] * 5 + [_run({QM: "PASS"})] * 7) == {}
+    # 5 of 5 is too few runs to call it chronic
+    assert al.chronic_blind([_run({QM: "BLIND"})] * 5) == {}
+
+
+def test_chronic_blind_uses_only_the_window_of_trusted_runs():
+    # 12 recent passes, then a long blind history outside the window
+    runs = [_run({QM: "PASS"})] * 12 + [_run({QM: "BLIND"})] * 20
+    assert al.chronic_blind(runs) == {}
+    # canary-less runs are skipped entirely — they are not evidence either way
+    runs = [_run({QM: "BLIND"}, canary=False)] * 12 + [_run({QM: "PASS"})] * 12
+    assert al.chronic_blind(runs) == {}
+
+
+def test_chronic_blind_ignores_a_retired_check_and_votes_by_family():
+    runs = [_run({"other::x::y": "PASS"})] + [_run({QM: "BLIND"})] * 11
+    assert al.chronic_blind(runs) == {}                  # not in the newest run
+    # two variants in one run: one observed → the run counts as observed
+    runs = [_run({QM + "::a": "BLIND", QM + "::b": "PASS"})] * 12
+    assert al.chronic_blind(runs) == {}
+    runs = [_run({QM + "::b": "PASS", QM + "::a": "BLIND"})] * 12   # either order
+    assert al.chronic_blind(runs) == {}
+    runs = [_run({QM + "::a": "BLIND", QM + "::b": "BLIND"})] * 12
+    assert list(al.chronic_blind(runs)) == [al.QA_BLIND_PREFIX + QM]
+
+
+def test_blind_item_briefs_a_probe_fix_not_a_product_fix():
+    info = al.chronic_blind([_run({QM: "BLIND"})] * 12)[al.QA_BLIND_PREFIX + QM]
+    it = al.blind_item(al.QA_BLIND_PREFIX + QM, info)
+    assert it["issue"].startswith("qa_blind chronic:")
+    assert "tools/qa_superuser/" in it["remedy"] and "NOT a product failure" in it["basis"]
+    assert "12 of its last 12" in it["basis"]
+
+
+def test_blind_feed_plan_caps_and_skips_open():
+    blind = {al.QA_BLIND_PREFIX + f"a::b::c{i}": {"blind": 6 + i, "runs": 12,
+                                                  "family": f"a::b::c{i}", "finding": {}}
+             for i in range(3)}
+    plan = al.blind_feed_plan(blind, open_keys=set())
+    assert [k for k, _ in plan] == [al.QA_BLIND_PREFIX + "a::b::c2"]   # most blind first
+    assert al.blind_feed_plan(blind, set(blind)) == []
+
+
+def test_blind_clear_needs_the_family_to_stop_being_chronic_and_age():
+    key = al.QA_BLIND_PREFIX + QM
+    row = _row(id=4, finding_key=key, source="qa", requested_at=NOW - timedelta(hours=7))
+    assert al.blind_clear_plan([row], {key: {}}, NOW) == []            # still chronic
+    assert al.blind_clear_plan([row], {}, NOW) == [4]                   # observes again
+    young = dict(row, requested_at=NOW - timedelta(hours=1))
+    assert al.blind_clear_plan([young], {}, NOW) == []
+    red_row = _row(id=5, finding_key=al.QA_PREFIX + QM + "#x", source="qa",
+                   requested_at=NOW - timedelta(hours=9))
+    assert al.blind_clear_plan([red_row], {}, NOW) == []                # not a blind row
+    # and the PASS rule never clears a blind row
+    assert al.qa_clear_plan([row], {QM}, set(), NOW) == []
+
+
+def test_merge_qa_items_carries_blind_families_for_liveness():
+    key = al.QA_BLIND_PREFIX + QM
+    qa = dict(QA_OK([]), blind={key: {"blind": 8, "runs": 12, "family": QM, "finding": {}}})
+    assert al.merge_qa_items({}, qa)[key]["chronic_blind"] is True
+
+
+def test_a_blind_fix_is_judged_after_the_whole_window():
+    key = al.QA_BLIND_PREFIX + QM
+    row = _row(id=5, finding_key=key, source="qa", agent_state="pr_open",
+               agent_pr_url=PR, status="awaiting_decision")
+    merged = (NOW - timedelta(hours=10)).isoformat()
+    pr = {"state": "closed", "merged_at": merged}
+    assert al.reconcile_plan(row, pr, {key}, NOW) is None      # 10h < 48h window
+    late = {"state": "closed", "merged_at": (NOW - timedelta(hours=49)).isoformat()}
+    assert al.reconcile_plan(row, late, {key}, NOW)["agent_state"] == "merged_unverified"
+    # a heal/red row keeps the 6h rule
+    red = dict(row, finding_key=al.QA_PREFIX + QM + "#x")
+    assert al.reconcile_plan(red, pr, {red["finding_key"]}, NOW)["agent_state"] == "merged_unverified"
+
+
+def test_an_observed_again_clear_credits_the_fix():
+    key = al.QA_BLIND_PREFIX + QM
+    row = _row(id=5, finding_key=key, source="qa", agent_state="pr_open",
+               agent_pr_url=PR, status="self_cleared",
+               reason=f"self-cleared ({al._QA_OBSERVED_MARK}): ...",
+               finished_at=NOW - timedelta(hours=1))
+    pr = {"state": "closed", "merged_at": (NOW - timedelta(hours=30)).isoformat()}
+    assert al.reconcile_plan(row, pr, set(), NOW)["agent_state"] == "fixed"
+    bare = dict(row, reason="closed by hand")
+    assert al.reconcile_plan(bare, pr, set(), NOW)["agent_state"] == "cleared_unverified"
+
+
+def test_feed_qa_files_blind_rows_only_from_a_readable_history(monkeypatch):
+    sent = []
+
+    class Cur:
+        connection = type("C", (), {"autocommit": True})()
+        def execute(self, sql, params=()): sent.append((sql, params))
+        def fetchone(self): return (1,)
+        def fetchall(self): return []
+    monkeypatch.setattr(al, "_rows", lambda cur, where, params=(), limit=200: [])
+    blind = al.chronic_blind([_run({QM: "BLIND"})] * 12)
+    out = al.feed_qa(Cur(), dict(QA_OK([]), blind=blind, blind_known=True))
+    assert out["blind_filed"] == 1
+    ins = [p for sql, p in sent if "INSERT INTO squasher_work_queue" in sql]
+    assert ins[0][0] == al.QA_BLIND_PREFIX + QM and "fix the probe" in ins[0][4]
+    sent.clear()
+    out = al.feed_qa(Cur(), dict(QA_OK([]), blind=blind, blind_known=False))
+    assert "blind_filed" not in out and out["blind_skipped"]
+    assert not [p for sql, p in sent if "INSERT" in sql]
+
+
+def test_qa_board_reads_the_history(monkeypatch):
+    monkeypatch.setattr(al, "_recent_runs", lambda limit=24: [_run({QM: "BLIND"})] * 12)
+    b = _qa_board_with(monkeypatch, _fresh())
+    assert b["blind_known"] and list(b["blind"]) == [al.QA_BLIND_PREFIX + QM]
+    monkeypatch.setattr(al, "_recent_runs", lambda limit=24: None)
+    b = _qa_board_with(monkeypatch, _fresh())
+    assert b["blind_known"] is False and b["blind"] == {}
+
+
+def test_lifecycle_blind_feed_and_clear_on_postgres(pg, monkeypatch):
+    blind = al.chronic_blind([_run({QM: "BLIND"})] * 12)
+    qa = dict(QA_OK([]), blind=blind, blind_known=True)
+    import psycopg2
+    with psycopg2.connect(DSN) as tx, tx.cursor() as cur:
+        assert al.feed_qa(cur, qa)["blind_filed"] == 1
+        tx.commit()
+    with pg.cursor() as cur:
+        assert al.feed_qa(cur, qa)["blind_filed"] == 0          # idempotent
+        cur.execute("UPDATE squasher_work_queue SET requested_at = NOW() -"
+                    " INTERVAL '7 hours'")
+        assert al.feed_qa(cur, dict(qa, blind_known=False))["cleared"] == 0
+        assert al.feed_qa(cur, dict(qa, blind={}))["cleared"] == 1
+    assert _state(pg, _id_of(pg, al.QA_BLIND_PREFIX + QM))[0] == "self_cleared"
