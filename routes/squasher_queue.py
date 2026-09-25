@@ -144,7 +144,7 @@ _MAX_WORK_PER_DAY = 40      # investigations/24h — model spend, a separate cos
 
 STATUSES = ("queued", "running", "proposed", "refused", "failed",
             "awaiting_ops", "awaiting_decision", "resolved", "superseded",
-            "self_cleared")
+            "self_cleared", "expired")
 
 # ★ 2026-08-20 — WHY THE QUEUE NEVER DRAINED.
 #
@@ -1697,6 +1697,88 @@ def sweep_self_cleared(cur, live: dict | None = None, *,
     return out
 
 
+# ★★★ 2026-09-25 — A HAND-OFF WITH NO DEADLINE IS A PARKING LOT.
+#
+# Measured live that day: 13 rows awaiting_decision, all unclassified, the
+# oldest 48 days (1157h). None could leave on its own. The self-clear sweep
+# DOES consider awaiting_decision, but every one of them is a CHRONIC finding
+# the detector keeps reporting (a data gap, a business rate under a floor, a
+# URL shared by several issues), so absence never came. The agent lane gives
+# each row one attempt and then leaves it where it was — `not_reproducible`
+# by its own settle note waits for a sweep that will never fire. And the
+# agentic-loop shell already judges a decision older than 7 days a CRITICAL
+# failure (DECISION_AGE_CEILING_DAYS) while nothing acts on it.
+#
+# So an unanswered hand-off now EXPIRES. `expired` is terminal, is not an
+# open status (so a re-observation files a FRESH row the agent lane may try
+# again), and — like self_cleared — is NOT a fix and is excluded from
+# convergence's closures. Never touched: a row with an action_class (its
+# grant/verifier owns it), a graduation proposal (a grant question only a
+# human answers), and a row whose agent is running or has a PR open (the
+# reconcile owns it). The finding itself stays on the heal board.
+DECISION_EXPIRE_DAYS = 7
+_EXPIRE_LIMIT = 50
+_EXPIRE_SELECT_SQL = (
+    "SELECT id, finding_key, COALESCE(agent_state, '')"
+    " FROM squasher_work_queue"
+    " WHERE status = 'awaiting_decision'"
+    " AND action_class IS NULL"
+    " AND COALESCE(source, '') <> 'graduation'"
+    " AND COALESCE(agent_state, '') NOT IN ('running', 'pr_open')"
+    " AND COALESCE(finished_at, requested_at)"
+    "     < NOW() - (%s * INTERVAL '1 day')"
+    " ORDER BY requested_at ASC, id ASC LIMIT %s")
+_EXPIRE_UPDATE_SQL = (
+    "UPDATE squasher_work_queue SET status = 'expired',"
+    " reason = LEFT(%s || ' | ' || COALESCE(reason, ''), 600),"
+    " finished_at = NOW()"
+    " WHERE id = %s AND status = 'awaiting_decision'"
+    " AND action_class IS NULL")
+
+
+def expire_stale_decisions(cur, *, days: int = DECISION_EXPIRE_DAYS,
+                           limit: int = _EXPIRE_LIMIT, dry_run: bool = False,
+                           now=None) -> dict:
+    """Close awaiting_decision rows nobody answered within `days` of the
+    hand-off. -> {"expired": [ids], "by_agent_state": {...}}. Each row under
+    its own SAVEPOINT; a failure is reported, never swallowed."""
+    now = now or datetime.now(timezone.utc)
+    out: dict = {"ok": True, "days": days, "expired": [],
+                 "by_agent_state": {}}
+    cur.execute(_EXPIRE_SELECT_SQL, (int(days), int(limit)))
+    rows = cur.fetchall() or []
+    if dry_run:
+        out["would_expire"] = [r[0] for r in rows]
+        return out
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    for rid, _fkey, agent_state in rows:
+        why = {"not_reproducible": "the agent could not reproduce it while "
+                                   "the detector still reports it — a "
+                                   "detector/reality disagreement",
+               "merged_unverified": "a merged PR did not clear the finding",
+               "needs_human": "the agent handed it to a human"}.get(
+                   agent_state, "no one answered the hand-off")
+        note = ("expired %s: awaiting a decision for more than %d day(s); %s. "
+                "Not a fix and none is claimed — the finding stays on the "
+                "heal board, and a re-observation files a fresh row."
+                % (stamp, days, why))
+        try:
+            cur.execute("SAVEPOINT sq_expire")
+            cur.execute(_EXPIRE_UPDATE_SQL, (note, rid))
+            cur.execute("RELEASE SAVEPOINT sq_expire")
+            out["expired"].append(rid)
+            k = agent_state or "none"
+            out["by_agent_state"][k] = out["by_agent_state"].get(k, 0) + 1
+        except Exception as e:  # noqa: BLE001
+            out.setdefault("errors", []).append(
+                "#%s: %s: %s" % (rid, type(e).__name__, str(e)[:120]))
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sq_expire")
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
 def drain(limit: int = _MAX_PER_DRAIN) -> dict:
     """Process queued items. Bounded, fail-soft, one item at a time."""
     if _disabled():
@@ -1732,6 +1814,22 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
             #   true. Publishes the whole result, skip reasons included: this
             #   lane's failure mode is closing nothing quietly.
             out["self_cleared"] = sweep_self_cleared(cur)
+            # Then expire hand-offs nobody answered — after the sweep, so a
+            # row whose finding really cleared is recorded as self_cleared,
+            # the truer of the two closures.
+            # Outer SAVEPOINT: a failed SELECT (e.g. the agent-lane columns
+            # not yet added) must not abort the drain's transaction.
+            try:
+                cur.execute("SAVEPOINT sq_expire_pass")
+                out["expired"] = expire_stale_decisions(cur)
+                cur.execute("RELEASE SAVEPOINT sq_expire_pass")
+            except Exception as e:  # noqa: BLE001
+                out["expired"] = {"ok": False, "error": "%s: %s" % (
+                    type(e).__name__, str(e)[:120])}
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sq_expire_pass")
+                except Exception:  # noqa: BLE001
+                    pass
             # Heal mis-filed closures BEFORE selecting work, so a reclaimed
             # row can be picked up in this very pass.
             out["reclaimed"] = reclaim_misfiled(cur)
@@ -1849,6 +1947,7 @@ _CONVERGENCE_SQL = """
          WHERE finished_at IS NOT NULL
            AND status <> 'superseded'   -- a merged duplicate, not a verdict
            AND status <> 'self_cleared' -- the world changed; we shipped nothing
+           AND status <> 'expired'      -- nobody answered; we shipped nothing
            AND finished_at > NOW() - (%s || ' days')::INTERVAL
     ),
     recurred AS (

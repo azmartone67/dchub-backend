@@ -12900,6 +12900,14 @@ def check_cross_surface_value_drift() -> list[dict]:
                     lit = int(m.group(1) or m.group(2))
                 except (TypeError, ValueError):
                     continue
+                # ★ 2026-09-25: a full-line COMMENT is not a surface. The
+                #   comment at routes/state_of_power.py:250 (quoting the old
+                #   "144 markets scored" claim it fixed) kept this finding —
+                #   and its squasher row — open for 36 days with nothing
+                #   hardcoded anywhere.
+                _ls = txt.rfind("\n", 0, m.start()) + 1
+                if txt[_ls:m.start()].lstrip().startswith(("#", "//", "*")):
+                    continue
                 # tolerance: flag only if a real count (>50) off by >max(10, 5%) — skips years/noise
                 if lit > 50 and abs(lit - lv) > max(10, 0.05 * lv):
                     ln = txt[:m.start()].count("\n") + 1
