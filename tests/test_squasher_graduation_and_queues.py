@@ -171,6 +171,9 @@ def _news_row(**kw):
     return d
 
 
+K_SELF_FILE_OPEN = "WHERE (action_class = %s OR finding_key = %s)"
+
+
 def _harness2(monkeypatch, *, classes, rows=(), day_used=0, enabled="1",
               extra=None):
     """A drain step wired to stubs for ANY mix of classes. -> (conn, cur)."""
@@ -183,6 +186,10 @@ def _harness2(monkeypatch, *, classes, rows=(), day_used=0, enabled="1",
         K_PLAN: [_row_tuple(r) for r in rows],
         K_RUN_INSERT: [(501,)],
         "action_class IS NULL ORDER BY id DESC": [],
+        # self_file_class_rows' open-row check: a scripted queue row for a
+        # class IS an open row naming it, exactly as in the live table.
+        K_SELF_FILE_OPEN: [(r["id"],) for r in rows][:1],
+        "INSERT INTO squasher_work_queue": [(900,)],
         **(extra or {}),
     })
     conn = _Conn(cur)
@@ -587,7 +594,11 @@ def test_probes_skip_a_tripped_class_and_a_granted_class(monkeypatch, claim_ledg
                                                 _deals_cls(granted=True)], rows=[])
     fetch = _Fetch2(readings={"blindspot": [5, 5], "excess": [9, 9]})
     out = sac.run_granted_actions(fetch=fetch)
-    assert out["probes"]["probed"] == 0 and fetch.calls == []
+    # The only read is the self-file step's verifier read for the GRANTED
+    # class (it has no open row) — no probe touched either class.
+    assert out["probes"]["probed"] == 0
+    assert [c for c in fetch.calls if "deals_exact_dupe" not in c[1]] == []
+    assert [f["class"] for f in out["self_filed"]["filed"]] == [DEALS]
     assert out["probes"]["skipped"] == [{"class": NEWS, "why": "breaker tripped"}]
 
 
@@ -1551,3 +1562,83 @@ def test_collect_carries_queue_ages_and_fails_soft(monkeypatch):
         raise RuntimeError("x")
     monkeypatch.setattr(sq, "queue_ages", _boom)
     assert sp.collect()["queue_ages"] == {"known": False}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  self-file: a granted class-scoped class with work files its own row
+# ══════════════════════════════════════════════════════════════════════════
+
+def _self_file_inserts(cur):
+    return [p for s, p in cur.calls
+            if s.startswith("INSERT INTO squasher_work_queue")]
+
+
+def test_a_granted_class_with_work_and_no_row_files_one(monkeypatch, claim_ledger):
+    """Live 2026-09-25: news_entity_reresolve granted, blindspot=12, 0 runs —
+    nothing ever filed the row candidates() reads."""
+    conn, cur = _harness2(monkeypatch, classes=[_news_cls(granted=True)], rows=[])
+    out = sac.run_granted_actions(fetch=_Fetch2(readings={"blindspot": [12]}))
+    ins = _self_file_inserts(cur)
+    assert len(ins) == 1
+    key, title, source, reason, cls, url, method = ins[0]
+    assert (key, source, cls, method) == (
+        "action-class:" + NEWS, "action_class", NEWS, "POST")
+    assert url == NEWS_ACT + "?confirm=1"
+    assert out["self_filed"]["filed"] == [
+        {"class": NEWS, "queue_id": 900, "blindspot": 12}]
+
+
+def test_an_UNGRANTED_class_never_self_files(monkeypatch, claim_ledger):
+    conn, cur = _harness2(monkeypatch, classes=[_news_cls(granted=False)], rows=[])
+    sac.run_granted_actions(fetch=_Fetch2(readings={"blindspot": [12, 12, 12]}))
+    assert _self_file_inserts(cur) == []
+
+
+def test_a_TRIPPED_class_never_self_files(monkeypatch, claim_ledger):
+    conn, cur = _harness2(monkeypatch, classes=[
+        _news_cls(granted=True, breaker_tripped=True)], rows=[])
+    sac.run_granted_actions(fetch=_Fetch2(readings={"blindspot": [12]}))
+    assert _self_file_inserts(cur) == []
+
+
+@pytest.mark.parametrize("reading", [0, None])
+def test_zero_or_unreadable_files_nothing(monkeypatch, claim_ledger, reading):
+    conn, cur = _harness2(monkeypatch, classes=[_news_cls(granted=True)], rows=[])
+    out = sac.run_granted_actions(fetch=_Fetch2(readings={"blindspot": [reading]}))
+    assert _self_file_inserts(cur) == []
+    assert out["self_filed"]["filed"] == []
+
+
+def test_an_open_row_naming_the_class_blocks_a_second(monkeypatch, claim_ledger):
+    conn, cur = _harness2(monkeypatch, classes=[_news_cls(granted=True)],
+                          rows=[_news_row()])
+    sac.run_granted_actions(fetch=_Fetch2(readings={"blindspot": [5, 0]}))
+    assert _self_file_inserts(cur) == []
+
+
+def test_a_per_row_class_is_never_self_filed(monkeypatch):
+    """facility_dedup_apply is scoped by ?country= — there is no class-wide
+    work item to file, whatever its grant."""
+    # Eligible on purpose, so only the per-row rule can stop it.
+    monkeypatch.setattr(sac, "eligible", lambda c: (True, ""))
+    cur = _Cur({K_SELF_FILE_OPEN: [], "INSERT INTO squasher_work_queue": [(1,)]})
+    seen = []
+    sac.self_file_class_rows(
+        cur, {"facility_dedup_apply": {"class": "facility_dedup_apply",
+                                       "granted": True}},
+        fetch=lambda m, p: seen.append(p) or (200, {"duplicate_rows": 9}))
+    assert not any("facility-dedup" in p for p in seen)
+    assert _self_file_inserts(cur) == []
+
+
+def test_dry_run_never_self_files(monkeypatch, claim_ledger):
+    conn, cur = _harness2(monkeypatch, classes=[_news_cls(granted=True)], rows=[])
+    sac.run_granted_actions(dry_run=True, fetch=_Fetch2(readings={"blindspot": [12]}))
+    assert _self_file_inserts(cur) == []
+
+
+def test_self_filed_rows_are_outside_the_heal_sweep():
+    """The heal detector does not speak for a self-filed row — its verifier
+    does (noop_clean resolves it at 0). A sweep that closed it on detector
+    absence would close every one of them on the next drain."""
+    assert sac.SELF_FILE_SOURCE not in sq._SWEEPABLE_SOURCES
