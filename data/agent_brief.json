@@ -44,6 +44,12 @@
   ],
   "decided": [
     {
+      "id": "dec-mcp-paid-means-pro",
+      "decision": "A paid MCP key calling through the MCP server reads PRO on the backend's tier-name gates (backend#5576): site_selection_canvas, deal_autopsy, grid_transition_radar and radar synthesis. Reads PRO: every mcp_dev_keys.tier = 'paid' key, which the checkout webhook writes for Developer $49, Pro $99 and founding (and the agentic Developer SKU). Reads ENTERPRISE: tier = 'enterprise'. A $10 pack adds credits only and never changes the tier, so a pack key stays FREE. Direct REST calls with the same key still read the plan it bought. Revisit at 10-01 whether Developer keeps the full synthesis.",
+      "by": "owner",
+      "date": "2026-09-25"
+    },
+    {
       "id": "dec-claude-go-c",
       "decision": "Claude's visible text carries /go/c. /upgrade/h rides in structuredContent.for_your_human.",
       "by": "owner",
