@@ -41,9 +41,11 @@ minute. **Never disable a guard to make your own change land.**
 
 ### Why the hook exists when branch protection already does this
 
-`main` requires **seven** checks — `substance-gate`, `syntax-check`,
-`unit-tests`, `regression-lint`, `db-parity`, `app-contract-gate` and `contract`
-(`.github/workflows/api-response-contract.yml`; measured 2026-09-21) — and GitHub
+`main` requires **eight** checks — `substance-gate`, `syntax-check`,
+`unit-tests`, `regression-lint`, `db-parity`, `app-contract-gate`, `contract`
+(`.github/workflows/api-response-contract.yml`; measured 2026-09-21) and
+`web-image-build` (`.github/workflows/web-image-build.yml`, added 2026-09-25 —
+builds the `Dockerfile.web` image Railway deploys for web and worker) — and GitHub
 enforces them on direct pushes too: the push is rejected with
 `GH006: Protected branch update failed`. main-branch-health compares the live
 list with `REQUIRED_CONTEXTS` in `tools/deadman/main_branch_verdict.py` on every
