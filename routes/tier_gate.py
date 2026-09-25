@@ -170,8 +170,16 @@ def _resolve_caller_tier() -> tuple[str, dict]:
     # route gated through caller_is_privileged (deal $ and MW on /api/deals,
     # /api/v1/deals and /api/v1/transactions among them). A direct REST caller's
     # MCP key now resolves through validate_api_key, the plan the key bought.
-    # The MCP server's own calls (valid X-Internal-Key) keep the old path: they
-    # are privileged by signal 2 of caller_is_privileged either way.
+    #
+    # ★2026-09-25 (live screen, Claude keyed): the MCP server's own calls
+    # (valid X-Internal-Key) used to take the mcp_gatekeeper path here, which
+    # knows no dch_live_/dch_oauth_ key, so every one read FREE. "Privileged by
+    # signal 2 of caller_is_privileged either way" held only for routes that
+    # ask caller_is_privileged; site_selection_canvas, deal_autopsy,
+    # grid_transition_radar and radar compare the tier NAME, so a paying key
+    # calling through MCP got the locked teaser. The MCP server's call now
+    # resolves the key as well, through validate_api_key, which under the
+    # internal key keeps MCP's own mapping (paid -> Pro; util/mcp_key_plan).
     #
     # ★2026-09-22 — every key the request presents, not only the first header.
     # Only X-API-Key and ?api_key= were read here, so a paid key sent as
@@ -192,9 +200,11 @@ def _resolve_caller_tier() -> tuple[str, dict]:
             continue
         try:
             from util.mcp_key_plan import is_mcp_key, from_mcp_server, rest_plan
-            if is_mcp_key(api_key) and not from_mcp_server():
+            if is_mcp_key(api_key):
                 _plan = rest_plan(api_key)
-                candidates.append(((_plan or "free").upper(), "x-api-key:mcp_dev_keys"))
+                candidates.append(((_plan or "free").upper(),
+                                   "x-api-key:mcp_dev_keys"
+                                   + (":mcp_server" if from_mcp_server() else "")))
             else:
                 from mcp_gatekeeper import resolve_tier, TIER_NAME
                 tier_enum = resolve_tier(api_key)

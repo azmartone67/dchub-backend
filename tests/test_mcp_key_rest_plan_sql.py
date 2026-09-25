@@ -258,13 +258,20 @@ def test_caller_is_privileged_sees_a_pro_mcp_key(db, app):
         assert caller_is_privileged("IDENTIFIED") is False
 
 
-def test_caller_tier_for_the_mcp_servers_call_is_unchanged(db, app):
-    """The MCP server's call resolves through mcp_gatekeeper as before (FREE for
-    an MCP key), and is privileged by its internal key, not by the user's."""
+def test_caller_tier_for_the_mcp_servers_call_resolves_the_key(db, app):
+    """2026-09-25: the MCP server's call resolves the user's key with MCP's own
+    mapping (paid -> Pro). It read FREE, so routes that compare the tier name
+    (site_selection_canvas, deal_autopsy, grid_transition_radar, radar) locked
+    a paying key. It stays privileged by its internal key; a free key stays
+    FREE; and the REST answer for the same key is not taken from the cache."""
     from routes.tier_gate import caller_is_privileged, _resolve_caller_tier
     with _ctx(app, "dch_live_dev_by_users", internal=True):
-        assert _resolve_caller_tier()[0] == "FREE"
+        assert _resolve_caller_tier()[0] == "PRO"
         assert caller_is_privileged("PRO") is True
+    with _ctx(app, "dch_live_dev_by_users"):
+        assert _resolve_caller_tier()[0] == "DEVELOPER"
+    with _ctx(app, "dch_live_free", internal=True):
+        assert _resolve_caller_tier()[0] in ("FREE", "IDENTIFIED")
 
 
 # ── util/tier_gate.resolve_tier ─────────────────────────────────────────────

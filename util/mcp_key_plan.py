@@ -139,10 +139,16 @@ _rest_plan_lock = threading.Lock()
 
 
 def rest_plan(api_key):
-    """validate_api_key's plan for an MCP key on a direct REST request, or None
-    for an unknown or inactive key. Cached for _REST_PLAN_TTL seconds."""
+    """validate_api_key's plan for an MCP key, or None for an unknown or
+    inactive key. Cached for _REST_PLAN_TTL seconds.
+
+    The answer depends on the caller: a direct REST request gets the plan the
+    key bought, the MCP server's call (X-Internal-Key) gets MCP's mapping
+    (paid -> Pro). The cache is keyed on that context so one never serves the
+    other (the same rule api_data_protection keeps for its own cache)."""
     now = time.time()
-    ck = hashlib.sha256(api_key.encode()).hexdigest()
+    ck = (hashlib.sha256(api_key.encode()).hexdigest()
+          + ("|mcp" if from_mcp_server() else "|rest"))
     with _rest_plan_lock:
         hit = _rest_plan_cache.get(ck)
         if hit and hit[1] > now:

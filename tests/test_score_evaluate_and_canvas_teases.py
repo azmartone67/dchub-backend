@@ -415,6 +415,28 @@ def test_internal_canvas_keeps_its_old_tier_logic(client, monkeypatch):
     assert body["shortlist"][0]["excess_power_score"] == 85.7
 
 
+@pytest.mark.parametrize("key,tier,locked", [
+    (PRO_KEY, "PRO", False), (DEV_KEY, "DEVELOPER", False), (FREE_KEY, "FREE", True)])
+def test_a_paid_key_through_the_mcp_server_gets_the_decision_layer(client, key, tier, locked):
+    """Live screen 2026-09-25: Claude with a paid key saw the recommendation
+    layer locked. The MCP server's call carries the user's key next to its
+    X-Internal-Key, and tier_gate resolved every dch_live_ key FREE there
+    (mcp_gatekeeper knows none). The key's own plan decides now."""
+    from util import mcp_key_plan
+    mcp_key_plan._rest_plan_cache.clear()
+    body = _get(client, CANVAS, key, **{"X-Internal-Key": SECRET}).get_json()
+    assert body["tier"] == tier
+    assert bool(body["synthesis"].get("locked")) is locked
+
+
+def test_the_canvas_paid_set_comes_from_tier_registry():
+    import routes.site_selection_canvas as ssc
+    from tier_registry import paid_plan_names
+    assert {n.upper() for n in paid_plan_names()} <= ssc._PAID
+    assert {"TEAM", "RESEARCH_SEED", "ADMIN"} <= ssc._PAID
+    assert "FREE" not in ssc._PAID and "IDENTIFIED" not in ssc._PAID
+
+
 def test_an_unknown_key_is_a_401(client):
     for path in [CANVAS]:
         assert _get(client, path, UNKNOWN_KEY).status_code == 401, path

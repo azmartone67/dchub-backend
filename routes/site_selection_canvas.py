@@ -45,9 +45,24 @@ except Exception:                                    # pragma: no cover
 logger = logging.getLogger(__name__)
 site_selection_canvas_bp = Blueprint("site_selection_canvas", __name__)
 
+def _derive_paid_upper(fallback):
+    """UPPERCASED paid plan names from tier_registry, plus the ADMIN/INTERNAL
+    gate words; fails CLOSED to `fallback`. The same rule as
+    routes/deal_autopsy.py and routes/grid_transition_radar.py:
+    _resolve_caller_tier returns the full plan vocabulary uppercased, and the
+    literal this replaces teased paying STARTER, TEAM and RESEARCH_SEED
+    customers."""
+    try:
+        from tier_registry import paid_plan_names
+        got = {str(n).upper() for n in paid_plan_names()}
+        return (got | {"ADMIN", "INTERNAL"}) if got else set(fallback)
+    except Exception:
+        return set(fallback)
+
+
 # Tiers that unlock the synthesis (decision) layer. FREE/IDENTIFIED get the
 # shortlist + a teaser only.
-_PAID = {"DEVELOPER", "PRO", "ENTERPRISE", "FOUNDING", "ADMIN"}
+_PAID = _derive_paid_upper({"DEVELOPER", "PRO", "ENTERPRISE", "FOUNDING", "ADMIN"})
 
 _UPGRADE_URL = "https://dchub.cloud/upgrade?tool=site_selection_canvas"
 
