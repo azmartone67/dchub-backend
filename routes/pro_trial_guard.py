@@ -22,8 +22,9 @@ webhook dispatcher, after handle_checkout_completed):
   4. a repeat calls stripe.Subscription.modify(sub, trial_end='now'), and main
      alerts the owner.
 
-The signal is the CHECKOUT session's metadata. A Payment Link copies its
-metadata onto the Checkout Sessions it creates, not onto the Subscription.
+The signal is the CHECKOUT session: its offer metadata, or its payment_link
+id. The live trial link has no metadata (measured 2026-09-24), so the id is what
+fires today; metadata stays accepted in case it is added later.
 
 FAIL-SAFE: if the ledger cannot be read, nothing is ended — a repeat cannot be
 proven, and ending a real first trial would charge someone who was promised a
@@ -74,8 +75,15 @@ _TABLE_READY = False
 
 
 def is_trial_offer(session: dict) -> bool:
+    """The trial checkout: offer metadata OR the trial Payment Link's id.
+
+    The live link carries no offer metadata (2026-09-24 live gate: both trial
+    checkouts skipped this guard), so the link id is the signal that fires."""
+    from routes._stripe_links import PRO_TRIAL_PAYMENT_LINK_ID
     s = session or {}
-    return (((s.get("metadata") or {}).get("offer") or "").strip() == OFFER
+    tagged = (((s.get("metadata") or {}).get("offer") or "").strip() == OFFER
+              or (s.get("payment_link") or "") == PRO_TRIAL_PAYMENT_LINK_ID)
+    return (tagged
             and s.get("mode") == "subscription"
             and bool(s.get("subscription")))
 

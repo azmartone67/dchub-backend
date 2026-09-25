@@ -196,3 +196,33 @@ def test_main_calls_it_on_checkout_completed_and_alerts_on_repeat():
     c = body.index("enforce_one_trial(data)")
     assert h < c, "the guard must run after the checkout handler"
     assert 'if _ot.get("repeat"):' in body[c:] and "send_admin_alert_email(" in body[c:]
+
+
+# r-trial-plink (2026-09-24, live gate FAIL): the live trial link has no offer
+# metadata; the guard skipped both live trials. The link id must be enough.
+def _live_sess(sub="sub_new", email="Buyer@Example.com", cust="cus_new", **over):
+    from routes._stripe_links import PRO_TRIAL_PAYMENT_LINK_ID
+    s = _sess(sub=sub, email=email, cust=cust, offer=None)
+    s["payment_link"] = PRO_TRIAL_PAYMENT_LINK_ID
+    s.update(over)
+    return s
+
+
+def test_trial_link_without_metadata_is_the_trial_offer():
+    assert g.is_trial_offer(_live_sess()) is True
+
+
+def test_live_gate_repeat_same_email_new_customer_is_ended_now():
+    # The live repeat: same email, a NEW Stripe customer, no metadata.
+    db = _DB()
+    first, ended = _run(_live_sess(sub="sub_1", cust="cus_VK3PgVxl9FTt8r",
+                                   email="someone@icloud.com"), db)
+    assert first["repeat"] is False and ended == []
+    out, ended = _run(_live_sess(sub="sub_2", cust="cus_VK3ZlnKtjD7HIE",
+                                 email="someone@icloud.com"), db)
+    assert out["repeat"] is True and out["repeat_of"] == "sub_1" and ended == ["sub_2"]
+
+
+def test_other_payment_links_are_not_the_trial_offer():
+    assert g.is_trial_offer(_live_sess(payment_link="plink_1UCTZKJ9ey2ATcQlByJCXN3W")) is False
+    assert g.is_trial_offer(_live_sess(mode="payment")) is False

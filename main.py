@@ -18873,8 +18873,16 @@ def _apply_plan_guard(session, plan_name, api_tier, user_id, customer_email):
 # amount bands and resolves 'free', and handle_subscription_created ignores
 # status 'trialing', so the trialist sat on Free for all 7 days. Subscription
 # mode only: an offer tag on a one-time payment must never read as a plan.
+#
+# r-trial-plink (2026-09-24, live gate FAIL): the live trial Payment Link
+# (plink_1UJLvfJ9ey2ATcQlo1eJBdp7) carries NO offer metadata. Both live trial
+# checkouts logged metadata_plan='' and fell to "Plan from amount ($0): free".
+# So the link id is keyed here too; either signal resolves the trial. The id is
+# pinned to routes/_stripe_links.PRO_TRIAL_PAYMENT_LINK_ID by
+# tests/test_checkout_trial_offer_grants_pro.py.
 _CHECKOUT_OFFER_PLAN = {
     'pro_trial_7d': 'pro_monthly',
+    'plink_1UJLvfJ9ey2ATcQlo1eJBdp7': 'pro_monthly',
 }
 
 
@@ -18882,7 +18890,9 @@ def _plan_from_checkout_offer(session):
     if not isinstance(session, dict) or session.get('mode') != 'subscription':
         return ''
     offer = str((session.get('metadata') or {}).get('offer') or '').strip()
-    return _CHECKOUT_OFFER_PLAN.get(offer, '')
+    plink = str(session.get('payment_link') or '').strip()
+    return (_CHECKOUT_OFFER_PLAN.get(offer, '')
+            or (_CHECKOUT_OFFER_PLAN.get(plink, '') if plink.startswith('plink_') else ''))
 
 
 def handle_checkout_completed(session):

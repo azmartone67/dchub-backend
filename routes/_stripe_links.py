@@ -142,6 +142,11 @@ TIER_PRICE_LABEL = {
 # integrity lanes compare each STRIPE_LINKS link's charge with its label, and a
 # trial charges $0 at checkout; and COLD_PLANS / CLICK_TO_PAY_PLANS stay pinned.
 PRO_TRIAL_LINK = "https://buy.stripe.com/cNieVeg7w93DcWV9maaZi0q"
+# Its Payment Link id, as the webhook sees it (session.payment_link). The live
+# link carries NO offer metadata (measured 2026-09-24 on two live trial
+# checkouts), so this id is how main.py and routes/pro_trial_guard recognise a
+# trial checkout.
+PRO_TRIAL_PAYMENT_LINK_ID = "plink_1UJLvfJ9ey2ATcQlo1eJBdp7"
 
 PACK_TIER = "metered"
 ONE_TIME_TIERS = frozenset({"metered", "pack5"})
