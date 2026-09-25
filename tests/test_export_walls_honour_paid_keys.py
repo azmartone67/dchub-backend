@@ -356,12 +356,16 @@ def test_a_wall_that_names_no_known_plan_admits_nobody():
         assert caller_meets("PR0")[0] is False
 
 
-def test_the_mcp_servers_own_call_still_resolves_as_before():
-    """frontend#1534 keeps tier_gate's answer for the MCP server's call (the
-    lift on the export walls is separate, and pinned in the matrix above)."""
+def test_the_mcp_servers_own_call_resolves_the_key_with_mcps_mapping():
+    """2026-09-25: tier_gate resolves the key the MCP server forwards, with
+    MCP's own mapping (paid -> Pro). It read FREE, which locked routes that
+    compare the tier name (site_selection_canvas and siblings) for paying
+    keys. A direct REST call with the same key still reads the plan it bought."""
     from routes.tier_gate import _resolve_caller_tier
     with _ctx({"X-Internal-Key": INTERNAL, "X-API-Key": DEV}):
-        assert _resolve_caller_tier()[0] == "FREE"
+        assert _resolve_caller_tier()[0] == "PRO"
+    with _ctx({"X-API-Key": DEV}):
+        assert _resolve_caller_tier()[0] == "DEVELOPER"
 
 
 def test_request_api_keys_starts_with_request_api_key():
