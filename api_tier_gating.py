@@ -2020,26 +2020,32 @@ def _handle_sub_deleted_v2(subscription):
     conn = get_db()
     c = conn.cursor()
     # #5555 (P1): an account holding ANOTHER live subscription is re-pointed at
-    # it, not demoted. Stripe unavailable or erroring: demote as before.
+    # it, not demoted, and its plan follows the kept price. A Stripe error is
+    # not an answer: it raises, the route answers 500 and Stripe redelivers
+    # (this route has no idempotency record to forget).
     keep = None
     if customer_id and (os.environ.get('STRIPE_SECRET_KEY') or '').strip():
-        try:
-            c.execute("SELECT email FROM users WHERE stripe_customer_id = %s", (customer_id,))
-            emails = [(r['email'] if isinstance(r, dict) else r[0]) for r in (c.fetchall() or [])]
-            emails = [e for e in emails if e]
-            if emails:
-                from routes.subscription_scope import other_live_subscription
+        c.execute("SELECT email FROM users WHERE stripe_customer_id = %s", (customer_id,))
+        emails = [(r['email'] if isinstance(r, dict) else r[0]) for r in (c.fetchall() or [])]
+        emails = [e for e in emails if e]
+        if emails:
+            from routes.subscription_scope import other_live_subscription
+            try:
                 keep = other_live_subscription(emails, subscription.get('id'))
-        except Exception as e:
-            print(f"[#5555] v2 live-subscription check failed (demoting as before): {e}")
-            keep = None
+            except Exception as e:
+                conn.close()
+                print(f"[#5555] v2 live-subscription check failed: {e} — NOT "
+                      f"demoting; Stripe will redeliver")
+                raise
     if keep:
-        c.execute("UPDATE users SET stripe_customer_id = %s, subscription_status = %s "
-                  "WHERE stripe_customer_id = %s", (keep[0], keep[1], customer_id))
+        from routes.subscription_scope import repoint_statements
+        stmts, plan = repoint_statements(customer_id, keep)
+        for q, params in stmts:
+            c.execute(q, params)
         conn.commit()
         conn.close()
         print(f"🔁 v2: subscription on {customer_id} ended; account re-pointed to "
-              f"{keep[0]} ({keep[1]}), not demoted (#5555)")
+              f"{keep[0]} ({keep[1]}, plan {plan or 'unchanged'}), not demoted (#5555)")
         return
     c.execute("""
         UPDATE users SET plan = 'free', subscription_status = 'canceled'

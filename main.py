@@ -16334,6 +16334,19 @@ def _stripe_event_already_processed(event_id, event_type=''):
         return False
 
 
+def _stripe_event_forget(event_id):
+    """Undo _stripe_event_already_processed's record for an event we are
+    asking Stripe to redeliver, so the retry is processed, not skipped. Never
+    raises; a failure is printed (the retry would then be skipped, which is
+    the pre-follow-up behaviour)."""
+    if not event_id:
+        return
+    try:
+        _pg_execute("DELETE FROM stripe_webhook_events WHERE event_id = %s", (event_id,))
+    except Exception as _e:
+        print(f"⚠️ could not forget stripe event {event_id} for redelivery: {_e}")
+
+
 @app.route('/api/v1/stripe/webhook',     methods=['POST'])
 @app.route('/api/stripe/webhook',        methods=['POST'])
 def stripe_webhook():
@@ -16452,6 +16465,10 @@ def stripe_webhook():
     # the upgrade. A paying customer with no account is far worse than a
     # few Stripe retries.
     _checkout_handler_failed = False
+    # #5555 follow-up: a cancel whose live-subscription check could not reach
+    # Stripe is answered 503 and its event id forgotten, so the redelivery
+    # re-runs the check instead of hitting the idempotency skip.
+    _cancel_check_unavailable = False
 
     if event_type == 'checkout.session.completed':
         try:
@@ -17051,6 +17068,8 @@ def stripe_webhook():
         try:
             handle_subscription_updated(data)
         except Exception as _e_sub:
+            if type(_e_sub).__name__ == 'CheckUnavailable':
+                _cancel_check_unavailable = True
             _STRIPE_WEBHOOK_STATS["handler_errors"] += 1
             _STRIPE_WEBHOOK_STATS["last_handler_error"] = f"subscription.updated: {str(_e_sub)[:120]}"
             _evt_bucket["errored"] += 1
@@ -17061,6 +17080,8 @@ def stripe_webhook():
         try:
             handle_subscription_deleted(data)
         except Exception as _e_sub:
+            if type(_e_sub).__name__ == 'CheckUnavailable':
+                _cancel_check_unavailable = True
             _STRIPE_WEBHOOK_STATS["handler_errors"] += 1
             _STRIPE_WEBHOOK_STATS["last_handler_error"] = f"subscription.deleted: {str(_e_sub)[:120]}"
             _evt_bucket["errored"] += 1
@@ -17106,6 +17127,11 @@ def stripe_webhook():
     # than silently dropping a paying customer.
     if _checkout_handler_failed:
         return jsonify({'received': False, 'error': 'handler_failed_will_retry'}), 500
+
+    if _cancel_check_unavailable:
+        _stripe_event_forget(_evt_id)
+        return jsonify({'received': False,
+                        'error': 'cancel_check_unavailable_will_retry'}), 503
 
     return jsonify({'received': True})
 
@@ -19837,36 +19863,13 @@ _PLAN_RANK = {'free': 0, 'starter': 1, 'developer': 2, 'paid': 2,
 
 def _resolve_plan_from_subscription(subscription):
     """(plan_name, api_tier, amount_dollars) from the subscription's first
-    price — explicit founding price id first, then the same amount bands
+    price — explicit founding / Pro price ids first, then the same amount bands
     handle_checkout_completed uses. (None, None, amt) when unrecognized, so
     an odd amount can never mint a tier (mirrors the 2026-06-25 checkout
-    hardening)."""
-    try:
-        _item = ((subscription.get('items') or {}).get('data') or [{}])[0] or {}
-        _price = _item.get('price') or _item.get('plan') or {}
-        _price_id = _price.get('id') or ''
-        _unit = _price.get('unit_amount')
-        if _unit is None:
-            _unit = _price.get('amount')  # legacy 'plan' object shape
-        amt = (_unit or 0) / 100.0
-    except Exception:
-        return None, None, 0
-    _founding_price = os.environ.get('STRIPE_PRICE_FOUNDING',
-                                     'price_1Tml5XJ9ey2ATcQl0pbU4htM')
-    if _price_id and _price_id in (_founding_price,
-                                   'price_1Tml5XJ9ey2ATcQl0pbU4htM'):
-        return 'founding', 'pro', amt
-    if 8 <= amt <= 11:
-        return 'starter', 'starter', amt
-    if 45 <= amt <= 55:
-        return 'developer', 'developer', amt
-    if 95 <= amt <= 105:
-        return 'founding', 'pro', amt
-    if (195 <= amt <= 205) or (295 <= amt <= 305):
-        return 'pro', 'pro', amt
-    if 695 <= amt <= 705:
-        return 'enterprise', 'enterprise', amt
-    return None, None, amt
+    hardening). Lives in routes/subscription_scope so the cancel re-point
+    (#5555 follow-up) and the v2 route read the same mapping."""
+    from routes.subscription_scope import plan_from_subscription
+    return plan_from_subscription(subscription)
 
 
 def _handle_subscription_plan_change(subscription, customer_id):
@@ -19979,12 +19982,14 @@ def _demote_customer_mcp_keys(customer_id):
 
 
 def _cancel_keeps_access(subscription):
-    """#5555: (customer_id, status) of ANOTHER live subscription held by the
-    accounts this canceled customer is linked to, else None.
+    """#5555: (customer_id, status, subscription) of ANOTHER live subscription
+    held by the accounts this canceled customer is linked to, else None.
 
-    Fail-safe is today's behaviour (demote): with Stripe unavailable or
-    erroring this returns None, because keeping access on a guess is how a
-    canceled customer stays paid. Never raises."""
+    Owner follow-up (2026-09-25): a Stripe error is NOT an answer. It raises
+    CheckUnavailable, the webhook answers 503, and Stripe redelivers so the
+    check re-runs; only a clean "none" lets the cancel demote. (No Stripe
+    library at all is a deploy fault, not a transient: it answers None and the
+    cancel demotes as it always has.)"""
     customer_id = (subscription or {}).get('customer', '')
     if not (STRIPE_AVAILABLE and customer_id):
         return None
@@ -19995,21 +20000,30 @@ def _cancel_keeps_access(subscription):
         if not emails:
             return None
         from routes.subscription_scope import other_live_subscription
+    except Exception as e:
+        print(f"[#5555] live-subscription check setup failed for {customer_id}: {e}")
+        return None
+    try:
         return other_live_subscription(emails, (subscription or {}).get('id'),
                                        stripe_mod=stripe)
     except Exception as e:
-        print(f"[#5555] live-subscription check failed for {customer_id} "
-              f"(demoting as before): {e}")
-        return None
+        from routes.subscription_scope import CheckUnavailable
+        print(f"[#5555] live-subscription check failed for {customer_id}: {e} "
+              f"— NOT demoting; the webhook asks Stripe to redeliver")
+        raise CheckUnavailable(str(e)[:200]) from e
 
 
 def _repoint_to_live_subscription(customer_id, keep):
-    live_customer, live_status = keep
-    _pg_execute("UPDATE users SET stripe_customer_id = %s, subscription_status = %s "
-                "WHERE stripe_customer_id = %s",
-                (live_customer, live_status, customer_id))
+    """Move the account onto the kept subscription; the plan follows its price
+    (owner follow-up: Dev $49 + a canceled Pro trial lands on Developer)."""
+    from routes.subscription_scope import repoint_statements
+    stmts, plan = repoint_statements(customer_id, keep)
+    for q, params in stmts:
+        _pg_execute(q, params)
+    live_customer, live_status = keep[0], keep[1]
     print(f"🔁 Subscription on {customer_id} ended, but the account still holds a "
-          f"{live_status} subscription on {live_customer}: re-pointed, not demoted (#5555)")
+          f"{live_status} subscription on {live_customer}: re-pointed "
+          f"(plan {plan or 'unchanged: price not recognised'}), not demoted (#5555)")
 
 
 def _checkout_customer_to_store(user_id, customer_email, new_customer):
