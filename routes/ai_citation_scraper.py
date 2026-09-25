@@ -371,7 +371,7 @@ def _record(agent: str, question: dict, response: str,
                 INSERT INTO ai_citations
                     (engine, platform, prompt_id, query, prompt_text,
                      response_text, cited_url, dchub_cited, citation_type, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 agent, agent, question["id"], question["q"][:500],
                 question["q"][:500], (response or "")[:600],

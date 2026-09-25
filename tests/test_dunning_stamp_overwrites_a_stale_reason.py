@@ -169,13 +169,13 @@ class _Harness:
         self.db.execute(
             "INSERT INTO users (id, email, stripe_customer_id, plan, demoted_at,"
             " demoted_reason, invoices_paid_count, payment_failed_count,"
-            " subscription_status) VALUES (?,?,?,?,?,?,?,?,'active')",
+            " subscription_status) VALUES (?,?,?,?,?,?,?,?,'active') ON CONFLICT DO NOTHING",
             (uid, email, CUSTOMER, plan, demoted_at, reason, paid, failed))
         self.db.execute(
-            "INSERT INTO api_keys (user_id, rate_limit_tier, plan) VALUES (?,?,?)",
+            "INSERT INTO api_keys (user_id, rate_limit_tier, plan) VALUES (?,?,?) ON CONFLICT DO NOTHING",
             (uid, tier, plan))
         self.db.execute(
-            "INSERT INTO mcp_dev_keys (email, tier, metadata) VALUES (?,?,'{}')",
+            "INSERT INTO mcp_dev_keys (email, tier, metadata) VALUES (?,?,'{}') ON CONFLICT DO NOTHING",
             (email, "paid"))
         self.db.commit()
 

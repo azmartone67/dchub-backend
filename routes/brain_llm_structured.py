@@ -255,7 +255,7 @@ def record_llm_usage(component: str, model: str, resp_json) -> None:
                 cur.execute(
                     "INSERT INTO brain_llm_usage (component, model,"
                     " input_tokens, output_tokens, cache_read_tokens,"
-                    " cache_write_tokens) VALUES (%s,%s,%s,%s,%s,%s)"
+                    " cache_write_tokens) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING"
                     " ON CONFLICT DO NOTHING",
                     (str(component)[:80], str(model)[:80],
                      usage.get("input_tokens"),

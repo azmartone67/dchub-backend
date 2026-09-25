@@ -45,7 +45,7 @@ def _insert_param(calls, column):
     assert len(inserts) == 1, f"expected one INSERT INTO api_keys, saw {len(inserts)}"
     sql, params = inserts[0]
     m = re.search(r"INSERT INTO api_keys\s*\(([^)]*)\)\s*VALUES\s*\(([^()]*)\)", sql)
-    assert m, "INSERT INTO api_keys has no (columns) VALUES (...) list"
+    assert m, "INSERT INTO api_keys has no (columns) VALUES (...) ON CONFLICT DO NOTHING list"
     cols = [c.strip() for c in m.group(1).split(",")]
     vals = [v.strip() for v in re.findall(r"\s*('[^']*'|[^,]+)", m.group(2))]
     assert len(cols) == len(vals), (cols, vals)

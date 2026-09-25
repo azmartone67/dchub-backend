@@ -88,7 +88,7 @@ def world(request):
                             (row["session_token"], row["user_id"]))
             # An active PRO key stored whole, as partner keys are.
             cur.execute("INSERT INTO api_keys (user_id, key_hash, key_prefix, "
-                        "rate_limit_tier, is_active) VALUES ('u-key', %s, %s, 'pro', 1)",
+                        "rate_limit_tier, is_active) VALUES ('u-key', %s, %s, 'pro', 1) ON CONFLICT DO NOTHING",
                         (row["api_key"], row["api_key"][:16]))
         mp.setenv("DATABASE_URL", _scoped_dsn())
         mp.setenv("JWT_SECRET", JWT_SECRET)

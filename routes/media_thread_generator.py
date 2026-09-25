@@ -528,7 +528,7 @@ def _insert_thread_log(payload: dict) -> int | None:
                 INSERT INTO media_thread_log
                     (seed_post_id, root_post_urn, title, posts, status,
                      destination_url, headline_num)
-                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (payload.get("seed_post_id"),
                   payload.get("root_post_urn"),

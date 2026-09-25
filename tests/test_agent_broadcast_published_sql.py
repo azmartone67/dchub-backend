@@ -99,7 +99,7 @@ def db(monkeypatch):
         _exec("INSERT INTO market_power_scores (market_slug, market_name, iso, "
               "verdict, excess_power_score, constraint_score, published, "
               "computed_at) VALUES (%s,%s,'ERCOT',%s,%s,%s,%s, "
-              "now() - make_interval(mins => %s))",
+              "now() ON CONFLICT DO NOTHING - make_interval(mins => %s))",
               (slug, name, verdict, ex, con, pub, mins))
     monkeypatch.setenv("DATABASE_URL", DSN)
     monkeypatch.delenv("NEON_DATABASE_URL", raising=False)

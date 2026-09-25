@@ -232,7 +232,7 @@ def _enqueue_cross_post(cur, platform: str, content_text: str) -> bool:
             tags = []
         cur.execute("""
             INSERT INTO social_media_posts (content, platform, status, created_at, approved_at, media_topic_tags)
-            VALUES (%s, %s, 'approved', NOW(), NOW()::text, %s::jsonb)
+            VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING, NOW()::text, %s::jsonb)
         """, (content_text, platform, _j.dumps(tags)))
         return True
     except Exception as e:

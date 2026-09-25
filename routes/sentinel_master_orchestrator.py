@@ -76,7 +76,7 @@ def _persist_report(report: dict):
         try:
             _ensure_report_table(conn)
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO sentinel_master_ticks (report) VALUES (%s)",
+                cur.execute("INSERT INTO sentinel_master_ticks (report) VALUES (%s) ON CONFLICT DO NOTHING",
                             (json.dumps(report, default=str),))
         finally:
             try: conn.close()
