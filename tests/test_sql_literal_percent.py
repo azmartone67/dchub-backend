@@ -108,7 +108,7 @@ def test_the_scan_finds_queries():
 # UndefinedColumn raised by the database; since the '%construct%' filter was
 # added, that measurement can no longer have been what was happening.
 #
-# Six ran in production and are fixed in this change. Two never run:
+# Six ran in production and are fixed in this change. One never runs:
 #
 #   * fix_capacity.py:188 — a one-time Replit maintenance script. Its own
 #     docstring says "Run this in Replit"; the only caller is its `__main__`
@@ -118,18 +118,16 @@ def test_the_scan_finds_queries():
 #     measured as empty AND writerless, against a phantom column set. Repairing
 #     the percent would buy nothing and imply the lane works.
 #
-#   * tools/email_blast_developer_launch.py:118 — an argparse CLI that only
-#     sends when a human passes --send. No workflow, script or import
-#     references it. It also fails LOUDLY: nothing catches the exception, so an
-#     operator running it sees the traceback rather than a quiet zero.
+# tools/email_blast_developer_launch.py:118 was pinned here too until
+#   2026-09-25, when it was made runnable (its created_at filter also compared
+#   TEXT with timestamptz; see tests/test_users_created_at_text_sql.py).
 #
-# Both are left pinned deliberately: they are still real violations, so
-# test_the_known_baseline_is_still_real keeps proving they still match, and
+# It is left pinned deliberately: it is still a real violation, so
+# test_the_known_baseline_is_still_real keeps proving it still matches, and
 # test_no_bare_percent_in_a_parameterized_query keeps every OTHER site clean.
 # Removing a file from this list is always correct; adding one needs a reason.
 _KNOWN_BARE_PCT = {
     "fix_capacity.py:188",
-    "tools/email_blast_developer_launch.py:118",
 }
 
 

@@ -29,10 +29,13 @@ from __future__ import annotations
 
 import argparse, json, os, sys, time
 import urllib.request, urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.extras
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from routes._users_created_at import parse_users_created_at  # noqa: E402
 
 
 SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY')
@@ -112,32 +115,45 @@ def ensure_audit_table(conn):
     cur.close()
 
 
-def fetch_targets(conn, campaign, limit):
-    """Free-tier users, engaged, not previously emailed for this campaign."""
+def fetch_targets(conn, campaign, limit, now=None):
+    """Free-tier users, engaged, not previously emailed for this campaign.
+
+    users.created_at is TEXT (main.py's CREATE TABLE users) holding more than
+    one format, so `u.created_at > NOW() - …` in SQL raises
+    `operator does not exist: text > timestamp with time zone`. The 30-day
+    signup test runs in Python via parse_users_created_at; the 60-day
+    last_used_at test stays in SQL as a column. Ordering and LIMIT follow the
+    Python filter — a SQL LIMIT would cut before it, and ORDER BY on TEXT is
+    lexical across formats."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("""
         SELECT u.id AS user_id, u.email, u.name, u.created_at,
                COALESCE(MAX(ak.last_used_at), '1970-01-01') AS last_used,
-               COUNT(ak.id) AS key_count
+               COUNT(ak.id) AS key_count,
+               COALESCE(MAX(ak.last_used_at)::timestamptz
+                        > NOW() - INTERVAL '60 days', FALSE) AS recently_used
         FROM users u
         LEFT JOIN api_keys ak ON ak.user_id = u.id
         WHERE u.plan = 'free'
           AND u.email IS NOT NULL
           AND u.email <> ''
-          AND u.email NOT LIKE '%example.com'
-          AND u.email NOT LIKE '%test%'
+          AND u.email NOT LIKE '%%example.com'
+          AND u.email NOT LIKE '%%test%%'
           AND u.id NOT IN (SELECT user_id FROM email_blasts WHERE campaign = %s)
         GROUP BY u.id, u.email, u.name, u.created_at
-        HAVING (
-            u.created_at > NOW() - INTERVAL '30 days'
-            OR MAX(ak.last_used_at)::timestamptz > NOW() - INTERVAL '60 days'
-        )
-        ORDER BY u.created_at DESC
-        LIMIT %s
-    """, (campaign, limit))
+    """, (campaign,))
     rows = cur.fetchall()
     cur.close()
-    return rows
+    targets = []
+    for r in rows:
+        signed_up = parse_users_created_at(r['created_at'])
+        if r['recently_used'] or (signed_up is not None and signed_up > cutoff):
+            targets.append((signed_up, r))
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    targets.sort(key=lambda t: t[0] or floor, reverse=True)
+    return [r for _, r in targets[:limit]]
 
 
 def humanize_signup(ts):
