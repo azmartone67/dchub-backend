@@ -1504,14 +1504,20 @@ def backfill_last_n_days(days: int = 7) -> dict:
             logger.warning("[crm_etl backfill] trial keys failed: %s", e)
 
         # 5. Paid conversions (users with active subscription)
+        # users.created_at is TEXT: `created_at >= %s` with a datetime raised
+        # "text >= timestamp with time zone" and this step always counted 0
+        # (swallowed below). Filter the window in Python (2026-09-25).
         try:
+            from routes._users_created_at import parse_users_created_at
             with c.cursor() as cur:
                 cur.execute(
                     """SELECT email, created_at, plan FROM users
-                        WHERE created_at >= %s
-                          AND subscription_status = 'active'
-                          AND email IS NOT NULL""", (cutoff,))
+                        WHERE subscription_status = 'active'
+                          AND email IS NOT NULL""")
                 for em, ts, plan in cur.fetchall():
+                    ts = parse_users_created_at(ts)
+                    if ts is None or ts < cutoff:
+                        continue
                     r = capture_event("paid_conversion",
                                       {"email": em, "plan": plan,
                                        "captured_at_hist": _iso(ts)})

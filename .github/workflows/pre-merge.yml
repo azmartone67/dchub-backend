@@ -1515,6 +1515,23 @@ jobs:
             echo "::error::the claim_quote fence SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── users.created_at is TEXT: date-filtering readers, same Postgres ──
+      # The paid activation-email sweep's candidate SQL compared the TEXT column
+      # to NOW() and raised on every tick; the CRM paid-conversion backfill did
+      # the same with a datetime param and swallowed it. The users table is
+      # built from main.py's own DDL, so the column type is production's.
+      # Owns and recreates its own schema only.
+      - name: users.created_at TEXT readers against a real Postgres
+        env:
+          USERS_CREATED_AT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_users_created_at_text_sql.py \
+            -q -rs --tb=short > uca.txt 2>&1 || { cat uca.txt; exit 1; }
+          cat uca.txt
+          if grep -qi "skipped" uca.txt; then
+            echo "::error::the users.created_at TEXT readers test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── warm-keys export consent + last wall (r-optin-consents) ───────────
       # routes/warm_key_cohort._gather's SQL, own schema, same Postgres.
       - name: warm-keys export SQL against a real Postgres
@@ -1595,6 +1612,7 @@ jobs:
             wk.txt
             msg.txt
             cqf.txt
+            uca.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

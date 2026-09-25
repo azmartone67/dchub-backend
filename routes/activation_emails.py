@@ -54,6 +54,8 @@ import os
 
 from flask import Blueprint, jsonify, request
 
+from routes._users_created_at import parse_users_created_at
+
 logger = logging.getLogger(__name__)
 activation_emails_bp = Blueprint("activation_emails", __name__)
 
@@ -175,6 +177,13 @@ def record_outcome(cur, customer_id: str, step: str, ok: bool, info: str,
 # Paid = the honest filter (stripe_customer_id NOT NULL) on a paid plan,
 # created inside the lookback. One row per customer with the aggregate usage
 # of EVERY key that belongs to them: REST keys by user_id, MCP keys by email.
+#
+# ★ The lookback is applied in PYTHON, not SQL (2026-09-25). users.created_at
+# is TEXT, so `u.created_at >= NOW() - …` raised "operator does not exist:
+# text >= timestamp with time zone" on every sweep since this shipped — the
+# unit tests fed fetch_candidates' OUTPUT to due_steps and never ran the SQL.
+# A SQL cast would make one malformed row fail the whole sweep again; the
+# paid population is tens of rows. See routes/_users_created_at.py.
 CANDIDATES_SQL = (
     "SELECT u.id::text AS customer_id, lower(u.email) AS email, u.plan, "
     "       u.created_at, "
@@ -188,14 +197,20 @@ CANDIDATES_SQL = (
     "  FROM users u "
     " WHERE u.stripe_customer_id IS NOT NULL "
     "   AND lower(COALESCE(u.plan, '')) IN %s "
-    "   AND u.created_at >= NOW() - (%s * INTERVAL '1 day') "
     "   AND COALESCE(u.email, '') <> '' "
-    " ORDER BY u.created_at"
 )
 
 
-def fetch_candidates(cur, lookback_days: int = LOOKBACK_DAYS) -> list[dict]:
-    cur.execute(CANDIDATES_SQL, (tuple(PAID_PLANS), int(lookback_days)))
+def fetch_candidates(cur, lookback_days: int = LOOKBACK_DAYS,
+                     now: _dt.datetime | None = None) -> list[dict]:
+    """Paid customers created inside the lookback, oldest first.
+
+    created_at comes back as an aware UTC datetime. A row whose created_at is
+    NULL or unparseable is dropped — the old SQL predicate dropped NULL too,
+    and an account of unknown age must not be mailed."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    cutoff = now - _dt.timedelta(days=int(lookback_days))
+    cur.execute(CANDIDATES_SQL, (tuple(PAID_PLANS),))
     out = []
     for r in cur.fetchall() or []:
         if isinstance(r, dict):
@@ -203,7 +218,12 @@ def fetch_candidates(cur, lookback_days: int = LOOKBACK_DAYS) -> list[dict]:
         else:
             d = {"customer_id": r[0], "email": r[1], "plan": r[2], "created_at": r[3],
                  "rest_calls": r[4], "mcp_last_used_at": r[5], "mcp_key": r[6]}
+        created = parse_users_created_at(d.get("created_at"))
+        if created is None or created < cutoff:
+            continue
+        d["created_at"] = created
         out.append(d)
+    out.sort(key=lambda d: d["created_at"])
     return out
 
 
@@ -328,7 +348,7 @@ def run_sweep(conn, sender=None, now=None, armed: bool | None = None,
     with conn.cursor() as cur:
         if armed:
             ensure_ledger(cur)
-        cands = fetch_candidates(cur)
+        cands = fetch_candidates(cur, now=now)
         out["candidates"] = len(cands)
         for c in cands:
             for step, why in due_steps(c, now):
