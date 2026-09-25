@@ -1,0 +1,80 @@
+# Dockerfile for dchub-backend (web) and dchub-worker — both build from the
+# root of this repo with railway.toml, which points here by dockerfilePath.
+#
+# ★ WHY THIS EXISTS. Under Railpack the venv is built against the python that
+# mise resolves in the BUILD image, and the RUNTIME image carries its own
+# /mise/installs. Twice the two disagreed on the patch version and every
+# worker deploy crashlooped with
+#
+#   start_web.sh: /app/.venv/bin/gunicorn: cannot execute: required file not found
+#
+# because the venv's bin/python symlink pointed at a python the runtime image
+# did not have:
+#   2026-08-26  venv -> 3.13.13, runtime had 3.13.14   (#3222, ~4h down)
+#   2026-09-24  venv -> 3.13.14, runtime had 3.13.15   (#5544, 45 failed deploys)
+# Bumping runtime.txt fixes one occurrence; this deletes the class. The build
+# and runtime stages below use the SAME image, so the interpreter the venv
+# points at is always present — it is a layer, not a start-time download.
+# Dockerfile.extractor made the same switch for the extractor cron on 09-08.
+#
+# ★ NOT NAMED `Dockerfile`. Railway auto-detects a root `Dockerfile` for every
+# service that builds from this root; the suffixed name is only used where a
+# config file names it (tests/test_extractor_dockerfile.py guards this).
+#
+# ★ THE VENV PATH IS LOAD-BEARING. start_web.sh probes /app/.venv/bin/python
+# (the r-venvguard diagnostic) and runs `gunicorn` from PATH. Keeping Railpack's
+# layout means start_web.sh and start_mcp.sh are unchanged by this switch.
+
+# ── build ────────────────────────────────────────────────────────────────
+FROM python:3.13.15-slim AS build
+
+# Pinned to runtime.txt (python-3.13.15); tests/test_web_dockerfile.py fails if
+# they diverge.
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Insurance for a transitive dep without a cp313 wheel. Build stage only — it
+# never reaches the runtime image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
+
+# ── runtime ──────────────────────────────────────────────────────────────
+FROM python:3.13.15-slim
+
+# System packages the running app calls out to. Each is named for its caller so
+# a later trim can tell what it breaks:
+#   curl                  start_mcp.sh waits for Flask with `curl .../api/health`
+#   procps                start_mcp.sh `pkill -f dchub_mcp_server.py`
+#   psmisc                start_mcp.sh `fuser -k 8888/tcp`
+#   libpango*/harfbuzz/   weasyprint dlopens these for the PDF exports
+#     cairo/gdk-pixbuf    (/markets/<slug>/brief.pdf, site-report ?format=pdf) —
+#     shared-mime-info    the list nixpacks.toml declared, which Railpack never
+#     fonts-liberation    read
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      curl procps psmisc \
+      libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
+      libharfbuzz0b libharfbuzz-subset0 libcairo2 libgdk-pixbuf-2.0-0 \
+      shared-mime-info fonts-liberation \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
+COPY --from=build /app/.venv /app/.venv
+
+WORKDIR /app
+COPY . /app
+
+# railway.toml's startCommand overrides this; it is here so the image runs on
+# its own and the two cannot disagree about the entrypoint.
+CMD ["bash", "start_web.sh"]
