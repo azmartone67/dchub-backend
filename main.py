@@ -42693,6 +42693,29 @@ _ENERGY_SUMMARY_CACHE: dict[str, tuple[float, dict]] = {}
 _ENERGY_SUMMARY_TTL = 300  # 5 minutes
 
 
+_ENERGY_ISO_HINT = ['PJM', 'ERCOT', 'CAISO', 'MISO', 'SPP', 'NYISO', 'ISO-NE']
+
+
+def _energy_bad_filter(kind, raw):
+    """400 for a ?state= / ?iso= that names nothing we hold retail rates for."""
+    from flask import jsonify as _j
+    what = 'a US state' if kind == 'state' else 'an ISO with retail-rate coverage'
+    body = {
+        "success": False,
+        "error": f"{kind} not recognized",
+        "detail": (f'"{raw}" is not {what}. Retail rates are EIA state-level data; '
+                   "the request was refused rather than answered with a national "
+                   "average or a zero."),
+        f"requested_{kind}": raw,
+        "hint": ("Pass state as a 2-letter US code or full name (e.g. TX, Virginia), "
+                 f"or iso as one of {', '.join(_ENERGY_ISO_HINT)}. Omit both for the national average."),
+        "valid_isos": _ENERGY_ISO_HINT,
+    }
+    resp = _j(body)
+    resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+    return resp, 400
+
+
 @app.route('/api/v1/energy/summary', methods=['GET'])
 def cf_stub_energy_summary():
     """Energy retail-rate overview (source: eia_retail_rates).
@@ -42750,6 +42773,30 @@ def cf_stub_energy_summary():
         'ISO-NE': ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'], 'ISONE': ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'],
         'ISNE':  ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'], 'NEISO': ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'],
     }
+    # r-energy-unknown-state (2026-09-24): an unrecognised ?state= or ?iso= used
+    # to be answered anyway. Measured live via MCP get_energy_prices:
+    #   state=ZZQX -> the NATIONAL average (len>3 skipped the state filter),
+    #                 echoed back as filter.state "ZZQX"
+    #   state=PJM  -> avg_rate_kwh 0 (no rows matched, zeros served as a rate)
+    # Resolve the input to a real US state (code or full name) or a known ISO,
+    # and refuse anything else with a 400 that names what IS accepted. The MCP
+    # alias region->state sends ?state=PJM, so an ISO name in the state slot is
+    # read as the ISO rather than refused.
+    from location_names import US_STATES as _ES_US_STATES
+    if state:
+        _es_by_name = {v.upper(): k for k, v in _ES_US_STATES.items()}
+        _es_iso_key = state.replace('_', '-').replace(' ', '-')
+        if state in _ES_US_STATES:
+            pass
+        elif state in _es_by_name:
+            state = _es_by_name[state]
+        elif _es_iso_key in _ENERGY_ISO_TO_STATES and not iso_norm:
+            iso_norm, state = _es_iso_key, ''
+        else:
+            return _energy_bad_filter('state', state_raw)
+    if iso_norm and not state and iso_norm not in _ENERGY_ISO_TO_STATES:
+        return _energy_bad_filter('iso', iso_raw)
+
     # Only treat ?iso= as an ISO filter when no explicit single-state was given.
     iso_states = _ENERGY_ISO_TO_STATES.get(iso_norm) if (iso_norm and not state) else None
 
@@ -42990,6 +43037,20 @@ def cf_stub_energy_summary():
                 }
 
         return_pg_connection(conn)
+
+        # r-energy-unknown-state: a real state with no EIA rows is "no data",
+        # not a rate of 0. Say so instead of serving zeros.
+        if (state or iso_states) and not int(row[3] or 0):
+            resp = jsonify({
+                "success": False,
+                "error": "no retail-rate data",
+                "detail": f"No EIA retail-rate rows for {state or iso_norm}.",
+                "filter": {"state": state or None, "iso": iso_norm if iso_states else None,
+                           "sector": sector or "all"},
+                "source_unavailable": True,
+            })
+            resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+            return resp, 404
 
         out = {
             "success": True,
