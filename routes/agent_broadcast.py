@@ -673,25 +673,37 @@ def _fetch_ai_citations(days: int) -> list[dict]:
                 who_expr = "'AI agent'"
             url_expr = "url" if "url" in cols else "''"
             ts_col = _first_col(cols, "approved_at", "created_at")
-            # 2026-06-11 FIX: fresh testimonials arrive approved_at=NULL +
-            # approved=false (auto-captured daily, pending manual curation). The
-            # old "approved_at DESC NULLS LAST" + "approved=true" combo buried all
-            # 355 fresh rows behind the LIMIT/WHERE, so the page showed only the
-            # 17 hand-approved marquee quotes whose newest approved_at is 96d
-            # stale (2026-03-06). Rank by EFFECTIVE recency and surface recent
-            # genuine captures (the probe already verified each DC Hub citation)
-            # so the testimonial feed stays fresh without a human in the loop.
             _has_both = ("approved_at" in cols and "created_at" in cols)
             rank_expr = "COALESCE(approved_at, created_at)" if _has_both else (ts_col or "NULL::timestamp")
             ts_expr = rank_expr
             order_expr = f"{rank_expr} DESC NULLS LAST"
-            if "approved" in cols and "created_at" in cols:
-                where_expr = ("WHERE (COALESCE(approved, true) = true "
-                              "OR created_at > NOW() - INTERVAL '21 days')")
-            elif "approved" in cols:
-                where_expr = "WHERE COALESCE(approved, true) = true"
-            else:
-                where_expr = ""
+            # APPROVED AI rows only (2026-09-24). This feed is public and
+            # unauthenticated; external agents poll it (and its /today and /rss
+            # twins) and are handed a citation_format to repeat it verbatim, so
+            # it is publication, not a staging view. `approved=FALSE` is the
+            # writers' "pending human review" state (testimonial_probe.
+            # _write_testimonial says so), and the probe's pass check is not
+            # that review. The 2026-06-11 change let unapproved rows under 21
+            # days old through for freshness. That is a
+            # publish-before-approval path, and measured 2026-09-24 every
+            # ai_citation item served was one of those pending probe rows.
+            # Freshness now comes from approving rows, not from skipping
+            # review. NULL `approved` is not approved (fail closed), and a
+            # table variant with no `approved` column serves nothing.
+            #
+            # Human customer quotes are never AI citations. source=
+            # 'claim_quote' rows are quotes people volunteered via
+            # POST /api/v1/keys/claim/quote (agent_name = the person, context =
+            # their company). Labelling them "<who> cited DC Hub" is a
+            # mislabel even after approval. Their only public path is the
+            # /cited-by customer section, and the named-customer source of
+            # truth is https://dchub.cloud/testimonials.json. NULL source is
+            # kept: writers that omit it get the column DEFAULT 'auto'.
+            if "approved" not in cols:
+                return out
+            where_expr = "WHERE approved = TRUE"
+            if "source" in cols:
+                where_expr += " AND COALESCE(source, '') <> 'claim_quote'"
             cur.execute(f"""
                 SELECT {who_expr}  AS who,
                        {url_expr}  AS url,
