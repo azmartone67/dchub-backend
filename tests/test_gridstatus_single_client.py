@@ -106,7 +106,7 @@ def test_pjm_dataminer_routes_through_the_client(monkeypatch):
     import pjm_dataminer as pjm
     seen = {}
 
-    def _fake(dataset, params=None, timeout=15, caller="unknown"):
+    def _fake(dataset, params=None, timeout=15, caller="unknown", shared_ttl_s=0):
         seen["dataset"], seen["caller"] = dataset, caller
         return [{"dom": 9000.0}], None
 
