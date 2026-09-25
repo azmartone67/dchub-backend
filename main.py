@@ -19200,6 +19200,11 @@ def handle_checkout_completed(session):
                     pass
 
         stripe_cust = session.get('customer', '')
+        # ★ #5555 (P1): Payment Links make a NEW Stripe customer per checkout;
+        # overwriting the stored one re-pointed the account at the newest, and
+        # cancelling that one then demoted the account off its first, still
+        # paid subscription. Keep a stored customer that still pays.
+        stripe_cust = _checkout_customer_to_store(user_id, customer_email, stripe_cust)
 
         # r-no-downgrade: last point before plan_name/api_tier reach a write.
         plan_name, api_tier, _guard_note = _apply_plan_guard(
@@ -19251,21 +19256,21 @@ def handle_checkout_completed(session):
         if user_id:
             if set_tier_expiry:
                 rc, _ = _pg_execute(
-                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW(), tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE id = %s",
+                    "UPDATE users SET plan = %s, role = CASE WHEN role = 'admin' THEN role ELSE %s END, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW(), tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE id = %s",
                     (plan_name, api_tier, stripe_cust, source_plan_label, user_id))
             else:
                 rc, _ = _pg_execute(
-                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE id = %s",
+                    "UPDATE users SET plan = %s, role = CASE WHEN role = 'admin' THEN role ELSE %s END, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE id = %s",
                     (plan_name, api_tier, stripe_cust, user_id))
             rows_updated = rc
         elif customer_email:
             if set_tier_expiry:
                 rc, _ = _pg_execute(
-                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW(), tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE email = %s",
+                    "UPDATE users SET plan = %s, role = CASE WHEN role = 'admin' THEN role ELSE %s END, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW(), tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE email = %s",
                     (plan_name, api_tier, stripe_cust, source_plan_label, customer_email))
             else:
                 rc, _ = _pg_execute(
-                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE email = %s",
+                    "UPDATE users SET plan = %s, role = CASE WHEN role = 'admin' THEN role ELSE %s END, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE email = %s",
                     (plan_name, api_tier, stripe_cust, customer_email))
             rows_updated = rc
 
@@ -19973,19 +19978,89 @@ def _demote_customer_mcp_keys(customer_id):
         print(f"⚠️ mcp_dev_keys demote failed (non-fatal): {str(_mcp_err)[:120]}")
 
 
+def _cancel_keeps_access(subscription):
+    """#5555: (customer_id, status) of ANOTHER live subscription held by the
+    accounts this canceled customer is linked to, else None.
+
+    Fail-safe is today's behaviour (demote): with Stripe unavailable or
+    erroring this returns None, because keeping access on a guess is how a
+    canceled customer stays paid. Never raises."""
+    customer_id = (subscription or {}).get('customer', '')
+    if not (STRIPE_AVAILABLE and customer_id):
+        return None
+    try:
+        _, rows = _pg_execute("SELECT email FROM users WHERE stripe_customer_id = %s",
+                              (customer_id,), fetch=True)
+        emails = [r[0] for r in (rows or []) if r and r[0]]
+        if not emails:
+            return None
+        from routes.subscription_scope import other_live_subscription
+        return other_live_subscription(emails, (subscription or {}).get('id'),
+                                       stripe_mod=stripe)
+    except Exception as e:
+        print(f"[#5555] live-subscription check failed for {customer_id} "
+              f"(demoting as before): {e}")
+        return None
+
+
+def _repoint_to_live_subscription(customer_id, keep):
+    live_customer, live_status = keep
+    _pg_execute("UPDATE users SET stripe_customer_id = %s, subscription_status = %s "
+                "WHERE stripe_customer_id = %s",
+                (live_customer, live_status, customer_id))
+    print(f"🔁 Subscription on {customer_id} ended, but the account still holds a "
+          f"{live_status} subscription on {live_customer}: re-pointed, not demoted (#5555)")
+
+
+def _checkout_customer_to_store(user_id, customer_email, new_customer):
+    """#5555: the stripe_customer_id a checkout writes. Keeps the stored one
+    when it is a DIFFERENT customer that still has a live subscription; the new
+    customer otherwise. Stripe unavailable or erroring: the new one (today's
+    behaviour; the cancel handlers' own check covers it). Never raises."""
+    if not (STRIPE_AVAILABLE and new_customer):
+        return new_customer
+    try:
+        if user_id:
+            _, rows = _pg_execute("SELECT stripe_customer_id FROM users WHERE id = %s",
+                                  (user_id,), fetch=True)
+        elif customer_email:
+            _, rows = _pg_execute("SELECT stripe_customer_id FROM users WHERE email = %s",
+                                  (customer_email,), fetch=True)
+        else:
+            return new_customer
+        stored = rows[0][0] if rows and rows[0] else None
+        if not stored or stored == new_customer:
+            return new_customer
+        from routes.subscription_scope import customer_has_live_subscription
+        if customer_has_live_subscription(stored, stripe_mod=stripe):
+            print(f"🔒 Kept stripe_customer_id={stored} (still has a live subscription); "
+                  f"checkout customer {new_customer} not written over it (#5555)")
+            return stored
+    except Exception as e:
+        print(f"[#5555] stored-customer check failed (writing the new one): {e}")
+    return new_customer
+
+
 def handle_subscription_updated(subscription):
     """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
     status = subscription.get('status', '')
     now = utc_iso_z()
+    # #5555: a cancel of one subscription must not demote an account that
+    # still holds another live one (see handle_subscription_deleted).
+    _keep = _cancel_keeps_access(subscription) if status == 'canceled' else None
 
     if status in ['active', 'trialing']:
         _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
     elif status in ['past_due', 'unpaid']:
         _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
+    elif status == 'canceled' and _keep:
+        _repoint_to_live_subscription(customer_id, _keep)
+        _demote_customer_mcp_keys(customer_id)
+        status = 'repointed'   # the mirror below must not demote either
     elif status == 'canceled':
         _, pg_rows = _pg_execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,), fetch=True)
-        _pg_execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = %s WHERE stripe_customer_id = %s",
+        _pg_execute("UPDATE users SET plan = 'free', role = CASE WHEN role = 'admin' THEN role ELSE 'free' END, subscription_status = %s WHERE stripe_customer_id = %s",
                    (status, customer_id))
         if pg_rows:
             for row in pg_rows:
@@ -19999,7 +20074,7 @@ def handle_subscription_updated(subscription):
         if status in ['active', 'trialing', 'past_due', 'unpaid']:
             c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
         elif status == 'canceled':
-            c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = %s WHERE stripe_customer_id = %s",
+            c.execute("UPDATE users SET plan = 'free', role = CASE WHEN role = 'admin' THEN role ELSE 'free' END, subscription_status = %s WHERE stripe_customer_id = %s",
                       (status, customer_id))
             c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
                       (now, customer_id))
@@ -20026,8 +20101,19 @@ def handle_subscription_deleted(subscription):
     customer_id = subscription.get('customer', '')
     now = utc_iso_z()
 
+    # ★ #5555 (P1): the account may hold ANOTHER live subscription (Payment
+    # Links make a customer per checkout). Then this cancel ends only this
+    # subscription: re-point the account at the live one and demote nothing
+    # the account pays for. Keys a k- checkout by THIS customer raised still
+    # drop (the email match is gone once the row is re-pointed).
+    _keep = _cancel_keeps_access(subscription)
+    if _keep:
+        _repoint_to_live_subscription(customer_id, _keep)
+        _demote_customer_mcp_keys(customer_id)
+        return
+
     _, pg_rows = _pg_execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,), fetch=True)
-    _pg_execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
+    _pg_execute("UPDATE users SET plan = 'free', role = CASE WHEN role = 'admin' THEN role ELSE 'free' END, subscription_status = 'canceled' WHERE stripe_customer_id = %s",
                (customer_id,))
     if pg_rows:
         for row in pg_rows:
@@ -20040,7 +20126,7 @@ def handle_subscription_deleted(subscription):
     conn = get_db()
     try:
         c = conn.cursor()
-        c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
+        c.execute("UPDATE users SET plan = 'free', role = CASE WHEN role = 'admin' THEN role ELSE 'free' END, subscription_status = 'canceled' WHERE stripe_customer_id = %s",
                   (customer_id,))
         c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
                   (now, customer_id))
