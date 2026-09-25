@@ -40224,6 +40224,24 @@ def api_site_score():
     if not lat or not lon:
         return jsonify({'success': False, 'error': 'lat and lon are required'}), 400
 
+    # composite-v2.4 (2026-09-25 live screen): state drove fiber's fallback and
+    # the whole risk factor, and find_sites' handoff sent none, so every anchor
+    # took STATE_RISK's default 65. Resolve it from the point (Census polygons,
+    # offline) and say which it was.
+    _state_basis = 'caller' if state else None
+    if not state:
+        try:
+            from util.state_geometry import resolve_state
+            _rs, _rb, _alts = resolve_state(lat, lon)
+            if _rs:
+                state, _state_basis = _rs.upper(), _rb
+            else:
+                _state_basis = _rb
+        except Exception as _rse:
+            logger.warning(f"site-score state resolve failed: {_rse}")
+            _state_basis = 'undetermined'
+    _errors = {}      # factor -> the lookup that failed (was `except: pass`)
+
     conn = None
     try:
         conn = get_read_db()
@@ -40265,8 +40283,8 @@ def api_site_score():
                   AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
             """, (lat, lat, lon, lon))
             nearby_substations = c.fetchone()[0] or 0
-        except Exception:
-            pass
+        except Exception as _e1:
+            _errors['substations'] = type(_e1).__name__
 
         # Source B: infrastructure_layers table (4,939+ KMZ features)
         # Guarded: latitude/longitude/layer_type are absent from the production
@@ -40281,8 +40299,8 @@ def api_site_score():
                       AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
                 """, (lat, lat, lon, lon))
                 infra_substations = c.fetchone()[0] or 0
-        except Exception:
-            pass
+        except Exception as _e2:
+            _errors['infrastructure_layers_substations'] = type(_e2).__name__
 
         total_substations = nearby_substations + infra_substations
 
@@ -40296,8 +40314,8 @@ def api_site_score():
                   AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
             """, (lat, lat, lon, lon))
             nearby_gas_pipelines = c.fetchone()[0] or 0
-        except Exception:
-            pass
+        except Exception as _e3:
+            _errors['gas_pipelines'] = type(_e3).__name__
 
         # 4. Nearby power plants (~80km radius)
         nearby_power_plants = 0
@@ -40321,8 +40339,8 @@ def api_site_score():
                 pp_row = c.fetchone()
                 nearby_power_plants = pp_row[0] or 0
                 nearby_generation_mw = float(pp_row[1] or 0)
-        except Exception:
-            pass
+        except Exception as _e4:
+            _errors['infrastructure_layers_plants'] = type(_e4).__name__
 
         # Fallback: discovered_power_plants table.
         # Live schema (verified via information_schema, not the stale CREATE TABLE
@@ -40339,8 +40357,46 @@ def api_site_score():
             dpp_row = c.fetchone()
             nearby_power_plants += (dpp_row[0] or 0)
             nearby_generation_mw += float(dpp_row[1] or 0)
-        except Exception:
-            pass
+        except Exception as _e5:
+            _errors['discovered_power_plants'] = type(_e5).__name__
+
+        # 4b. composite-v2.4 point differentiators: the nearest >=230 kV
+        # substation and the nearest active gas pipeline segment. Counts
+        # saturate in a dense metro; distances do not.
+        from util import site_scoring as _ss
+        _hv = None
+        try:
+            c.execute("""
+                SELECT name, voltage_kv, lat, lng FROM substations
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                  AND voltage_kv >= %s
+                ORDER BY (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s)
+                LIMIT 1
+            """, (lat - _ss.SEARCH_DEG, lat + _ss.SEARCH_DEG,
+                  lon - _ss.SEARCH_DEG, lon + _ss.SEARCH_DEG, _ss.HV_KV,
+                  lat, lat, lon, lon))
+            _r = c.fetchone()
+            if _r and _r[2] is not None and _r[3] is not None:
+                _hv = {'name': _r[0], 'voltage_kv': float(_r[1]) if _r[1] else None,
+                       'km': round(_ss.haversine_km(lat, lon, float(_r[2]), float(_r[3])), 1)}
+        except Exception as _e6:
+            _errors['nearest_hv_substation'] = type(_e6).__name__
+        _gas_near_km = None
+        try:
+            c.execute("""
+                SELECT lat, lng FROM gas_pipelines
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                  AND status = 'active'
+                ORDER BY (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s)
+                LIMIT 1
+            """, (lat - _ss.SEARCH_DEG, lat + _ss.SEARCH_DEG,
+                  lon - _ss.SEARCH_DEG, lon + _ss.SEARCH_DEG, lat, lat, lon, lon))
+            _g = c.fetchone()
+            if _g and _g[0] is not None and _g[1] is not None:
+                _gas_near_km = round(_ss.haversine_km(lat, lon, float(_g[0]), float(_g[1])), 1)
+        except Exception as _e7:
+            _errors['nearest_gas_pipeline'] = type(_e7).__name__
+        _as_of = _ss.as_of(c)
 
         # 5. Fiber connectivity
         METRO_FIBER_SCORES = {
@@ -40354,6 +40410,8 @@ def api_site_score():
             'ID': 55, 'NM': 54, 'MT': 50, 'WV': 50,
         }
         fiber_score = METRO_FIBER_SCORES.get(state, 55)
+        _fiber_basis = ('state_table' if state in METRO_FIBER_SCORES
+                        else 'default_no_state' if not state else 'default_state_not_in_table')
         fiber_carriers = 0
         fiber_conn = None
         # Parcel-level fiber readiness (real near-net distance + carrier depth + path diversity)
@@ -40366,8 +40424,10 @@ def api_site_score():
                 fiber_score = _cc['score']
                 fiber_carriers = _cc['carrier_count']
                 fiber_conn = _cc
-        except Exception:
+                _fiber_basis = 'measured_point:carrier_presence'
+        except Exception as _e8:
             fiber_conn = None
+            _errors['fiber_parcel'] = type(_e8).__name__
 
         if fiber_conn is None:
             try:
@@ -40399,39 +40459,28 @@ def api_site_score():
             'WA': 70, 'NY': 73, 'NJ': 71, 'CT': 74, 'MA': 75,
             'MI': 72, 'WV': 65, 'AR': 58, 'NM': 72, 'MT': 74,
         }
-        risk_score = STATE_RISK.get(state, 65)
-
-        # 7. Sub-scores
-        power_score = min(100, 40 + (total_substations * 2) + (nearby_power_plants * 1.5))
-
-        if nearby_gas_pipelines >= 20:
-            gas_score = 95
-        elif nearby_gas_pipelines >= 10:
-            gas_score = 85
-        elif nearby_gas_pipelines >= 3:
-            gas_score = 70
-        elif nearby_gas_pipelines >= 1:
-            gas_score = 55
+        # composite-v2.4: a state the table does not hold, or no state at all,
+        # is NOT scored (was a silent 65). It leaves the composite, which is
+        # renormalised over what was scored and says so.
+        if state in STATE_RISK:
+            risk_score, _risk_basis = STATE_RISK[state], 'state_table'
         else:
-            gas_score = 30
+            risk_score = None
+            _risk_basis = ('risk_not_scored:state_unresolved' if not state
+                           else 'risk_not_scored:state_not_in_table')
 
-        if nearby_facilities < 5:
-            market_score = 60
-        elif nearby_facilities < 20:
-            market_score = 85
-        elif nearby_facilities < 50:
-            market_score = 75
-        else:
-            market_score = 60
+        # 7. Sub-scores (util/site_scoring, composite-v2.4)
+        power_score, _power_basis = _ss.power_score(
+            (_hv or {}).get('km'), (_hv or {}).get('voltage_kv'),
+            total_substations, nearby_power_plants)
+        gas_score, _gas_basis = _ss.gas_score(_gas_near_km, nearby_gas_pipelines)
+        market_score, _market_basis = _ss.market_score(nearby_facilities)
 
         # 8. Overall composite: power 25%, gas 10%, fiber 15%, market 15%, risk 35%
-        overall = round(
-            (power_score * 0.25) +
-            (gas_score * 0.10) +
-            (fiber_score * 0.15) +
-            (market_score * 0.15) +
-            (risk_score * 0.35)
-        , 1)
+        overall, _overall_basis = _ss.composite({
+            'power_infrastructure': power_score, 'gas_pipeline_access': gas_score,
+            'fiber_connectivity': fiber_score, 'market_conditions': market_score,
+            'risk_resilience': risk_score})
 
         # Power COST (¢/kWh) — the number a developer asks for FIRST. analyze_site
         # historically returned a power *score* (substation/generation density)
@@ -40488,8 +40537,8 @@ def api_site_score():
             try:
                 from routes.candidates import candidate_echo
                 _cand_echo = {'echo': candidate_echo(
-                    _cand, analysis_version='site-score/2026-07-11',
-                    methodology_version='composite-v2.3')}
+                    _cand, analysis_version='site-score/2026-09-25',
+                    methodology_version=_ss.METHODOLOGY_VERSION)}
             except Exception:
                 _cand_echo = {}
 
@@ -40524,7 +40573,21 @@ def api_site_score():
                 'gas_pipeline_access': round(gas_score, 1),
                 'fiber_connectivity': round(fiber_score, 1),
                 'market_conditions': round(market_score, 1),
-                'risk_resilience': round(risk_score, 1),
+                'risk_resilience': (round(risk_score, 1) if risk_score is not None else None),
+            },
+            # composite-v2.4: what each factor rests on, where it came from and
+            # whether it was scored at all. A factor whose score is a table
+            # value or a band says so; a lookup that failed is named.
+            'methodology_version': _ss.METHODOLOGY_VERSION,
+            'overall_basis': _overall_basis,
+            'coverage': _ss.coverage(
+                state, _state_basis, _hv, _gas_near_km, _as_of, _errors,
+                power_basis=_power_basis, gas_basis=_gas_basis,
+                fiber_basis=_fiber_basis, market_basis=_market_basis,
+                risk_basis=_risk_basis),
+            'nearest': {
+                'hv_substation': _hv,
+                'gas_pipeline_km': _gas_near_km,
             },
             'power_cost': power_cost,
             'nearby': {
@@ -40550,6 +40613,7 @@ def api_site_score():
                 'basis': 'state-level estimate (parcel data unavailable)',
             }),
             'interpretation': (
+                'Not scored' if overall is None else
                 'Excellent site' if overall >= 80 else
                 'Good site' if overall >= 70 else
                 'Viable site' if overall >= 60 else

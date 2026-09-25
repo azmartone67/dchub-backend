@@ -396,7 +396,10 @@ def assemble_candidates(anchors, gas_pts, fiber_segs, moratoria,
                 "records": hits[:3] or None,
             } if bool(evaluated.get("exclude_moratorium")) else None,
             "next_calls": [
-                "analyze_site lat=%s lon=%s" % (out_lat, out_lon),
+                # composite-v2.4: pass the state, or analyze_site's risk
+                # factor is unscored for want of one.
+                ("analyze_site lat=%s lon=%s state=%s" % (out_lat, out_lon, a.get("state"))
+                 if a.get("state") else "analyze_site lat=%s lon=%s" % (out_lat, out_lon)),
                 "get_fiber_readiness lat=%s lon=%s" % (out_lat, out_lon),
                 "get_permitting_intel state=%s" % (a.get("state") or ""),
             ],
