@@ -152,6 +152,20 @@ def _headline_stats() -> dict:
     the whole block."""
     s = dict(_CANON)  # start from canonical; override with live values
     s["_origin"] = {}
+
+    # Markets — SAME single source state_of_power.py._canon_mkts() reads, so
+    # this surface can't drift from that one independently (the
+    # cross_surface_metric_divergence detector flagged _CANON['markets'] as a
+    # frozen literal here while the live DCPI market count kept moving).
+    try:
+        import canonical_stats
+        m = canonical_stats.get_canonical_stats().get("markets")
+        if m:
+            s["markets"] = int(m)
+            s["_origin"]["markets"] = "canonical_stats.get_canonical_stats"
+    except Exception:
+        pass
+
     c = None
     try:
         c = _conn()
