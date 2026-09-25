@@ -1000,9 +1000,27 @@ def api_rank_sites():
             else:
                 _keep.append(c)
         survivors = _keep
+    # owner 2026-09-25 (site-score composite-v2.4): a site-score row whose
+    # composite was renormalised without a factor (risk, when no state could be
+    # resolved) must not be compared as an equal. Each recognisable row carries
+    # scored_factors; a row missing risk is flagged and ranks below the rows
+    # scored on all five, whatever its objective_score.
+    from util.site_scoring import row_completeness as _rowc, is_complete as _complete
+    _incomplete_ids = []
+    for c in survivors:
+        _sf, _risk_missing = _rowc(c)
+        if _sf is not None:
+            c["scored_factors"] = _sf
+        if _risk_missing:
+            c["risk_not_scored"] = True
+        c["_complete"] = not _risk_missing and (_sf is None or _complete(_sf))
+        if not c["_complete"]:
+            _incomplete_ids.append(c.get("id") or c.get("site_ref") or c.get("candidate_id"))
     survivors.sort(key=lambda c: (c["objective_score"] is not None,
+                                  c["_complete"],
                                   c["objective_score"] or 0.0), reverse=True)
     for i, c in enumerate(survivors):
+        c.pop("_complete", None)
         c["rank"] = i + 1
 
     _mode = "percentile" if percentile else ("absolute" if absolute else "relative")
@@ -1065,6 +1083,14 @@ def api_rank_sites():
             f"{len(_validated)} of {len(objectives)} objectives evaluated; ranking reflects ONLY "
             f"validated objectives. Unavailable ({', '.join(_unavail)}) were excluded from the weighted "
             f"score — not fabricated, not zero-filled. Treat the result as conditionally complete.")
+    if _incomplete_ids:
+        _extra["incomplete_rows"] = {
+            "ids": _incomplete_ids,
+            "note": ("these rows' scores cover fewer than all five site-score factors "
+                     "(risk_not_scored or scored_factors below n/n); they rank below "
+                     "every complete row so a renormalised score is not compared as an "
+                     "equal. Pass state= to analyze_site to score risk."),
+        }
     if _caveats:
         _extra["caveats"] = _caveats
     return jsonify({
