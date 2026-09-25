@@ -16835,12 +16835,21 @@ def stripe_webhook():
             # payment links never touch our code, so this webhook is the one
             # chokepoint every sale crosses. Idempotent per session; kill switch
             # DCHUB_PAYMENT_RECEIPT_DISABLE=1.
+            # r-trial-copy (2026-09-24): the trial checkout's end date, for
+            # the receipt and the upgrade welcome. None for every other sale.
+            _trial_end = None
+            try:
+                from routes.trial_copy import trial_end_for_checkout as _tefc
+                _trial_end = _tefc(data)
+            except Exception:
+                _trial_end = None
             if customer_email and data.get('payment_status') == 'paid':
                 try:
                     _send_payment_receipt(customer_email,
                                           data.get('amount_total'),
                                           data.get('currency'),
-                                          data.get('id') or '')
+                                          data.get('id') or '',
+                                          trial_end=_trial_end)
                 except Exception as _re:
                     print(f"⚠️ receipt send error (non-fatal): {_re}")
 
@@ -16892,7 +16901,8 @@ def stripe_webhook():
                                 and _plan_now in ('pro', 'founding', 'enterprise')
                                 and not _welcome_recently_sent(customer_email)):
                             try:
-                                send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0])
+                                send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0],
+                                                                trial_end=_trial_end)
                             except Exception as email_err:
                                 print(f"⚠️ Pro welcome email error: {email_err}")
                         elif data.get('mode') == 'subscription':
@@ -17563,7 +17573,7 @@ def _resend_message_id(response):
 
 
 def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro',
-                                   reset_url=None):
+                                   reset_url=None, trial_end=None):
     """Resend fallback when SendGrid fails (r-resend-fallback 2026-06-16 — SendGrid
     hit 'Maximum credits exceeded' 401 on the first $5 pack sale, stranding paying
     customers' API keys). Light (urllib, no SDK).
@@ -17577,6 +17587,13 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro',
         return False
     try:
         _plan = (plan_name or '').replace('_', ' ').strip() or 'DC Hub'
+        _trial_html = ""
+        try:
+            from routes.trial_copy import plan_display as _pd, trial_block_html as _tbh
+            _plan = _pd(plan_name, trial_end)
+            _trial_html = _tbh(trial_end) if trial_end else ""
+        except Exception:
+            pass
         # r-whiteglove (2026-07-06): founder-voiced welcome so EVERY new customer
         # gets the same white-glove onboarding — a personal greeting (best-effort
         # first name, fail-soft to 'there'), the load-bearing "Connect to Claude"
@@ -17640,6 +17657,7 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro',
         html = (f"<div style='font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e;line-height:1.6;font-size:15px'>"
                 f"<p>Hi {_first},</p>"
                 f"<p>Jonathan here, founder of DC Hub. Thanks for coming on board as a <strong>{_plan}</strong> subscriber &mdash; I wanted to reach out personally and make sure you have everything you need to get value fast. Your account is live and fully provisioned.</p>"
+                f"{_trial_html}"
                 f"{_conn}"
                 f"<p style='font-size:14px;color:#6a6a7a;margin-top:20px;'>Prefer the REST API? Your key: <code>{raw_api_key}</code> &mdash; send it as your <code>X-API-Key</code> header.</p>"
                 f"{_entry}"
@@ -17887,7 +17905,8 @@ def _claim_welcome_send(to_email, plan_name):
         return -1
 
 
-def _send_payment_receipt(to_email, amount_cents, currency, session_id):
+def _send_payment_receipt(to_email, amount_cents, currency, session_id,
+                          trial_end=None):
     """Email a payment receipt for a completed checkout (r-receipt 2026-08-17).
 
     Onboarding shell lane 2: every recent payer had 2-4 welcome emails and NO
@@ -17897,10 +17916,23 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id):
     (plan='receipt:<session>') is claimed with the same INSERT ... WHERE NOT
     EXISTS shape as _claim_welcome_send, so webhook re-delivery cannot
     double-send. Fire-and-forget thread; never raises into the webhook.
-    Kill switch: DCHUB_PAYMENT_RECEIPT_DISABLE=1."""
+    Kill switch: DCHUB_PAYMENT_RECEIPT_DISABLE=1.
+
+    r-trial-copy (2026-09-24, live gate): a trial checkout (trial_end set) is
+    NOT a payment. It said "Thanks, payment received, 0.00 USD"; it now says the
+    trial started, $0 today, the first charge date and how to cancel. The
+    Reference is the FULL session id: the 28-char cut was pasted into
+    /upgrade/h/done?cs= and could not resolve (Stripe 404, 2026-09-25 03:02Z)."""
     if (os.environ.get("DCHUB_PAYMENT_RECEIPT_DISABLE") or "").strip() == "1":
         return
     plan_tag = "receipt:" + (session_id or "")[:40]
+    _trial_html = ""
+    if trial_end:
+        try:
+            from routes.trial_copy import trial_block_html
+            _trial_html = trial_block_html(trial_end)
+        except Exception:
+            _trial_html = ""
 
     def _send():
         try:
@@ -17922,11 +17954,12 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id):
             except Exception:
                 pass
             html = f"""<div style="font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;">
-  <h2 style="margin:24px 0 8px;">Thanks — payment received</h2>
+  <h2 style="margin:24px 0 8px;">{'Your DC Hub Pro trial has started' if _trial_html else 'Thanks — payment received'}</h2>
   <p style="color:#4a4a5a;">This is your receipt from DC Hub.</p>
+  {_trial_html}
   <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:15px;">
-    {f'<tr><td style="padding:8px 0;color:#6a6a7a;">Amount</td><td style="text-align:right;font-weight:600;">{amount_line}</td></tr>' if amount_line else ''}
-    <tr><td style="padding:8px 0;color:#6a6a7a;">Reference</td><td style="text-align:right;font-family:monospace;font-size:13px;">{(session_id or '')[:28]}</td></tr>
+    {f'<tr><td style="padding:8px 0;color:#6a6a7a;">{"Charged today" if _trial_html else "Amount"}</td><td style="text-align:right;font-weight:600;">{amount_line}</td></tr>' if amount_line else ''}
+    <tr><td style="padding:8px 0;color:#6a6a7a;">Reference</td><td style="text-align:right;font-family:monospace;font-size:12px;word-break:break-all;">{session_id or ''}</td></tr>
   </table>
   <p style="color:#6a6a7a;font-size:13px;">Your API key and getting-started guide arrive in a separate welcome email. Questions or billing changes: reply to this email or write jonathan@dchub.cloud.</p>
   <p style="color:#9a9aaa;font-size:12px;">DC Hub · dchub.cloud · live infrastructure data for AI</p>
@@ -17939,7 +17972,8 @@ def _send_payment_receipt(to_email, amount_cents, currency, session_id):
                     "https://api.resend.com/emails",
                     json={"from": f"DC Hub <{os.environ.get('DCHUB_FROM_EMAIL', 'jonathan@dchub.cloud')}>",
                           "to": [to_email],
-                          "subject": "Your DC Hub receipt",
+                          "subject": ("Your DC Hub Pro trial has started"
+                                      if _trial_html else "Your DC Hub receipt"),
                           "html": html},
                     headers={"Authorization": f"Bearer {rk}"}, timeout=20)
                 ok = resp.status_code in (200, 201)
@@ -18156,7 +18190,8 @@ def _alert_welcome_failure(to_email, plan_name, raw_api_key, reset_url, reason='
     return delivered
 
 
-def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None):
+def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None,
+                                trial_end=None):
     """Send welcome email with API key (and login password for new accounts) via SendGrid.
 
     r43-H: reset_url is a 72h self-serve "set your password" link. When
@@ -18194,7 +18229,8 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 # Resend message id; testing it for truth threw that away and
                 # made this lane's sends permanently unmatchable.
                 _mid_nokey = _welcome_email_resend_fallback(
-                    to_email, raw_api_key, plan_name, reset_url=reset_url)
+                    to_email, raw_api_key, plan_name, reset_url=reset_url,
+                    trial_end=trial_end)
                 if _mid_nokey:
                     print(f"📧 Welcome sent via Resend (SENDGRID_API_KEY unset) to {to_email}")
                     _log_welcome_email(to_email, plan_name, status='sent_via_resend',
@@ -18230,7 +18266,23 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 _log_welcome_email(to_email, plan_name, status='failed_no_sendgrid_key',
                                    claim_id=claim_id)
                 return
-            plan_display = plan_name.replace('_', ' ').title()
+            # r-trial-copy (2026-09-24): plan_name may carry provenance
+            # ("paid:mint") for the send log; it rendered as "Welcome to DC Hub
+            # Paid:Mint!". The customer sees the plan only, the trial when
+            # there is one, and the call limit from tier_registry (this said
+            # 10,000/day for every plan; Pro is 2,000).
+            try:
+                from routes.trial_copy import (plan_display as _pd,
+                                               daily_calls as _dc,
+                                               trial_block_html as _tbh)
+                plan_display = _pd(plan_name, trial_end)
+                _daily = _dc(plan_name, trial_end)
+                _trial_html = _tbh(trial_end) if trial_end else ""
+            except Exception:
+                plan_display = plan_name.split(':', 1)[0].replace('_', ' ').title()
+                _daily, _trial_html = None, ""
+            _daily_h3 = (f"{_daily:,} API calls/day" if _daily
+                         else "Full API access")
             subject = f"Welcome to DC Hub {plan_display} - Your API Key Inside"
             # r-onboarding-fix (2026-07-03, defect #6): lead with the Claude connector.
             mcp_connector_section = _welcome_mcp_connector_html(to_email, raw_api_key)
@@ -18304,6 +18356,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to DC Hub {plan_display}!</h1>
+{_trial_html}
 {password_section}
 {mcp_connector_section}
     <p>Prefer the REST API? Your account is active and ready to go. Below is your API key -- this is the <strong>only time</strong> you'll see the full key, so please save it now.</p>
@@ -18319,7 +18372,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
     <h2 style="margin-top: 32px;">Your {plan_display} Plan Includes</h2>
     <div class="feature-box">
-      <h3>10,000 API calls/day</h3>
+      <h3>{_daily_h3}</h3>
       <p>Full access to facility search, market intelligence, and energy data</p>
     </div>
     <div class="feature-box">
@@ -18404,7 +18457,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # r43-H: record outcome so the daily audit can reconcile.
             if not _ok:
                 _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
-                                                  reset_url=reset_url)
+                                                  reset_url=reset_url, trial_end=trial_end)
                 if _rmid:
                     _log_welcome_email(to_email, plan_name, status='sent_via_resend',
                                        resend_message_id=(None if _rmid == 'sent-no-id' else _rmid),
@@ -18432,7 +18485,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # credits exceeded" 401) → try Resend before alerting so paying
             # customers still get their key.
             _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
-                                                  reset_url=reset_url)
+                                                  reset_url=reset_url, trial_end=trial_end)
             if _rmid:
                 _log_welcome_email(to_email, plan_name, status='sent_via_resend',
                                    resend_message_id=(None if _rmid == 'sent-no-id' else _rmid),
@@ -18611,8 +18664,11 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
 
 
-def send_pro_welcome_email_sendgrid(to_email, name=''):
-    """Send welcome email for Pro upgrades via SendGrid"""
+def send_pro_welcome_email_sendgrid(to_email, name='', trial_end=None):
+    """Send welcome email for Pro upgrades via SendGrid.
+
+    r-trial-copy (2026-09-24): trial_end set = a trial start, not a paid
+    upgrade: the subject, heading and a trial block say so."""
     import threading
     def _send():
         try:
@@ -18622,6 +18678,14 @@ def send_pro_welcome_email_sendgrid(to_email, name=''):
                 return
             display_name = name if name else to_email.split('@')[0]
             subject = "🎉 Welcome to DC Hub Pro - Your Upgrade is Active"
+            _trial_html = ""
+            if trial_end:
+                try:
+                    from routes.trial_copy import trial_block_html
+                    _trial_html = trial_block_html(trial_end)
+                    subject = "Your DC Hub Pro trial has started"
+                except Exception:
+                    _trial_html = ""
             # This body is an f-STRING, so a {canon_*} placeholder would be read
             # as a Python name and raise. Bind the canonical value first and
             # interpolate it like any other f-string field.
@@ -18657,8 +18721,9 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     <div class="pro-badge">PRO MEMBER</div>
   </div>
   <div class="body">
-    <h1>Welcome to Pro, {display_name}! 🎉</h1>
-    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>{canon_facilities} distinct facilities</strong> across <strong>170+ countries</strong>.</p>
+    <h1>{'Your Pro trial has started' if _trial_html else 'Welcome to Pro'}, {display_name}! 🎉</h1>
+    {_trial_html}
+    <p>{'Pro is active for your trial.' if _trial_html else 'Your upgrade is now active.'} You have full access to the world's most comprehensive data center intelligence platform -- <strong>{canon_facilities} distinct facilities</strong> across <strong>170+ countries</strong>.</p>
     <h2 style="margin-top: 32px;">What You Now Have Access To</h2>
     <div class="feature-box">
       <h3>⚡ 2,000 API Calls / Day</h3>
@@ -18917,6 +18982,15 @@ def _plan_from_checkout_offer(session):
     plink = str(session.get('payment_link') or '').strip()
     return (_CHECKOUT_OFFER_PLAN.get(offer, '')
             or (_CHECKOUT_OFFER_PLAN.get(plink, '') if plink.startswith('plink_') else ''))
+
+
+def _checkout_trial_end(session):
+    """r-trial-copy: the trial checkout's end (unix s), else None. Never raises."""
+    try:
+        from routes.trial_copy import trial_end_for_checkout
+        return trial_end_for_checkout(session)
+    except Exception:
+        return None
 
 
 def handle_checkout_completed(session):
@@ -19392,7 +19466,8 @@ def handle_checkout_completed(session):
             reset_url = mint_reset_url(customer_email)
 
             send_welcome_email_sendgrid(customer_email, raw_key, plan_name,
-                                        temp_password=temp_password, reset_url=reset_url)
+                                        temp_password=temp_password, reset_url=reset_url,
+                                        trial_end=_checkout_trial_end(session))
 
         elif customer_email:
             resolved_user_id = user_id
@@ -19463,7 +19538,8 @@ def handle_checkout_completed(session):
                     # helper as the new-user branch above.
                     from routes._password_reset_link import mint_reset_url
                     send_welcome_email_sendgrid(customer_email, raw_key, plan_name,
-                                                reset_url=mint_reset_url(customer_email))
+                                                reset_url=mint_reset_url(customer_email),
+                                                trial_end=_checkout_trial_end(session))
             else:
                 print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
 

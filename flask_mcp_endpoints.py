@@ -8013,10 +8013,12 @@ def stripe_webhook_mcp():
                 # variant on None — so a DB blip degrades to today's behaviour
                 # instead of shipping a dead link.
                 from routes._password_reset_link import mint_reset_url
+                from routes.trial_copy import trial_end_for_subscription as _trial_end_of
                 _main_mod.send_welcome_email_sendgrid(
                     email, provisioned_key,
                     plan_name=f"{_ptier}:{'mint' if _newmint else 'upgrade'}",
-                    reset_url=mint_reset_url(email))
+                    reset_url=mint_reset_url(email),
+                    trial_end=_trial_end_of(obj))
             except Exception as _ee:
                 # send_welcome_email_sendgrid already admin-alerts on SendGrid
                 # failure; swallow here so provisioning never breaks the webhook.
