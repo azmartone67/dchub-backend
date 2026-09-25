@@ -234,6 +234,14 @@ class _Harness:
                      _plan_write_floor=lambda e, u, p, t: (p, t),
                      send_admin_alert_email=lambda *a, **k: None,
                      send_welcome_email_sendgrid=lambda *a, **k: None)
+        # The REAL offer→plan helper and its map, not a stub: a trial
+        # checkout's plan comes from it (r-pro-trial7).
+        offer_map = next(n.value for n in MAIN.body if isinstance(n, ast.Assign)
+                         and any(getattr(t, "id", "") == "_CHECKOUT_OFFER_PLAN"
+                                 for t in n.targets))
+        co_ns["_plan_from_checkout_offer"] = _compile(
+            "_plan_from_checkout_offer",
+            dict(co_ns, _CHECKOUT_OFFER_PLAN=ast.literal_eval(offer_map)))
         self.checkout_fn = _compile("handle_checkout_completed", co_ns)
 
         monkeypatch.setattr(api_tier_gating, "get_db",

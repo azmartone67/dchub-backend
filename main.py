@@ -18854,6 +18854,24 @@ def _apply_plan_guard(session, plan_name, api_tier, user_id, customer_email):
         return plan_name, api_tier, None
 
 
+# r-pro-trial7 (2026-09-24): offer-tagged subscription links → plan key.
+# A trial checkout arrives with amount_total=0 and the Pro trial link carries
+# metadata offer=pro_trial_7d, not `plan`. Without this the $0 falls to the
+# amount bands and resolves 'free', and handle_subscription_created ignores
+# status 'trialing', so the trialist sat on Free for all 7 days. Subscription
+# mode only: an offer tag on a one-time payment must never read as a plan.
+_CHECKOUT_OFFER_PLAN = {
+    'pro_trial_7d': 'pro_monthly',
+}
+
+
+def _plan_from_checkout_offer(session):
+    if not isinstance(session, dict) or session.get('mode') != 'subscription':
+        return ''
+    offer = str((session.get('metadata') or {}).get('offer') or '').strip()
+    return _CHECKOUT_OFFER_PLAN.get(offer, '')
+
+
 def handle_checkout_completed(session):
     """Handle successful checkout - upgrade user plan and API key tier. Writes to PostgreSQL first."""
     import traceback
@@ -18866,7 +18884,8 @@ def handle_checkout_completed(session):
 
         metadata = session.get('metadata', {})
         user_id = metadata.get('user_id')
-        plan_from_metadata = metadata.get('plan', '')
+        plan_from_metadata = (metadata.get('plan', '')
+                              or _plan_from_checkout_offer(session))
 
         amount_total = session.get('amount_total', 0)
         amount_dollars = amount_total / 100 if amount_total else 0
