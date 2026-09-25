@@ -108,6 +108,8 @@ def test_checkout_new_user_stores_and_logs_a_bounded_prefix(monkeypatch, plan, b
         "_pg_execute": lambda sql, params=None, **kw: calls.append((sql, params)) or (1, []),
         "send_welcome_email_sendgrid": lambda *a, **kw: emailed.append(a),
         "print": lambda *a, **kw: printed.append(" ".join(map(str, a))),
+        # r-trial-copy: the welcome call passes the checkout's trial end.
+        "session": {}, "_checkout_trial_end": lambda s: None,
     }
     exec(compile(_checkout_mint_statements(), "main.py", "exec"), ns)
 

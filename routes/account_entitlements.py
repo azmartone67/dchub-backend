@@ -123,8 +123,13 @@ def my_entitlements():
                         "conversions from this account are unattributable")
             else:
                 cur.execute(
-                    "SELECT status, metadata->>'email',"
-                    "       created_at::date"
+                    # r-trial-copy (d, 2026-09-24): the bound address is the
+                    # `email` COLUMN (what the resolver and the checkout
+                    # upgrade read). metadata->>'email' is empty on bound keys,
+                    # so email_bound read false for a key /api/v1/me showed
+                    # with its address.
+                    "SELECT status, COALESCE(NULLIF(email, ''), metadata->>'email'),"
+                    "       created_at::date, tier"
                     "  FROM mcp_dev_keys WHERE api_key = %s"
                     " ORDER BY created_at DESC LIMIT 1", (key,))
                 mk = cur.fetchone()
@@ -133,6 +138,7 @@ def my_entitlements():
                         "status": mk[0],
                         "email_bound": bool(mk[1]),
                         "minted": str(mk[2]),
+                        "tier": mk[3],
                     }
                     if mk[0] != "active":
                         out["mismatches"].append(
@@ -157,9 +163,17 @@ def my_entitlements():
     try:
         from util.tier_gate import resolve_tier
         t, _tctx = resolve_tier()
-        tier_name = getattr(t, "name", str(t)).lower()
+        gate = getattr(t, "name", str(t)).lower()
+        # r-trial-copy (d): util.tier_gate has no FREE level; a free key
+        # resolves to the ANONYMOUS gate level, and this printed "anonymous"
+        # for a known, bound free key. Name the plan; keep the gate level.
+        known = (_tctx or {}).get("source") not in (None, "anonymous")
+        plan = ((_tctx or {}).get("plan") or "").lower()
+        tier_name = ("free" if gate == "anonymous" and known else gate)
         out["resolved"] = {
             "tier": tier_name,
+            "gate_level": gate,
+            "plan": plan or None,
             "unlocks": _PLAN_TOOL_SUMMARY.get(
                 tier_name, _PLAN_TOOL_SUMMARY["free"]),
         }

@@ -237,6 +237,7 @@ class _Harness:
                      hash_password=lambda pw: "x",
                      _apply_plan_guard=lambda s, p, t, u, e: (p, t, None),
                      _plan_write_floor=lambda e, u, p, t: (p, t),
+                     _checkout_trial_end=lambda s: None,
                      send_admin_alert_email=lambda *a, **k: None,
                      send_welcome_email_sendgrid=lambda *a, **k: None)
         # The REAL offer→plan helper and its map, not a stub: a trial
