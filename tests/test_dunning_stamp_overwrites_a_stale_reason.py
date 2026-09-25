@@ -107,12 +107,15 @@ def _jsonb_to_sqlite(flat):
 
 
 def _load(handler, ns_extra):
-    fn = next(n for n in ast.parse(MAIN.read_text(encoding="utf-8")).body
-              if isinstance(n, ast.FunctionDef) and n.name == handler)
-    fn = copy.deepcopy(fn)
-    fn.decorator_list = []
+    # The dunning handlers call the r-trial-dunning helpers, so lift them too;
+    # they run against the same stubbed globals.
+    names = (handler, "_real_paid_invoice_count", "_is_post_trial_first_charge")
+    fns = [copy.deepcopy(n) for n in ast.parse(MAIN.read_text(encoding="utf-8")).body
+           if isinstance(n, ast.FunctionDef) and n.name in names]
+    for fn in fns:
+        fn.decorator_list = []
     ns = dict(ns_extra)
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(MAIN), "exec"), ns)
+    exec(compile(ast.Module(body=fns, type_ignores=[]), str(MAIN), "exec"), ns)
     return ns[handler]
 
 
