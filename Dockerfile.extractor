@@ -25,9 +25,9 @@
 # stays the verification signal for both builders.
 
 # ── build ────────────────────────────────────────────────────────────────
-FROM python:3.13.14-slim AS build
+FROM python:3.13.15-slim AS build
 
-# Pinned to runtime.txt (python-3.13.14) — the same version Railpack resolved,
+# Pinned to runtime.txt (python-3.13.15) — the same version Railpack resolved,
 # so this is a change of WHERE the interpreter comes from, not WHICH one.
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -52,7 +52,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 # ── runtime ──────────────────────────────────────────────────────────────
-FROM python:3.13.14-slim
+FROM python:3.13.15-slim
 
 # Same base image as the build stage, which is what makes the copied venv
 # valid: its bin/python symlink and pyvenv.cfg point at /usr/local/bin/python
