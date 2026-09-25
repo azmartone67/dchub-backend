@@ -37,6 +37,10 @@ on:
       # whose alarm reaches nobody is the alarm not existing. It watches
       # config no PR touches, so its red is ALWAYS worth a human look.
       - "CF cache ruleset drift"
+      # ★2026-09-25 — required check `web-image-build`: builds the image
+      # railway.toml deploys for web + worker. Red on main = the next deploy
+      # of both services would ship (or fail on) a broken image.
+      - "Web image build"
     types: [completed]
 
 permissions:
