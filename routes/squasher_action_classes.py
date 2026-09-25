@@ -2037,7 +2037,13 @@ def _pre_image(cur, cls: str):
                 " WHERE in_facilities = FALSE"
                 " ORDER BY last_seen_at DESC NULLS LAST, id DESC LIMIT %s",
                 (_NEWS_PRE_IMAGE_CAP,))
-    return [(r[0], r[1]) for r in (cur.fetchall() or [])]
+    pre = [(r[0], r[1]) for r in (cur.fetchall() or [])]
+    # ...plus the blind-spot pass's rows, which can sit outside that window.
+    from routes.news_entity_extraction import blindspot_entity_rows
+    seen = {i for i, _ in pre}
+    pre += [(i, s) for i, s in blindspot_entity_rows(cur, _NEWS_PRE_IMAGE_CAP)
+            if i not in seen]
+    return pre
 
 
 def _rollback_from_pre_image(cur, pre_image) -> list:
