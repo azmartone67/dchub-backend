@@ -116,7 +116,7 @@ def world():
             INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
                                          request_ua, call_count, notes)
             VALUES ('dch_trial_borngated', {WEEK_TS}, 'realip-gated', 'Cursor/1.0',
-                    10, 'gate_carry:10 (cumulative unbound usage carried ...)')""")
+                    10, 'gate_carry:10 (cumulative unbound usage carried ...) ON CONFLICT DO NOTHING')""")
         # the scan: one pair, 500 born-gated mints in one day
         cur.execute(f"""
             INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
@@ -152,10 +152,10 @@ def world():
         cur.execute(f"""
             INSERT INTO auto_trial_keys (api_key, minted_at, request_ip_hash,
                                          request_ua, call_count, mcp_platform)
-            VALUES ('dch_trial_extnode', {WEEK_TS}, 'extnodeip', 'node', 1, 'chatgpt')""")
+            VALUES ('dch_trial_extnode', {WEEK_TS}, 'extnodeip', 'node', 1, 'chatgpt') ON CONFLICT DO NOTHING""")
         cur.execute(f"""
             INSERT INTO mcp_call_log (api_key, platform, "timestamp")
-            VALUES ('dch_trial_extnode', 'chatgpt', {WEEK_TS})""")
+            VALUES ('dch_trial_extnode', 'chatgpt', {WEEK_TS}) ON CONFLICT DO NOTHING""")
     admin.close()
     yield
     admin = _REAL_CONNECT(DSN)

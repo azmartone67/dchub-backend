@@ -154,8 +154,8 @@ def test_a_sweep_that_did_not_commit_leaves_the_state_unbaselined(conn):
 
 def test_gas_candidate_on_a_federal_point_is_skipped(conn):
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO gas_pipelines (lat, lng) VALUES (31.0, -100.0)")
-        cur.execute("INSERT INTO gas_pipelines (lat, lon) VALUES (33.0, -102.0)")
+        cur.execute("INSERT INTO gas_pipelines (lat, lng) VALUES (31.0, -100.0) ON CONFLICT DO NOTHING")
+        cur.execute("INSERT INTO gas_pipelines (lat, lon) VALUES (33.0, -102.0) ON CONFLICT DO NOTHING")
     conn.commit()
 
     def pipe(wid, lat, lng):
@@ -173,7 +173,7 @@ def test_gas_candidate_on_a_federal_point_is_skipped(conn):
 def test_substations_held_rows_untouched_new_rows_tagged_osm(conn):
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO substations (name, lat, lng, created_at)
-                       VALUES ('OSM-1', 30.0, -97.0, '2026-01-01')""")
+                       VALUES ('OSM-1', 30.0, -97.0, '2026-01-01') ON CONFLICT DO NOTHING""")
     conn.commit()
     els = [{"type": "node", "id": 1, "lat": 30.0, "lon": -97.0, "tags": {}},
            {"type": "node", "id": 2, "lat": 31.0, "lon": -98.0, "tags": {"name": "New Sub"}}]
@@ -190,7 +190,7 @@ def test_substations_held_rows_untouched_new_rows_tagged_osm(conn):
 def test_power_plants_new_rows_stamped_held_rows_untouched(conn):
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO discovered_power_plants (id, name, source)
-                       VALUES ('osm-way-5', 'Old', 'osm_overpass')""")
+                       VALUES ('osm-way-5', 'Old', 'osm_overpass') ON CONFLICT DO NOTHING""")
     conn.commit()
     els = [{"type": "way", "id": 5, "center": {"lat": 30.0, "lon": -97.0}, "tags": {}},
            {"type": "node", "id": 6, "lat": 31.0, "lon": -98.0,
@@ -216,7 +216,7 @@ def test_board_summary_publishes_post_baseline_rows_not_the_snapshot_delta(conn)
         cur.execute("DROP TABLE IF EXISTS infra_growth_snapshot")
         ig._ensure(cur)
         cur.execute("""INSERT INTO infra_growth_snapshot (snapshot_date, layer, count)
-                       VALUES (CURRENT_DATE - 3, 'osm_transmission_new', 0),
+                       VALUES (CURRENT_DATE - 3, 'osm_transmission_new', 0) ON CONFLICT DO NOTHING,
                               (CURRENT_DATE, 'osm_transmission_new', 4)""")
     conn.commit()
     with conn.cursor() as cur:
@@ -235,7 +235,7 @@ def test_substation_near_one_we_hold_is_not_new(conn):
     50 m of a substation already held — the same station twice."""
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO substations (name, lat, lng, source)
-                       VALUES ('Wilkins Substation', 33.0, -112.0, 'HIFLD')""")
+                       VALUES ('Wilkins Substation', 33.0, -112.0, 'HIFLD') ON CONFLICT DO NOTHING""")
     conn.commit()
 
     def sub(i, lat, lng, name):
@@ -258,12 +258,12 @@ def test_a_stalled_run_is_resumed_not_restarted(conn, monkeypatch):
     osm.ensure_tables(conn)
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO osm_load_runs (loader, status, states_total, heartbeat_at, detail)
-                       VALUES ('osm_substations', 'running', 51, NOW() - INTERVAL '20 minutes',
+                       VALUES ('osm_substations', 'running', 51, NOW() ON CONFLICT DO NOTHING - INTERVAL '20 minutes',
                                '{"done_states": ["AK", "AL"]}') RETURNING id""")
         dead = cur.fetchone()[0]
         # a stalled run of ANOTHER loader, and a stale one, must not be picked
         cur.execute("""INSERT INTO osm_load_runs (loader, status, heartbeat_at, detail)
-                       VALUES ('osm_power_plants', 'running', NOW() - INTERVAL '20 minutes',
+                       VALUES ('osm_power_plants', 'running', NOW() ON CONFLICT DO NOTHING - INTERVAL '20 minutes',
                                '{"done_states": ["TX"]}')""")
     conn.commit()
     rid = osm.start_run("osm_substations")
@@ -286,7 +286,7 @@ def _snap(conn, layer, rows):
         ig._ensure(cur)
         for d, n, cap in rows:
             cur.execute("""INSERT INTO infra_growth_snapshot (snapshot_date, layer, count, captured_at)
-                           VALUES (CURRENT_DATE - %s, %s, %s, %s)""", (d, layer, n, cap))
+                           VALUES (CURRENT_DATE - %s, %s, %s, %s) ON CONFLICT DO NOTHING""", (d, layer, n, cap))
     conn.commit()
 
 
@@ -299,7 +299,7 @@ def test_substation_backfill_is_never_published_as_new(conn):
         cur.execute("SELECT NOW() - INTERVAL '1 second'")
         t0 = cur.fetchone()[0]
         cur.execute("""INSERT INTO substations (name, lat, lng, source)
-                       VALUES ('Held', 30.0, -97.0, 'HIFLD')""")
+                       VALUES ('Held', 30.0, -97.0, 'HIFLD') ON CONFLICT DO NOTHING""")
     conn.commit()
 
     def sub(i, lat):
@@ -358,11 +358,11 @@ def test_an_incomplete_run_is_resumed_and_never_beats(conn, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO osm_load_runs (loader, status, detail)
                        VALUES ('osm_transmission_lines', 'incomplete',
-                               '{"done_states": ["AL", "AK"]}') RETURNING id""")
+                               '{"done_states": ["AL", "AK"]}') ON CONFLICT DO NOTHING RETURNING id""")
         inc = cur.fetchone()[0]
         # a FINISHED run (error / success) is an outcome, never resumed
         cur.execute("""INSERT INTO osm_load_runs (loader, status, detail)
-                       VALUES ('osm_pipelines', 'error', '{"done_states": ["TX"]}')""")
+                       VALUES ('osm_pipelines', 'error', '{"done_states": ["TX"]}') ON CONFLICT DO NOTHING""")
     conn.commit()
     rid = osm.start_run("osm_transmission_lines")
     assert osm._carried_for(rid) == ["AK", "AL"]

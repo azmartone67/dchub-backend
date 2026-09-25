@@ -657,7 +657,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict, findings: int) -
             cur.execute("""
                 INSERT INTO precision_depth_snapshots
                   (precision_score, weakest_lever, action_taken, armed, lever_scores, findings_filed, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (score, levers.get("weakest"), (action or {}).get("action"), _act_armed(),
                   json.dumps(levers.get("scores") or {}), findings, json.dumps({**m, "action": action})))
         return True

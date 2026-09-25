@@ -308,7 +308,7 @@ def seed_database():
             # Insert without status column
             c.execute("""
                 INSERT INTO deals (id, date, year, buyer, seller, value, mw, type, region, market, notes, created_at, verified)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1) ON CONFLICT DO NOTHING
             """, (
                 deal_id, date, year, buyer, seller, value, mw, dtype, region, market, notes, datetime.now().isoformat()
             ))

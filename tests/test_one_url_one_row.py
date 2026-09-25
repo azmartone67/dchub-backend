@@ -188,7 +188,7 @@ def test_without_the_rollback_the_insert_could_not_have_run():
     with pytest.raises(RuntimeError):
         cur.execute("SELECT 1 WHERE canonical_slug = %s", ("x",))
     with pytest.raises(RuntimeError, match="aborted"):
-        cur.execute("INSERT INTO discovered_facilities (name) VALUES (%s)", ("x",))
+        cur.execute("INSERT INTO discovered_facilities (name) VALUES (%s) ON CONFLICT DO NOTHING", ("x",))
 
 
 # ── 3. the crawler stops spending its budget on its own repeats ─────────────
