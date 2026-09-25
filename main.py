@@ -19900,6 +19900,52 @@ def handle_subscription_deleted(subscription):
         try: conn.close()
         except Exception: pass
 
+# ★ r-trial-dunning (2026-09-24, owner: "demote now"). Two defects that let a
+# trialist whose first REAL charge fails keep Pro for days to weeks:
+#   1. "paid" meant status='paid', and Stripe issues a PAID $0 invoice when a
+#      trial starts, so a trialist counted as a prior payer (the 4-failure /
+#      ~21-day path) although no money ever arrived;
+#   2. the never-paid guard waited for 2 failures; subscription.updated ->
+#      past_due only records the status.
+# Now a payer is someone with an invoice that actually took money
+# (amount_paid > 0), and the FIRST failed post-trial charge of a subscription
+# that had a trial demotes through the existing reversible
+# 'first_charge_never_succeeded' path (invoice.paid restores it). Customers who
+# really paid keep today's dunning untouched.
+def _real_paid_invoice_count(customer_id):
+    """Invoices for this customer that took money, or None when Stripe is
+    unavailable (the caller keeps its legacy fallback)."""
+    if not (STRIPE_AVAILABLE and customer_id):
+        return None
+    try:
+        invs = stripe.Invoice.list(customer=customer_id, status='paid', limit=100).data
+        return sum(1 for i in invs if int((i.get('amount_paid') if isinstance(i, dict)
+                                           else getattr(i, 'amount_paid', 0)) or 0) > 0)
+    except Exception as e:
+        print(f"[dunning] Stripe paid-invoice count failed for {customer_id}: {e}")
+        return None
+
+
+def _is_post_trial_first_charge(invoice):
+    """True when this failing invoice charges a subscription that had a trial
+    (its first real charge: trial ended naturally or was ended now). Fail-safe:
+    any doubt -> False, which keeps the existing 2-failure rule."""
+    try:
+        sub_id = invoice.get('subscription') or ''
+        if isinstance(sub_id, dict):
+            sub_id = sub_id.get('id') or ''
+        if not (STRIPE_AVAILABLE and sub_id):
+            return False
+        if (invoice.get('billing_reason') or '') not in ('subscription_cycle', 'subscription_update'):
+            return False
+        sub = stripe.Subscription.retrieve(sub_id)
+        trial_end = sub.get('trial_end') if isinstance(sub, dict) else getattr(sub, 'trial_end', None)
+        return bool(trial_end)
+    except Exception as e:
+        print(f"[dunning] trial lookup failed for invoice {invoice.get('id')}: {e}")
+        return False
+
+
 def handle_invoice_paid(invoice):
     """Handle successful payment — increments invoices_paid_count and
     resets payment_failed_count so a customer who has paid at least once
@@ -19919,17 +19965,14 @@ def handle_invoice_paid(invoice):
     # it on both invoice.paid and invoice.payment_succeeded can't double-count.
     # GREATEST(...) keeps it strictly upgrade-only; falls back to the legacy +1
     # if Stripe is unavailable.
-    stripe_paid_n = None
-    try:
-        if STRIPE_AVAILABLE and customer_id:
-            stripe_paid_n = len(stripe.Invoice.list(
-                customer=customer_id, status='paid', limit=100).data)
-    except Exception as e:
-        print(f"[dunning] invoice_paid Stripe count failed for {customer_id}: {e}")
+    # r-trial-dunning: count only invoices that took money — the $0 trial-start
+    # invoice is 'paid' but is not a payment.
+    stripe_paid_n = _real_paid_invoice_count(customer_id)
+    _took_money = int(invoice.get('amount_paid') or 0) > 0
 
     # Postgres (canonical)
     try:
-        if stripe_paid_n:
+        if stripe_paid_n is not None:
             _pg_execute(
                 """UPDATE users
                       SET invoices_paid_count = GREATEST(COALESCE(invoices_paid_count, 0), %s),
@@ -19941,11 +19984,11 @@ def handle_invoice_paid(invoice):
         else:
             _pg_execute(
                 """UPDATE users
-                      SET invoices_paid_count = COALESCE(invoices_paid_count, 0) + 1,
+                      SET invoices_paid_count = COALESCE(invoices_paid_count, 0) + %s,
                           payment_failed_count = 0,
                           subscription_status = 'active'
                     WHERE stripe_customer_id = %s""",
-                (customer_id,),
+                (1 if _took_money else 0, customer_id),
             )
     except Exception as e:
         print(f"[dunning] invoice_paid pg update failed for {customer_id}: {e}")
@@ -20137,6 +20180,13 @@ def handle_payment_failed(invoice):
     # do NOT touch the canceled / subscription.deleted full-revoke path.
     DEMOTE_PRIOR_PAYER_AFTER_N_FAILURES = 4
     demoted_users = []
+    # r-trial-dunning (owner: demote now): the first failed charge after a
+    # trial demotes a never-paid customer at once — they were never charged,
+    # so there is no payer to give a retry window. Everyone else: 2, as before.
+    _never_paid_after = DEMOTE_AFTER_N_FAILURES
+    if pg_rows and any(int(r[1] or 0) == 0 for r in pg_rows):
+        if _is_post_trial_first_charge(invoice):
+            _never_paid_after = 1
     for row in (pg_rows or []):
         user_id, paid_count, failed_count, plan, email = row
         paid_count = int(paid_count or 0)
@@ -20148,11 +20198,12 @@ def handle_payment_failed(invoice):
         # shows ANY paid invoice, backfill the counter and DON'T treat them as
         # never-paid — they fall through to the prior-payer path, which only
         # fires at >=4 fails and auto-restores on the next successful retry.
-        if paid_count == 0 and failed_count >= DEMOTE_AFTER_N_FAILURES and customer_id:
+        if paid_count == 0 and failed_count >= _never_paid_after and customer_id:
             try:
                 if STRIPE_AVAILABLE:
-                    real_n = len(stripe.Invoice.list(
-                        customer=customer_id, status='paid', limit=100).data)
+                    # r-trial-dunning: money taken, not status='paid' (a trial's
+                    # $0 invoice would otherwise make a trialist a "payer").
+                    real_n = _real_paid_invoice_count(customer_id) or 0
                     if real_n > 0:
                         _pg_execute(
                             """UPDATE users
@@ -20166,7 +20217,7 @@ def handle_payment_failed(invoice):
             except Exception as e:
                 print(f"[dunning] Stripe paid-invoice crosscheck failed for {email}: {e}")
         demote_reason = None
-        if paid_count == 0 and failed_count >= DEMOTE_AFTER_N_FAILURES:
+        if paid_count == 0 and failed_count >= _never_paid_after:
             demote_reason = 'first_charge_never_succeeded'
         elif paid_count >= 1 and failed_count >= DEMOTE_PRIOR_PAYER_AFTER_N_FAILURES:
             demote_reason = 'dunning_prior_payer'

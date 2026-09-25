@@ -43,12 +43,15 @@ EXCLUDED = ("tier_expired_onetime", "manual", "abuse")
 
 def _load_handler(ns_extra):
     src = open(MAIN, encoding="utf-8").read()
-    fn = next(n for n in ast.parse(src).body
-              if isinstance(n, ast.FunctionDef) and n.name == HANDLER)
-    fn = copy.deepcopy(fn)
-    fn.decorator_list = []
+    # The handler calls the r-trial-dunning helpers, so lift them with it; they
+    # run against the same stubbed globals (STRIPE_AVAILABLE=False -> None/False).
+    names = (HANDLER, "_real_paid_invoice_count", "_is_post_trial_first_charge")
+    fns = [copy.deepcopy(n) for n in ast.parse(src).body
+           if isinstance(n, ast.FunctionDef) and n.name in names]
+    for fn in fns:
+        fn.decorator_list = []
     ns = dict(ns_extra)
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), MAIN, "exec"), ns)
+    exec(compile(ast.Module(body=fns, type_ignores=[]), MAIN, "exec"), ns)
     return ns[HANDLER]
 
 
