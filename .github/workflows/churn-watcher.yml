@@ -46,6 +46,8 @@ jobs:
               "https://dchub.cloud/api/v1/admin/$route?days=7")
             if [ "$code" != "200" ]; then
               echo "::error::/api/v1/admin/$route returned HTTP $code — refusing to read it as zero at-risk"
+              # The error string only (never the body: a 200-shaped body carries emails).
+              python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('error:', str(d.get('error') if isinstance(d, dict) else '')[:300])" "/tmp/$name.json" 2>/dev/null || echo "error: (non-JSON body)"
               exit 1
             fi
           done
