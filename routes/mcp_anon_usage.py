@@ -13,11 +13,15 @@ GET /api/v1/mcp/anon-usage?ip=<raw-client-ip>
 Source of truth: mcp_tool_calls — the gateway's own per-call telemetry sink
 (written by flask_mcp_endpoints.py's /api/v1/mcp/track handler, which inserts
 the forwarded client IP into the RAW `ip_address` column). We count today's
-rows for that exact IP:
+rows for that exact IP, leaving out calls made with a key:
 
     COUNT(*) FROM mcp_tool_calls
      WHERE ip_address = %s
        AND created_at >= date_trunc('day', (now() AT TIME ZONE 'UTC'))
+       AND keyed IS NOT TRUE
+
+(r-anon-wall-keyed, 2026-09-25: before the keyed column, keyed calls from the
+same IP counted too. Until the column exists the query falls back to that.)
 
 FAIL-OPEN, non-negotiable: on a missing ?ip, a DB connect/timeout error, or a
 missing table/column, we return {ok:true, count:0} with HTTP 200 — NEVER an
@@ -57,6 +61,17 @@ _CONNECT_TIMEOUT_S = 3
 _STATEMENT_TIMEOUT_MS = 2000
 
 
+_COUNT_ALL_SQL = """
+    SELECT COUNT(*)
+      FROM mcp_tool_calls
+     WHERE ip_address = %s
+       AND created_at >= date_trunc('day', (now() AT TIME ZONE 'UTC'))
+"""
+# keyed IS NOT TRUE keeps NULL rows (written before the column, or by a writer
+# that does not set it) in the count.
+_COUNT_ANON_SQL = _COUNT_ALL_SQL + "       AND keyed IS NOT TRUE\n"
+
+
 def _ip_hash(ip: str) -> str:
     """sha256(ip)[:16] — never echo the raw IP back to the caller."""
     try:
@@ -66,7 +81,7 @@ def _ip_hash(ip: str) -> str:
 
 
 def _today_count_for_ip(ip: str) -> int:
-    """Today's (UTC) mcp_tool_calls count for this exact raw IP.
+    """Today's (UTC) count of this exact raw IP's calls made without a key.
 
     FAIL-OPEN: any error — no DSN, connect/timeout failure, missing
     table/column — returns 0 so the gateway never throttles on a backend
@@ -92,15 +107,20 @@ def _today_count_for_ip(ip: str) -> int:
                 # this ever no-ops we still proceed — the connect_timeout and
                 # the cheap query are the real guards.
                 pass
-            cur.execute(
-                """
-                SELECT COUNT(*)
-                  FROM mcp_tool_calls
-                 WHERE ip_address = %s
-                   AND created_at >= date_trunc('day', (now() AT TIME ZONE 'UTC'))
-                """,
-                (ip,),
-            )
+            # Keyed calls are not anonymous: the gateway never walls a call
+            # that carries a key, so they must not use up the anonymous budget
+            # of whoever else shares the IP. Before the `keyed` column exists
+            # (deploy skew) fall back to counting every row, as before — never
+            # to the fail-open 0, which would lift the wall.
+            try:
+                cur.execute(_COUNT_ANON_SQL, (ip,))
+            except Exception as e:  # noqa: BLE001
+                log.debug("mcp_anon_usage keyed count failed, counting all rows: %s", e)
+                conn.rollback()   # also drops the SET LOCAL above: set it again
+                cur.execute(
+                    "SET LOCAL statement_timeout = %s", (_STATEMENT_TIMEOUT_MS,)
+                )
+                cur.execute(_COUNT_ALL_SQL, (ip,))
             row = cur.fetchone()
             n = int(row[0]) if row and row[0] is not None else 0
             return n if n >= 0 else 0
