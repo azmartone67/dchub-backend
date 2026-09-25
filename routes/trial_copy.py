@@ -133,3 +133,51 @@ def daily_calls(plan_name, trial_end=None) -> int | None:
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+# r-repeat-receipt (2026-09-24, live gate run 3). A repeat trial is ended now
+# by routes/pro_trial_guard; Stripe then charges the first month on the
+# subscription's latest invoice. The receipt must state THAT charge.
+def repeat_charge_for(sub_id) -> dict:
+    """{'amount_cents', 'currency'} of the ended trial's first real charge.
+
+    Reads the subscription's latest invoice (amount_paid, else amount_due). On
+    any failure returns {} and the receipt says the subscription started at the
+    Pro list price without claiming an exact amount. Never raises."""
+    if not sub_id:
+        return {}
+    try:
+        import stripe
+        key = (os.environ.get("STRIPE_SECRET_KEY") or "").strip()
+        if not key:
+            return {}
+        sub = stripe.Subscription.retrieve(str(sub_id), api_key=key,
+                                           expand=["latest_invoice"])
+        inv = sub.get("latest_invoice") if hasattr(sub, "get") else None
+        if not hasattr(inv, "get"):
+            return {}
+        cents = inv.get("amount_paid") or inv.get("amount_due")
+        if not isinstance(cents, int) or cents <= 0:
+            return {}
+        return {"amount_cents": cents, "currency": inv.get("currency") or "usd"}
+    except Exception as e:  # noqa: BLE001
+        log.warning("trial_copy: repeat charge lookup failed: %s", e)
+        return {}
+
+
+def repeat_block_html(charge) -> str:
+    charge = charge or {}
+    cents = charge.get("amount_cents")
+    if isinstance(cents, int) and cents > 0:
+        amount = "$%s" % f"{cents / 100:,.2f}"
+        what = "%s charged today, renews monthly" % amount
+    else:
+        what = "billed at %s, renews monthly" % _price()
+    return ("<div style='border:1px solid #d6e4ff;background:#f3f7ff;border-radius:10px;"
+            "padding:14px 18px;margin:16px 0;'>"
+            "<p style='margin:0 0 6px;font-weight:600;'>You've already used your free "
+            "trial, so your Pro subscription started today.</p>"
+            "<p style='margin:0 0 6px;'>%s.</p>"
+            "<p style='margin:0;'>Cancel anytime: <a href='%s'>dchub.cloud/dashboard</a> "
+            "&rarr; Manage billing, or reply to this email.</p></div>"
+            % (what[0].upper() + what[1:], CANCEL_URL))
