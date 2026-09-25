@@ -183,4 +183,27 @@ def test_the_preview_below_pro_leaks_no_new_distance():
     fn = next(n for n in ast.parse(MAIN_SRC).body
               if isinstance(n, ast.FunctionDef) and n.name == "_site_score_preview")
     body = ast.get_source_segment(MAIN_SRC, fn)
-    assert "'nearest'" not in body and "'coverage'" not in body and "hv_substation" not in body
+    # coverage{} is labels and dates and IS carried (live verify 2026-09-25);
+    # the distances in nearest{} are not.
+    assert "'nearest'" not in body and "hv_substation" not in body
+
+
+def test_the_preview_carries_coverage_and_the_methodology():
+    """Live verify 2026-09-25: GET /api/site-score below Pro had no coverage{}
+    while analyze_site at the same point did. Labels and dates only: nearest{}
+    (the distances) stays out."""
+    fn = copy.deepcopy(next(n for n in ast.parse(MAIN_SRC).body
+                            if isinstance(n, ast.FunctionDef) and n.name == "_site_score_preview"))
+    ns = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "main.py", "exec"), ns)  # noqa: S102
+    full = {"location": {"lat": 39.0438, "lon": -77.4874, "state": "VA"},
+            "scores": {"risk_resilience": 72}, "scored_factors": "5/5",
+            "methodology_version": "composite-v2.4", "overall_basis": "all_factors",
+            "coverage": {"risk_resilience": {"scored": True, "basis": "state_table",
+                                             "source": "x", "as_of": None}},
+            "nearest": {"hv_substation": {"km": 1.2}, "gas_pipeline_km": 0.4}}
+    body, locked, _ = ns["_site_score_preview"](full)
+    assert body["coverage"] == full["coverage"]
+    assert body["methodology_version"] == "composite-v2.4"
+    assert body["overall_basis"] == "all_factors" and body["scored_factors"] == "5/5"
+    assert "nearest" not in body and body["scores"] == {"risk_resilience": None}
