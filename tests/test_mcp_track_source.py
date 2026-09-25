@@ -27,8 +27,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _NAMES = (
     "_TRACK_SOURCE_MAX_LEN", "_TRACK_SOURCE_RE", "_sanitize_track_source",
-    "_SOURCE_COLUMN_STATE", "_SOURCE_COLUMN_RETRY_S",
-    "_SOURCE_COLUMN_PRESENT_SQL", "_ensure_source_column",
+    "_TRACK_COLUMN_STATE", "_TRACK_COLUMN_TYPE", "_TRACK_COLUMN_RETRY_S",
+    "_TRACK_COLUMN_PRESENT_SQL", "_ensure_track_column", "_ensure_source_column",
     "track_tool_call",
 )
 
@@ -49,8 +49,11 @@ class _Cursor:
         c.log.append(("execute", sql, params, c.autocommit))
         s = " ".join(sql.split())
         if s.startswith("SELECT 1 FROM information_schema.columns"):
-            table = (params or ("mcp_call_log",))[0]
-            present = c.has_source if table == "mcp_call_log" else c.tc_has_source
+            table, column = (tuple(params or ()) + ("mcp_call_log", "source"))[:2]
+            if column == "keyed":
+                present = c.tc_has_keyed
+            else:
+                present = c.has_source if table == "mcp_call_log" else c.tc_has_source
             self._next = (1,) if present else None
         elif s.startswith("ALTER TABLE mcp_call_log"):
             if c.alter_fails:
@@ -59,7 +62,10 @@ class _Cursor:
         elif s.startswith("ALTER TABLE mcp_tool_calls"):
             if c.alter_fails:
                 raise RuntimeError("canceling statement due to lock timeout")
-            c.pending_tc_source = True
+            if " keyed " in s + " ":
+                c.pending_tc_keyed = True
+            else:
+                c.pending_tc_source = True
         elif s.startswith("INSERT INTO mcp_call_log"):
             if "source" in s.split("VALUES")[0] and not c.has_source:
                 raise RuntimeError('column "source" of relation "mcp_call_log" does not exist')
@@ -72,8 +78,11 @@ class _Cursor:
 
 
 class _Conn:
-    def __init__(self, has_source=True, alter_fails=False, tc_has_source=None):
+    def __init__(self, has_source=True, alter_fails=False, tc_has_source=None,
+                 tc_has_keyed=True):
         self.autocommit = True
+        self.tc_has_keyed = tc_has_keyed
+        self.pending_tc_keyed = False
         self.has_source = has_source
         self.tc_has_source = has_source if tc_has_source is None else tc_has_source
         self.pending_tc_source = False
@@ -91,11 +100,14 @@ class _Conn:
             self.has_source = True
         if self.pending_tc_source:
             self.tc_has_source = True
+        if self.pending_tc_keyed:
+            self.tc_has_keyed = True
 
     def rollback(self):
         self.log.append(("rollback", None, None, self.autocommit))
         self.pending_source = False
         self.pending_tc_source = False
+        self.pending_tc_keyed = False
 
     def close(self):
         pass
@@ -277,6 +289,8 @@ class _Pooled:
                 elif s.startswith("INSERT INTO mcp_tool_calls"):
                     if "source" in s.split("VALUES")[0] and not pooled.direct.tc_has_source:
                         raise RuntimeError('column "source" of relation "mcp_tool_calls" does not exist')
+                    if "keyed" in s.split("VALUES")[0] and not pooled.direct.tc_has_keyed:
+                        raise RuntimeError('column "keyed" of relation "mcp_tool_calls" does not exist')
                     pooled.inserts.append((s, params))
         return _C()
 
@@ -322,8 +336,11 @@ def test_tool_calls_no_source_pays_nothing(monkeypatch):
     direct, pooled, _, _ = _track_both(monkeypatch, dict(BASE),
                                        has_source=False, tc_has_source=False)
     assert "source" not in _tool_calls_row(pooled)
-    sqls = [e[1] for e in direct.log if e[0] == "execute"]
-    assert not any("information_schema" in s or "ALTER" in s for s in sqls), sqls
+    # No source work at all. (keyed is written on every call, so its own
+    # catalog check does run — once, until the column is confirmed.)
+    ex = [e for e in direct.log if e[0] == "execute"]
+    assert not any("ALTER" in e[1] and "source" in e[1] for e in ex), ex
+    assert not any("information_schema" in e[1] and "source" in (e[2] or ()) for e in ex), ex
 
 
 def test_tool_calls_column_converged_on_direct_conn_not_pooled(monkeypatch):
@@ -359,4 +376,76 @@ def test_tool_calls_migration_declares_the_column():
     path = os.path.join(ROOT, "migrations", "2026-09-24_mcp_tool_calls_source.sql")
     sql = open(path, encoding="utf-8").read()
     assert re.search(r"ALTER TABLE mcp_tool_calls ADD COLUMN IF NOT EXISTS source text;", sql)
+    assert "%" not in sql
+
+
+# ── r-anon-wall-keyed: mcp_tool_calls.keyed, read by the anonymous wall ─────
+# routes/mcp_anon_usage.py counts an IP's anonymous calls from mcp_tool_calls.
+# Without a key column every keyed call from the IP counted against the
+# anonymous budget of everyone behind it.
+
+def test_keyed_call_is_marked_keyed(monkeypatch):
+    _, pooled, _, _ = _track_both(monkeypatch, dict(BASE, api_key="dch_live_abc"))
+    assert _tool_calls_row(pooled)["keyed"] is True
+
+
+def test_anonymous_call_is_marked_not_keyed(monkeypatch):
+    for body in (dict(BASE), dict(BASE, api_key=None), dict(BASE, api_key="  ")):
+        _, pooled, _, _ = _track_both(monkeypatch, body)
+        assert _tool_calls_row(pooled)["keyed"] is False, body
+
+
+def test_keyed_follows_the_gateway_key_not_the_session_bound_one(monkeypatch):
+    # The wall checks the gateway's own c.api_key. A key this handler later
+    # resolves from the session never reached the wall, so the call was
+    # anonymous as far as the wall is concerned and must count.
+    direct = _Conn()
+    pooled = _Pooled(direct)
+    ns = _load(direct, dict(BASE, session_id="s-1"), monkeypatch, pooled=pooled)
+    ns["_resolve_session_claimed_key"] = lambda c, s: "dch_live_bound"
+    ns["track_tool_call"]()
+    # the session key WAS resolved (it is on the call-log row) …
+    assert _only_insert(direct)["api_key"] == "dch_live_bound"
+    # … and still does not make the call keyed for the wall
+    assert _tool_calls_row(pooled)["keyed"] is False
+
+
+def test_keyed_column_converged_on_direct_conn_not_pooled(monkeypatch):
+    direct, pooled, _, _ = _track_both(monkeypatch, dict(BASE, api_key="k"),
+                                       tc_has_keyed=False)
+    assert _tool_calls_row(pooled)["keyed"] is True
+    assert pooled.ddl == []
+    alters = [e for e in direct.log if e[0] == "execute"
+              and e[1].startswith("ALTER TABLE mcp_tool_calls")]
+    assert len(alters) == 1 and alters[0][3] is False
+    assert "ADD COLUMN IF NOT EXISTS keyed BOOLEAN" in alters[0][1]
+
+
+def test_keyed_failed_convergence_still_writes_the_row(monkeypatch):
+    direct, pooled, resp, _ = _track_both(monkeypatch, dict(BASE, api_key="k"),
+                                          tc_has_keyed=False, alter_fails=True)
+    assert resp == {"ok": True}
+    row = _tool_calls_row(pooled)
+    assert "keyed" not in row and row["tool_name"] == "rank_markets"
+    assert direct.autocommit is True
+
+
+def test_keyed_and_source_together_bind_in_column_order(monkeypatch):
+    _, pooled, _, _ = _track_both(monkeypatch, dict(BASE, source="glama", api_key="k"))
+    row = _tool_calls_row(pooled)
+    assert row["source"] == "glama" and row["keyed"] is True
+
+
+def test_ensure_rejects_unlisted_columns(monkeypatch):
+    ns = _load(_Conn(), {}, monkeypatch)
+    conn = _Conn(has_source=False)
+    assert ns["_ensure_track_column"](conn, "mcp_tool_calls", "ip_address; drop") is False
+    assert ns["_ensure_track_column"](conn, "mcp_call_log", "keyed") is False
+    assert conn.log == []
+
+
+def test_keyed_migration_declares_the_column():
+    path = os.path.join(ROOT, "migrations", "2026-09-25_mcp_tool_calls_keyed.sql")
+    sql = open(path, encoding="utf-8").read()
+    assert re.search(r"ALTER TABLE mcp_tool_calls ADD COLUMN IF NOT EXISTS keyed boolean;", sql)
     assert "%" not in sql

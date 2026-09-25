@@ -278,23 +278,32 @@ def _sanitize_track_source(raw):
 # r-reach-source (#3778 follow-up): the same column on mcp_tool_calls
 # (migrations/2026-09-24_mcp_tool_calls_source.sql), because /api/v1/reach
 # reads mcp_calls_identity — a view over mcp_tool_calls, not mcp_call_log.
-# One state per table: the two columns converge independently. The table name
-# is interpolated into the ALTER, so it must be a key of this dict — nothing
-# caller-supplied ever reaches it.
-_SOURCE_COLUMN_STATE = {
-    "mcp_call_log":   {"ready": False, "next_try": 0.0},
-    "mcp_tool_calls": {"ready": False, "next_try": 0.0},
+# One state per (table, column): each column converges independently. Table
+# and column are interpolated into the ALTER, so the pair must be a key of
+# this dict — nothing caller-supplied ever reaches it.
+#
+# r-anon-wall-keyed (2026-09-25): mcp_tool_calls.keyed, TRUE when the gateway
+# sent an api_key on the call (migrations/2026-09-25_mcp_tool_calls_keyed.sql).
+# routes/mcp_anon_usage.py counts an IP's calls for the anonymous daily cap and
+# hard wall from this table, which had no key column — so a KEYED caller's
+# calls used up the anonymous budget of everyone behind the same IP. Unlike
+# `source` it is written on every call, so it is converged on first use.
+_TRACK_COLUMN_STATE = {
+    ("mcp_call_log", "source"):   {"ready": False, "next_try": 0.0},
+    ("mcp_tool_calls", "source"): {"ready": False, "next_try": 0.0},
+    ("mcp_tool_calls", "keyed"):  {"ready": False, "next_try": 0.0},
 }
-_SOURCE_COLUMN_RETRY_S = 300
-_SOURCE_COLUMN_PRESENT_SQL = (
+_TRACK_COLUMN_TYPE = {"source": "TEXT", "keyed": "BOOLEAN"}
+_TRACK_COLUMN_RETRY_S = 300
+_TRACK_COLUMN_PRESENT_SQL = (
     "SELECT 1 FROM information_schema.columns"
     " WHERE table_schema = current_schema()"
-    " AND table_name = %s AND column_name = 'source'")
+    " AND table_name = %s AND column_name = %s")
 
 
-def _ensure_source_column(conn, table) -> bool:
-    """True once <table>.source is confirmed present. Never raises."""
-    st = _SOURCE_COLUMN_STATE.get(table)
+def _ensure_track_column(conn, table, column) -> bool:
+    """True once <table>.<column> is confirmed present. Never raises."""
+    st = _TRACK_COLUMN_STATE.get((table, column))
     if st is None:
         return False
     if st["ready"]:
@@ -304,10 +313,10 @@ def _ensure_source_column(conn, table) -> bool:
     now = time.time()
     if now < st["next_try"]:
         return False
-    st["next_try"] = now + _SOURCE_COLUMN_RETRY_S
+    st["next_try"] = now + _TRACK_COLUMN_RETRY_S
     try:
         with conn.cursor() as cur:
-            cur.execute(_SOURCE_COLUMN_PRESENT_SQL, (table,))
+            cur.execute(_TRACK_COLUMN_PRESENT_SQL, (table, column))
             if cur.fetchone():
                 st["ready"] = True
                 return True
@@ -316,8 +325,8 @@ def _ensure_source_column(conn, table) -> bool:
         try:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL lock_timeout = '2s'")
-                cur.execute("ALTER TABLE " + table
-                            + " ADD COLUMN IF NOT EXISTS source TEXT")
+                cur.execute("ALTER TABLE " + table + " ADD COLUMN IF NOT EXISTS "
+                            + column + " " + _TRACK_COLUMN_TYPE[column])
             conn.commit()
         except Exception:
             try:
@@ -328,11 +337,16 @@ def _ensure_source_column(conn, table) -> bool:
         finally:
             conn.autocommit = prev
         with conn.cursor() as cur:
-            cur.execute(_SOURCE_COLUMN_PRESENT_SQL, (table,))
+            cur.execute(_TRACK_COLUMN_PRESENT_SQL, (table, column))
             st["ready"] = bool(cur.fetchone())
     except Exception:
         pass
     return st["ready"]
+
+
+def _ensure_source_column(conn, table) -> bool:
+    """True once <table>.source is confirmed present. Never raises."""
+    return _ensure_track_column(conn, table, "source")
 
 
 _pool = _PoolShim()
@@ -3819,6 +3833,12 @@ def track_tool_call():
             _lt_src = ()
             if _src is not None and _ensure_source_column(_tc_conn, "mcp_tool_calls"):
                 _lt_src = (_src,)
+            # The RAW body key, not _eff_api_key: the anonymous wall reads
+            # this, and the gateway walls on its own c.api_key — a key this
+            # handler later resolves from the session never reached the wall.
+            _lt_keyed = ()
+            if _ensure_track_column(_tc_conn, "mcp_tool_calls", "keyed"):
+                _lt_keyed = (bool((body.get("api_key") or "").strip()),)
             _params_str = params if isinstance(params, str) else (json.dumps(params or {}) if params is not None else '{}')
             # Phase FF++ (2026-05-12): DROPPED the session_id fallback in
             # client_name. Previously, when upstream MCP server (server.mjs)
@@ -3838,9 +3858,11 @@ def track_tool_call():
                 """INSERT INTO mcp_tool_calls
                        (tool_name, platform, client_name, params, success,
                         response_time_ms, ip_address, user_agent, session_id"""
-                + (", source" if _lt_src else "") + """)
+                + (", source" if _lt_src else "")
+                + (", keyed" if _lt_keyed else "") + """)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s"""
-                + (", %s" if _lt_src else "") + ")",
+                + (", %s" if _lt_src else "")
+                + (", %s" if _lt_keyed else "") + ")",
                 (
                     str(tool)[:200],
                     (_platform_clean or 'mcp-worker')[:80],
@@ -3861,7 +3883,7 @@ def track_tool_call():
                     # user_agent='node'.
                     ((body.get('user_agent') or request.headers.get('User-Agent') or ''))[:300],
                     (str(_r_session)[:200] if _r_session else None),
-                ) + _lt_src
+                ) + _lt_src + _lt_keyed
             )
             _db_lt.commit()
     except Exception as _e_lt:
