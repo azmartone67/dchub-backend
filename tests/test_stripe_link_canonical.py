@@ -336,9 +336,12 @@ _NON_ID_FRAGMENTS = {"9B69AU", "dchub"}
 
 def test_no_new_noncanonical_stripe_links():
     """Every buy.stripe.com id in the repo is canonical or already known."""
-    from routes._stripe_links import STRIPE_LINKS
+    from routes._stripe_links import PRO_TRIAL_LINK, STRIPE_LINKS
 
     canon_ids = {v.rsplit("/", 1)[-1] for v in STRIPE_LINKS.values()}
+    # r-pro-trial-web: canon in routes/_stripe_links.py, kept out of STRIPE_LINKS
+    # on purpose (a $0-at-checkout trial vs the charge-vs-label integrity lanes).
+    canon_ids.add(PRO_TRIAL_LINK.rsplit("/", 1)[-1])
     pattern = re.compile(r"buy\.stripe\.com/([A-Za-z0-9]+)")
 
     found = {}

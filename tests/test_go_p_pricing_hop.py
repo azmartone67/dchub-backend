@@ -200,3 +200,52 @@ def test_main_imports_and_registers_the_blueprint():
                      and any(isinstance(a, ast.Name) and a.id == "pricing_click_bp" for a in n.args)
                      for n in ast.walk(tree))
     assert imported and registered, (imported, registered)
+
+
+# ── r-pro-trial-web (2026-09-24, owner): /go/p/pro_trial ─────────────────────
+# The Pro 7-day trial link, sold on /pricing only. Kept OUT of COLD_PLANS (and so
+# out of handoff_definition.CLICK_TO_PAY_PLANS, the lanes the 10-01 readout
+# reads) and out of STRIPE_LINKS (checkout-integrity compares a link's charge to
+# its label; a trial charges $0).
+from routes._stripe_links import PRO_TRIAL_LINK as TRIAL  # noqa: E402  (canon)
+
+
+def test_the_trial_lands_on_the_trial_link_with_the_pages_ref(client_and_stamps, monkeypatch):
+    monkeypatch.delenv("DCHUB_PRO_TRIAL_LINK", raising=False)
+    client, stamped = client_and_stamps
+    r = client.get("/go/p/pro_trial")
+    assert (r.status_code, r.headers["Location"]) == (302, TRIAL)
+    r = client.get(f"/go/p/PRO_TRIAL?ref={PAGE_REF}")
+    assert r.headers["Location"] == TRIAL + "?client_reference_id=" + PAGE_REF
+    assert stamped == [("pro_trial", "", True), ("pro_trial", PAGE_REF, True)]
+
+
+# Invalid values built from canon links, never a new literal (the repo's
+# test_stripe_link_canonical ratchet scans every tracked file, tests included).
+@pytest.mark.parametrize("val", ["off", "OFF", "0", "false", "disabled",
+                                 "https://evil.example/x",
+                                 "http://" + TRIAL.split("://", 1)[1],     # not https
+                                 TRIAL.rsplit("/", 1)[0] + "/../x"])
+def test_the_trial_can_be_switched_off_and_never_redirects_off_stripe(client_and_stamps, monkeypatch, val):
+    monkeypatch.setenv("DCHUB_PRO_TRIAL_LINK", val)
+    client, stamped = client_and_stamps
+    r = client.get("/go/p/pro_trial")
+    assert (r.status_code, r.headers["Location"]) == (302, PRICING)
+    assert stamped == [("pro_trial", "", False)]
+
+
+def test_the_trial_link_is_overridable(client_and_stamps, monkeypatch):
+    from routes._stripe_links import STRIPE_LINKS
+    other = STRIPE_LINKS["pro"]            # any other canonical Payment Link
+    monkeypatch.setenv("DCHUB_PRO_TRIAL_LINK", other)
+    client, _ = client_and_stamps
+    assert client.get("/go/p/pro_trial").headers["Location"] == other
+
+
+def test_the_trial_is_not_a_cold_plan_or_a_stripe_link():
+    from routes import pricing_click_tracker as tracker
+    from routes import handoff_definition as H
+    from routes._stripe_links import STRIPE_LINKS
+    assert "pro_trial" not in tracker.COLD_PLANS
+    assert "pro_trial" not in H.CLICK_TO_PAY_PLANS
+    assert "pro_trial" not in STRIPE_LINKS and TRIAL not in STRIPE_LINKS.values()
