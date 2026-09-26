@@ -26,16 +26,16 @@ def _run(monkeypatch, markets=300, countries=170):
     return r.check_cross_surface_value_drift()
 
 
-def _line(url):
-    rel, _, ln = url.rpartition(":")
-    return (ROOT / rel).read_text(encoding="utf-8").splitlines()[int(ln) - 1]
+def _line(f):
+    rel = f["url"].partition("#")[0]
+    return (ROOT / rel).read_text(encoding="utf-8").splitlines()[int(f["line"]) - 1]
 
 
 def test_no_finding_points_at_a_comment(monkeypatch):
     found = [f for f in _run(monkeypatch)
              if f["issue"] == "cross_surface_metric_divergence"]
-    comments = [(f["url"], _line(f["url"]).strip()) for f in found
-                if _line(f["url"]).lstrip().startswith(("#", "//", "*"))]
+    comments = [(f["url"], _line(f).strip()) for f in found
+                if _line(f).lstrip().startswith(("#", "//", "*"))]
     assert comments == []
 
 
@@ -46,4 +46,4 @@ def test_CONTROL_a_code_literal_is_still_flagged(monkeypatch):
     found = [f for f in _run(monkeypatch, markets=5000, countries=5000)
              if f["issue"] == "cross_surface_metric_divergence"]
     assert found, "control: the detector flagged nothing at all"
-    assert all(not _line(f["url"]).lstrip().startswith("#") for f in found)
+    assert all(not _line(f).lstrip().startswith("#") for f in found)

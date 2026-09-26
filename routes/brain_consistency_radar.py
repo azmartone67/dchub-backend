@@ -12875,6 +12875,7 @@ def check_cross_surface_value_drift() -> list[dict]:
     SURFACES = ["routes/state_of_power.py", "routes/competitive_seo.py", "agent_hub.py",
                 "routes/quarterly_report.py", "routes/mcp_presence_crawler.py"]
     findings: list[dict] = []
+    seen: dict[str, dict] = {}
     for rel in SURFACES:
         try:
             txt = open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace").read()
@@ -12911,14 +12912,32 @@ def check_cross_surface_value_drift() -> list[dict]:
                 # tolerance: flag only if a real count (>50) off by >max(10, 5%) — skips years/noise
                 if lit > 50 and abs(lit - lv) > max(10, 0.05 * lv):
                     ln = txt[:m.start()].count("\n") + 1
-                    findings.append({
+                    # ★ 2026-09-26: the url IS the finding key downstream. It was
+                    #   f"{rel}:{ln}", so any edit above the literal moved the key:
+                    #   the old row self-cleared and a fresh one filed for the
+                    #   same unfixed literal. Key on what the literal IS; the line
+                    #   rides in `line` and in `detail`, where brain_source_map's
+                    #   file:line pin still finds it.
+                    key = f"{rel}#{mkey}={lit}"
+                    if key in seen:
+                        seen[key]["_lines"].append(ln)
+                        continue
+                    seen[key] = {
                         "issue": "cross_surface_metric_divergence",
-                        "url": f"{rel}:{ln}",
+                        "url": key,
+                        "line": ln,
                         "count": abs(lit - lv),
-                        "detail": (f"{rel}:{ln} hardcodes {mkey}={lit} but the live canonical "
-                                   f"value is {lv}. Read canonical_stats.{mkey}_phrase() / "
-                                   f"get_canonical_stats() so it can't drift (parallel-stale-surface)."),
-                    })
+                        "_lines": [ln], "_rel": rel, "_mkey": mkey, "_lit": lit, "_lv": lv,
+                    }
+                    findings.append(seen[key])
+    for f in findings:
+        if "_lines" not in f:
+            continue
+        rel, mkey, lit, lv = f.pop("_rel"), f.pop("_mkey"), f.pop("_lit"), f.pop("_lv")
+        at = ", ".join(f"{rel}:{n}" for n in f.pop("_lines"))
+        f["detail"] = (f"{at} hardcodes {mkey}={lit} but the live canonical "
+                       f"value is {lv}. Read canonical_stats.{mkey}_phrase() / "
+                       f"get_canonical_stats() so it can't drift (parallel-stale-surface).")
     return findings[:20]
 
 
