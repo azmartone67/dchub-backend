@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 from collections import defaultdict
 from db_utils import get_db
+from routes.facility_geo_quality import resolve_country
 
 TRUSTED_SOURCES = {'peeringdb', 'openstreetmap'}
 
@@ -350,10 +351,14 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 stats['flagged_review'] += 1
                 continue
 
+            country = resolve_country(
+                disc.get('country'), disc.get('latitude'), disc.get('longitude')
+            ) or 'US'
+
             facility_id = _generate_facility_id(
                 disc['name'],
                 disc.get('city') or '',
-                disc.get('country') or 'US'
+                country
             )
 
             try:
@@ -370,7 +375,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                     disc.get('provider'),
                     disc.get('city'),
                     disc.get('state'),
-                    disc.get('country') or 'US',
+                    country,
                     disc.get('latitude'),
                     disc.get('longitude'),
                     disc.get('power_mw'),

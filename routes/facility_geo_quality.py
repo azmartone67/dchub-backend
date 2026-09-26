@@ -140,6 +140,32 @@ def _city_country(city):
     return _CITY_COUNTRY.get((city or "").strip().lower())
 
 
+def resolve_country(declared, lat, lon):
+    """Pre-insert guard for the facility write path: the same policy `_scan()`
+    applies after the fact (never overrides a deliberately-set non-'US' tag,
+    never guesses without a confident single-box match), applied BEFORE a row
+    is ever written so it does not need the post-hoc /analyze + /apply repair.
+
+    `facility_auto_approve.py` and `discovery_auto_approve.py` used to write
+    whatever `country` a scraped row carried (or default it to 'US' when
+    blank) with no coordinate check, which is exactly the bulk mislabel this
+    module's analyze/apply endpoints exist to clean up after — new rows kept
+    recreating the backlog those endpoints were meant to drain."""
+    cc = (declared or "").strip().upper() or None
+    if cc and cc not in _AUTOFIX_FROM:
+        return declared  # a deliberate non-default tag is left alone
+    try:
+        la, lo = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return declared
+    if cc:
+        b = BBOX.get(cc)
+        if b and b[0] <= la <= b[1] and b[2] <= lo <= b[3]:
+            return declared  # coords agree with the declared country
+    inferred = _infer(la, lo)
+    return inferred or declared
+
+
 def _scan():
     """Classify every coordinate-bearing row. Returns (fixes, ambiguous, badcoord).
       fixes     — country wrong, coords land uniquely in ONE other country, and
