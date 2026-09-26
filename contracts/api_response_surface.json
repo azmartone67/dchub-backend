@@ -12352,7 +12352,7 @@
    ]
   },
   "GET /api/v1/email-capture/stats": {
-   "source": "routes/email_capture.py:790",
+   "source": "routes/email_capture.py:791",
    "handler": "stats",
    "resolution": "resolved",
    "open_at": [
@@ -12377,7 +12377,7 @@
    ]
   },
   "GET /api/v1/email-capture/test-send": {
-   "source": "routes/email_capture.py:740",
+   "source": "routes/email_capture.py:741",
    "handler": "test_send",
    "resolution": "resolved",
    "open_at": [
@@ -17465,14 +17465,14 @@
    ]
   },
   "GET /api/v1/mcp/quality": {
-   "source": "routes/mcp_quality_badge.py:111",
+   "source": "routes/mcp_quality_badge.py:116",
    "handler": "mcp_quality",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/mcp/quality/badge.svg": {
-   "source": "routes/mcp_quality_badge.py:141",
+   "source": "routes/mcp_quality_badge.py:146",
    "handler": "mcp_quality_badge",
    "resolution": "opaque",
    "open_at": [],
@@ -18903,7 +18903,7 @@
    "keys": []
   },
   "GET /api/v1/onboard": {
-   "source": "routes/onboard_universal.py:130",
+   "source": "routes/onboard_universal.py:132",
    "handler": "onboard",
    "resolution": "opaque",
    "open_at": [],
@@ -20955,7 +20955,7 @@
    ]
   },
   "GET /api/v1/reports/state-of-power": {
-   "source": "routes/state_of_power.py:353",
+   "source": "routes/state_of_power.py:355",
    "handler": "state_of_power_json",
    "resolution": "opaque",
    "open_at": [],
@@ -27635,7 +27635,7 @@
    ]
   },
   "POST /api/v1/auto-trial/with-email": {
-   "source": "routes/email_capture.py:350",
+   "source": "routes/email_capture.py:351",
    "handler": "auto_trial_with_email",
    "resolution": "resolved",
    "open_at": [
@@ -29383,7 +29383,7 @@
    ]
   },
   "POST /api/v1/email-capture": {
-   "source": "routes/email_capture.py:895",
+   "source": "routes/email_capture.py:896",
    "handler": "email_capture_generic",
    "resolution": "resolved",
    "open_at": [
@@ -31078,7 +31078,7 @@
    "keys": []
   },
   "POST /api/v1/notify-when-free": {
-   "source": "routes/email_capture.py:289",
+   "source": "routes/email_capture.py:290",
    "handler": "notify_when_free",
    "resolution": "resolved",
    "open_at": [
