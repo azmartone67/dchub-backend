@@ -604,6 +604,126 @@ def fetch_evidence(targets: list[dict], meta: dict | None = None) -> dict:
     return out
 
 
+# ── ticking a DOC whose findings provably stopped firing (2026-09-26) ──────
+#
+# The quiet arm above closes ISSUES. The obligation lives in the DOC, and
+# nothing ticked one: /api/v1/brain/spec-debt counted the same 245 open docs
+# whatever the evidence said. This ticks an OPEN doc's checklist only when
+# EVERY target it stands for is quiet_proven — its own finding, plus each
+# member rolled up into it by a class collapse ("— was `X.md`" roster lines).
+# Any target that is firing, unproven, unmeasured, or not from brain_findings
+# (a QA or prose spec) keeps the doc open. The ledger arm then closes the
+# issues that tracked it. Written by .github/workflows/spec-debt-quiet-docs.yml.
+
+DEFAULT_MAX_DOC_TICKS = 20
+QUIET_DOC_MARKER = "(spec-debt quiet proof)"
+_ROSTER_MEMBER_RE = re.compile(r"^- `.*` — was `([A-Za-z0-9][A-Za-z0-9._-]*\.md)`", re.M)
+_TEMPLATE_BOX_RE = re.compile(
+    r"^- \[ \] (Confirm this is still worth doing|Scope it to a concrete change "
+    r"\(file\(s\) \+ approach\)|Implement \+ verify|Or (?:discard|close) this PR if "
+    r"superseded / not worth it)\s*$", re.M)
+
+
+def doc_targets(doc: str, corpus_dir: str) -> list[dict] | None:
+    """Every brain_findings target an open doc stands for, or None when any of
+    them cannot be named — an unnameable target can never be proven quiet."""
+    try:
+        with open(os.path.join(corpus_dir, doc), encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    names = [doc] + [m for m in _ROSTER_MEMBER_RE.findall(text) if m != doc]
+    out, seen = [], set()
+    for name in names:
+        t = spec_target(doc_heading(name, corpus_dir))
+        if t is None:
+            return None
+        k = evidence_key(t["issue"], t["url"])
+        if k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
+
+
+def quiet_doc_plan(corpus_dir: str, evidence: dict, *, only=None,
+                   max_ticks: int = DEFAULT_MAX_DOC_TICKS) -> dict:
+    """Which open docs to tick. Pure given the evidence.
+
+    ticks  [{doc, targets: [{issue, url, verdict, reason, detector_fn}]}]
+    held   [{doc, reason}] — open docs with a nameable target that stay open"""
+    mod = _ledger()
+    ticks, held = [], []
+    for name in sorted(os.listdir(corpus_dir)):
+        if not name.endswith(".md") or (only is not None and name not in only):
+            continue
+        with open(os.path.join(corpus_dir, name), encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        if mod.classify_doc_text(text) != mod.OPEN:
+            continue
+        targets = doc_targets(name, corpus_dir)
+        if not targets:
+            continue
+        if len(_TEMPLATE_BOX_RE.findall(text)) != 4 or "- [ ]" in _TEMPLATE_BOX_RE.sub("", text):
+            held.append({"doc": name, "reason": "checklist is not the 4-line template"})
+            continue
+        judged = []
+        for t in targets:
+            e = evidence.get(evidence_key(t["issue"], t["url"])) or {}
+            judged.append({**t, "verdict": e.get("verdict") or "unmeasured",
+                           "reason": e.get("reason") or "no evidence returned for it",
+                           "detector_fn": e.get("detector_fn")})
+        bad = [j for j in judged if j["verdict"] != "quiet_proven"]
+        if bad:
+            held.append({"doc": name, "reason": f"{len(bad)} of {len(judged)} target(s) not "
+                         f"quiet_proven (first: {bad[0]['url']} — {bad[0]['verdict']})"})
+            continue
+        ticks.append({"doc": name, "targets": judged})
+    return {"ticks": ticks[:max_ticks], "deferred": max(0, len(ticks) - max_ticks), "held": held}
+
+
+def tick_doc_text(text: str, targets: list[dict], date: str) -> str:
+    """The doc with its template checklist ticked and the evidence recorded."""
+    n = len(targets)
+    lines = "".join(f"- `{t['issue']}` @ `{t['url']}` — {t['reason']}\n" for t in targets)
+    block = (f"## Triage — {date} {QUIET_DOC_MARKER} — CLOSED, stopped firing\n\n"
+             f"Every target this doc stands for ({n}) is `quiet_proven` in the detector "
+             f"ledger (routes/brain_detector_ledger.py): its detector completed repeated "
+             f"recorded runs over days without reporting it, and that detector is reviewed "
+             f"as absence-provable. Evidence at {date}:\n\n{lines}\n"
+             f"If any of these fires again, the brain files a fresh spec for it.\n")
+    reasons = [
+        f"yes, and measured — all {n} target(s) stopped firing",
+        "no change scoped — the evidence below shows the condition cleared",
+        f"verified by the detector ledger: {n} of {n} target(s) quiet_proven",
+        f"closed {date}: every target provably stopped firing {QUIET_DOC_MARKER}",
+    ]
+    i = [0]
+
+    def rep(m):
+        r = reasons[i[0]]
+        i[0] += 1
+        return f"- [x] {m.group(1)} — {r}"
+
+    ticked = _TEMPLATE_BOX_RE.sub(rep, text)
+    at = ticked.find("\n## Human checklist")
+    if at < 0:
+        at = ticked.find("\n- [x] Confirm this is still worth doing")
+    return ticked[:at] + "\n" + block + ticked[at:]
+
+
+def _quiet_docs_summary(p: dict, note: str, applied: bool) -> str:
+    out = ["## spec-debt quiet docs", "",
+           f"- evidence: {note}",
+           f"- {'ticked' if applied else 'would tick (shadow)'}: {len(p['ticks'])}"
+           + (f"; deferred past the cap: {p['deferred']}" if p["deferred"] else "")]
+    for t in p["ticks"]:
+        out.append(f"  - `{t['doc']}` ({len(t['targets'])} target(s))")
+    out.append(f"- held open (a target not quiet_proven): {len(p['held'])}")
+    for h in p["held"][:40]:
+        out.append(f"  - `{h['doc']}`: {h['reason']}")
+    return "\n".join(out) + "\n"
+
+
 def apply(p: dict, repo: str, *, pause: float = 1.0) -> dict:
     """Carry out a plan. A copy is never closed unless its spec PRs were carried
     to the surviving issue first."""
@@ -709,7 +829,58 @@ def main(argv=None) -> int:
                    help="skip the quiet arm and its evidence read")
     r.add_argument("--require-evidence", action="store_true",
                    help="exit 2 when the evidence endpoint could not be read")
+    q = sub.add_parser("quiet-docs")
+    q.add_argument("--corpus", required=True)
+    q.add_argument("--apply", action="store_true", help="edit the docs in --corpus")
+    q.add_argument("--date", default=time.strftime("%Y-%m-%d", time.gmtime()))
+    q.add_argument("--max", type=int, default=DEFAULT_MAX_DOC_TICKS)
+    q.add_argument("--only", default="", help="comma-separated doc names")
+    q.add_argument("--verify", action="store_true",
+                   help="exit 1 unless every --only doc would still be ticked")
+    q.add_argument("--summary", default="")
     args = ap.parse_args(argv)
+
+    if args.cmd == "quiet-docs":
+        only = set(filter(None, args.only.split(","))) or None
+        targets, seen = [], set()
+        for name in sorted(os.listdir(args.corpus)):
+            if name.endswith(".md") and (only is None or name in only):
+                for t in doc_targets(name, args.corpus) or []:
+                    k = evidence_key(t["issue"], t["url"])
+                    if k not in seen:
+                        seen.add(k)
+                        targets.append(t)
+        try:
+            meta = {}
+            evidence = fetch_evidence(targets, meta) if targets else {}
+        except EvidenceUnavailable as e:
+            print(f"UNMEASURED — evidence unreadable: {e}")
+            return 2
+        ledger = meta.get("ledger") or {}
+        note = (f"read for {len(evidence)} of {len(targets)} target(s); detector ledger: "
+                f"{ledger.get('sweeps', 0)} sweep(s) since {ledger.get('first_sweep') or 'never'}")
+        p = quiet_doc_plan(args.corpus, evidence, only=only,
+                           max_ticks=10 ** 6 if args.verify else args.max)
+        if args.verify:
+            still = {t["doc"] for t in p["ticks"]}
+            lost = sorted((only or set()) - still)
+            for h in p["held"]:
+                print(f"{h['doc']}: {h['reason']}")
+            print("VERIFIED" if not lost else f"NO LONGER QUIET: {', '.join(lost)}")
+            return 0 if not lost else 1
+        if args.apply:
+            for t in p["ticks"]:
+                path = os.path.join(args.corpus, t["doc"])
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(tick_doc_text(text, t["targets"], args.date))
+        text = _quiet_docs_summary(p, note, args.apply)
+        print(text)
+        if args.summary:
+            with open(args.summary, "a", encoding="utf-8") as fh:
+                fh.write(text)
+        return 0
 
     if args.cmd == "class-key":
         print(class_key(args.title))
