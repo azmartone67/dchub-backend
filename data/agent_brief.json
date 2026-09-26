@@ -1,7 +1,7 @@
 {
   "schema": "dchub.agent_brief/v1",
   "status": "published",
-  "as_of": "2026-09-25T01:00:00Z",
+  "as_of": "2026-09-26T07:30:00Z",
   "public_path": "https://dchub.cloud/api/v1/ops/brief",
   "purpose": "Read this before proposing any change to DC Hub. It lists what has been measured, what has been refuted, which surfaces are frozen, what has been decided, and what is open. Cite the entry id when a proposal relies on or disagrees with one.",
   "how_it_changes": "This brief is the file data/agent_brief.json in the dchub-backend repo. It changes only by pull request, so every edit is reviewed and dated. `as_of` is when it was last reviewed, not when it was served.",
@@ -40,6 +40,13 @@
       "surface": "Smithery description (site-selection lead, mirrored in mcp#537)",
       "until": "2026-09-27",
       "reason": "3-day rank measurement at pageSize=100. displayName changes wait for the readout."
+    },
+    {
+      "id": "frz-chatgpt-toolset",
+      "surface": "The /mcp/chatgpt tool set: tool names, count, titles, descriptions, annotations and input schemas",
+      "until": "OpenAI app review closes (DC Hub 1.0.0, submitted 2026-09-25 ~18:06 PT)",
+      "reason": "DC Hub 1.0.0 is in OpenAI app review. Adding, removing or renaming a tool, or changing any of the fields above, forces a new review. Backend and data fixes and tool output changes are fine.",
+      "enforced_by": "dchub-mcp-server test/chatgpt-toolset-frozen.test.mjs (mcp#570) pins the live tools/list snapshot"
     }
   ],
   "decided": [
