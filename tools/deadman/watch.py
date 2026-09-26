@@ -209,6 +209,7 @@ WORKFLOWS = {
     # month while succeeding exactly as scheduled. 780 is what the two
     # other monthly jobs here use (gem-refresh, planned-generators-ingest).
     "monthly-trend-cron.yml": 780,                  # every 744h (1st of the month)
+    "state-of-power-monthly.yml": 780,              # every 744h (1st of the month)
     "newsroom-auto.yml": 4.5,                       # every 3h
     "outreach-daily.yml": 36,                       # every 24h
     "paid-account-health-daily.yml": 36,            # every 24h
