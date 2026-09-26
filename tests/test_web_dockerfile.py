@@ -12,57 +12,9 @@ need from the image. All static: CI builds the image separately
 import os
 import re
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-IAC = os.path.join(ROOT, ".railway", "railway.ts")
+from tests._railway_iac import ROOT, service_block as _service_block, string_field as _field
+
 SERVICES = ("dchub-backend", "dchub-worker")
-
-
-def _strip_ts_comments(text):
-    """Drop // and /* */ comments, leaving string literals intact, so a comment
-    that quotes a setting can never satisfy an assertion about the setting."""
-    out, i, n = [], 0, len(text)
-    while i < n:
-        c = text[i]
-        if c in "\"'`":
-            j = i + 1
-            while j < n and text[j] != c:
-                j += 2 if text[j] == "\\" else 1
-            out.append(text[i:j + 1])
-            i = j + 1
-        elif text.startswith("//", i):
-            i = text.find("\n", i)
-            i = n if i < 0 else i
-        elif text.startswith("/*", i):
-            j = text.find("*/", i + 2)
-            i = n if j < 0 else j + 2
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out)
-
-
-def _service_block(name):
-    """The object literal passed to service("<name>", {...}), comments removed."""
-    with open(IAC, encoding="utf-8") as f:
-        code = _strip_ts_comments(f.read())
-    m = re.search(r'\bservice\(\s*"%s"\s*,\s*\{' % re.escape(name), code)
-    assert m, f".railway/railway.ts no longer declares service({name!r}, {{...}})"
-    depth, i = 1, m.end()
-    while depth:
-        assert i < len(code), f"unbalanced braces in service({name!r})"
-        c = code[i]
-        if c in "\"'`":
-            j = code.index(c, i + 1)
-            i = j + 1
-            continue
-        depth += {"{": 1, "}": -1}.get(c, 0)
-        i += 1
-    return code[m.end():i - 1]
-
-
-def _field(name, key):
-    m = re.search(r'\b%s\s*:\s*"([^"]*)"' % re.escape(key), _service_block(name))
-    return m.group(1) if m else ""
 
 
 def _cfg():
