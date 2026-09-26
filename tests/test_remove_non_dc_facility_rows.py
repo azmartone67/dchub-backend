@@ -41,6 +41,14 @@ def test_the_target_is_pinned_to_the_live_row():
     assert t["slug"].endswith("-" + t["hash8"])
 
 
+def test_the_unknown_provider_twin_is_a_target_too():
+    from routes.facility_slug import stable_hash8
+    t = {x["key"]: x for x in rm.TARGETS}["golds-gym-ashburn-unknown"]
+    assert t["id"] == 19001
+    assert stable_hash8("Unknown", "Golds Gym Ashburn") == t["hash8"]
+    assert t["slug"].endswith("-" + t["hash8"])
+
+
 def test_replica_is_refused():
     env = {"NEON_REPLICA_URL": "postgresql://u@replica.example:5432/db"}
     with pytest.raises(rm.Refused) as e:
@@ -79,6 +87,8 @@ def pg():
               "'Ashburn', 'peeringdb', %s, NULL, 39.016, NULL, NULL)", (slug,))
     c.execute("INSERT INTO discovered_facilities VALUES (1223, 'DataBank IAD1', 'DataBank', 'Ashburn', "
               "'peeringdb', 'databank-iad1-11111111', NULL, 39.016, NULL, NULL)")
+    c.execute("INSERT INTO discovered_facilities VALUES (19001, 'Golds Gym Ashburn', 'Unknown', 'Ashburn', "
+              "'osm', 'unknown-golds-gym-ashburn-b3e77583', NULL, 39.02, NULL, NULL)")
     c.execute("INSERT INTO facilities VALUES ('abc123', 'Golds Gym Ashburn', 'Golds Gym Ashburn')")
     c.execute("INSERT INTO carrier_facility_presence (dchub_facility_id, carrier_name) VALUES "
               "('10669', 'Cogent'), ('abc123', 'Akamai'), ('1223', 'Cogent')")
@@ -105,6 +115,7 @@ def test_pg_plan_takes_the_gym_and_nothing_else(pg):
     assert sorted(r["dchub_facility_id"] for r in plan["carrier_facility_presence"]) == ["10669", "abc123"]
     assert [r["old_slug"] for r in plan["facility_slug_aliases"]] == ["golds-gym-ashburn-deadbeef"]
     assert [r["id"] for r in kept] == [20001]
+    assert [r["id"] for r in plans["golds-gym-ashburn-unknown"][0]["discovered_facilities"]] == [19001]
 
 
 def test_pg_apply_then_rollback_round_trips(pg, tmp_path, monkeypatch):
@@ -113,11 +124,11 @@ def test_pg_apply_then_rollback_round_trips(pg, tmp_path, monkeypatch):
     for var in rm.REPLICA_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     assert rm.main([]) == 0                                    # dry run writes nothing
-    assert _ids(conn, "discovered_facilities") == [1223, 10669, 20001]
+    assert _ids(conn, "discovered_facilities") == [1223, 10669, 19001, 20001]
     out = tmp_path / "rb.json"
     assert rm.main(["--apply", "--rollback-out", str(out)]) == 0
     conn.rollback()
-    assert _ids(conn, "discovered_facilities") == [1223, 20001]
+    assert _ids(conn, "discovered_facilities") == [1223, 20001]            # both gym rows gone
     assert _ids(conn, "facilities") == []
     assert _ids(conn, "carrier_facility_presence", "dchub_facility_id") == ["1223"]
     assert _ids(conn, "facility_slug_aliases", "old_slug") == []
@@ -127,7 +138,7 @@ def test_pg_apply_then_rollback_round_trips(pg, tmp_path, monkeypatch):
     assert rm.main(["--apply", "--rollback-out", str(out)]) == 4
     assert rm.main(["--rollback", str(out)]) == 0
     conn.rollback()
-    assert _ids(conn, "discovered_facilities") == [1223, 10669, 20001]
+    assert _ids(conn, "discovered_facilities") == [1223, 10669, 19001, 20001]
     assert _ids(conn, "facilities") == ["abc123"]
     assert len(_ids(conn, "carrier_facility_presence")) == 3
     assert _ids(conn, "facility_slug_aliases", "old_slug") == ["golds-gym-ashburn-deadbeef"]

@@ -7,6 +7,7 @@ Dry run by default; --apply writes; --rollback FILE restores.
 THE ROWS (2026-09-26)
 ---------------------
 "Golds Gym Ashburn"  (discovered_facilities id 10669, provider = name,
+and id 19001, provider "Unknown" — the same gym under a second hash8,
 slug golds-gym-ashburn-golds-gym-ashburn-0167420b, hash8 0167420b)
   * A fitness club, not a data center. Served live as v=verified in
     /api/v1/facilities?query=Ashburn, and it was the result a ChatGPT
@@ -78,6 +79,16 @@ TARGETS = (
      "name_re": r"(?i)\bgold'?s\s+gym\b",
      "reason": "A fitness club, not a data center; not in PeeringDB; its carriers "
                "belong to the adjacent DataBank Ashburn (IAD1), which has its own row."},
+    # The same gym under provider "Unknown" (hash8 of "Unknown|Golds Gym
+    # Ashburn"), so the first target's hash never reached it. Found live after
+    # the first --apply (2026-09-26 03:21Z): /facilities/<the first slug> 301'd
+    # here and served an indexable "Unknown Golds Gym Ashburn" page.
+    {"key": "golds-gym-ashburn-unknown",
+     "id": 19001,
+     "hash8": "b3e77583",
+     "slug": "unknown-golds-gym-ashburn-b3e77583",
+     "name_re": r"(?i)\bgold'?s\s+gym\b",
+     "reason": "The same fitness club as golds-gym-ashburn, ingested under provider 'Unknown'."},
 )
 
 DF, LEGACY, CARRIER, ALIASES = ("discovered_facilities", "facilities",
