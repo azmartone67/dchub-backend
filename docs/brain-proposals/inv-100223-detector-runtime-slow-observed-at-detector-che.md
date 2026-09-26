@@ -19,9 +19,16 @@ _Filed 2026-08-18T19:12:59.814591Z · inv #100223_
 
 Decide whether to (a) close the check_shadowed_routes finding as covered by the already-shipped detector_runtime_slow fixes (brain_findings 8353/8439/9802) after confirming its current runtime is under 15s, or (b) commission a profiled re-run of the detector to identify the specific bottleneck before any code change. No mechanical remedy is proposed because the detector's source and a unique find string are not present in the evidence.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100126-reliability-brain-finding-detector-runtime-sl.md`, which stays
+OPEN as the single obligation for `detector_runtime_slow`. This doc's target —
+`detector:check_shadowed_routes` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100126-reliability-brain-finding-detector-runtime-sl.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100126-reliability-brain-finding-detector-runtime-sl.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100126-reliability-brain-finding-detector-runtime-sl.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100126-reliability-brain-finding-detector-runtime-sl.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-100126-reliability-brain-finding-detector-runtime-sl.md (class collapse)

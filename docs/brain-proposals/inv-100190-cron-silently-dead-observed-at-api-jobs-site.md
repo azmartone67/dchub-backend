@@ -19,9 +19,16 @@ _Filed 2026-08-18T08:15:47.125914Z · inv #100190_
 
 Choose one: (1) REVIVE — add a site-baseline entry to the JOBS dict in dchub-scheduler.py with an explicit interval you choose, then verify the endpoint returns 200 under the scheduler's auth; or (2) RETIRE — declare it intentionally manual/stale by adding 'site-baseline' to _INTENTIONAL_STALE_CRONS and the path to _CRON_INTENTIONAL_MANUAL so both detectors stop firing. No mechanical fix is proposed because this is a schedule/retirement judgement call and the exact file contents needed for a unique find string are not in evidence.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100131-reliability-brain-finding-cron-silently-dead.md`, which stays
+OPEN as the single obligation for `cron_silently_dead`. This doc's target —
+`/api/jobs/site-baseline` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100131-reliability-brain-finding-cron-silently-dead.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100131-reliability-brain-finding-cron-silently-dead.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100131-reliability-brain-finding-cron-silently-dead.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100131-reliability-brain-finding-cron-silently-dead.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-100131-reliability-brain-finding-cron-silently-dead.md (class collapse)

@@ -19,9 +19,16 @@ _Filed 2026-08-20T01:56:49.478972Z · inv #100272_
 
 Choose between: (a) accept that merged PR #2937 already resolves inspector_l22_handoff and close the finding after observing one successful post-merge inspector cycle where the draft-PR handoff fires for a fresh brief, or (b) if the handoff for brief #100356 failed after #2937 was deployed, commission a targeted investigation of the full handler body in routes/brain_inspector.py (beyond the route-decorator window shown) before any code change. No mechanical find-and-replace fix applies: the route exists, the endpoint returns 200, no defective code was shown in evidence, and the known root-cause fix has already shipped.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md`, which stays
+OPEN as the single obligation for `inspector_l22_handoff`. This doc's target —
+`/api/v1/brain/brief/100356/draft-prs` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md (class collapse)

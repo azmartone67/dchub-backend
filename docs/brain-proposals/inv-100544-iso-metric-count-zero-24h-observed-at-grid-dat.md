@@ -19,9 +19,16 @@ _Filed 2026-09-05T17:08:07.565310Z · inv #100544_
 
 Open routes/iso_orchestrator.py, locate the fan-out feed that registers SCEG's grid_data writes, and restart/re-trigger that ingest loop, then confirm a fresh grid_data write timestamp for iso=SCEG within the last hour before closing the finding.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100138-iso-metric-count-zero-24h-observed-at-grid-dat.md`, which stays
+OPEN as the single obligation for `iso_metric_count_zero_24h`. This doc's target —
+`grid_data: iso=SCEG` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100138-iso-metric-count-zero-24h-observed-at-grid-dat.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100138-iso-metric-count-zero-24h-observed-at-grid-dat.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100138-iso-metric-count-zero-24h-observed-at-grid-dat.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100138-iso-metric-count-zero-24h-observed-at-grid-dat.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100138-iso-metric-count-zero-24h-observed-at-grid-dat.md (class collapse)

@@ -13,9 +13,16 @@ _Filed 2026-08-30T21:02:32.976642Z · inv #100397_
 
 Approve running `gh workflow run press-rss.yml` in the dchub-frontend repo now, then re-curl all 8 press URLs. If the 5 links still 404 after a green run, authorize a deeper fix in scripts/bake_press_static.py (per-release page generation / slug alignment) instead of just re-triggering the lane.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100383-5-of-8-published-story-link-s-are-dead-observ.md`, which stays
+OPEN as the single obligation for `media_story_links_dead`. This doc's target —
+`https://dchub.cloud/press-release/2026-08-29-kansas-city-spp-73-excess-power -> HTTP 404; https://dchub.cloud/press-release/auto-2026-08-29-neso-queue-600-gw-ti…` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100383-5-of-8-published-story-link-s-are-dead-observ.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100383-5-of-8-published-story-link-s-are-dead-observ.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100383-5-of-8-published-story-link-s-are-dead-observ.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100383-5-of-8-published-story-link-s-are-dead-observ.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100383-5-of-8-published-story-link-s-are-dead-observ.md (class collapse)

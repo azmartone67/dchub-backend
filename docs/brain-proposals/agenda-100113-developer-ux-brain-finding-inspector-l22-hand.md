@@ -13,6 +13,17 @@ _Filed 2026-07-18T08:55:26.521680Z · agenda #100113_
 
 Choose between: (A) authorize an investigation-and-fix of the L22 handoff trigger plus a recipe-dedup/escalation registry and handoff-SLA fence (the durable fix), or (B) manually draft/merge the two currently-proposed recipe PRs for brief 100228 as a one-off patch, accepting the finding will recur on future briefs. If (A), also decide whether the handoff should remain human-gated with an explicit approval queue or fire autonomously.
 
+## Rolled-up targets — class `inspector_l22_handoff` (class collapse, 2026-09-26)
+
+This doc is now the single obligation for **2 occurrences** of
+`inspector_l22_handoff`. The other 1 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `/api/v1/brain/brief/100228/draft-prs` — was `agenda-100113-developer-ux-brain-finding-inspector-l22-hand.md` (filed 2026-07-18)
+- `/api/v1/brain/brief/100356/draft-prs` — was `inv-100272-inspector-l22-handoff-observed-at-api-v1-brai.md` (filed 2026-08-20)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

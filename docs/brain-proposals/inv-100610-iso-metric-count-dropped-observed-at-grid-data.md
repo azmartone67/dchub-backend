@@ -19,9 +19,16 @@ _Filed 2026-09-11T04:10:28.018341Z · inv #100610_
 
 Pull the last 24h of ingestion logs for iso=EPE from the grid_data collector (start with routes/iso_eu_entsoe.py's ENTSO-E fetch path) and identify which specific metric_name API calls returned errors vs the 2 that succeeded, to confirm whether the failure is per-metric API errors, a mapping gap, or a rate limit before any code change.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100493-iso-metric-count-dropped-observed-at-grid-data.md`, which stays
+OPEN as the single obligation for `iso_metric_count_dropped`. This doc's target —
+`grid_data: iso=EPE` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100493-iso-metric-count-dropped-observed-at-grid-data.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100493-iso-metric-count-dropped-observed-at-grid-data.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100493-iso-metric-count-dropped-observed-at-grid-data.md (class collapse)

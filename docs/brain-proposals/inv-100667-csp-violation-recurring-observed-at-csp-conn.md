@@ -19,9 +19,16 @@ _Filed 2026-09-18T01:00:28.892626Z · inv #100667_
 
 Open dchub-frontend/_headers, confirm whether https://dchub.cloud is present in the connect-src, frame-src, and script-src-elem directives, add any missing, and redeploy the Pages frontend; then confirm the /api/csp-report POST volume drops to zero over 24h.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100362-csp-violation-recurring-observed-at-csp-scri.md`, which stays
+OPEN as the single obligation for `csp_violation_recurring`. This doc's target —
+`csp://connect-src/dchub.cloud` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100362-csp-violation-recurring-observed-at-csp-scri.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100362-csp-violation-recurring-observed-at-csp-scri.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100362-csp-violation-recurring-observed-at-csp-scri.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100362-csp-violation-recurring-observed-at-csp-scri.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100362-csp-violation-recurring-observed-at-csp-scri.md (class collapse)

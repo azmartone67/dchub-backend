@@ -13,9 +13,16 @@ _Filed 2026-09-07T01:07:40.306332Z · inv #100550_
 
 In the dchub-frontend repo run `gh workflow run press-rss.yml` to re-bake the per-story press-release pages, then curl the 4 reported slugs (starting with /press-release/20k-facilities-index-live-map-2026-09-06) and confirm HTTP 200; if any still 404, verify the corresponding press_releases row exists via /api/press-releases/list before authoring content.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100383-5-of-8-published-story-link-s-are-dead-observ.md`, which stays
+OPEN as the single obligation for `media_story_links_dead`. This doc's target —
+`https://dchub.cloud/press-release/20k-facilities-index-live-map-2026-09-06 -> HTTP 404; https://dchub.cloud/press-release/2026-09-05-upper-peninsula-michigan-dc…` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100383-5-of-8-published-story-link-s-are-dead-observ.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100383-5-of-8-published-story-link-s-are-dead-observ.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100383-5-of-8-published-story-link-s-are-dead-observ.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100383-5-of-8-published-story-link-s-are-dead-observ.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100383-5-of-8-published-story-link-s-are-dead-observ.md (class collapse)

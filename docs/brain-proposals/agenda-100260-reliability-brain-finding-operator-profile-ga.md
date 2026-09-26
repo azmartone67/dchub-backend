@@ -13,9 +13,16 @@ _Filed 2026-09-12T10:56:08.005568Z · agenda #100260_
 
 In routes/operators.py (the operator_profile_gap detector path near line 429), refactor the gap detector to emit ONE aggregated finding per normalized operator carrying a completeness percentage (missing power_mw / missing market ratios), and normalize provider strings ('Digital Realty', 'Equinix'/'Equinix, Inc.') before grouping — then backfill Digital Realty's 416 verified facilities' power_mw/market via the discovery-enrichment pipeline.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100410-operator-profile-gap-equinix-inc-observed-at.md`, which stays
+OPEN as the single obligation for `operator_profile_gap`. This doc's target —
+`Digital Realty @ /operators/digital-realty` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100410-operator-profile-gap-equinix-inc-observed-at.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100410-operator-profile-gap-equinix-inc-observed-at.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100410-operator-profile-gap-equinix-inc-observed-at.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100410-operator-profile-gap-equinix-inc-observed-at.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100410-operator-profile-gap-equinix-inc-observed-at.md (class collapse)

@@ -13,8 +13,8 @@ Choose the remediation path: (A) prioritize unblocking the 10 stuck Cloudflare P
 
 ## Rolled-up targets — class `site_sentinel_unhealthy` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **3 occurrences** of
-`site_sentinel_unhealthy`. The other 2 were closed against it. They are listed here
+This doc is now the single obligation for **6 occurrences** of
+`site_sentinel_unhealthy`. The other 5 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
@@ -22,6 +22,9 @@ discharged the obligation.
 - `https://dchub.cloud/admin/fu` — was `agenda-84-reliability-brain-finding-site-sentinel-unhea.md` (filed 2026-07-11)
 - `https://dchub.cloud/oper` — was `agenda-100174-reliability-brain-finding-site-sentinel-unhea.md` (filed 2026-08-06)
 - `https://dchub.clo` — was `agenda-100175-reliability-brain-finding-site-sentinel-unhea.md` (filed 2026-08-06)
+- `/mcp#workos-oauth-challenge @ https://dchub.cloud/m` — was `agenda-100204-reliability-brain-finding-site-sentinel-unhea.md` (filed 2026-08-17; added 2026-09-26)
+- `/mcp#workos-oauth-challenge @ https://dchub.cloud/mcp#workos-oauth-challenge` — was `inv-100214-site-sentinel-unhealthy-mcp-workos-oauth-challe.md` (filed 2026-08-18; added 2026-09-26)
+- `/pricing @ https://dchub.cloud/pricing` — was `inv-100683-site-sentinel-unhealthy-pricing-observed-at-h.md` (filed 2026-09-19; added 2026-09-26)
 
 ## Human checklist
 

@@ -19,6 +19,18 @@ _Filed 2026-09-05T06:23:21.889410Z · inv #100528_
 
 Open routes/iso_orchestrator.py and locate the aggregate fan-out feed that WACM registers under, then check that feed's last successful write timestamp against grid_data to confirm the ingest loop has stalled before restarting/repairing it.
 
+## Rolled-up targets — class `coverage_gap_iso` (class collapse, 2026-09-26)
+
+This doc is now the single obligation for **3 occurrences** of
+`coverage_gap_iso`. The other 2 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `WACM @ dchub://coverage/iso` — was `inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md` (filed 2026-09-05)
+- `AEC @ dchub://coverage/iso` — was `inv-100584-coverage-gap-iso-aec-observed-at-dchub-cover.md` (filed 2026-09-08)
+- `SPA @ dchub://coverage/iso` — was `inv-100688-coverage-gap-iso-spa-observed-at-dchub-cover.md` (filed 2026-09-20)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

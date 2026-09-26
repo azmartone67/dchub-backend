@@ -19,9 +19,16 @@ _Filed 2026-08-18T21:59:04.411583Z · inv #100226_
 
 Decide whether to (a) run the verification (curl the URL, grep the frontend/templates repo for 'dchub-webmcp.js') and only then authorize a fix, or (b) close this finding as stale given it no longer appears in the live detector worklist. No mechanical remedy is proposed because the referencing file and static-asset layout are not in evidence, so no verbatim-unique find string can be guaranteed.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100138-reliability-brain-finding-repeated-404-patter.md`, which stays
+OPEN as the single obligation for `repeated_404_pattern`. This doc's target —
+`/js/dchub-webmcp.js` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100138-reliability-brain-finding-repeated-404-patter.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100138-reliability-brain-finding-repeated-404-patter.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-100138-reliability-brain-finding-repeated-404-patter.md (class collapse)

@@ -15,8 +15,8 @@ Choose between: (1) approve a small multi-site patch replacing ALL hardcoded mar
 
 ## Rolled-up targets — class `cross_surface_metric_divergence` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **6 occurrences** of
-`cross_surface_metric_divergence`. The other 5 were closed against it. They are listed here
+This doc is now the single obligation for **8 occurrences** of
+`cross_surface_metric_divergence`. The other 7 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
@@ -27,6 +27,8 @@ discharged the obligation.
 - `routes/quarterly_report.py:67` — was `inv-100059-cross-surface-metric-divergence-observed-at-ro.md` (filed 2026-08-10)
 - `routes/quarterly_report.py:67` — was `agenda-100189-reliability-brain-finding-cross-surface-metri.md` (filed 2026-08-11)
 - `routes/state_of_power.py:249` — was `inv-100089-cross-surface-metric-divergence-observed-at-ro.md` (filed 2026-08-11)
+- `routes/mcp_presence_crawler.py:2403 (seen` — was `agenda-100257-reliability-brain-finding-cross-surface-metri.md` (filed 2026-09-09; added 2026-09-26)
+- `routes/mcp_presence_crawler.py:2440` — was `inv-100615-cross-surface-metric-divergence-observed-at-ro.md` (filed 2026-09-11; added 2026-09-26)
 
 ## Human checklist
 

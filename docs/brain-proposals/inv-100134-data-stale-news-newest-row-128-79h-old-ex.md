@@ -19,9 +19,16 @@ _Filed 2026-08-15T07:41:10.055181Z · inv #100134_
 
 Choose the diagnostic path: (1) inspect dchub-scheduler.py JOBS / dchub-jobs config for a missing or disabled news entry, or (2) manually trigger the news refresh endpoint and read the run output under the new PR #2677 failure semantics. No remedy block is emitted because no candidate file contents appear in the evidence, so no find string can be guaranteed verbatim or unique — this is an investigate-first case, not a mechanical fix.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100046-data-stale-news-newest-row-72-98h-old-exc.md`, which stays
+OPEN as the single obligation for `data_stale`. This doc's target —
+`'news' — newest row 128.79h old — exceeds SLA 24h @ dchub://data/news` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100046-data-stale-news-newest-row-72-98h-old-exc.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100046-data-stale-news-newest-row-72-98h-old-exc.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100046-data-stale-news-newest-row-72-98h-old-exc.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100046-data-stale-news-newest-row-72-98h-old-exc.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100046-data-stale-news-newest-row-72-98h-old-exc.md (class collapse)

@@ -19,6 +19,18 @@ _Filed 2026-08-24T06:15:34.104014Z · inv #100362_
 
 Choose one of three paths for the appassets.androidplatform.net CSP violation: (a) accept it as benign Android-WebView wrapper noise and leave the CSP unchanged (recommended), (b) add a suppression/ignore rule for this hostname in the /api/csp-report handler to stop the recurring finding, or (c) if DC Hub sanctions an Android app embedding the site, allowlist the domain in dchub-frontend/_headers script-src-elem. No mechanical remedy block is emitted because the domain does not appear anywhere in the evidenced code, the _headers file contents were never shown, and the fix is a security judgement call rather than a verifiable single-file find-and-replace.
 
+## Rolled-up targets — class `csp_violation_recurring` (class collapse, 2026-09-26)
+
+This doc is now the single obligation for **3 occurrences** of
+`csp_violation_recurring`. The other 2 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `csp://script-src-elem/appassets.androidplatform.net` — was `inv-100362-csp-violation-recurring-observed-at-csp-scri.md` (filed 2026-08-24)
+- `csp://script-src-elem/dchub.cloud` — was `inv-100661-csp-violation-recurring-observed-at-csp-scri.md` (filed 2026-09-18)
+- `csp://connect-src/dchub.cloud` — was `inv-100667-csp-violation-recurring-observed-at-csp-conn.md` (filed 2026-09-18)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing
