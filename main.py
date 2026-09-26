@@ -25371,6 +25371,11 @@ def facility_by_slug(slug):
         conn = get_read_db()
         c = conn.cursor()
         from routes.facility_slug import hash_sql
+        # r-frozen-slug-api (2026-09-25): the list endpoints hand out the FROZEN
+        # canonical_slug, whose hash8 goes stale once a provider/name is cleaned.
+        # Resolve it to the owning row's live hash first (util/frozen_slug.py).
+        from util.frozen_slug import frozen_slug_hash8
+        hash8 = frozen_slug_hash8(c, slug) or hash8
         # r-carrierlink2 (2026-07-17): on-site fiber carriers RESTORED after
         # verifying the link against live data (2fbce20d removed them to stop a
         # 500 storm; its premise (a) turned out to be wrong).
@@ -39910,6 +39915,9 @@ def get_facility_by_slug(slug):
         conn = get_read_db()
         c = conn.cursor()
         from routes.facility_slug import hash_sql
+        # r-frozen-slug-api (2026-09-25): see util/frozen_slug.py.
+        from util.frozen_slug import frozen_slug_hash8
+        hash8 = frozen_slug_hash8(c, slug) or hash8
         # r-stable-slug: stable provider|name hash can collide for true-dupes /
         # generic names; ORDER BY highest power then lowest id so a collision
         # deterministically resolves to the canonical facility.
@@ -39986,6 +39994,10 @@ def get_facility_by_id(facility_id):
             _hp = str(facility_id).rsplit('-', 1)
             if len(_hp) == 2 and len(_hp[1]) == 8 and all(ch in '0123456789abcdef' for ch in _hp[1].lower()):
                 _h8 = _hp[1].lower()
+            # r-frozen-slug-api (2026-09-25): a frozen list slug outlives its
+            # hash8; resolve it to the owner's live hash (util/frozen_slug.py).
+            from util.frozen_slug import frozen_slug_hash8
+            _h8 = frozen_slug_hash8(cur, facility_id) or _h8
             cur.execute("""
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
                        df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,

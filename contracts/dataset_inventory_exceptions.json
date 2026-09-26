@@ -3,9 +3,19 @@
   "allowed": [
     {
       "table": "exclusive_listings",
-      "findings": ["NEW_TIER1_UNWATCHED"],
+      "findings": [
+        "NEW_TIER1_UNWATCHED"
+      ],
       "added": "2026-09-16",
       "reason": "Capacity Source listings are watched PER LISTING, by routes/exclusive_listings._freshness(), not by a whole-table freshness registry — and neither registry can express that rule without inverting its own meaning. THREE measured reasons, each read out of the code: (1) BOTH REGISTRIES SCAN WHOLE TABLES WITH NO PREDICATE. data_freshness_radar._max_ts_and_count runs `MAX(<col>) FROM <table>` and infra_growth._LAYERS is the same (label, table, category, stale_days) shape. Liveness here is routes.exclusive_listings._LIVE_WHERE (status public or pocket, not past expires_at). A withdrawn or expired listing keeps its updated_at, so a whole-table MAX would read `fresh` off exactly the rows the product must NOT publish — a false GREEN over a sitemap carrying nothing. (2) DORMANT AT ZERO IS A FALSE ALARM. Capacity Source is deliberately dormant at zero live listings (the owner removes the sample listings after a meeting). With the table empty, _max_ts_and_count returns ts_used=None, _classify returns `unknown`, and the detail string is \"table 'exclusive_listings' present but no usable timestamp column\" — which contains \"no usable timestamp\", the exact substring dchub_self_heal.fix_data_freshness_radar matches to escalate `data_source_missing` into actionable_backend_issues. Registering the table would page a human every heal pull for a state the owner chose. (3) THE THRESHOLD IS PER-ROW, NOT PER-TABLE. Both registries hold ONE scalar per entry (sla_hours / stale_days). The real rule is _CADENCE_OVERDUE_DAYS = {real_time: 2, weekly: 9, monthly: 35} applied to each listing's own verification.verified_at, which _freshness() already computes and every teaser already publishes as freshness.overdue with next_update_due. WHAT WOULD RETIRE THIS EXCEPTION: a registry entry that accepts (a) a row predicate so it measures only live rows, (b) a zero-row disposition of `dormant` that does not escalate, and (c) a per-row staleness rule instead of one scalar. Any one of the three alone is not enough — (a) without (b) turns the dormant state into a permanent breach. Pinned by tests/test_listings_freshness_is_watched_per_listing.py, which fails if the per-listing rule or the dormant behaviour goes away."
+    },
+    {
+      "table": "facility_slug_aliases",
+      "findings": [
+        "NEW_TIER1_UNWATCHED"
+      ],
+      "added": "2026-09-26",
+      "reason": "A URL routing map, not a dataset with a freshness. util/frozen_slug.py (backend#5611) reads it only to turn an OLD facility slug into its canonical slug, one hop, so /api/v1/facility/<slug> (MCP fetch/get_facility) finds the same building the profile page already finds. No field of it is published: the response is the facility row, whose own tables are watched. Rows are written once by routes/facility_slug_freeze.py when a slug changes and are correct forever after, so a MAX(created_at) age says nothing about staleness; an empty or old table is the healthy state. The page route (routes/facility_profile_page.py) has read it since 2026-07-03 without being flagged because it is not MCP-served."
     }
   ]
 }
