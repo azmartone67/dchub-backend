@@ -1,0 +1,165 @@
+name: spec-debt-quiet-docs
+
+# WHY (2026-09-26): spec-debt-reconcile's quiet arm closes spec-debt ISSUES whose
+# findings provably stopped firing, but the obligation lives in the DOC
+# (docs/brain-proposals/), and nothing ever ticked one. /api/v1/brain/spec-debt
+# kept counting the same open docs whatever the detector ledger proved.
+#
+# This ticks an open doc's checklist when EVERY target it stands for is
+# quiet_proven (routes/brain_detector_ledger.py) — its own finding plus each
+# member rolled up into it by a class collapse. One target firing, unproven,
+# unmeasured, or not from brain_findings keeps the doc open. The decision is
+# `quiet-docs` in scripts/spec_debt_issues.py.
+#
+# SHADOW BY DEFAULT. The same repo variable that arms the reconcile's quiet arm,
+# SPEC_DEBT_CLOSE_ON_QUIET=1, arms this: acting on quiet proof is one decision.
+# Unset, each run writes what it WOULD tick to the step summary and changes
+# nothing. Kill switch: SPEC_DEBT_RECONCILE_DISABLE=1.
+#
+# WHY A PR: main requires status checks with enforce_admins, so a direct push is
+# refused. PR_SUBMIT_TOKEN, not GITHUB_TOKEN, because a PR opened with
+# GITHUB_TOKEN triggers no workflow run and its required checks never report
+# (see refresh-api-response-baseline.yml). The PR body declares SPEC-ONLY: it
+# records evidence and changes no running code, which brain-pr-substance-gate
+# requires of a docs-only PR that says "closed".
+#
+# A TICK IS EVIDENCE AT ONE MOMENT. Every run first re-verifies each open tick PR
+# against live evidence and main's copy of its docs, and closes it if any doc no
+# longer verifies — a finding fired again, main already closed the doc, or the
+# evidence could not be read (fail closed). One tick PR at a time; at most
+# --max docs per PR. After a tick PR merges, spec-debt-reconcile runs on the
+# push to docs/brain-proposals/ and its ledger arm closes the issues.
+
+on:
+  schedule:
+    # 18 minutes after spec-debt-reconcile, which refreshes the radar first.
+    - cron: '47 3,9,15,21 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spec-debt-quiet-docs
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Move to live main
+        id: live
+        run: |
+          set -euo pipefail
+          git fetch -q origin +refs/heads/main:refs/remotes/origin/main
+          git checkout -q --detach origin/main
+          echo "main $(git rev-parse --short=9 HEAD)"
+
+      # Runs even when the lane is disabled or shadowed: it only ever removes a
+      # tick that is no longer true. Fails closed.
+      - name: Close tick PRs whose docs no longer verify
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          LIVE: ${{ steps.live.outcome }}
+        run: |
+          set +e -uo pipefail
+          PRS=$(gh pr list --state open --limit 100 --json number,headRefName \
+                  --jq '.[] | select(.headRefName | startswith("chore/spec-debt-quiet-")) | .number') || {
+            echo "::error::cannot list open PRs — cannot tell whether a stale tick is mergeable"
+            exit 1
+          }
+          FAILED=0
+          for N in $PRS; do
+            DOCS=$(gh pr diff "$N" --name-only | grep '^docs/brain-proposals/.*\.md$' \
+                     | xargs -n1 basename | paste -sd, -)
+            if [ "${LIVE:-}" != "success" ] || [ -z "$DOCS" ]; then
+              echo "UNMEASURED — main fetch=${LIVE:-absent}, docs listed: '${DOCS}'" > "/tmp/verify-$N.txt"
+              RC=2
+            else
+              python3 scripts/spec_debt_issues.py quiet-docs --corpus docs/brain-proposals \
+                --only "$DOCS" --verify > "/tmp/verify-$N.txt" 2>&1
+              RC=$?
+            fi
+            cat "/tmp/verify-$N.txt"
+            if [ "$RC" = "0" ]; then
+              echo "#$N still verifies — leaving it open"
+              continue
+            fi
+            {
+              echo "Closed by \`spec-debt-quiet-docs\`: this tick no longer verifies against main $(git rev-parse --short=9 origin/main) and live evidence (exit $RC)."
+              echo
+              echo "A finding fired again, main already closed the doc, or the evidence could not be read. The next run re-plans from current main."
+              echo
+              echo '```'
+              tail -n 60 "/tmp/verify-$N.txt"
+              echo '```'
+            } > "/tmp/close-$N.md"
+            gh pr merge "$N" --disable-auto >/dev/null 2>&1 || true
+            gh pr comment "$N" --body-file "/tmp/close-$N.md" || true
+            if gh pr close "$N" --delete-branch; then
+              echo "::warning::closed tick PR #$N (exit $RC)"
+            else
+              echo "::error::#$N could not be closed — a stale tick can still land"
+              FAILED=1
+            fi
+          done
+          exit "$FAILED"
+
+      - name: Tick docs whose findings provably stopped firing
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DISABLE: ${{ vars.SPEC_DEBT_RECONCILE_DISABLE }}
+          ARMED: ${{ vars.SPEC_DEBT_CLOSE_ON_QUIET }}
+        run: |
+          set -euo pipefail
+          if [ "${DISABLE:-0}" = "1" ]; then
+            echo "disabled via SPEC_DEBT_RECONCILE_DISABLE"; exit 0
+          fi
+          if [ "${ARMED:-0}" != "1" ]; then
+            echo "SHADOW — SPEC_DEBT_CLOSE_ON_QUIET is not 1; nothing is written" | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 scripts/spec_debt_issues.py quiet-docs --corpus docs/brain-proposals \
+              --summary "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          OPEN=$(gh pr list --state open --limit 100 --json headRefName \
+                   --jq '[.[] | select(.headRefName | startswith("chore/spec-debt-quiet-"))] | length')
+          if [ "${OPEN:-0}" != "0" ]; then
+            echo "a tick PR is already open — the next run plans after it lands"; exit 0
+          fi
+          python3 scripts/spec_debt_issues.py quiet-docs --corpus docs/brain-proposals --apply \
+            --summary /tmp/summary.md
+          cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
+          if git diff --quiet -- docs/brain-proposals; then
+            echo "nothing provably quiet — no PR"; exit 0
+          fi
+
+          BR="chore/spec-debt-quiet-$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M)"
+          git config user.name "dchub-spec-debt"
+          git config user.email "api@dchub.cloud"
+          git switch -q -c "$BR"
+          git add docs/brain-proposals
+          N=$(git diff --cached --name-only | wc -l | tr -d ' ')
+          git commit -q -m "spec-debt: tick $N doc(s) whose findings provably stopped firing" \
+                        -m "Written by spec-debt-quiet-docs from the detector ledger's quiet_proven verdicts."
+          git push -q -u origin HEAD
+          {
+            echo "SPEC-ONLY: records detector-ledger evidence in spec docs; changes no running code."
+            echo
+            echo "Opened by \`.github/workflows/spec-debt-quiet-docs.yml\`. Each doc below had EVERY"
+            echo "target it stands for judged \`quiet_proven\` by routes/brain_detector_ledger.py at"
+            echo "the time of this run; the evidence is written into each doc. Every later run"
+            echo "re-verifies this PR and closes it if any doc stops verifying."
+            echo
+            cat /tmp/summary.md
+          } > /tmp/body.md
+          gh pr create --title "spec-debt: tick $N doc(s) whose findings provably stopped firing" \
+            --body-file /tmp/body.md
+          gh pr merge --auto --squash
