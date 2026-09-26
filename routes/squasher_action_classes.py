@@ -1792,7 +1792,9 @@ def eligible_for_grant(cls_row: dict | None, record: dict | None) -> tuple[bool,
         why.append("breaker tripped — a human clears it")
     req = track_record_required_of(row, ACTION_CLASSES.get(row.get("class") or ""))
     clean = int((record or {}).get("clean_dry_runs_7d") or 0)
-    if clean < req["clean_dry_runs"]:
+    # probe_candidates never probes a granted class, so its dry-run count is
+    # 0 by design; "0/3 clean dry runs" there reads as a deficit it can't fix.
+    if clean < req["clean_dry_runs"] and not row.get("granted"):
         why.append(f"{clean}/{req['clean_dry_runs']} clean dry runs in 7d")
     cf = int(row.get("consecutive_failed") or 0)
     if cf > req["max_consecutive_failed"]:

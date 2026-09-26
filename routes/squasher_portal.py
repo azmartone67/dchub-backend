@@ -716,17 +716,25 @@ def _graduation_html(ac: dict) -> str:
             prop_txt = "not filed yet — POST /graduation (or the #65 tick) files it"
         else:
             prop_txt = "—"
+        if e.get("granted"):
+            # Granted classes are never probed (probe_candidates skips them);
+            # their record is the runs column, not a permanent "0 / 3".
+            dry_txt = ("<span class='muted'>n/a — granted classes are not "
+                       "probed; see runs 7d</span>")
+        else:
+            dry_txt = "%s / %s <span class='muted'>(%s reads)</span>" % (
+                _n(e.get("clean_dry_runs_7d")), _n(req.get("clean_dry_runs")),
+                _n(e.get("dry_run_reads_7d")))
         rows += ("<tr><td class='t'>%s<br><span class='seen'>%s</span></td>"
                  "<td><span class='pill %s'>%s</span></td>"
-                 "<td>%s / %s <span class='muted'>(%s reads)</span></td>"
+                 "<td>%s</td>"
                  "<td>%s ok · %s failed</td><td class='%s'>%s</td>"
                  "<td class='%s'>%s</td><td>%s</td></tr>"
                  % (_esc(e.get("class") or ""),
                     _esc((e.get("candidate_reason") or "")[:180]),
                     "p-resolved" if e.get("granted") else "p-refused",
                     "GRANTED" if e.get("granted") else "candidate",
-                    _n(e.get("clean_dry_runs_7d")), _n(req.get("clean_dry_runs")),
-                    _n(e.get("dry_run_reads_7d")),
+                    dry_txt,
                     _n(e.get("runs_ok_7d")), _n(e.get("runs_failed_7d")),
                     "bad" if e.get("breaker_tripped") else "ok",
                     "TRIPPED" if e.get("breaker_tripped") else "clear",
