@@ -1,17 +1,13 @@
 // Railway Infrastructure as Code for dchub-backend's services.
 //
-// Replaces Config as Code, which Railway stops reading on 2026-12-01. The root
-// railway.toml / railway.json were deleted 2026-09-26; railway-extractor.toml
-// and services/daily/railway.json remain until those services move here.
+// Replaces Config as Code, which Railway stops reading on 2026-12-01. Root
+// railway.toml / railway.json deleted 2026-09-26 (#5606); daily's
+// services/daily/railway.json deleted with this block. railway-extractor.toml
+// (desirable-playfulness) is the last one left.
 // Evaluated by the Railway CLI (`railway config plan` / `apply`), NOT at deploy
 // time: merging a change here does nothing until it is applied.
 //
-// Declared here: dchub-backend (web), dchub-worker. dchub-daily's settings were
-// applied from here on 2026-09-25, then its ownership was released: it stays on
-// services/daily/railway.json for now. While a root railway.toml existed, a
-// service with no Config File setting fell back to it (measured 2026-09-25:
-// daily redeployed as a web-app clone); with the root files gone, daily and the
-// extractor can move here next.
+// Declared here: dchub-backend (web), dchub-worker, dchub-daily.
 //
 // ★ partial: this repo owns ONLY the services it declares. Project
 // resourceful-essence also holds dchub-mcp-server (owned by partial
@@ -615,7 +611,38 @@ export default defineRailway(() => {
     },
   });
 
+  // dchub-daily — its own root dir and Dockerfile; deploys only when
+  // services/daily/** changes (watchPatterns). Values were applied from here on
+  // 2026-09-25 while services/daily/railway.json still existed; that file is
+  // deleted in the same PR that re-adds this block. `start` is the Dockerfile
+  // CMD (the json's older copy lacked `exec` and `--log-level info`).
+  const daily = service("dchub-daily", {
+    source: github("azmartone67/dchub-backend", { checkSuites: false, rootDirectory: "services/daily" }),
+    build: { builder: "DOCKERFILE", dockerfilePath: "Dockerfile", watchPatterns: ["services/daily/**"] },
+    start: "sh -c 'exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080} --log-level info'",
+    healthcheck: "/health",
+    healthcheckTimeout: 120,
+    replicas: { "us-west2": 1 },
+    deploy: { restartPolicyMaxRetries: 3 },
+    env: {
+      AUTOPOST_ENABLED: preserve(),
+      AUTOPOST_SIZE: preserve(),
+      AUTOPOST_THEME: preserve(),
+      DAILY_RENDER_ORIGIN: preserve(),
+      DATABASE_URL: preserve(),
+      DCHUB_API_BASE: preserve(),
+      DCHUB_API_KEY: preserve(),
+      DRY_RUN: preserve(),
+      R2_ACCESS_KEY_ID: preserve(),
+      R2_ACCOUNT_ID: preserve(),
+      R2_BUCKET: preserve(),
+      R2_PUBLIC_BASE: preserve(),
+      R2_SECRET_ACCESS_KEY: preserve(),
+      REFRESH_SECRET: preserve(),
+    },
+  });
+
   return project("resourceful-essence", {
-    resources: [web, worker],
+    resources: [web, worker, daily],
   });
 });
