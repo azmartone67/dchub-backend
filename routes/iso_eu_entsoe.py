@@ -745,7 +745,7 @@ def _persist_metrics(snap):
             try:
                 cur.execute(
                     """INSERT INTO grid_data (iso, metric_name, metric_value, unit, timestamp)
-                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW()))
+                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW() ON CONFLICT DO NOTHING))
                        ON CONFLICT (iso, timestamp, metric_name) DO NOTHING""",
                     (iso, name, value, unit, observed_at))
                 if cur.rowcount > 0:
@@ -841,10 +841,12 @@ def compute_dcpi_score():
 
 
 # ── HTTP endpoints ──────────────────────────────────────────────────────────
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_eu_entsoe_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_ieso.py:432 — review and remove one
 
 @iso_eu_entsoe_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -920,6 +922,7 @@ def http_zones():
 @iso_eu_entsoe_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200
+# AUTO-REPAIR: duplicate route '/health' also in main.py:8584 — review and remove one
 
 
 @iso_eu_entsoe_bp.route("/health", methods=["GET"])

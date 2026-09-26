@@ -421,7 +421,7 @@ def _persist(measure: dict, discovery: dict, legibility: dict, reinforcement: di
                    registry_covered, registry_total, self_surfaces_ok,
                    self_surfaces_total, drafts_queued, submitted, top_platform,
                    geo_next_slug, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 measure.get("distinct_agents_7d"),
                 measure.get("agents_wow_delta"),

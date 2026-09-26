@@ -54,7 +54,7 @@ def pg(monkeypatch):
 
 def _seed(c):
     with c.cursor() as cur:
-        cur.executemany("INSERT INTO facilities (name, provider) VALUES (%s, %s)", [
+        cur.executemany("INSERT INTO facilities (name, provider) VALUES (%s, %s) ON CONFLICT DO NOTHING", [
             ("Aligned Data Centers PHX1", "Aligned"),
             ("Stack Infrastructure Ashburn", None),
             ("Vantage Data Centers VA1", None),
@@ -62,7 +62,7 @@ def _seed(c):
         ])
         # prefix blind spots (the live shape), one exact match, and controls
         cur.executemany("INSERT INTO news_discovered_entities (entity_name, status,"
-                        " last_seen_at) VALUES (%s, %s, NOW() - %s * INTERVAL '1 day')", [
+                        " last_seen_at) VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING - %s * INTERVAL '1 day')", [
             # blind spots, both OLDER than the recency window
             ("Stack Infrastructure", "unknown", 400),
             ("Vantage", "rejected", 300),

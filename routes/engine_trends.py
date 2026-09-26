@@ -116,7 +116,7 @@ def record(engine: str, score, detail: dict | None = None, min_gap_min: int = 55
                 cur.close()
                 c.commit()
                 return
-        cur.execute("INSERT INTO engine_snapshots (engine, score, detail) VALUES (%s,%s,%s)",
+        cur.execute("INSERT INTO engine_snapshots (engine, score, detail) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                     (engine, float(score), json.dumps(detail or {})))
         c.commit()
         cur.close()

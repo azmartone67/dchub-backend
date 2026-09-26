@@ -130,7 +130,7 @@ def test_transmission_lines_has_one_row_writer(scan):
 
 
 @pytest.mark.parametrize("sql,verbs", [
-    ("INSERT INTO transmission_lines (hifld_id) VALUES (%s)", ["INSERT"]),
+    ("INSERT INTO transmission_lines (hifld_id) VALUES (%s) ON CONFLICT DO NOTHING", ["INSERT"]),
     ("  insert into\n  transmission_lines\n (a)", ["INSERT"]),
     ("DELETE FROM transmission_lines WHERE source IN %s", ["DELETE"]),
     ("TRUNCATE TABLE transmission_lines RESTART IDENTITY", ["TRUNCATE"]),
@@ -150,8 +150,8 @@ def test_the_matcher(sql, verbs):
 def test_docstrings_are_not_writes(tmp_path):
     """A docstring that quotes the old INSERT is prose, not a writer; the same
     text as a live string is one."""
-    doc = '"""INSERT INTO transmission_lines (a) VALUES (1)"""\n'
-    live = 'SQL = "INSERT INTO transmission_lines (a) VALUES (1)"\n'
+    doc = '"""INSERT INTO transmission_lines (a) VALUES (1) ON CONFLICT DO NOTHING"""\n'
+    live = 'SQL = "INSERT INTO transmission_lines (a) VALUES (1) ON CONFLICT DO NOTHING"\n'
     for src, want in ((doc, []), (doc + live, ["INSERT"])):
         tree = ast.parse(src)
         skip = _docstring_ids(tree)

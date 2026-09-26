@@ -129,7 +129,7 @@ def register_target(output_kind: str, output_ref: str, metric_key: str,
             cur.execute("""INSERT INTO brain_metric_targets
                 (output_kind, output_ref, metric_key, baseline_value,
                  target_delta, verify_at, auto_revertible, revert_payload)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING
                 RETURNING id""",
                 (output_kind, output_ref, metric_key, baseline_value,
                  target_delta, verify_at, auto_revertible,

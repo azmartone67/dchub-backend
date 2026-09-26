@@ -279,7 +279,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO directory_submissions  
                 (directory_name, directory_url, category, status, submitted_at, notes)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 directory['name'],
                 directory['submit_url'],
@@ -325,7 +325,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO backlink_tracking 
                 (source_url, source_domain, anchor_text, target_page, status)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 f"https://{domain}",
                 domain,
@@ -386,7 +386,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO ai_platform_integrations 
                 (platform_name, platform_type, integration_status, integration_date, details)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 platform['name'],
                 platform['type'],
@@ -438,7 +438,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO social_media_posts 
                 (platform, content, post_type, status, scheduled_at)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 'linkedin',
                 linkedin_content,
@@ -458,7 +458,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO social_media_posts 
                 (platform, content, post_type, status, scheduled_at)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 'twitter',
                 twitter_content,
@@ -543,7 +543,7 @@ API Documentation: {self.site_url}/api/v1
         # Save to database (using existing schema)
         cursor.execute('''
             INSERT INTO press_releases (title, content, status)
-            VALUES (%s, %s, %s)
+            VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
         ''', (
             press_release['title'],
             press_release['body'],
@@ -708,7 +708,7 @@ API Documentation: {self.site_url}/api/v1
             INSERT INTO promotion_stats  
             (date, directories_submitted, social_posts, backlinks_gained, 
              ai_platforms_integrated, press_releases, total_reach_estimate)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (
             today,
             len(results.get('directories', {}).get('pending_manual', [])),

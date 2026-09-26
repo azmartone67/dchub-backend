@@ -226,7 +226,7 @@ _RUN_INSERT = """
     INSERT INTO entity_capture_runs
         (run_id, layer, status, baseline, scanned, appeared, changed,
          unkeyable, truncated, next_offset, note)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
 """
 
 
