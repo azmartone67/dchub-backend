@@ -177,7 +177,12 @@ def test_the_summary_does_not_publish_the_demo_megawatts(env):
     blob = json.dumps(j)
     # 41.2 is 40 + 1.2, the two demos; 43.2 would be the pair plus the real
     # listing. Neither may ever be published as live capacity again.
-    assert "41.2" not in blob and "43.2" not in blob, blob
+    # ISO timestamps are masked first: "generated_at": "…T07:27:41.210694…"
+    # contains "41.2" by chance and failed CI at random (backend#5633 shard 2,
+    # run 36226686561, 2026-09-26).
+    figures = re.sub(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
+                     "<ts>", blob)
+    assert "41.2" not in figures and "43.2" not in figures, blob
     assert j["live_count"] == 1, j
     assert j["total_mw"] == 2, j
     assert j["markets"] == [{"count": 1, "country": "US", "delivery_types": ["colocation"],
