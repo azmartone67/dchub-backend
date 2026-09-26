@@ -47,6 +47,7 @@ about us. Same reason the whole harness exists.
 """
 from __future__ import annotations
 
+import html
 import re
 import time
 
@@ -62,9 +63,18 @@ SURFACE = "registry"
 LISTINGS = (
     {
         "name": "glama",
-        "url": ("https://glama.ai/api/mcp/v1/servers/"
-                "azmartone67/dchub-mcp-server"),
-        "text_fields": ("description",),
+        # ★ 2026-09-26 — the listing is read from the PUBLIC PAGE's
+        #   <meta name="description">, not the JSON API. The API
+        #   (glama.ai/api/mcp/v1/servers/azmartone67/dchub-mcp-server) answers
+        #   401 without an API key since ~2026-09 — measured 401 with both the
+        #   QA and a browser User-Agent, while this page answers 200 to the QA
+        #   User-Agent. routes/glama_listing_probe.py moved to HTML for the same
+        #   reason; this probe never did, so `registry::glama::fetch` was BLIND
+        #   12 runs in 12 and every claim check below it never ran. The meta
+        #   description carries the same submitted prose the API's
+        #   `description` field did.
+        "listing_page": ("https://glama.ai/mcp/servers/"
+                         "azmartone67/dchub-mcp-server"),
         "page": "https://glama.ai/mcp/servers/qa3uoznre7",
         # ★★★ The tool inventory is counted from the RENDERED schema page, NOT
         #   from the API record's `tools` field. That field is an empty list for
@@ -144,6 +154,35 @@ _CLAIM_PATTERNS = (
 )
 
 
+# <meta ... name="description" ... content="..."> in either attribute order;
+# og:description is the fallback. Glama renders `content` FIRST.
+_META_DESC = (
+    re.compile(r'<meta\s[^>]*\bname="description"[^>]*\bcontent="([^"]*)"', re.I),
+    re.compile(r'<meta\s[^>]*\bcontent="([^"]*)"[^>]*\bname="description"', re.I),
+    re.compile(r'<meta\s[^>]*\bproperty="og:description"[^>]*\bcontent="([^"]*)"', re.I),
+    re.compile(r'<meta\s[^>]*\bcontent="([^"]*)"[^>]*\bproperty="og:description"', re.I),
+)
+
+
+def listing_text(spec: dict) -> tuple[int | None, str | None]:
+    """(HTTP status, the listing's description) from its public page.
+
+    status None = transport failure (we learned nothing). text None with a
+    200 = the page was fetched and carries no description meta — a layout
+    change on their side that THIS probe has to follow, reported as such."""
+    try:
+        status, _, body = fetch(spec["listing_page"])
+    except Unreachable:
+        return None, None
+    if status != 200:
+        return status, None
+    for pat in _META_DESC:
+        m = pat.search(body or "")
+        if m and m.group(1).strip():
+            return status, html.unescape(m.group(1)).strip()
+    return status, None
+
+
 def tools_rendered(spec: dict) -> int | None:
     """How many distinct tools the registry RENDERS for us, or None if blind.
 
@@ -216,18 +255,42 @@ def probe(out: list[Finding] | None = None) -> list[Finding]:
 
     for spec in LISTINGS:
         name = spec["name"]
-        code, rec = get_json(spec["url"])
-        if code != 200 or not isinstance(rec, dict):
+        code, text = listing_text(spec)
+        if text is None:
+            parsed_nothing = code == 200
+            # A page we fetched and could not parse is OUR instrument failing,
+            # not the registry — addressed to us (instrument_fault), routable.
             out.append(blind(
                 stable_key("registry", name, "fetch"), SURFACE, SEAT_NONE,
-                f"{name} listing unreadable",
-                f"HTTP {code} or non-JSON body — a registry being down is not "
-                f"evidence our listing is wrong",
-                basis=f"GET {spec['url']}"))
-            continue
-
-        text = " ".join(str(rec.get(f) or "") for f in spec["text_fields"])
-        claimed = claims_in(text)
+                (f"{name} listing page carries no description — probe needs "
+                 f"updating" if parsed_nothing else f"{name} listing unreadable"),
+                (f"HTTP 200 but no <meta name=\"description\"> on "
+                 f"{spec['listing_page']} — the page layout changed under this "
+                 f"probe" if parsed_nothing else
+                 f"HTTP {code} — a registry being down is not evidence our "
+                 f"listing is wrong"),
+                basis=f"GET {spec['listing_page']} -> <meta name=description>",
+                instrument_fault=parsed_nothing))
+            # The tool inventory comes from a DIFFERENT page, so it is still
+            # measured; only the prose claims below depend on the text.
+        else:
+            # ★ A PASS, not silence: a check that simply stops being emitted
+            #   is absence, and absence is not evidence the probe can see. The
+            #   squasher's chronic-blind lane closes this family only on a
+            #   history that shows it OBSERVING.
+            out.append(Finding(
+                key=stable_key("registry", name, "fetch"),
+                surface=SURFACE, seat=SEAT_NONE,
+                title=f"{name} listing readable",
+                verdict=PASS, severity=INFO,
+                evidence=(f"HTTP 200, description of {len(text)} chars read "
+                          f"from {spec['listing_page']}"),
+                basis=f"GET {spec['listing_page']} -> <meta name=description>",
+                red_when=("n/a — this check only says whether the listing's "
+                          "prose could be read; the claims in it are judged "
+                          "by the claim-* checks"),
+            ))
+        claimed = claims_in(text) if text is not None else {}
 
         # 1 · did the registry's build + introspection actually deliver tools?
         n = tools_rendered(spec)
@@ -292,8 +355,8 @@ def probe(out: list[Finding] | None = None) -> list[Finding]:
                 evidence=(f"listing prose says {said:,}{'+' if plus else ''} "
                           f"{field}; the platform's own live canon says "
                           f"{canon_val:,} ({verdict_kind})"),
-                basis=(f"GET {spec['url']} -> "
-                       f".{'/'.join(spec['text_fields'])}; canon from "
+                basis=(f"GET {spec['listing_page']} -> "
+                       f"<meta name=description>; canon from "
                        f"{_CANON_STATS_URL} / {_CANON_TOOLS_URL} in the SAME run"),
                 red_when=("the listing's number contradicts the platform's own "
                           "live canon — UNDER-claiming sells the server short, "
@@ -330,7 +393,7 @@ def probe(out: list[Finding] | None = None) -> list[Finding]:
                     verdict=BLIND, severity=INFO, instrument_fault=True,
                     evidence=(f"canon returned {sorted(canon)} only; claims "
                               f"present but unjudgeable: {', '.join(canon_owned)}"),
-                    basis=(f"GET {spec['url']} -> prose regex; canon from "
+                    basis=(f"GET {spec['listing_page']} -> prose regex; canon from "
                            f"read_canon() (stats leg failed after 1 retry)"),
                     red_when=("n/a — BLIND, addressed to the harness: the "
                               "stats canon leg failed from this seat, so the "
@@ -345,7 +408,7 @@ def probe(out: list[Finding] | None = None) -> list[Finding]:
                     verdict=GAUGE, severity=INFO,
                     evidence=f"claims found with no canonical counterpart: "
                              f"{', '.join(rest)}",
-                    basis=f"GET {spec['url']} -> prose regex vs canon keys",
+                    basis=f"GET {spec['listing_page']} -> prose regex vs canon keys",
                     red_when=("n/a — a GAUGE. Reported so an unwatched claim is "
                               "visible rather than counted as verified"),
                 ))
