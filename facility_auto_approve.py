@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from routes._swallowed_writes import note_swallowed_write
+from routes.facility_geo_quality import resolve_country
 
 logger = logging.getLogger('facility_auto_approve')
 
@@ -283,9 +284,9 @@ def run_auto_approve(conn, batch_size=100, dry_run=False):
                 name = row.get('name', '')
                 city = row.get('city', '')
                 state = row.get('state', '')
-                country = row.get('country', '')
                 latitude = row.get('latitude')
                 longitude = row.get('longitude')
+                country = resolve_country(row.get('country'), latitude, longitude) or ''
                 provider = row.get('provider') or row.get('operator', '')
                 source = row.get('source', 'discovery')
 
