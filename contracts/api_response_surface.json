@@ -20703,14 +20703,14 @@
    ]
   },
   "GET /api/v1/reports/energy/monthly": {
-   "source": "routes/energy_report.py:363",
+   "source": "routes/energy_report.py:444",
    "handler": "energy_monthly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/energy/monthly/narrative": {
-   "source": "routes/energy_report.py:387",
+   "source": "routes/energy_report.py:466",
    "handler": "energy_monthly_narrative_only",
    "resolution": "resolved",
    "open_at": [
@@ -20732,14 +20732,14 @@
    ]
   },
   "GET /api/v1/reports/energy/quarterly": {
-   "source": "routes/energy_report.py:375",
+   "source": "routes/energy_report.py:455",
    "handler": "energy_quarterly_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/reports/energy/quarterly/narrative": {
-   "source": "routes/energy_report.py:410",
+   "source": "routes/energy_report.py:488",
    "handler": "energy_quarterly_narrative_only",
    "resolution": "resolved",
    "open_at": [
