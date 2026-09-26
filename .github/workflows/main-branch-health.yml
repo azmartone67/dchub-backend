@@ -95,7 +95,7 @@ jobs:
           jq -nc --arg s "$STATUS" --arg n "$NOTE" \
             '{feed:"main-ci",status:$s,cadence_hours:2,note:$n}' \
           | curl --fail-with-body -sS --max-time 30 -X POST \
-              "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+              "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest-runs/beat" \
               -H "X-Admin-Key: $ADMIN_KEY" \
               -H "Content-Type: application/json" \
               -H "User-Agent: dchub-main-health/1.0" \

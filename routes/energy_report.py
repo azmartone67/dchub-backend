@@ -26,6 +26,7 @@ from routes.url_registry import build_public_url
 import json
 import time
 import logging
+import threading
 import datetime as _dt
 try:
     from routes.report_email_capture import report_capture_block
@@ -111,6 +112,86 @@ def _gather_energy(window: str) -> dict:
         pass
     _GATHER_CACHE[window] = {"data": data, "computed_at": time.monotonic()}
     return dict(data)
+
+
+# ── Stale-while-revalidate for the full report (gather + narrative) ─────
+# 2026-09-25: Cloudflare's slowest-paths panel had /reports/energy/quarterly
+# at p95 17.2s, and a live cold read took 17.26s. Both caches under it (the
+# gather above and report_narrative's) expire on the same 1h clock, so once
+# an hour a real visitor paid for 4 leaderboard fetches + 5 grid fetches + an
+# LLM call in the foreground. The report is daily; an hour-old copy is fine.
+#
+# So keep the last GOOD full report for a week and serve it immediately once
+# it is past _GATHER_TTL, refreshing it on a background thread. Only a
+# process that has never seen a good copy (cold Redis + cold worker) builds
+# inline. A poisoned gather is never stored, so it can never be served stale.
+_SWR_KEEP_SECONDS = 7 * 24 * 3600
+_SWR_LOCAL: dict[str, dict] = {}          # window -> {"data", "computed_at"}
+_SWR_REFRESHING: set[str] = set()
+_SWR_LOCK = threading.Lock()
+
+
+def _swr_key(window: str) -> str:
+    return f"dchub:energy_report:v2:full:{window}"
+
+
+def _swr_read(window: str):
+    """(data, age_seconds) of the last good full report, or (None, None)."""
+    try:
+        from redis_cache import cache_get
+        hit = cache_get(_swr_key(window))
+        if hit and isinstance(hit.get("data"), dict):
+            return dict(hit["data"]), time.time() - float(hit.get("computed_at") or 0)
+    except Exception:
+        pass
+    local = _SWR_LOCAL.get(window)
+    if local:
+        return dict(local["data"]), time.time() - local["computed_at"]
+    return None, None
+
+
+def _swr_build(window: str) -> dict:
+    """Build the full report and, if it is good, store it as last-good."""
+    d = _attach_narrative_safe(_gather_energy(window), kind=f"energy_{window}")
+    if d.get("_partial_cache_poison"):
+        return d
+    entry = {"data": d, "computed_at": time.time()}
+    _SWR_LOCAL[window] = entry
+    try:
+        from redis_cache import cache_set
+        cache_set(_swr_key(window), entry, ttl=_SWR_KEEP_SECONDS)
+    except Exception:
+        pass
+    return dict(d)
+
+
+def _swr_refresh_in_background(window: str) -> None:
+    with _SWR_LOCK:
+        if window in _SWR_REFRESHING:
+            return
+        _SWR_REFRESHING.add(window)
+
+    def _run():
+        try:
+            _swr_build(window)
+        except Exception as e:
+            logger.warning(f"energy_report({window}): background refresh failed: {e}")
+        finally:
+            with _SWR_LOCK:
+                _SWR_REFRESHING.discard(window)
+
+    threading.Thread(target=_run, name=f"energy-report-swr-{window}",
+                     daemon=True).start()
+
+
+def _full_report(window: str) -> dict:
+    """Gathered data + narrative, served stale-while-revalidate."""
+    data, age = _swr_read(window)
+    if data is None:
+        return _swr_build(window)
+    if age >= _GATHER_TTL:
+        _swr_refresh_in_background(window)
+    return data
 
 
 def _gather_energy_uncached(window: str) -> dict:
@@ -361,9 +442,8 @@ def _attach_narrative_safe(d: dict, kind: str = "energy_monthly") -> dict:
 @energy_report_bp.route("/api/v1/reports/energy/monthly",
                         methods=["GET"], strict_slashes=False)
 def energy_monthly_json():
-    d = _gather_energy("monthly")
+    d = _full_report("monthly")
     d["license"] = _license_block("monthly")
-    d = _attach_narrative_safe(d, kind="energy_monthly")
     return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
                               "Link": _CC_LINK_HEADER,
                               "X-License": "CC-BY-4.0",
@@ -373,9 +453,8 @@ def energy_monthly_json():
 @energy_report_bp.route("/api/v1/reports/energy/quarterly",
                         methods=["GET"], strict_slashes=False)
 def energy_quarterly_json():
-    d = _gather_energy("quarterly")
+    d = _full_report("quarterly")
     d["license"] = _license_block("quarterly")
-    d = _attach_narrative_safe(d, kind="energy_quarterly")
     return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
                               "Link": _CC_LINK_HEADER,
                               "X-License": "CC-BY-4.0",
@@ -385,9 +464,8 @@ def energy_quarterly_json():
 @energy_report_bp.route("/api/v1/reports/energy/monthly/narrative",
                         methods=["GET"], strict_slashes=False)
 def energy_monthly_narrative_only():
-    d = _gather_energy("monthly")
+    d = _full_report("monthly")
     d["license"] = _license_block("monthly")
-    d = _attach_narrative_safe(d, kind="energy_monthly")
     narr = d.get("narrative_summary") or {}
     out = {
         "window":       "monthly",
@@ -408,9 +486,8 @@ def energy_monthly_narrative_only():
 @energy_report_bp.route("/api/v1/reports/energy/quarterly/narrative",
                         methods=["GET"], strict_slashes=False)
 def energy_quarterly_narrative_only():
-    d = _gather_energy("quarterly")
+    d = _full_report("quarterly")
     d["license"] = _license_block("quarterly")
-    d = _attach_narrative_safe(d, kind="energy_quarterly")
     narr = d.get("narrative_summary") or {}
     out = {
         "window":       "quarterly",
@@ -432,7 +509,7 @@ def energy_quarterly_narrative_only():
 @energy_report_bp.route("/reports/energy/monthly",
                         methods=["GET"], strict_slashes=False)
 def energy_monthly_html():
-    d = _attach_narrative_safe(_gather_energy("monthly"), kind="energy_monthly")
+    d = _full_report("monthly")
     return Response(_render_html(d, "monthly"),
                     mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
@@ -443,7 +520,7 @@ def energy_monthly_html():
 @energy_report_bp.route("/reports/energy/quarterly",
                         methods=["GET"], strict_slashes=False)
 def energy_quarterly_html():
-    d = _attach_narrative_safe(_gather_energy("quarterly"), kind="energy_quarterly")
+    d = _full_report("quarterly")
     return Response(_render_html(d, "quarterly"),
                     mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
@@ -454,7 +531,7 @@ def energy_quarterly_html():
 @energy_report_bp.route("/reports/energy/monthly.md",
                         methods=["GET"], strict_slashes=False)
 def energy_monthly_md():
-    d = _attach_narrative_safe(_gather_energy("monthly"), kind="energy_monthly")
+    d = _full_report("monthly")
     return Response(_render_md(d, "monthly"),
                     content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
@@ -465,7 +542,7 @@ def energy_monthly_md():
 @energy_report_bp.route("/reports/energy/quarterly.md",
                         methods=["GET"], strict_slashes=False)
 def energy_quarterly_md():
-    d = _attach_narrative_safe(_gather_energy("quarterly"), kind="energy_quarterly")
+    d = _full_report("quarterly")
     return Response(_render_md(d, "quarterly"),
                     content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
