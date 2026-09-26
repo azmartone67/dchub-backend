@@ -22,6 +22,107 @@ from flask import Blueprint, jsonify, request
 import psycopg2, psycopg2.extras
 
 mcp_retention_bp = Blueprint("mcp_retention_r86", __name__)
+
+
+# ── comparability breaks in the key_reuse series (2026-09-26) ────────────────
+# key_reuse counts trial KEYS. Until 2026-09-15 a keyless caller that hit the
+# gate was handed its EXISTING trial key back, matched by IP+UA, so one caller
+# accumulated calls on one key and counted as reused / returned. #4612 (merged
+# 2026-09-15 06:16Z, auto-mint) and #4616 (19:48Z, the remaining handback
+# paths) removed that: every gated keyless request now mints its own key. So
+# after this date the same caller behaviour produces MORE keys, each with fewer
+# calls — reused_2plus and returned_next_week fall and keys per IP hash
+# (minted / distinct_ips) rise, with no change in the callers.
+#
+# ★ DATA, NOT PROSE. Published as series_breaks[] and on every key_reuse row as
+# row["series_break"], so a consumer can branch on it. The agent/ip cohorts are
+# NOT affected (they key on IP, not on api_key), which is also why this is not
+# in routes/weekly_series._DEFINITION_CHANGES: every entry there applies to that
+# endpoint's agents/calls/signals series, and none of those moved.
+#
+# The break is marked at DAY grain [start, end): the two merges were 13.5h
+# apart and each deployed some minutes after merge, so no single instant is
+# right, and a week containing any part of that day is marked as straddling.
+SERIES_BREAKS = [
+    {
+        "date": "2026-09-15",
+        "start": "2026-09-15T00:00:00+00:00",
+        "end": "2026-09-16T00:00:00+00:00",
+        "what": ("trial-key handback by IP+UA removed (#4612/#4616): each "
+                 "gated keyless request now mints its own key"),
+        "effect": ("reused_2plus and returned_next_week fall, and keys per IP "
+                   "hash (minted / distinct_ips) rises; not comparable across "
+                   "this date"),
+        "affects": ["key_reuse", "summary.pct_reused_30d",
+                    "summary.pct_returned_next_week_mature",
+                    "summary.avg_calls_per_key_30d"],
+        "not_affected": ["ip_cohort", "agent_cohort"],
+        "refs": ["dchub-backend#4612", "dchub-backend#4616"],
+    },
+]
+
+
+def _as_date(v):
+    import datetime as _dt
+    if isinstance(v, _dt.datetime):
+        return v.date()
+    if isinstance(v, _dt.date):
+        return v
+    try:
+        return _dt.date.fromisoformat(str(v)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def series_break_position(week_start, brk) -> str | None:
+    """'before' | 'straddles' | 'after' for an ISO week against one break.
+
+    A week is 'before' when it ENDS (next Monday 00:00Z) at or before the
+    break day starts, 'after' when it STARTS at or after the break day ends,
+    and 'straddles' otherwise. None for an unparseable week.
+    """
+    import datetime as _dt
+    d = _as_date(week_start)
+    if d is None:
+        return None
+    lo = _dt.date.fromisoformat(brk["start"][:10])
+    hi = _dt.date.fromisoformat(brk["end"][:10])
+    if d + _dt.timedelta(days=7) <= lo:
+        return "before"
+    if d >= hi:
+        return "after"
+    return "straddles"
+
+
+def mark_series_breaks(rows):
+    """Attach row['series_break'] to every key_reuse row.
+
+    Rows that precede or straddle a break carry {date, position} (the most
+    recent such break); rows wholly after every break carry None, meaning
+    comparable with the latest weeks.
+    """
+    for r in rows:
+        mark = None
+        for brk in SERIES_BREAKS:
+            pos = series_break_position(r.get("week"), brk)
+            if pos in ("before", "straddles"):
+                mark = {"date": brk["date"], "position": pos,
+                        "comparable_with_weeks_after": False}
+        r["series_break"] = mark
+    return rows
+
+
+def window_crosses_series_break(now, days: int) -> list:
+    """Break dates falling inside the trailing `days` window ending at now."""
+    import datetime as _dt
+    lo = now - _dt.timedelta(days=days)
+    out = []
+    for brk in SERIES_BREAKS:
+        b_lo = _dt.datetime.fromisoformat(brk["start"])
+        b_hi = _dt.datetime.fromisoformat(brk["end"])
+        if lo < b_hi and b_lo < now:
+            out.append(brk["date"])
+    return out
 _INTERNAL = r"(loop|dchub-|selfheal|probe|health|scanner|regression|mcp-test|sweep|clawith|anthropicapi)"
 
 
@@ -47,6 +148,9 @@ def mcp_retention():
     if c is None:
         return jsonify(error="no_db"), 503
     out = {"weeks": weeks, "ip_cohort": [], "key_reuse": [], "summary": {},
+           "series_breaks": [{k: b[k] for k in ("date", "what", "effect", "affects",
+                                                "not_affected", "refs")}
+                             for b in SERIES_BREAKS],
            "primary_metric": "summary.pct_returned_next_week_mature (durable api_key, mature 8-30d cohort)",
            "note": ("Retention is the lever, not reach. ⚠️ ip_cohort is NOT the retention truth — it counts "
                     "mcp_tool_calls.ip_address, which is UNRELIABLE IN BOTH DIRECTIONS: TODAY it is the client's "
@@ -188,6 +292,17 @@ def mcp_retention():
             """, _cte30_params)
             row = cur.fetchone()
             out["summary"] = dict(row) if row else {}
+            # The 30d summary rates span a series break until 30 days after it.
+            import datetime as _dt
+            _crossed = window_crosses_series_break(
+                _dt.datetime.now(_dt.timezone.utc), 30)
+            out["summary"]["window_30d_crosses_series_break"] = _crossed
+            if _crossed:
+                out["summary"]["series_break_note"] = (
+                    "the 30d rates above mix keys minted before and after "
+                    + ", ".join(_crossed)
+                    + " (see series_breaks); not comparable with 30d rates "
+                    "from before that date")
             # r86b (2026-06-14): NEVER let the in-progress current week read as a
             # "decline". date_trunc('week', now()) = Monday of the current ISO week;
             # any cohort/reuse row with week >= that is a PARTIAL week (often just a
@@ -201,6 +316,8 @@ def mcp_retention():
             partial_ip = [r for r in out["ip_cohort"] if r["week"] >= cur_wk]
             out["ip_cohort"] = [r for r in out["ip_cohort"] if r["week"] < cur_wk]
             out["key_reuse"] = [r for r in out["key_reuse"] if r["week"] < cur_wk]
+            # 2026-09-26: comparability breaks, as data (see SERIES_BREAKS).
+            mark_series_breaks(out["key_reuse"])
             # ★★★ 2026-08-18: r86b above has split the partial week out of
             # ip_cohort and key_reuse since 06-14 — but agent_cohort was added
             # LATER (08-15) and never got it, so the series the note calls
