@@ -142,3 +142,72 @@ def test_the_discontinuity_is_published_not_silent():
     assert "OLD" in block and "basis" in block, (
         "a reader is not told the historical figures keep the old basis and "
         "are not revised")
+
+
+# ── 2026-09-26: Gemini's user-triggered fetchers ──────────────────────────
+# Verbatim from Google's user-triggered fetchers page
+# (developers.google.com/search/docs/crawling-indexing/
+# google-user-triggered-fetchers, last updated 2026-08-19). Chrome/W.X.Y.Z is
+# Google's own placeholder. Google-NotebookLM is the FORMER Gemini Notebook
+# token ("supported until August 2026"); its exact full string is no longer
+# published, so the case below uses the same shape with that token.
+GOOGLE_AGENT_MOBILE = (
+    "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z Mobile "
+    "Safari/537.36 (compatible; Google-Agent; "
+    "+https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)")
+GOOGLE_AGENT_DESKTOP = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko; "
+    "compatible; Google-Agent; "
+    "+https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)"
+    " Chrome/W.X.Y.Z Safari/537.36")
+GEMINI_NOTEBOOK_MOBILE = (
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/138.0.0.0 Mobile Safari/537.36 (compatible; Google-GeminiNotebook; "
+    "+https://developers.google.com/crawling/docs/crawlers-fetchers/google-gemininotebook)")
+GEMINI_NOTEBOOK_DESKTOP = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36 (compatible; Google-GeminiNotebook; "
+    "+https://developers.google.com/crawling/docs/crawlers-fetchers/google-gemininotebook)")
+NOTEBOOKLM = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36 (compatible; Google-NotebookLM)")
+
+
+def test_gemini_user_triggered_fetchers_attribute_to_gemini():
+    """Before 2026-09-26 Google-Agent fell to seo_bot (its UA URL contains
+    'crawlers-fetchers') and Google-NotebookLM to 'direct' — both dropped, so
+    real Gemini-user fetches were never counted."""
+    from ai_tracking import detect_platform
+    for ua in (GOOGLE_AGENT_MOBILE, GOOGLE_AGENT_DESKTOP,
+               GEMINI_NOTEBOOK_MOBILE, GEMINI_NOTEBOOK_DESKTOP, NOTEBOOKLM):
+        got = detect_platform(ua, "")
+        assert got == "gemini", "%r resolved to %r, not gemini" % (ua, got)
+
+
+def test_the_roster_names_the_three_fetchers_explicitly():
+    from ai_tracking import AI_PLATFORMS
+    agents = [a.lower() for a in AI_PLATFORMS["gemini"]["agents"]]
+    for tok in ("google-agent", "google-notebooklm", "google-gemininotebook"):
+        assert tok in agents, "%s missing from gemini's agent list" % tok
+
+
+def test_widening_did_not_readmit_googlebot():
+    """The new tokens must not substring-match any Googlebot UA."""
+    from ai_tracking import detect_platform
+    for ua in (GOOGLEBOT,
+               "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z Mobile "
+               "Safari/537.36 (compatible; Googlebot/2.1; "
+               "+http://www.google.com/bot.html)",
+               "Googlebot-Image/1.0"):
+        assert detect_platform(ua, "") == "seo_bot", ua
+
+
+def test_reach_definition_names_both_gemini_breaks():
+    from tests.test_reach_self_refresh_split import _reach_definition_text
+    block = _reach_definition_text()
+    assert "2026-09-05" in block and "2026-09-26" in block
+    for tok in ("Google-Agent", "Google-NotebookLM", "Google-GeminiNotebook"):
+        assert tok in block, "reach_definition does not name %s" % tok
+    assert "NOT comparable" in block

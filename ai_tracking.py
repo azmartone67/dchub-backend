@@ -134,7 +134,32 @@ AI_PLATFORMS = {
     # ★ `bing` is deliberately NOT added to ai_platform_canon._VENDOR_ALIASES,
     # so canonical_platform("bing") stays None and count_platforms() does not
     # count a search crawler as an AI platform. It is measured, not promoted.
-    "gemini":     {"name": "Gemini",     "color": "#4285f4", "company": "Google",     "agents": ["Google-Extended", "GoogleOther", "Gemini"]},
+    #
+    # ★★ 2026-09-26 (owner decision) — GEMINI'S USER-TRIGGERED FETCHERS ADDED.
+    # After #3973 the gemini series sat at ~0/day from 2026-09-06 (it was
+    # 49-214/day of Googlebot before). Google documents the fetchers a Gemini
+    # user's request actually arrives as, on its user-triggered-fetchers page
+    # (developers.google.com/search/docs/crawling-indexing/
+    # google-user-triggered-fetchers, last updated 2026-08-19):
+    #   Google-Agent           "(compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)"
+    #   Google-GeminiNotebook  "(compatible; Google-GeminiNotebook; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-gemininotebook)"
+    #   Google-NotebookLM      the FORMER Gemini Notebook token ("supported until August 2026")
+    # Matching order is safe: only chatgpt and claude precede gemini in this
+    # dict and none of their markers occur in these UAs, no _INTERNAL_UA_MARKERS
+    # entry does either, and gemini is matched BEFORE the generic-bot branch —
+    # which matters, because the Google-Agent / GeminiNotebook UAs carry a
+    # ".../crawlers-fetchers/..." URL whose "crawler" would otherwise send them
+    # to seo_bot (dropped), and a bare Google-NotebookLM UA would fall to
+    # "direct" (also dropped). The bare "Gemini" marker already caught
+    # Google-GeminiNotebook; it is listed by name so removing "Gemini" cannot
+    # silently lose it.
+    #
+    # Googlebot STAYS OUT (see above). Google-Extended is KEPT BUT DEAD: Google
+    # says it "doesn't have a separate HTTP request user agent string" — it is
+    # a robots.txt control token (google-common-crawlers page, 2026-07-14), so
+    # it will never match a real request. Kept because it is harmless and other
+    # modules (mcp_platform_backfill, ai_interconnection) key on the same name.
+    "gemini":     {"name": "Gemini",     "color": "#4285f4", "company": "Google",     "agents": ["Google-Extended", "GoogleOther", "Gemini", "Google-Agent", "Google-NotebookLM", "Google-GeminiNotebook"]},
     "perplexity": {"name": "Perplexity", "color": "#1fb8cd", "company": "Perplexity", "agents": ["PerplexityBot"]},
     "copilot":    {"name": "Copilot",    "color": "#0078d4", "company": "Microsoft",  "agents": ["Copilot"]},
     # Search crawler, not an assistant. Its own bucket so Bing's page-crawl
