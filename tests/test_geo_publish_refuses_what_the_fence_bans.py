@@ -279,6 +279,9 @@ def test_the_drafter_is_handed_one_facility_population(monkeypatch):
     """Sentinel phrases, one per helper, so the row shows exactly which reached it."""
     import canonical_stats as cs
     monkeypatch.setattr(cs, "facilities_phrase", lambda: "29,000+")
+    # Distinct sentinels for the distinct and keeper helpers: the row is
+    # LABELLED facilities_distinct, so check the label and the value together.
+    monkeypatch.setattr(cs, "facilities_distinct_phrase", lambda: "24,600+")
     monkeypatch.setattr(cs, "facilities_with_keeper_distinct_phrase", lambda: "21,500+")
     monkeypatch.setattr(cs, "countries_phrase", lambda: "170+")
     monkeypatch.setattr(cs, "markets_phrase", lambda: "300+")
@@ -286,7 +289,8 @@ def test_the_drafter_is_handed_one_facility_population(monkeypatch):
     monkeypatch.setattr(cs, "grid_coverage_phrase", lambda style="full": "7 live feeds")
     rows = g._canonical_rows()
     blob = json.dumps(rows)
-    assert "21,500+" in blob, rows
+    assert rows[0].get("facilities_distinct") == "24,600+", rows
+    assert "21,500+" not in blob, f"the keeper count reached the drafter: {rows}"
     assert "29,000+" not in blob, f"the raw pile reached the drafter: {rows}"
     assert [k for k in rows[0] if "facilit" in k] == ["facilities_distinct"], rows
 
