@@ -235,7 +235,7 @@ def test_an_exact_match_is_judged_on_its_own_detector_and_key(m):
     [f] = out["findings"]
     assert out["state"] == "MEASURED" and f["match"] == "exact" and f["verdict"] == m.QUIET_PROVEN
     [(_, params)] = [(q, p) for q, p in cur.sql if q.startswith("WITH d AS")]
-    assert params == {"fn": FN, "keys": ["operator_profile_gap:X|/operators/x"]}
+    assert params == {"fn": FN, "keys": ["operator_profile_gap:X|/operators/x"], "since": None}
     assert f["evidence"]["last_completed"] == _h(2).isoformat()
 
 

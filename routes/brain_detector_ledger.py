@@ -105,6 +105,23 @@ ABSENCE_PROVABLE: dict[str, str] = {
         "3+ metrics in 24h, or is a registered intermittent stream inside its leash"),
 }
 
+ABSENCE_PROVABLE["check_facility_duplicate_clusters"] = (
+    "reviewed 2026-09-26: targets are a fixed list of 15 countries; a failed import, "
+    "connection or plan read records the run degraded and a failed query reports "
+    "its own crash; silence means fewer than 5 of that country's planned duplicate "
+    "rows are unmarked")
+
+# detector_fn -> ISO time its reviewed code was live. Only completed runs AFTER it
+# count toward quiet_proven, and the quiet window starts no earlier. Needed when a
+# review had to FIX a silent path: the ledger cannot tell a pre-fix run that
+# silently skipped a target from one that looked at it.
+#   check_facility_duplicate_clusters — before the 2026-09-26 fix, a market whose
+#   facility_dedup._conn() failed was skipped and the run still read completed.
+#   The time is set after the fix's deploy, not at merge.
+REVIEWED_SINCE: dict[str, str] = {
+    "check_facility_duplicate_clusters": "2026-09-26T12:00:00+00:00",
+}
+
 # issue -> the other issues its detector reports for the same url INSTEAD of it.
 # Going quiet on one of these can mean the other took over, so evidence_for reads
 # all of them: any open row or completed report of a sibling blocks the proof.
@@ -289,7 +306,8 @@ def judge(rows: list[dict], stats: dict, ledger: dict, now: datetime) -> dict:
                    f"{RECENT_COMPLETION_HOURS}h", fn)
     if stats.get("truncated_since"):
         return out(QUIET_UNPROVEN, "a completed run in the window hit the reported-keys cap", fn)
-    starts = [t for t in (last_reported, ledger.get("first_sweep")) if t is not None]
+    starts = [t for t in (last_reported, ledger.get("first_sweep"), REVIEWED_SINCE.get(fn))
+              if t is not None]
     quiet_days = min(_hours_since(t, now) for t in starts) / 24.0
     completed = int(stats.get("completed_since") or 0)
     if completed < MIN_COMPLETED_RUNS or quiet_days < MIN_QUIET_DAYS:
@@ -316,10 +334,12 @@ SELECT (SELECT t FROM lr) AS last_reported,
        MIN(swept_at) AS first_run,
        MAX(swept_at) FILTER (WHERE outcome = 'completed') AS last_completed,
        COUNT(*) FILTER (WHERE outcome = 'completed'
-                          AND swept_at > COALESCE((SELECT t FROM lr), '-infinity'::timestamptz))
+                          AND swept_at > COALESCE((SELECT t FROM lr), '-infinity'::timestamptz)
+                          AND swept_at > COALESCE(%(since)s::timestamptz, '-infinity'::timestamptz))
            AS completed_since,
        COALESCE(BOOL_OR(reported_truncated) FILTER (WHERE outcome = 'completed'
-                          AND swept_at > COALESCE((SELECT t FROM lr), '-infinity'::timestamptz)),
+                          AND swept_at > COALESCE((SELECT t FROM lr), '-infinity'::timestamptz)
+                          AND swept_at > COALESCE(%(since)s::timestamptz, '-infinity'::timestamptz)),
                 FALSE) AS truncated_since
   FROM d
 """
@@ -376,7 +396,8 @@ def evidence_for(cur, targets: list[dict], now: datetime | None = None) -> dict:
         if ledger["first_sweep"] is not None and len(fns) == 1:
             u = rows[0][5] if rows else url
             keys = [finding_key(i, u) for i in (issue, *siblings)]
-            cur.execute(_STATS_SQL, {"fn": next(iter(fns)), "keys": keys})
+            fn = next(iter(fns))
+            cur.execute(_STATS_SQL, {"fn": fn, "keys": keys, "since": REVIEWED_SINCE.get(fn)})
             s = cur.fetchone()
             if s:
                 stats = dict(zip(("last_reported", "first_run", "last_completed",
