@@ -321,3 +321,20 @@ def test_an_error_page_with_a_description_is_not_the_listing(monkeypatch):
     # A 503 page with generic site copy must not be read as OUR listing's claims.
     serve(monkeypatch, listing=(503, {}, '<meta content="3 tools" name="description"/>'))
     assert pr.listing_text(pr.LISTINGS[0]) == (503, None)
+
+
+# ── canon is read from /api/v1/stats/canonical, not a prose sentence ───────
+
+def test_read_canon_uses_the_canonical_distinct_count(monkeypatch):
+    # 2026-09-25: the stats leg parsed /api/ai/query's suggested_response,
+    # which quoted the keeper-deduped 23,173 against a canonical
+    # facilities_distinct of 24,687.
+    def fake(url, **kw):
+        if url == pr._CANON_TOOLS_URL:
+            return 200, {"tools": [{}] * 92}
+        assert url == "https://dchub.cloud/api/v1/stats/canonical", url
+        return 200, {"ok": True, "stats": {"facilities_distinct": 24687,
+                                           "facilities_verified": 23173,
+                                           "deals_tracked": 1659}}
+    monkeypatch.setattr(pr, "get_json", fake)
+    assert pr.read_canon() == {"tools": 92, "facilities": 24687, "deals": 1659}

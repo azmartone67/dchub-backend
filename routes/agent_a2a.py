@@ -69,7 +69,9 @@ AGENT_CARD = {
     "a2a_marketplace_ready": True,
     "agent": {
         "name":         "DC Hub Intelligence",
-        "version":      "2.1.2",
+        # No literal: _card() fills this per request from _card_version(). It
+        # was a hand-typed "2.1.2" while the MCP server answered 2.12.x.
+        "version":      None,
         # RAW template. Only _card() reads it, and resolves it per request;
         # canon_text() here would run once, at import (see the note above).
         "description":  _AGENT_DESCRIPTION,
@@ -206,6 +208,19 @@ AGENT_CARD = {
 }
 
 
+def _card_version():
+    """The MCP server version, from the ONE accessor every other served card
+    uses (ai_surface_canon.resolve_server_version_cached: memory-only on the
+    request path, background refresh, monotonic, never blank). Falls back to
+    the canon pin if that module is somehow un-importable."""
+    try:
+        from ai_surface_canon import resolve_server_version_cached
+        v = resolve_server_version_cached()
+    except Exception:
+        v = ""
+    return v or str(_CANON.get("version") or "")
+
+
 def _card():
     out = dict(AGENT_CARD)
     out["computed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
@@ -217,7 +232,8 @@ def _card():
     # nothing existing is removed.
     # A fresh dict, never AGENT_CARD["agent"] mutated in place: dict() above is
     # shallow, and the module card is shared by every request.
-    _agent = {**AGENT_CARD["agent"], "description": canon_text(_AGENT_DESCRIPTION)}
+    _agent = {**AGENT_CARD["agent"], "description": canon_text(_AGENT_DESCRIPTION),
+              "version": _card_version()}
     out["agent"]              = _agent
     out["protocolVersion"]    = "0.3.0"
     out["name"]               = _agent["name"]

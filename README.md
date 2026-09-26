@@ -86,7 +86,7 @@ The MCP server at `https://dchub.cloud/mcp` exposes **92 tools** for AI agents (
 
 - **Public API**: <https://dchub.cloud/api/v1/> — free tier with no signup
 - **Free dev key**: <https://dchub.cloud/signup> for higher rate limits
-- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $99 Pro, Enterprise)
+- **Paid tiers**: <https://dchub.cloud/pricing> ($49 Developer, $99 Pro, Enterprise)
 - **OpenAPI spec**: <https://dchub.cloud/openapi.json>
 
 ## Used by

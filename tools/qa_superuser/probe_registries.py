@@ -96,7 +96,11 @@ LISTINGS = (
 # Canon read LIVE in the same run — never a constant in this file, or the guard
 # becomes the next thing that drifts.
 _CANON_TOOLS_URL = "https://dchub.cloud/.well-known/mcp.json"
-_CANON_STATS_URL = "https://dchub.cloud/api/ai/query?type=stats"
+# ★2026-09-25: was /api/ai/query?type=stats, whose suggested_response quoted
+# the keeper-deduped count (23,173) while /api/v1/stats/canonical's
+# facilities_distinct — the field its own provenance says to cite — read
+# 24,687. Read the canonical endpoint's integers directly, not a sentence.
+_CANON_STATS_URL = "https://dchub.cloud/api/v1/stats/canonical"
 
 
 def _int(s: str) -> int:
@@ -125,13 +129,13 @@ def read_canon() -> dict | None:
     for attempt in (0, 1):
         code, stats = get_json(_CANON_STATS_URL)
         if code == 200 and isinstance(stats, dict):
-            txt = str(stats.get("suggested_response") or "")
-            m = re.search(r"([\d,]+)\s+data center facilities", txt)
-            if m:
-                out["facilities"] = _int(m.group(1))
-            m = re.search(r"([\d,]+)\s+M&A transactions", txt)
-            if m:
-                out["deals"] = _int(m.group(1))
+            cs = stats.get("stats") if isinstance(stats.get("stats"), dict) else {}
+            fac = cs.get("facilities_distinct")
+            if isinstance(fac, int) and fac > 0:
+                out["facilities"] = fac
+            deals = cs.get("deals_tracked")
+            if isinstance(deals, int) and deals > 0:
+                out["deals"] = deals
         if "facilities" in out or "deals" in out:
             break
         if attempt == 0:
