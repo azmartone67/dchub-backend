@@ -549,16 +549,19 @@ def _iso(ts):
         return str(ts)
 
 
+def _utc(ts):
+    """Aware UTC; a naive value is taken to already be UTC."""
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def _age_days(ts, now):
-    """Days since ts, with `now` a naive UTC datetime. None if unreadable."""
+    """Days since ts. None if unreadable."""
     if ts is None:
         return None
     try:
-        if isinstance(ts, str):
-            ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-        if ts.tzinfo is not None:
-            ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
-        return max(0.0, (now - ts).total_seconds() / 86400.0)
+        return max(0.0, (_utc(now) - _utc(ts)).total_seconds() / 86400.0)
     except Exception:
         return None
 
@@ -590,7 +593,7 @@ def real_outreach_status(conn_factory=None, now=None):
     partner mail is named by lab (the targets are our own list), and a
     self-registration is named only once a human or the fit gate approved it.
     """
-    now = now or datetime.utcnow()
+    now = _utc(now or datetime.now(timezone.utc))
     conn_factory = conn_factory or get_db
     events, lanes, summary = [], [], {}
 
