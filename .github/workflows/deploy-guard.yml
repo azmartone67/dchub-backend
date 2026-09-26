@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up Python
-        # MUST match the production runtime (nixpacks.toml: python-3.13). The
+        # MUST match the production runtime (runtime.txt / Dockerfile.web). The
         # guard ran 3.11 while prod ran 3.13, so it false-alarmed RED for days
         # on valid 3.12+ syntax (e.g. PEP 701 backslashes in f-strings that
         # prod accepts) — cry-wolf that also masked any real 3.13 break.
@@ -62,17 +62,20 @@ jobs:
           fi
           echo "All Python files pass syntax check"
 
-      - name: Verify railway.json healthcheck
+      - name: Verify web healthcheck in .railway/railway.ts
+        # railway.json is gone (Railway IaC since 2026-09-26); the healthcheck
+        # lives in the dchub-backend service block. tests/test_web_dockerfile.py
+        # parses it properly; this is the fast smoke check.
         run: |
           python3 -c "
-          import json, sys
-          with open('railway.json') as f:
-              config = json.load(f)
-          hc = config.get('deploy', {}).get('healthcheckPath', '')
+          import re, sys
+          src = open('.railway/railway.ts').read()
+          m = re.search(r'service\(\"dchub-backend\".*?\n  \}\);', src, re.S)
+          hc = re.search(r'^\s*healthcheck:\s*\"([^\"]+)\"', m.group(0), re.M) if m else None
           if not hc:
-              print('railway.json missing healthcheckPath')
+              print('.railway/railway.ts: no healthcheck on dchub-backend')
               sys.exit(1)
-          print(f'railway.json OK: healthcheck={hc}')
+          print(f'.railway/railway.ts OK: healthcheck={hc.group(1)}')
           "
 
       - name: Scan for dangerous patterns

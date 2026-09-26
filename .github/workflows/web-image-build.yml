@@ -1,6 +1,6 @@
 name: Web image build
 
-# Builds Dockerfile.web — the image railway.toml deploys for dchub-backend (web)
+# Builds Dockerfile.web — the image .railway/railway.ts deploys for dchub-backend (web)
 # and dchub-worker — and checks, inside the built container, the things that
 # broke under Railpack: the venv interpreter resolves, gunicorn starts, the
 # start scripts' system binaries exist, and weasyprint can render a PDF.
