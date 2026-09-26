@@ -459,14 +459,14 @@
    "keys": []
   },
   "GET /api/ai-ecosystem/manifest": {
-   "source": "ai_ecosystem_agent.py:600",
+   "source": "ai_ecosystem_agent.py:794",
    "handler": "get_ai_manifest",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/ai-ecosystem/outreach-log": {
-   "source": "ai_ecosystem_agent.py:621",
+   "source": "ai_ecosystem_agent.py:815",
    "handler": "get_outreach_log",
    "resolution": "resolved",
    "open_at": [
@@ -480,7 +480,7 @@
    ]
   },
   "GET /api/ai-ecosystem/platforms": {
-   "source": "ai_ecosystem_agent.py:605",
+   "source": "ai_ecosystem_agent.py:799",
    "handler": "get_ai_platforms",
    "resolution": "resolved",
    "open_at": [
@@ -493,7 +493,7 @@
    ]
   },
   "GET /api/ai-ecosystem/status": {
-   "source": "ai_ecosystem_agent.py:554",
+   "source": "ai_ecosystem_agent.py:748",
    "handler": "get_agent_status",
    "resolution": "resolved",
    "open_at": [
@@ -24857,7 +24857,7 @@
    ]
   },
   "POST /api/ai-ecosystem/run": {
-   "source": "ai_ecosystem_agent.py:564",
+   "source": "ai_ecosystem_agent.py:758",
    "handler": "run_agent_cycle",
    "resolution": "resolved",
    "open_at": [
@@ -24869,7 +24869,7 @@
    ]
   },
   "POST /api/ai-ecosystem/start": {
-   "source": "ai_ecosystem_agent.py:575",
+   "source": "ai_ecosystem_agent.py:769",
    "handler": "start_agent",
    "resolution": "resolved",
    "open_at": [
@@ -24882,7 +24882,7 @@
    ]
   },
   "POST /api/ai-ecosystem/stop": {
-   "source": "ai_ecosystem_agent.py:588",
+   "source": "ai_ecosystem_agent.py:782",
    "handler": "stop_agent",
    "resolution": "resolved",
    "open_at": [
