@@ -33025,6 +33025,31 @@ def db_queue_status():
 # AI QUERY & CITATION ENDPOINTS (must be at module level for gunicorn)
 # =============================================================================
 
+# ★ 2026-09-26 — the free ?type=stats citation quoted a DIFFERENT facility
+#   population than every other public surface. #4924 (2026-09-20) moved canon
+#   to facilities_distinct (COUNT(DISTINCT canonical_slug), no dedupe filter:
+#   live 24,687, published "24,600+" by /api/v1/canon/phrases, mcp.json, the
+#   MCP server, GitHub About, the homepage) because the keeper filter hid real
+#   buildings. This endpoint kept reading the keeper count (live 23,172), so
+#   "there are 23,172 data center facilities" sat beside "24,600+" everywhere
+#   else — and the QA super-user probe, which takes canon from this sentence,
+#   would have convicted every correct "24,600+" listing as a CRITICAL
+#   over-claim. Only a MEASURED value is quoted: the snapshot is seeded with
+#   citation floors (facilities_distinct seed = 400), and quoting the seed
+#   would publish a 60x under-claim; unmeasured → the SQL below.
+_STATS_FACILITIES_SQL = ("SELECT COUNT(DISTINCT canonical_slug) "
+                         "FROM discovered_facilities "
+                         "WHERE canonical_slug IS NOT NULL")
+
+
+def _stats_citation_facilities(cs, is_live):
+    """facilities_distinct from a canonical_stats snapshot, or 0 when it was
+    not measured (the caller then runs _STATS_FACILITIES_SQL)."""
+    if not is_live("facilities_distinct"):
+        return 0
+    return int((cs or {}).get("facilities_distinct") or 0)
+
+
 @app.route('/api/ai/query')
 def ai_query():
     """AI-optimized endpoint with citation prompts.
@@ -33140,21 +33165,21 @@ def ai_query():
                 # from canonical_stats — the SAME source /api/v1/canon/phrases
                 # publishes — so the most-quoted free citation endpoint can
                 # never contradict canon. get_canonical_stats() is cached and
-                # never raises (floors on failure); the SQL fallback repeats
-                # canonical_stats' own deduped filter (#1539) for the case
-                # where the import itself is unavailable.
+                # never raises (floors on failure). Facilities are the canon
+                # population, facilities_distinct (see _stats_citation_
+                # facilities above); the SQL fallback counts the same set for
+                # the case where the import or the measurement is unavailable.
                 facilities = deals = 0
                 try:
-                    from canonical_stats import get_canonical_stats as _gcs
+                    from canonical_stats import (get_canonical_stats as _gcs,
+                                                 stat_is_live as _live)
                     _cs = _gcs() or {}
-                    facilities = int(_cs.get('facilities_verified') or 0)
+                    facilities = _stats_citation_facilities(_cs, _live)
                     deals = int(_cs.get('deals') or 0)
                 except Exception:
                     pass
                 if not facilities:
-                    pg_cur.execute(
-                        "SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
-                        "WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT NULL")
+                    pg_cur.execute(_STATS_FACILITIES_SQL)
                     facilities = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM announcements")
                 news = pg_cur.fetchone()[0]
