@@ -10622,6 +10622,8 @@ def check_facility_duplicate_clusters() -> list[dict]:
         except Exception:
             import facility_dedup as fd
     except Exception:
+        # Could not look at all: record the run as degraded, never as healthy.
+        _DB_UNAVAILABLE.hit = True
         return findings
     c = _db()
     if c is None:
@@ -10632,7 +10634,12 @@ def check_facility_duplicate_clusters() -> list[dict]:
     try:
         for code in MARKETS:
             plan = fd._plan(code)
-            if not plan:
+            if plan is None:
+                # ★ 2026-09-26: _plan reads through facility_dedup._conn(), a
+                #   connection the query-tracking cursor never sees, and returns
+                #   None when it cannot connect. Skipping the market silently
+                #   made an unreadable market look like a clean one.
+                _DB_UNAVAILABLE.hit = True
                 continue
             dup_ids = [d["id"] for cl in plan["plan"] for d in cl["duplicates"]]
             if not dup_ids:
