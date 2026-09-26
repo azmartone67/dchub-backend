@@ -235,7 +235,7 @@ def test_an_exact_match_is_judged_on_its_own_detector_and_key(m):
     [f] = out["findings"]
     assert out["state"] == "MEASURED" and f["match"] == "exact" and f["verdict"] == m.QUIET_PROVEN
     [(_, params)] = [(q, p) for q, p in cur.sql if q.startswith("WITH d AS")]
-    assert params == {"fn": FN, "key": "operator_profile_gap:X|/operators/x"}
+    assert params == {"fn": FN, "keys": ["operator_profile_gap:X|/operators/x"]}
     assert f["evidence"]["last_completed"] == _h(2).isoformat()
 
 
@@ -245,7 +245,7 @@ def test_a_cut_url_matches_only_a_unique_prefix(m):
     [f] = m.evidence_for(one, [{"issue": "i", "url": "/operators/equin", "url_prefix": True}],
                          now=NOW)["findings"]
     assert f["match"] == "prefix"
-    assert [p for q, p in one.sql if q.startswith("WITH d AS")][0]["key"] == "i|/operators/equinix-inc"
+    assert [p for q, p in one.sql if q.startswith("WITH d AS")][0]["keys"] == ["i|/operators/equinix-inc"]
     two = ScriptCur(prefix=[("resolved", _d(8), _d(9), "consistency_radar", FN, "/operators/equinix-inc"),
                             ("resolved", _d(8), _d(9), "consistency_radar", FN, "/operators/equinix")])
     [f] = m.evidence_for(two, [{"issue": "i", "url": "/operators/equin", "url_prefix": True}],
