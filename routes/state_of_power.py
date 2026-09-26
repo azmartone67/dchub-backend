@@ -251,8 +251,33 @@ def _gather():
             # 300+. Floor at the canonical market count (same live
             # canonical_stats source as summary.markets above — not a new
             # hardcode) so the flagship claim can never lag canon again.
-            "markets_scored": max(_canon_mkts(),
-                                  int(e.get("markets_scored_total") or 0)),
+            # ★2026-09-26: when the verdict split was COUNTED over the
+            # canonical population, markets_scored IS its sum — so the split
+            # and the headline cannot disagree. The floor stays for the
+            # fallback, where the split is declared incomplete.
+            "markets_scored": (int(e.get("markets_scored_total") or 0)
+                               if e.get("verdict_distribution_complete")
+                               and e.get("markets_scored_total") else
+                               max(_canon_mkts(),
+                                   int(e.get("markets_scored_total") or 0))),
+        },
+        # What each count below counts. ★2026-09-26 (audit): this payload said
+        # markets_scored 331, scored_market_count 33 and a split summing to 203
+        # with no population named for any of them.
+        "populations": {
+            "markets_scored": e.get("population") or (
+                "DCPI markets scored (canonical_stats `markets`)."),
+            "verdict_distribution": (
+                "Same population as summary.markets_scored; sums to it."
+                if e.get("verdict_distribution_complete") else
+                "INCOMPLETE — tallied from the DCPI leaderboard, which caps "
+                "each verdict at 100 rows, so it does not sum to "
+                "summary.markets_scored."),
+            "scored_market_count": (
+                "BUILD-verdict markets with a composite DCPI score: the pool "
+                "the top-10 BUILD table is ranked from. A subset of "
+                "verdict_distribution.BUILD, not a count of all scored "
+                "markets."),
         },
         # — DCPI verdicts (reused) —
         "verdict_distribution": e.get("verdict_distribution") or {},

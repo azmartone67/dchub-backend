@@ -194,6 +194,73 @@ def _full_report(window: str) -> dict:
     return data
 
 
+# ── One population for every DCPI count this report publishes ───────────────
+# ★2026-09-26 (audit): /api/v1/reports/state-of-power answered
+# summary.markets_scored 331, scored_market_count 33, and a verdict split of
+# 33 BUILD / 70 CAUTION / 100 AVOID that summed to 203. Three populations, none
+# named:
+#   · the split was read off /api/v1/dcpi/leaderboard, which caps every call at
+#     limit=100, so AVOID stopped at exactly 100 (the canonical count is ~230);
+#   · the leaderboard also carries the three rural AGGREGATE regions, which
+#     canonical_stats' `markets` excludes as not-markets — two of them sat in
+#     the BUILD top 10 (rural-spp, upper-michigan) and made BUILD 33 against a
+#     canonical 31;
+#   · markets_scored was floored at canonical_stats' market count.
+# The population is now the canonical one everywhere: latest published score
+# per distinct market name, aggregate regions excluded — the filter
+# canonical_stats uses for `markets` and agent_capabilities_feed uses for
+# `dcpi_verdicts`. The split is COUNTED over it in SQL (not read off a capped
+# list), so it sums to markets_scored by construction, and the ranked rows
+# drop the aggregate regions so the ranking pool is a subset of it.
+# Same three slugs as routes/dcpi._DCPI_AGGREGATE_REGION_SLUGS and the literal
+# in canonical_stats.py; tests/test_state_of_power_counts_agree.py pins that.
+_DCPI_AGGREGATE_REGION_SLUGS = ("pacific-nw-rural", "rural-spp", "upper-michigan")
+_LEADERBOARD_CAP = 100   # /api/v1/dcpi/leaderboard clamps `limit` to this
+
+POPULATION_NOTE = (
+    "DCPI markets: the latest published score per distinct market name, "
+    "excluding the 3 aggregate rural regions (pacific-nw-rural, rural-spp, "
+    "upper-michigan). The same population canonical_stats counts as `markets`.")
+
+
+def _dcpi_verdict_population():
+    """{verdict: count} over the canonical DCPI market population, or None if
+    it cannot be counted (no DB, timeout). Never raises."""
+    try:
+        import canonical_stats
+        from util.dcpi_score_row import PUBLISHED_ONLY
+        c = canonical_stats._conn()
+        if c is None:
+            return None
+        try:
+            c.autocommit = True
+            cur = c.cursor()
+            try:
+                cur.execute("SET statement_timeout = 8000")
+            except Exception:
+                pass
+            cur.execute(
+                "SELECT verdict, COUNT(*) FROM ("
+                "  SELECT DISTINCT ON (market_name) market_name, verdict"
+                "  FROM market_power_scores"
+                f"  WHERE {PUBLISHED_ONLY}"
+                "    AND market_slug NOT IN %s"
+                "  ORDER BY market_name, computed_at DESC"
+                ") x WHERE verdict IS NOT NULL GROUP BY verdict",
+                (tuple(_DCPI_AGGREGATE_REGION_SLUGS),))
+            rows = cur.fetchall() or []
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+        counts = {str(v).upper(): int(n) for v, n in rows if v}
+        return counts or None
+    except Exception as e:
+        logger.info(f"energy_report: verdict population count failed ({e})")
+        return None
+
+
 def _gather_energy_uncached(window: str) -> dict:
     """Actual gather logic — kept separate so the cache wrapper above
     can be a simple lookup-or-recompute."""
@@ -272,12 +339,28 @@ def _gather_energy_uncached(window: str) -> dict:
         out["_failed_verdicts"] = [v for v, c in verdict_results.items() if c is None]
         # Caller checks _partial_cache_poison to skip the Redis write.
 
+    # Aggregate regions are not markets (see _DCPI_AGGREGATE_REGION_SLUGS).
+    leaderboard = [r for r in leaderboard
+                   if r.get("market_slug") not in _DCPI_AGGREGATE_REGION_SLUGS]
+
     verdicts = {"BUILD": 0, "CAUTION": 0, "AVOID": 0, "LOW_SIGNAL": 0}
-    for row in leaderboard:
-        v = (row.get("verdict") or "LOW_SIGNAL").upper()
-        verdicts[v] = verdicts.get(v, 0) + 1
-    out["markets_scored_total"] = len(leaderboard)
+    counted = _dcpi_verdict_population()
+    if counted:
+        verdicts.update(counted)
+        complete = True
+    else:
+        # Fallback: tally the leaderboard rows. A verdict that came back AT the
+        # cap was truncated, so the split is declared incomplete rather than
+        # passed off as the whole index.
+        for row in leaderboard:
+            v = (row.get("verdict") or "LOW_SIGNAL").upper()
+            verdicts[v] = verdicts.get(v, 0) + 1
+        complete = not any(c is None or len(c) >= _LEADERBOARD_CAP
+                           for c in verdict_results.values())
+    out["markets_scored_total"] = sum(verdicts.values())
     out["verdict_distribution"] = verdicts
+    out["verdict_distribution_complete"] = complete
+    out["population"] = POPULATION_NOTE
 
     # Top 10 BUILD + AVOID by composite_score
     #
