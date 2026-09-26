@@ -281,6 +281,14 @@ def safe_request(url: str, method: str = 'GET', **kwargs) -> Optional[requests.R
                 time.sleep(REQUEST_DELAY * (attempt + 1))
     return None
 
+_NON_DC_BUSINESS_RE = re.compile(
+    r"(?i)\b(gold'?s gym|gym|fitness|health club|yoga|pilates|crossfit|"
+    r"restaurant|pizzeria|salon|barber ?shop|dental|dentist|daycare|car wash)\b")
+_DC_WORD_RE = re.compile(
+    r"(?i)\b(data ?cent(er|re)s?|datacent(er|re)|colo(cation)?|dc ?\d+|hyperscale|"
+    r"carrier hotel|internet exchange|server farm)\b")
+
+
 def is_valid_datacenter(name: str, desc: str = "", source: str = "") -> bool:
     """Strict filter for data center entries - rejects entries without positive indicators"""
     if not name:
@@ -294,6 +302,14 @@ def is_valid_datacenter(name: str, desc: str = "", source: str = "") -> bool:
     if name.lower() in ['data center', 'datacenter', 'unknown', 'unnamed']:
         return False
     
+    # A named consumer business (2026-09-26): "Golds Gym Ashburn" came in as a
+    # facility and, from a trusted source, skipped every keyword test below.
+    # Word-bounded, and a name that also says data center / colo / DC<n> is
+    # kept ("Gym Data Center LLC"). scripts/remove_non_dc_facility_rows.py
+    # removed the live row.
+    if (_NON_DC_BUSINESS_RE.search(name) and not _DC_WORD_RE.search(name)):
+        return False
+
     # Strong negative keywords (definitely NOT data centers)
     # NOTE: Avoid words that appear in legitimate DC addresses like "park" (Science Park, Business Park)
     strong_negative = [
