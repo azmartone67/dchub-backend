@@ -348,7 +348,12 @@ def _canonical_rows() -> list:
         # the canon the frontend accuracy fence enforces. That fence runs inside
         # the deploy job, so the 09-10 page stopped every frontend deploy for
         # ten hours. Canon publishes the distinct figure only; so does this.
-        for key, fn in (("facilities_distinct", "facilities_with_keeper_distinct_phrase"),
+        # ★2026-09-26 and it is now actually the distinct figure: this row was
+        # filled from the KEEPER phrase (a de-duplication state, ~23,100+)
+        # under the label facilities_distinct (canon, ~24,600+) — the name and
+        # the value disagreed. Looked up by name inside a swallowing try, so a
+        # wrong helper name here drops the row silently; the test pins both.
+        for key, fn in (("facilities_distinct", "facilities_distinct_phrase"),
                         ("countries", "countries_phrase"),
                         ("markets_scored", "markets_phrase"),
                         # deduped + quarantine-filtered + floored DOWN. Never
