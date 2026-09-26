@@ -85,7 +85,33 @@ FIRING, QUIET_PROVEN, QUIET_UNPROVEN, UNMEASURED = (
 #     crashed), and use connections _db() does not see.
 #   · detector_runtime_slow reads process-local timings.
 #   Until an entry is added, the quiet arm classifies and never closes.
-ABSENCE_PROVABLE: dict[str, str] = {}
+#
+# ★ 2026-09-26 — check_iso_metric_dropped re-reviewed and ADDED. Each 09-13
+#   objection, against the code on main that day:
+#   · exclusive branches: _zero_24h and _dropped for one url are now judged as
+#     one finding (SIBLING_ISSUES) — an open row or a report of EITHER key
+#     keeps both from being proven quiet.
+#   · failed queries: every query runs on a _db() connection, so a raise marks
+#     the run degraded; the one path that returned [] without raising (no
+#     grid_data table) now marks it degraded too.
+#   · targets: every iso with ANY row in grid_data, not a recent window, and
+#     nothing in this repo deletes grid_data rows (git grep, 2026-09-26). The
+#     intermittent leash is finite: past it a stream is judged like any other.
+ABSENCE_PROVABLE: dict[str, str] = {
+    "check_iso_metric_dropped": (
+        "reviewed 2026-09-26: targets are every iso with grid_data history; a "
+        "failed query or missing table records the run degraded; its _zero_24h "
+        "and _dropped findings are judged together; silence means the iso wrote "
+        "3+ metrics in 24h, or is a registered intermittent stream inside its leash"),
+}
+
+# issue -> the other issues its detector reports for the same url INSTEAD of it.
+# Going quiet on one of these can mean the other took over, so evidence_for reads
+# all of them: any open row or completed report of a sibling blocks the proof.
+SIBLING_ISSUES: dict[str, tuple] = {
+    "iso_metric_count_zero_24h": ("iso_metric_count_dropped",),
+    "iso_metric_count_dropped": ("iso_metric_count_zero_24h",),
+}
 
 _OUTCOME_RANK = {"completed": 0, "degraded": 1, "crashed": 2, "timeout": 3, "abandoned": 4}
 _SELF_REPORTED_FAILURE = ("consistency_radar_detector_crashed:", "consistency_radar_detector_timeout:")
@@ -284,7 +310,7 @@ WITH d AS (
     SELECT swept_at, outcome, reported, reported_truncated
       FROM brain_detector_runs WHERE detector_fn = %(fn)s
 ), lr AS (
-    SELECT MAX(swept_at) AS t FROM d WHERE outcome = 'completed' AND reported ? %(key)s
+    SELECT MAX(swept_at) AS t FROM d WHERE outcome = 'completed' AND reported ?| %(keys)s
 )
 SELECT (SELECT t FROM lr) AS last_reported,
        MIN(swept_at) AS first_run,
@@ -336,13 +362,21 @@ def evidence_for(cur, targets: list[dict], now: datetime | None = None) -> dict:
                 continue
         if not rows:
             match = "none"
+        siblings = SIBLING_ISSUES.get(issue, ())
+        if rows and siblings and len({r[5] for r in rows}) == 1:
+            # The detector reports ONE of these for a url; the others' rows and
+            # reports count against this finding too (see SIBLING_ISSUES).
+            cur.execute(select.replace("issue = %s", "issue = ANY(%s)") + "= %s",
+                        (list(siblings), rows[0][5]))
+            rows = rows + cur.fetchall()
         dict_rows = [{"status": r[0], "resolved_at": r[1], "last_seen": r[2],
                       "detector": r[3], "detector_fn": r[4]} for r in rows]
         stats = {}
         fns = {str(r["detector_fn"] or "") for r in dict_rows} - {""}
         if ledger["first_sweep"] is not None and len(fns) == 1:
-            key = finding_key(issue, rows[0][5] if rows else url)
-            cur.execute(_STATS_SQL, {"fn": next(iter(fns)), "key": key})
+            u = rows[0][5] if rows else url
+            keys = [finding_key(i, u) for i in (issue, *siblings)]
+            cur.execute(_STATS_SQL, {"fn": next(iter(fns)), "keys": keys})
             s = cur.fetchone()
             if s:
                 stats = dict(zip(("last_reported", "first_run", "last_completed",

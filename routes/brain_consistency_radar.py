@@ -4485,6 +4485,9 @@ def check_iso_metric_dropped() -> list[dict]:
             try:
                 cur.execute("SELECT to_regclass('public.grid_data')")
                 if not (cur.fetchone() or [None])[0]:
+                    # No table is not "every iso healthy": record the run as
+                    # degraded so the detector ledger never reads it as quiet.
+                    _DB_UNAVAILABLE.hit = True
                     return findings
             except Exception:
                 return findings
