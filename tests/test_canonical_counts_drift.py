@@ -3527,7 +3527,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/registry_surface_shell.py': {'markets_232', 'tool_count_literal'},
     'routes/sample_landing.py': {'tool_count_literal'},
     'routes/site_valuation_engine.py': {'deals_stale_floor'},
-    'routes/state_of_power.py': {'tool_count_literal'},
     'routes/testimonial_probe.py': {'facilities_stale_floor'},
     'routes/upgrade_outreach.py': {'markets_232'},
     'routes/vertex_integration.py': {'facilities_stale_floor', 'markets_232'},
@@ -3793,14 +3792,15 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # tool_count_literal: r-sku-wall rewrote the near-converter pitch whose
     # Starter line typed "all 48 tools" (Starter retired from every offer,
     # owner 2026-09-24).
-    # ★2026-09-26: 69 -> 66. email_capture (coaching learn hint "73 tools"),
+    # ★2026-09-26: 69 -> 65. email_capture (coaching learn hint "73 tools"),
     # mcp_quality_badge ("53 tools") and onboard_universal ("48 tools") drained
     # their tool_count_literal; openapi_dynamic dropped that token ("24 tools")
-    # and stays for markets_232. All four now render {canon_tools}. Three
-    # files, three decrements, lowered in the SAME commit that drains them.
-    assert len(outside) >= 66, (
+    # and stays for markets_232. state_of_power ("48 MCP tools" in the_wedge)
+    # drained too. All five now render {canon_tools}. Four files, four
+    # decrements, lowered in the SAME commit that drains them.
+    assert len(outside) >= 65, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 66 did when last measured. If debt was genuinely drained, lower this "
+        "— 65 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

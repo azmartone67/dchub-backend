@@ -56,3 +56,12 @@ def test_quality_badge_capabilities(monkeypatch):
     monkeypatch.setattr(qb, "_get", lambda *a, **k: None)
     detail = qb.compute_quality()["components"]["capabilities"]["detail"]
     _assert_canon(detail, "/api/v1/mcp/quality capabilities")
+
+
+def test_state_of_power_wedge(monkeypatch):
+    import routes.state_of_power as sop
+    import routes.energy_report as er
+    monkeypatch.setattr(er, "_gather_energy", lambda w: {})
+    monkeypatch.setattr(sop, "_fuel_block", lambda: {"fuel_mix": []})
+    monkeypatch.setattr(sop, "_canon_mkts", lambda default=300: 331)
+    _assert_canon(sop._gather()["the_wedge"], "/api/v1/reports/state-of-power the_wedge")
