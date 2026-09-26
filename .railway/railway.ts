@@ -308,6 +308,7 @@ export default defineRailway(() => {
       SMTP_PASSWORD: preserve(),
       SMTP_PORT: preserve(),
       SMTP_USERNAME: preserve(),
+      SPEC_DEBT_CLOSE_ON_QUIET: preserve(),
       SPEC_IMPLEMENTER_ARM: preserve(),
       SQUASHER_AGENT_MAX_PER_DAY: preserve(),
       STRIPE_PRICE_DEV_MONTHLY: preserve(),
