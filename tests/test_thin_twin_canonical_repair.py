@@ -21,7 +21,7 @@ way: a page WITH capacity canonicalising to a page WITHOUT.
 
   1. Set is_duplicate. That is the 2026-07-27 change that left 57 of 58 slugs
      with no keeper and was reverted; repeating it here drops 527 canonical
-     slugs and takes canonical_stats.facilities_verified 17,864 -> 17,337,
+     slugs and takes canonical_stats.facilities_with_keeper_distinct 17,864 -> 17,337,
      through the advertised "17,500+".
   2. Invert direction. Clearing the pointer on the THIN side instead of the
      populated side would undo the 518 correct pointers — and the run would
@@ -282,7 +282,7 @@ def test_a_without_b_creates_cycles_so_the_two_must_be_atomic():
 def test_it_never_writes_is_duplicate():
     """★ THE REVERTED CHANGE. is_duplicate is a VISIBILITY flag: flagging the
     527 drops them from COUNT(DISTINCT canonical_slug) WHERE is_duplicate=0,
-    which is canonical_stats.facilities_verified — 17,864 -> 17,337, through
+    which is canonical_stats.facilities_with_keeper_distinct — 17,864 -> 17,337, through
     the "17,500+" the MCP instructions advertise."""
     code = _code(_src())
     for stmt in re.findall(r"UPDATE\s+discovered_facilities\s+SET\s+([^\"']+)", code, re.I):
@@ -297,10 +297,10 @@ def test_it_never_writes_is_duplicate():
 
 def test_the_advertised_count_is_asserted_not_assumed():
     code = _code(_src())
-    assert "facilities_verified" in code, "the count guard is gone"
-    seg = code.split("facilities_verified\"] != before")[-1][:400]
+    assert 'after["facilities_with_keeper_distinct"]' in code, "the count guard is gone"
+    seg = code.split('!= before["facilities_with_keeper_distinct"]')[-1][:400]
     assert "rollback()" in seg, (
-        "a move in facilities_verified must roll the transaction back, not just log"
+        "a move in facilities_with_keeper_distinct must roll the transaction back, not just log"
     )
 
 

@@ -487,10 +487,10 @@ def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
             # 18,000+" — the raw pile presented as buildings, and the ~1.4x
             # dedup ratio presented as GROWTH over the number that is actually
             # correct. Lead with distinct buildings, exactly as
-            # ai_surface_canon does (see its facilities_verified_phrase note):
+            # ai_surface_canon does (see its facilities_phrase notes):
             # rows are not facilities, and the qualifier cannot be relied on to
             # survive re-voicing.
-            f"{cs.facilities_verified_phrase()} data-center facilities across {cs.countries_phrase()} "
+            f"{cs.facilities_with_keeper_distinct_phrase()} data-center facilities across {cs.countries_phrase()} "
             f"countries — distinct buildings, deduped from {cs.facilities_phrase()} source records — now tracked "
             f"by DC Hub as one queryable, machine-readable layer, refreshed daily rather than a "
             f"quarterly PDF.\n\n"

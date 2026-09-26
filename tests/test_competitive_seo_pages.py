@@ -26,7 +26,7 @@ def vs_client(monkeypatch):
     # No DB in CI: force the canonical_stats fallback path so PINNED wins.
     monkeypatch.setattr(canonical_stats, "get_canonical_stats",
                         lambda force=False: {})
-    monkeypatch.setattr(canonical_stats, "facilities_verified_phrase",
+    monkeypatch.setattr(canonical_stats, "facilities_with_keeper_distinct_phrase",
                         lambda: "")
 
     # No network: radar probe cache cold, background warm disabled.
@@ -85,7 +85,7 @@ def test_counts_are_canon_bound_not_hardcoded(vs_client):
 
 def test_vs_publishes_the_canon_floor_not_the_keeper_count(vs_client, monkeypatch):
     """★2026-09-22: every /vs <meta description> and og:description published
-    the KEEPER floor (facilities_verified_phrase, a de-duplication state)
+    the KEEPER floor (facilities_with_keeper_distinct_phrase, a de-duplication state)
     labelled "verified", about 1,600 below the facilities floor
     /api/v1/canon/phrases served. The pages must publish the canon floor (the
     live public floor canon_text resolves) and never the keeper count.
@@ -96,7 +96,7 @@ def test_vs_publishes_the_canon_floor_not_the_keeper_count(vs_client, monkeypatc
     import canonical_stats
     monkeypatch.setattr(ai_surface_canon, "_live_public_floors",
                         lambda: {"facilities": "31,300+"})          # the live canon floor
-    monkeypatch.setattr(canonical_stats, "facilities_verified_phrase",
+    monkeypatch.setattr(canonical_stats, "facilities_with_keeper_distinct_phrase",
                         lambda: "29,100+")                          # the keeper count
     for path in ("/vs", "/vs/datacenterhawk", "/vs/baxtel"):
         body = _body(vs_client, path)

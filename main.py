@@ -8434,7 +8434,7 @@ def handle_well_known():
             # ★{canon_*} resolves from PINNED (canon_nums reads it directly;
             # resolve_canon deep-copies and does NOT mutate it), so these are
             # static conservative floors that do NOT depend on DATABASE_URL.
-            # That matters: facilities_verified_phrase() would resolve to the
+            # That matters: facilities_with_keeper_distinct_phrase() would resolve to the
             # 2026-06-30 cold-start seed "400+" with no DB — a 46x UNDER-claim,
             # which is not the safe direction of a 1.4x over-claim. Floors round
             # DOWN, so a phrase can never exceed reality; an exact integer is not

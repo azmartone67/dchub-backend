@@ -359,9 +359,9 @@ def facility_verification_counts():
         # separate except-paths, so one can be a live measurement while the
         # other is still the seed. Publishing that pair would be a ratio
         # between a measurement and a hand-typed constant.
-        if not (stat_is_live("facilities") and stat_is_live("facilities_verified")):
+        if not (stat_is_live("facilities") and stat_is_live("facilities_with_keeper_distinct")):
             return None
-        v = s.get("facilities_verified")
+        v = s.get("facilities_with_keeper_distinct")
         t = s.get("facilities")
         if v and t:
             return {"verified": int(v), "tracked": int(t)}

@@ -107,12 +107,13 @@ repo already made and reverted. From facility_profile_page.py, 2026-07-28:
      to elect keepers on 2026-07-27. I reproduced that bug at small scale: 57
      of 58 slugs I flagged were left with no keeper, and it was reverted."
 
-Measured cost of doing it anyway, 2026-08-14: canonical_stats.facilities_verified
-is COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0, and 527 of
+Measured cost of doing it anyway, 2026-08-14: canonical_stats'
+facilities_with_keeper_distinct (then named facilities_verified) is
+COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0, and 527 of
 the 533 hold a canonical_slug distinct from their twin's. Flagging them takes
 that number 17,864 -> 17,337 — through the "17,500+" the MCP server instructions
 and the registry listings advertise. A duplicate_of_id repair moves it by zero,
-because facilities_verified does not read duplicate_of_id.
+because facilities_with_keeper_distinct does not read duplicate_of_id.
 
 ★ IT DOES NOT COPY power_mw ACROSS. That would re-admit the empty row to the
 sitemap as a second URL for the same building — the duplicate problem, made
@@ -272,7 +273,7 @@ def _conn(dsn: str):
 def _counts(cur) -> dict:
     """The numbers a reviewer will want to see move — and the one that must not.
 
-    facilities_verified mirrors canonical_stats.py exactly. It is here to prove
+    facilities_with_keeper_distinct mirrors canonical_stats.py exactly. It is here to prove
     the repair leaves the advertised count alone, which is the whole reason this
     is a duplicate_of_id change and not an is_duplicate change.
     """
@@ -282,7 +283,7 @@ def _counts(cur) -> dict:
     out["live_rows"] = cur.fetchone()[0]
     cur.execute("SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
                 "WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT NULL")
-    out["facilities_verified"] = cur.fetchone()[0]
+    out["facilities_with_keeper_distinct"] = cur.fetchone()[0]
     cur.execute(BACKWARDS_SQL)
     out["backwards_canonicals"] = len(cur.fetchall())
     cur.execute(CYCLE_CHECK_SQL)
@@ -417,11 +418,12 @@ def main() -> int:
                 return 1
 
             after = _counts(cur)
-            if after["facilities_verified"] != before["facilities_verified"]:
+            if (after["facilities_with_keeper_distinct"]
+                    != before["facilities_with_keeper_distinct"]):
                 conn.rollback()
-                print(f"\n✗ ABORTED: facilities_verified moved "
-                      f"{before['facilities_verified']:,} -> "
-                      f"{after['facilities_verified']:,}. A duplicate_of_id repair "
+                print(f"\n✗ ABORTED: facilities_with_keeper_distinct moved "
+                      f"{before['facilities_with_keeper_distinct']:,} -> "
+                      f"{after['facilities_with_keeper_distinct']:,}. A duplicate_of_id repair "
                       f"must not move the advertised count. Rolled back.",
                       file=sys.stderr)
                 return 1

@@ -79,7 +79,7 @@ def test_a_cold_cache_still_renders_the_pin_not_the_seed(stats_state):
     cs._live_keys.clear()
     body = _body()
     assert asc.PINNED["public"]["facilities"] in body
-    seed = cs._floor_phrase(cs._FALLBACK["facilities_verified"], step=100)
+    seed = cs._floor_phrase(cs._FALLBACK["facilities_with_keeper_distinct"], step=100)
     assert seed != asc.PINNED["public"]["facilities"], "guard-the-guard: seed == pin"
     # ★2026-09-09: ANCHORED, was `seed not in body`. The seed floors to "400+",
     # and the pin walked to "21,400+" — which CONTAINS "400+" as a suffix, so a

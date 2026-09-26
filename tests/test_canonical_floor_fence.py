@@ -151,5 +151,5 @@ def test_canon_equal_to_its_fallback_is_BLIND_not_a_verdict(fence, monkeypatch):
     """`_query_live` returns _FALLBACK verbatim on a DB outage. An unanswered
     read must omit the key, never convict the floor of exceeding a fallback."""
     import canonical_stats as cs
-    assert fence(facilities_distinct=int(cs._FALLBACK["facilities_verified"]),
+    assert fence(facilities_distinct=int(cs._FALLBACK["facilities_with_keeper_distinct"]),
                  floor=17_000) == []

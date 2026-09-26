@@ -37,7 +37,7 @@ def _stub_sources(monkeypatch):
     import canonical_stats
     monkeypatch.setattr(canonical_stats, "get_canonical_stats", lambda *a, **k: {
         "facilities": 21000,
-        "facilities_verified": 15000,
+        "facilities_with_keeper_distinct": 15000,
         "countries": 178,
         "markets": 232,
         "isos": 7,

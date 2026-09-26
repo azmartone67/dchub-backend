@@ -35,7 +35,7 @@ def _get_counts():
         date, so one deal accrues a row per day. 4,979 rows against 1,932
         distinct, published live as "4,979 M&A deals".
 
-    Both now come from ``canonical_stats``: ``facilities_verified`` =
+    Both now come from ``canonical_stats``: ``facilities_with_keeper_distinct`` =
     COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0 (the same
     query ``media_fact_check_guard.check_facility_count_claims`` measures
     published copy against) and ``deals`` = the deduped distinct-deal count.
@@ -53,7 +53,7 @@ def _get_counts():
     try:
         import canonical_stats as _cs
         s = _cs.get_canonical_stats() or {}
-        fac = s.get("facilities_verified")
+        fac = s.get("facilities_with_keeper_distinct")
         deals = s.get("deals")
         if isinstance(fac, (int, float)) and fac > 0:
             counts["facilities"] = int(fac)

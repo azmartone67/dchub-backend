@@ -50,50 +50,93 @@ def test_the_published_floor_says_nothing_about_verification():
 
 
 def test_the_renamed_metric_has_a_fallback_seed():
-    """Three gates: a spec, a query, and a seed. A spec whose metric has no
-    _FALLBACK entry raises KeyError on a DB outage — the one moment the
-    fallback exists for."""
-    assert cs._FALLBACK[NEW] == cs._FALLBACK[OLD], (
-        "the seed and its deprecated alias disagree, so a DB outage publishes "
-        "two different floors for one number")
+    """Three gates: a spec, a query, and a seed. A metric with no _FALLBACK
+    entry raises KeyError on a DB outage — the one moment the fallback exists
+    for. The seed is citation-safe (400) and must stay far below reality."""
+    assert cs._FALLBACK[NEW] == 400
 
 
-def test_the_query_writes_both_names_and_marks_both_live():
-    """The alias is load-bearing, not decoration: routes/provenance.py:313
-    gates on stat_is_live('facilities_verified'), and
-    routes/facilities_by_dims.py:207 setdefaults the PUBLIC
-    /api/v1/stats/canonical response off _cs.get('facilities_verified')."""
-    src = open(os.path.join(ROOT, "canonical_stats.py"), encoding="utf-8").read()
-    fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.FunctionDef) and n.name == "_query_live")
-    body = ast.unparse(fn)
-    for name in (NEW, OLD):
-        assert f"out['{name}']" in body, f"_query_live never writes {name!r}"
-        assert f"_live_keys.add('{name}')" in body, (
-            f"_query_live writes {name!r} without marking it live — "
-            f"stat_is_live({name!r}) reads False forever and every publisher "
-            f"gated on it suppresses a measured number")
+# ── ★2026-09-25 the deprecated alias is RETIRED ──────────────────────────────
+#
+# The alias was not harmless: routes/facilities_by_dims.stats_canonical
+# setdefault'ed the PUBLIC /api/v1/stats/canonical `facilities_verified`
+# (duplicate_of_id IS NULL, ~22,414) from canonical_stats' alias (the keeper
+# count, ~23,172 — or its 400 seed) whenever its own query failed. One name,
+# two populations, on a public surface. Every internal reader moved to NEW;
+# these guards keep the old name from coming back into canonical_stats.
 
 
-def test_the_deprecated_alias_still_answers(monkeypatch):
-    """★ ai_surface_canon:1374 imports facilities_verified_phrase BY NAME to
-    build c['facilities_verified_live'], the _LIVE_WITNESS entry for
-    public.facilities. An unmapped witness reads NOT live and fails closed, so
-    dropping this helper would silently un-live the headline floor."""
-    monkeypatch.setattr(cs, "get_canonical_stats",
-                        lambda: {NEW: 22_949, OLD: 22_949}, raising=True)
-    assert cs.facilities_verified_phrase() == cs.facilities_with_keeper_distinct_phrase()
-    assert cs.facilities_with_keeper_distinct_phrase() == "22,900+"
+class _FakeCursor:
+    def execute(self, sql, params=None):
+        self.sql = sql
+
+    def fetchone(self):
+        return (23_172,)
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
 
 
-def test_the_witness_import_still_resolves():
-    """Guard the guard above against a rename that deletes the alias: the
-    import ai_surface_canon actually performs must succeed."""
-    from canonical_stats import facilities_verified_phrase  # noqa: F401
-    src = open(os.path.join(ROOT, "ai_surface_canon.py"), encoding="utf-8").read()
-    assert "facilities_verified_phrase" in src, (
-        "ai_surface_canon stopped importing the alias — move _LIVE_WITNESS "
-        "and this guard together, or public.facilities reads NOT live")
+class _FakeConn:
+    autocommit = False
+
+    def cursor(self):
+        return _FakeCursor()
+
+    def close(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def commit(self):
+        pass
+
+
+def test_query_live_no_longer_writes_the_alias(monkeypatch):
+    """BEHAVIOUR, not source text: run the real _query_live against a fake
+    connection whose every COUNT answers 23,172, and read the snapshot it
+    returns. NEW must be measured (so the guard is not vacuous — a
+    snapshot with neither name would pass a bare absence check); OLD must be
+    absent from the snapshot AND from the live set."""
+    monkeypatch.setattr(cs, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(cs, "_cache", None)
+    monkeypatch.setattr(cs, "_cache_ts", 0.0)
+    monkeypatch.setattr(cs, "_live_keys", set())
+    out = cs._query_live()
+    assert out.get(NEW) == 23_172, (
+        f"_query_live did not measure {NEW} from the fake connection "
+        f"({out.get(NEW)!r}) — this guard would pass against nothing")
+    assert cs.stat_is_live(NEW)
+    assert OLD not in out, (
+        f"_query_live writes the retired alias {OLD!r} again. On the public "
+        f"stats endpoints that name means duplicate_of_id IS NULL — a "
+        f"different population from the keeper count. Read {NEW!r}.")
+    assert not cs.stat_is_live(OLD)
+
+
+def test_the_alias_has_no_seed_and_no_read_alias():
+    assert OLD not in cs._FALLBACK, (
+        f"_FALLBACK[{OLD!r}] is back — get_canonical_stats() snapshots are "
+        f"built from _FALLBACK, so every snapshot would carry the old name")
+    assert all(OLD not in names for names in cs._METRIC_ALIASES.values()), (
+        f"_METRIC_ALIASES resolves {OLD!r} again")
+    assert OLD not in cs._METRIC_ALIASES
+    # the alias table is empty but the resolver still works through it
+    assert cs._metric_names(NEW) == (NEW,)
+    assert cs._read_metric({NEW: 7}, NEW) == 7
+    assert cs._read_metric({OLD: 7}, NEW) is None, (
+        "a mapping carrying only the old name must NOT resolve as the keeper "
+        "count — that is the cross-population read this retirement ends")
+
+
+def test_the_alias_phrase_helper_is_gone():
+    assert not hasattr(cs, "facilities_verified_phrase"), (
+        "canonical_stats.facilities_verified_phrase is defined again — use "
+        "facilities_with_keeper_distinct_phrase()")
 
 
 def test_the_new_name_does_not_collide_with_the_endpoints_keeper_count():

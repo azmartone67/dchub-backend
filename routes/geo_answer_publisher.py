@@ -261,8 +261,8 @@ def _fence_canon():
 
 
 def _live_canon() -> dict:
-    """The same two populations from live canon. `facilities_verified` is the
-    distinct figure facilities_verified_phrase() floors — the only facility
+    """The same two populations from live canon. `facilities_with_keeper_distinct`
+    is the distinct figure facilities_with_keeper_distinct_phrase() floors — the only facility
     figure the drafter is handed — and `deals` the deduplicated count
     deals_phrase() floors."""
     try:
@@ -271,7 +271,7 @@ def _live_canon() -> dict:
     except Exception:
         return {}
     out = {}
-    for key, field in (("facilities", "facilities_verified"), ("deals", "deals")):
+    for key, field in (("facilities", "facilities_with_keeper_distinct"), ("deals", "deals")):
         try:
             value = int(stats.get(field) or 0)
         except Exception:

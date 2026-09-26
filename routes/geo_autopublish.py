@@ -348,7 +348,7 @@ def _canonical_rows() -> list:
         # the canon the frontend accuracy fence enforces. That fence runs inside
         # the deploy job, so the 09-10 page stopped every frontend deploy for
         # ten hours. Canon publishes the distinct figure only; so does this.
-        for key, fn in (("facilities_distinct", "facilities_verified_phrase"),
+        for key, fn in (("facilities_distinct", "facilities_with_keeper_distinct_phrase"),
                         ("countries", "countries_phrase"),
                         ("markets_scored", "markets_phrase"),
                         # deduped + quarantine-filtered + floored DOWN. Never

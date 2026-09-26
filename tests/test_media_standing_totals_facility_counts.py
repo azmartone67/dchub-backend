@@ -20,7 +20,8 @@ published them faithfully:
 
   (1) ROWS AS BUILDINGS. `_t_fac` read canonical_stats["facilities"] =
       COUNT(*) FROM discovered_facilities = raw source ROWS (26,388 live),
-      ~1.4x the building count. The citeable figure is `facilities_verified` =
+      ~1.4x the building count. The citeable figure is `facilities_verified` (since
+      2026-09-20 facilities_with_keeper_distinct) =
       COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0 AND
       canonical_slug IS NOT NULL (18,656 live) — and that is exactly the ceiling
       media_fact_check_guard.check_facility_count_claims measures published copy
@@ -84,13 +85,14 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 # The live reading on 2026-08-23, the day this was found. facilities_records is
-# what the three posts above published as facilities; facilities_verified is
+# what the three posts above published as facilities; the keeper-distinct count
+# (then named facilities_verified) is
 # what they should have. Replaying the failing day is the point.
 RECORDS, DISTINCT, DEALS_DISTINCT, DEAL_ROWS, MARKETS = 26388, 18656, 1932, 5121, 320
 
 LIVE = {
     "facilities": RECORDS,              # COUNT(*) — raw source ROWS
-    "facilities_verified": DISTINCT,    # COUNT(DISTINCT canonical_slug) — BUILDINGS
+    "facilities_with_keeper_distinct": DISTINCT,  # COUNT(DISTINCT canonical_slug) — BUILDINGS
     # ★2026-09-20: the gate reads facilities_DISTINCT after #4924 rebased
     # canon onto it. Fed under one key only, every fixture built from LIVE
     # hands the gate a None ceiling, it fails CLOSED, and each of those
@@ -252,8 +254,8 @@ def pinned_canon(monkeypatch):
 # NOT off /api/v1/stats. /api/v1/stats/canonical runs util.facility_canon_count
 # .CANON_SQL through its OWN cur.execute against the primary, and its
 # facilities_distinct has no canonical_stats fallback (the setdefaults at
-# routes/facilities_by_dims.py:207 cover only facilities_verified and
-# facilities_tracked), so it is a direct measurement or it is absent — never
+# routes/facilities_by_dims.py cover only facilities_tracked; since 2026-09-25
+# a failed facilities_verified reads None, never canonical_stats), so it is a direct measurement or it is absent — never
 # canon certifying itself:
 #
 #   SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities
@@ -264,7 +266,7 @@ def pinned_canon(monkeypatch):
 # pile is still refused and this fence still does the job it was built for.
 # Floor rounds DOWN to the nearest 100: 24,400 <= 24,449.
 #
-# ★ The injection key moved with the basis. CANON_ERA fed facilities_verified;
+# ★ The injection key moved with the basis. CANON_ERA fed the keeper count;
 # feeding the old key while the gate reads the new one would leave the fixture
 # INERT and this fence silently reading whatever the live module returned.
 CANON_ERA_DISTINCT, CANON_ERA_DEALS = 24449, 2237
@@ -324,8 +326,8 @@ def test_composed_prompt_clears_the_rows_ne_buildings_gate(story_type, pinned_ca
     assert not over, (
         "linkedin_content_engine prompt for story_type=%r hands the composer a "
         "row count labelled as facilities — claim_breaker's rows_ne_buildings "
-        "will refuse the post:\n  over: %s\nRead facilities_verified (distinct "
-        "buildings) via _canon_media_phrases(), never canonical_stats"
+        "will refuse the post:\n  over: %s\nRead facilities_with_keeper_distinct "
+        "(distinct buildings) via _canon_media_phrases(), never canonical_stats"
         "['facilities'].""" % (story_type, [c.get("raw") for c in over]))
 
 
@@ -352,7 +354,7 @@ def test_standing_totals_anchor_renders_both_canonical_numbers(pinned_canon):
     carries the two canon phrases as canonical_stats spells them.
     """
     prompt = _render_prompt("shipped_this_week")
-    fac_phrase = canonical_stats.facilities_verified_phrase()
+    fac_phrase = canonical_stats.facilities_with_keeper_distinct_phrase()
     deals_phrase = canonical_stats.deals_phrase()
     assert fac_phrase == "18,600+" and deals_phrase == "1,900+", (
         "the pinned reading no longer floors to the phrases this fence was "
@@ -388,7 +390,7 @@ def test_no_prompt_claim_moves_with_the_row_pile(pinned_canon, monkeypatch):
     assert not moved, (
         "a composed prompt moves when canonical_stats['facilities'] moves — "
         "that key is COUNT(*) FROM discovered_facilities, a ROW pile, never a "
-        "building count. Read facilities_verified:\n  " + "\n  ".join(moved))
+        "building count. Read facilities_with_keeper_distinct:\n  " + "\n  ".join(moved))
 
 
 # ── two-sided: the gate and the pinning really can refuse ────────────────────
@@ -607,7 +609,7 @@ def test_copy_module_types_no_facility_or_deal_count(rel, pinned_canon):
     assert not bad, (
         "hardcoded facility/deal counts in shipped copy:\n  " + "\n  ".join(bad)
         + "\nInterpolate from canon — canonical_stats "
-          "(facilities_verified_phrase / deals_phrase) or ai_surface_canon's "
+          "(facilities_distinct_phrase / deals_phrase) or ai_surface_canon's "
           "{canon_facilities} / {canon_deals}. A literal that is right today is "
           "still a finding: it is right by coincidence and stale by the next "
           "ingest.")
@@ -658,7 +660,7 @@ def test_census_stays_clean_on_honest_copy(pinned_canon):
 # ── the other surfaces, RENDERED (a derived read is invisible to the census) ──
 #
 # The census above only sees TYPED numbers. A module that reads the wrong
-# canonical KEY — `facilities` (COUNT(*)) instead of `facilities_verified` —
+# canonical KEY — `facilities` (COUNT(*)) instead of a distinct count —
 # types nothing at all and sails straight through it. That is the original
 # defect's exact shape, so each surface below is executed and its real output
 # run through the real gate.
@@ -698,9 +700,9 @@ def test_quad_legacy_fallback_bodies_clear_the_gate(pinned_canon, monkeypatch):
     topic without data skips, and compose_story_post never returns empty text
     without skip), and _canon_media_phrases prints a count only when canon
     MEASURED it. The pinned reading is marked measured under exactly the names
-    it carries. That is facilities_verified, the deprecated alias, and not
-    facilities_with_keeper_distinct, so this also pins that the gate is
-    alias-aware: a gate on the canonical name alone drops the count here.
+    it carries — facilities_with_keeper_distinct (2026-09-25: the deprecated
+    facilities_verified alias is retired, so there is no second name to be
+    aware of).
     """
     monkeypatch.setattr(canonical_stats, "_live_keys", set(pinned_canon))
     quad = pytest.importorskip("routes.linkedin_quad_daily", reason="needs Flask")
@@ -718,7 +720,7 @@ def test_quad_legacy_fallback_bodies_clear_the_gate(pinned_canon, monkeypatch):
         stale = DEALS_STALE_RE.search(body)
         assert not stale, ("quad fallback for slot %r states a retired deal "
                            "floor %r" % (slot["topic"], stale.group(0)))
-    fac = canonical_stats.facilities_verified_phrase()
+    fac = canonical_stats.facilities_with_keeper_distinct_phrase()
     deals = canonical_stats.deals_phrase()
     generic = [b for b in bodies.values() if "DC Hub Media ·" in b]
     assert generic, (
@@ -842,9 +844,9 @@ def _reads_key(path, fn_name, key):
 def test_composer_and_gate_read_the_same_canonical_key():
     """The composer's ceiling and the gate's ceiling must be ONE key.
 
-    canonical_stats fills `facilities_verified` from COUNT(DISTINCT
+    canonical_stats fills `facilities_with_keeper_distinct` from COUNT(DISTINCT
     canonical_slug) WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT
-    NULL. The gate measures against it; facilities_verified_phrase() floors it
+    NULL. The gate measures against it; facilities_with_keeper_distinct_phrase() floors it
     DOWN, so the anchor can never sit above the ceiling. Drift here re-opens the
     bug with both sides looking correct in isolation — the #3111 failure mode.
     """
@@ -864,20 +866,21 @@ def test_composer_and_gate_read_the_same_canonical_key():
     # word collided with a different predicate on /api/v1/stats and
     # /api/v1/stats/canonical (duplicate_of_id IS NULL).
     #
-    # The fence's intent is unchanged and is now asserted STRICTER than before:
-    # string equality only ever proved the two sides shared a literal, while the
-    # alias map proves they are ONE METRIC. #3111 is still fenced.
+    # ★2026-09-25 the deprecated alias is RETIRED: the composer reads the
+    # keeper count under ONE name only, so the alias map must no longer carry
+    # facilities_verified (on the public stats endpoints that name is
+    # duplicate_of_id IS NULL, a different population). #3111 is still fenced
+    # by the _reads_key and DISTINCT-SQL checks around this one.
     assert _reads_key(cs_path, "facilities_with_keeper_distinct_phrase",
                       "facilities_with_keeper_distinct"), (
         "canonical_stats.facilities_with_keeper_distinct_phrase stopped reading "
         "facilities_with_keeper_distinct — the composer's anchor moved off the "
         "gate's key")
     import canonical_stats as _cs
-    assert "facilities_verified" in _cs._METRIC_ALIASES.get(
-        "facilities_with_keeper_distinct", ()), (
-        "the composer's key is no longer an alias of the gate's key — that is "
-        "two names for two numbers, and it re-opens #3111 with both sides "
-        "looking correct in isolation")
+    assert _cs._METRIC_ALIASES.get("facilities_with_keeper_distinct", ()) == (), (
+        "facilities_with_keeper_distinct resolves a deprecated alias again — "
+        "the retired facilities_verified name means a different population on "
+        "the public stats endpoints")
     distinct_sql = ("SELECT COUNT(DISTINCT canonical_slug) FROM "
                     "discovered_facilities WHERE COALESCE(is_duplicate,0)=0 "
                     "AND canonical_slug IS NOT NULL")
@@ -896,8 +899,8 @@ def test_composer_and_gate_read_the_same_canonical_key():
 ], ids=["content_engine", "quad_daily"])
 def test_media_modules_never_bind_the_raw_facilities_phrase(rel):
     """`facilities_phrase()` is the RAW discovery-pile floor (back-compat, and
-    correctly named as such in canonical_stats). It is one character away from
-    facilities_verified_phrase() and reintroduces the exact bug, so no media
+    correctly named as such in canonical_stats). It is one word away from
+    facilities_distinct_phrase() and reintroduces the exact bug, so no media
     composer may import or call it."""
     tree = ast.parse(open(os.path.join(ROOT, rel), encoding="utf-8").read())
     offenders = []
@@ -911,7 +914,7 @@ def test_media_modules_never_bind_the_raw_facilities_phrase(rel):
     assert not offenders, (
         "%s binds canonical_stats.facilities_phrase() at line(s) %s — that is "
         "the RAW row floor (~26,000), not buildings (~18,600). Use "
-        "facilities_verified_phrase()." % (rel, offenders))
+        "facilities_with_keeper_distinct_phrase()." % (rel, offenders))
 
 
 @pytest.mark.parametrize("modname", ["routes.linkedin_content_engine",

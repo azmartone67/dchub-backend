@@ -468,7 +468,7 @@ def _dchub_self_metrics() -> dict:
     over-claim, past the 5% tolerance in
     ``media_fact_check_guard.check_facility_count_claims`` and squarely inside
     the rows_ne_buildings class ``routes/claim_breaker.py`` refuses (#3111).
-    Both now read ``canonical_stats``: ``facilities_verified`` = COUNT(DISTINCT
+    Both now read ``canonical_stats``: ``facilities_with_keeper_distinct`` = COUNT(DISTINCT
     canonical_slug) WHERE COALESCE(is_duplicate,0)=0, and ``deals`` = the
     deduped distinct-deal count (raw ``deals`` rows over-state ~2.9x).
 
@@ -483,7 +483,7 @@ def _dchub_self_metrics() -> dict:
         _s = _cs.get_canonical_stats() or {}
     except Exception:
         _s = {}
-    for _key, _canon in (("facilities", "facilities_verified"), ("deals", "deals")):
+    for _key, _canon in (("facilities", "facilities_with_keeper_distinct"), ("deals", "deals")):
         _v = _s.get(_canon)
         out[_key] = int(_v) if isinstance(_v, (int, float)) and _v > 0 else None
     # News volume has no canonical source; best-effort from the health probe.

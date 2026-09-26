@@ -211,11 +211,11 @@ def gather_evidence() -> list[dict]:
                 "source": "canonical_stats.discovered_facilities COUNT(*)",
                 "value": int(s["facilities"]),
             })
-        if s.get("facilities_verified"):
+        if s.get("facilities_with_keeper_distinct"):
             evidence.append({
                 "claim": "Verified/active facilities (deduped)",
                 "source": "canonical_stats (COALESCE(is_duplicate,0)=0 fleet filter; issue #1539 dropped merged_at)",
-                "value": int(s["facilities_verified"]),
+                "value": int(s["facilities_with_keeper_distinct"]),
             })
         if s.get("countries"):
             evidence.append({
