@@ -149,7 +149,7 @@ def db(monkeypatch):
             cur.execute("INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status) "
                         "VALUES (%s, %s, %s, %s, %s)", (key, "dev_" + key, email, tier, status))
         for email, plan_to in CONVERSIONS.items():
-            cur.execute("INSERT INTO mcp_conversions (user_email, plan_to) VALUES (%s, %s)",
+            cur.execute("INSERT INTO mcp_conversions (user_email, plan_to) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                         (email, plan_to))
     import routes.checkout_payment_refs as cpr
     # ensure_schema remembers success per process; the table was just dropped.

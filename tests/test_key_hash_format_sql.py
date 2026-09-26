@@ -72,7 +72,7 @@ def _seed(conn, api_key_hash, token, session=None, credits=1000):
                    (topup_token, api_key_hash, credits, price_cents, paid_at,
                     expires_at, credits_remaining, stripe_session_id,
                     mcp_session_id, source)
-               VALUES (%s, %s, %s, 1000, NOW() - INTERVAL '2 days',
+               VALUES (%s, %s, %s, 1000, NOW() ON CONFLICT DO NOTHING - INTERVAL '2 days',
                        %s::timestamptz, %s, %s, %s, 'pack10_keybound')
                RETURNING id""",
             (token, api_key_hash, credits, mcp.PACK_NEVER_EXPIRES, credits,

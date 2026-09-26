@@ -179,7 +179,7 @@ def _shared_cache(key, rows=None, ttl_s=0):
                     return hit[0] if hit else None
                 cur.execute("""
                     INSERT INTO gridstatus_shared_cache (cache_key, rows_json, expires_at)
-                    VALUES (%s, %s::jsonb, NOW() + make_interval(secs => %s))
+                    VALUES (%s, %s::jsonb, NOW() ON CONFLICT DO NOTHING + make_interval(secs => %s))
                     ON CONFLICT (cache_key) DO UPDATE
                       SET rows_json = EXCLUDED.rows_json, expires_at = EXCLUDED.expires_at
                 """, (key, json.dumps(rows, default=str), int(ttl_s)))

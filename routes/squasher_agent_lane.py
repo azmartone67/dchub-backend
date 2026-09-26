@@ -957,7 +957,7 @@ def feed_qa(cur, qa: dict) -> dict:
             cur.execute(
                 """INSERT INTO squasher_work_queue (finding_key, title, source,
                        status, reason, analysis, decision, confidence, last_seen)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT DO NOTHING RETURNING id""",
                 (key, title[:200], QA_SOURCE, "awaiting_decision",
                  reason[:600], analysis, decision, confidence))

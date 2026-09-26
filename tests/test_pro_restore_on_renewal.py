@@ -92,7 +92,7 @@ class _Harness:
             "INSERT INTO users (id, stripe_customer_id, demoted_at, demoted_reason)"
             " VALUES (?,?,?,?)", (uid, customer, demoted_at, reason))
         self.db.execute(
-            "INSERT INTO api_keys (user_id, rate_limit_tier, plan) VALUES (?,?,?)",
+            "INSERT INTO api_keys (user_id, rate_limit_tier, plan) VALUES (?,?,?) ON CONFLICT DO NOTHING",
             (uid, tier, plan))
         self.db.commit()
 

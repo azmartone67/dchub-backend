@@ -162,7 +162,7 @@ def log_notification(
             cur.execute(
                 """INSERT INTO brain_notifications
                        (kind, summary, detail, url, severity)
-                   VALUES (%s, %s, %s::jsonb, %s, %s)""",
+                   VALUES (%s, %s, %s::jsonb, %s, %s) ON CONFLICT DO NOTHING""",
                 (kind, safe_summary,
                  _json.dumps(detail or {}, default=str),
                  url, severity),

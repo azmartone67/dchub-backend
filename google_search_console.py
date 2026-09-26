@@ -304,7 +304,7 @@ def submit_sitemap(token):
         
         conn = get_db()
         c = conn.cursor()
-        c.execute('''INSERT INTO gsc_sitemap_submissions (sitemap_url, status) VALUES (%s, %s)''',
+        c.execute('''INSERT INTO gsc_sitemap_submissions (sitemap_url, status) VALUES (%s, %s) ON CONFLICT DO NOTHING''',
                   (sitemap_url, 'submitted' if response.status_code in [200, 204] else 'failed'))
         conn.commit()
         conn.close()
@@ -516,7 +516,7 @@ def request_indexing(token):
         c = conn.cursor()
         
         if response.status_code == 200:
-            c.execute('''INSERT INTO gsc_index_requests (url, status) VALUES (%s, 'submitted')''', (url,))
+            c.execute('''INSERT INTO gsc_index_requests (url, status) VALUES (%s, 'submitted') ON CONFLICT DO NOTHING''', (url,))
             conn.commit()
             conn.close()
             
@@ -528,7 +528,7 @@ def request_indexing(token):
             })
         else:
             error_msg = response.text
-            c.execute('''INSERT INTO gsc_index_requests (url, status, error) VALUES (%s, 'failed', %s)''', 
+            c.execute('''INSERT INTO gsc_index_requests (url, status, error) VALUES (%s, 'failed', %s) ON CONFLICT DO NOTHING''', 
                       (url, error_msg))
             conn.commit()
             conn.close()
@@ -885,7 +885,7 @@ def _record_sitemap_submission(sitemap_url, status, urls_submitted):
         c = conn.cursor()
         c.execute(
             '''INSERT INTO gsc_sitemap_submissions (sitemap_url, status, urls_submitted)
-               VALUES (%s, %s, %s)''',
+               VALUES (%s, %s, %s) ON CONFLICT DO NOTHING''',
             (sitemap_url, status, urls_submitted)
         )
         conn.commit()

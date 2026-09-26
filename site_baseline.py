@@ -161,7 +161,7 @@ def run_site_baseline_tick(sample_n=40):
             cur.execute("""
                 INSERT INTO site_score_baseline
                     (metric, p10, p25, p50, p75, p90, min_v, max_v, sample_size, higher_is_better, computed_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() ON CONFLICT DO NOTHING)
                 ON CONFLICT (metric) DO UPDATE SET
                     p10=EXCLUDED.p10, p25=EXCLUDED.p25, p50=EXCLUDED.p50,
                     p75=EXCLUDED.p75, p90=EXCLUDED.p90, min_v=EXCLUDED.min_v,

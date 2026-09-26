@@ -351,6 +351,7 @@ def get_source(source_id):
 # POST / — register / upsert source (admin)
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '' also in routes/sources.py:254 — review and remove one
 @sources_bp.route("", methods=["POST"])
 def upsert_source():
     err = _check_auth()
@@ -373,7 +374,7 @@ def upsert_source():
             (id, name, kind, url_pattern, parser, target_table,
              cadence_seconds, tier, enabled, description, notes)
         VALUES
-            (%(id)s, %(name)s, %(kind)s, %(url_pattern)s, %(parser)s, %(target_table)s,
+            (%(id) ON CONFLICT DO NOTHINGs, %(name)s, %(kind)s, %(url_pattern)s, %(parser)s, %(target_table)s,
              %(cadence_seconds)s, %(tier)s, %(enabled)s, %(description)s, %(notes)s)
         ON CONFLICT (id) DO UPDATE SET
             name             = EXCLUDED.name,
@@ -440,7 +441,7 @@ def heartbeat(source_id):
                 """INSERT INTO extraction_runs
                        (source_id, started_at, completed_at, status,
                         rows_affected, duration_ms, error, metadata)
-                   VALUES (%s, NOW() - INTERVAL '1 millisecond' * COALESCE(%s, 0),
+                   VALUES (%s, NOW() ON CONFLICT DO NOTHING - INTERVAL '1 millisecond' * COALESCE(%s, 0),
                            NOW(), %s, %s, %s, %s, %s)
                    RETURNING id""",
                 (source_id, duration_ms, status, rows_affected, duration_ms, error_text,
@@ -581,6 +582,7 @@ def archive_stale():
 # ---------------------------------------------------------------------------
 # GET /dashboard — HTML view of all sources
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/dashboard' also in main.py:28119 — review and remove one
 
 @sources_bp.route("/dashboard", methods=["GET"])
 def dashboard():
@@ -690,6 +692,7 @@ def dashboard():
 
 # ---------------------------------------------------------------------------
 # GET /health
+# AUTO-REPAIR: duplicate route '/health' also in main.py:8584 — review and remove one
 # ---------------------------------------------------------------------------
 
 @sources_bp.route("/health", methods=["GET"])

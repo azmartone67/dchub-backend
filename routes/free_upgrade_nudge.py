@@ -364,7 +364,7 @@ def nudge_fire():
                     INSERT INTO upgrade_nudge_log
                         (email, api_key_hash, pair_code, calls_window,
                          top_tools, mode, resend_message_id)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                     (cand["email"], cand["api_key_hash"], links.get("pair_code"),
                      cand["calls_window"], json.dumps(cand.get("top_tools") or []),
                      "live" if live else "dry_run",

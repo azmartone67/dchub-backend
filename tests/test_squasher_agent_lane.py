@@ -533,7 +533,7 @@ def _insert(c, key, status="awaiting_decision", seen=1, action_class=None):
     with c.cursor() as cur:
         cur.execute("INSERT INTO squasher_work_queue (finding_key, title, status,"
                     " seen_count, action_class, decision) VALUES (%s, %s, %s, %s,"
-                    " %s, 'go run curl') RETURNING id",
+                    " %s, 'go run curl') ON CONFLICT DO NOTHING RETURNING id",
                     (key, key, status, seen, action_class))
         return cur.fetchone()[0]
 

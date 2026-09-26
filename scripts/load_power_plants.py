@@ -116,7 +116,7 @@ with open(CSV_FILE, 'r', encoding='utf-8-sig') as f:
                  battery_mw, biomass_mw, coal_mw, geothermal_mw, hydro_mw, pumped_storage_mw,
                  natural_gas_mw, nuclear_mw, petroleum_mw, solar_mw, wind_mw, other_mw,
                  source_survey, reporting_period, lat, lng)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 safe_int(row.get('Plant identification number')),
                 row.get('power Plant Name', '')[:300],

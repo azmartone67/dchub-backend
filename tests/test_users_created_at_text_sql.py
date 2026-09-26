@@ -210,7 +210,7 @@ def test_email_blast_fetch_targets_runs_on_text_created_at(conn, last_used_type)
                         "VALUES (%s, %s, 'x', %s, %s)",
                         (uid, email or f"{uid}@corp.io", plan, created_at))
             if used_days_ago is not None:
-                cur.execute("INSERT INTO api_keys (user_id, last_used_at) VALUES (%s, %s)",
+                cur.execute("INSERT INTO api_keys (user_id, last_used_at) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                             (uid, (now - dt.timedelta(days=used_days_ago)).isoformat()))
 
         user("recentnaive", ago(1))
