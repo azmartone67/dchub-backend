@@ -67,6 +67,19 @@ ai_lab_outreach_bp = Blueprint("ai_lab_outreach", __name__)
 #   value_pitch  — 1-sentence summary of what they unlock
 #   integration  — recommended path (MCP server / REST API / dataset)
 
+# ── Manual-lane slugs: NEVER sent by this module ────────────────────
+# 2026-09-26 owner decision: the restarted partner outreach (agent builders,
+# MCP clients, energy agents) is sent by hand from the owner's Gmail and
+# tracked in HubSpot, not by the 17:17Z auto-send cron. /auto-send picks ANY
+# status='draft' row with an email -- it never consults _TARGETS -- so a row
+# for one of these slugs (inserted by hand, or by a future _TARGETS entry)
+# would otherwise be mailed with no human step. The exclusion lives in the
+# auto-send SELECT (so these rows never use up ?limit) AND in
+# _perform_resend_send (the one choke point both send routes share).
+_MANUAL_LANE_SLUGS = frozenset({
+    "composio", "pipeworx", "typingmind", "paces", "transect",
+})
+
 _TARGETS = [
     {
         "slug":        "perplexity",
@@ -832,6 +845,21 @@ def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
     (_id, target_slug, subject, body, contact_url,
      status, sent_at, target_email, prior_resend_id) = row
 
+    # 00. Manual-lane slugs are sent by hand from Gmail, never from here.
+    #     Checked before the claim gate and NOT bypassed by force=1.
+    if target_slug in _MANUAL_LANE_SLUGS:
+        try: c.close()
+        except Exception: pass
+        return {
+            "ok":       False,
+            "error":    "manual_lane_slug",
+            "draft_id": draft_id,
+            "target":   target_slug,
+            "hint":     ("This target is contacted by hand (Gmail + HubSpot). "
+                         "Remove it from _MANUAL_LANE_SLUGS to hand it back "
+                         "to the Resend lane."),
+        }, 409
+
     # 0. THE CLAIM GATE — before anything can leave. This is the one choke
     #    point /send-via-resend/<id> and /auto-send both flow through, which is
     #    why it lives here and not at either call site.
@@ -1059,9 +1087,10 @@ def auto_send():
                  WHERE status = 'draft'
                    AND target_email IS NOT NULL
                    AND target_email <> ''
+                   AND NOT (target_slug = ANY(%s))
                  ORDER BY target_slug, created_at DESC
                  LIMIT %s
-            """, (limit,))
+            """, (sorted(_MANUAL_LANE_SLUGS), limit))
             candidates = cur.fetchall() or []
     except Exception as e:
         try: c.close()
