@@ -83,8 +83,14 @@ def test_send_helper_still_reaches_the_gate_for_other_slugs(
         monkeypatch, no_real_send):
     """Guard-the-guard: the refusal above must be slug-specific, not a
     helper that now refuses everything."""
-    conn = _Conn(row=_draft_row("coreweave"))
+    # coreweave was this test's slug until the 9 lab targets were retired
+    # (be#5652); a retired slug now stops at its own refusal before the gate.
+    # Every known slug today is retired or manual, so use a hypothetical
+    # active one to keep proving the manual refusal is slug-specific.
+    conn = _Conn(row=_draft_row("example-active"))
     monkeypatch.setattr(alo, "_db_conn", lambda: conn, raising=True)
+    monkeypatch.setattr(alo, "_ACTIVE_SLUGS",
+                        alo._ACTIVE_SLUGS | {"example-active"}, raising=True)
     try:
         alo._perform_resend_send(7)
     except Exception:
@@ -107,4 +113,4 @@ def test_auto_send_select_excludes_the_manual_slugs(monkeypatch):
     sql, params = selects[0]
     assert "NOT (target_slug = ANY(%s))" in sql
     assert set(params[0]) == set(alo._MANUAL_LANE_SLUGS)
-    assert params[1] == 3
+    assert params[-1] == 3

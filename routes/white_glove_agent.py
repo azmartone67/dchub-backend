@@ -425,7 +425,7 @@ def _lane_partner_outreach(cur, now):
         # beat stays green while nothing goes out. Say which it is.
         why = ("NO drafts queued - the daily sender fires and has nothing to "
                "send; drafts are only created by POST "
-               "/api/v1/admin/ai-lab-outreach/draft-all"
+               "/api/v1/admin/ai-lab-outreach/draft-all?category=<category>"
                if not pending else f"{pending} draft(s) queued and unsent")
         return {"verdict": VERDICT_OFF, "observed": observed,
                 "detail": (f"last partner email {age:.0f}d ago "

@@ -33,8 +33,12 @@ Endpoints:
   POST /api/v1/admin/ai-lab-outreach/draft/<slug>
        — generate a personalized draft for one target
 
-  POST /api/v1/admin/ai-lab-outreach/draft-all
-       — generate all 9 drafts in one call
+  POST /api/v1/admin/ai-lab-outreach/draft-all?category=<category>
+       — draft every active target in one category
+
+2026-09-26: the 9 targets above are RETIRED (per-target "retired" flag) and
+the lane now pitches agent builders, MCP clients and energy-agent teams.
+Retired targets cannot be drafted, and a stored draft for one cannot be sent.
 
   GET  /api/v1/admin/ai-lab-outreach/drafts/<slug>
        — read back a previously generated draft
@@ -47,6 +51,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 
 from flask import Blueprint, jsonify, request
@@ -54,6 +59,11 @@ from routes._swallowed_writes import note_swallowed_write
 
 
 ai_lab_outreach_bp = Blueprint("ai_lab_outreach", __name__)
+
+# ★ _perform_resend_send() logs a claim-gate block through this. It was used
+# and never defined, so a blocked draft raised NameError (HTTP 500) and took
+# the rest of the /auto-send loop down with it.
+logger = logging.getLogger(__name__)
 
 
 # ── The 9 targets ──────────────────────────────────────────────────
@@ -83,6 +93,7 @@ _MANUAL_LANE_SLUGS = frozenset({
 _TARGETS = [
     {
         "slug":        "perplexity",
+        "retired":     True,
         "name":        "Perplexity",
         "category":    "ai_lab",
         "contact_url": "https://www.perplexity.ai/hub/contact",
@@ -97,6 +108,7 @@ _TARGETS = [
     },
     {
         "slug":        "groq",
+        "retired":     True,
         "name":        "Groq",
         "category":    "ai_lab",
         "contact_url": "https://groq.com/contact-sales/",
@@ -111,6 +123,7 @@ _TARGETS = [
     },
     {
         "slug":        "gemini",
+        "retired":     True,
         "name":        "Google DeepMind / Gemini",
         "category":    "ai_lab",
         "contact_url": "https://deepmind.google/about/contact/",
@@ -127,6 +140,7 @@ _TARGETS = [
     },
     {
         "slug":        "mistral",
+        "retired":     True,
         "name":        "Mistral",
         "category":    "ai_lab",
         "contact_url": "https://mistral.ai/contact/",
@@ -143,6 +157,7 @@ _TARGETS = [
     },
     {
         "slug":        "nvidia",
+        "retired":     True,
         "name":        "NVIDIA",
         "category":    "hyperscaler_oem",
         "contact_url": "https://www.nvidia.com/en-us/contact/",
@@ -159,6 +174,7 @@ _TARGETS = [
     },
     {
         "slug":        "coreweave",
+        "retired":     True,
         "name":        "CoreWeave",
         "category":    "gpu_cloud",
         "contact_url": "https://www.coreweave.com/contact-sales",
@@ -175,6 +191,7 @@ _TARGETS = [
     },
     {
         "slug":        "lambda",
+        "retired":     True,
         "name":        "Lambda",
         "category":    "gpu_cloud",
         "contact_url": "https://lambda.ai/contact",
@@ -190,6 +207,7 @@ _TARGETS = [
     },
     {
         "slug":        "tensorwave",
+        "retired":     True,
         "name":        "TensorWave",
         "category":    "gpu_cloud",
         "contact_url": "https://tensorwave.com/contact",
@@ -206,6 +224,7 @@ _TARGETS = [
     },
     {
         "slug":        "core42",
+        "retired":     True,
         "name":        "Core42 (UAE / G42)",
         "category":    "gpu_cloud",
         "contact_url": "https://www.core42.ai/contact-us",
@@ -221,7 +240,80 @@ _TARGETS = [
                                 "non-US AI infrastructure players. The strategic "
                                 "narrative needs global comparables that we now ship.",
     },
+    # ── 2026-09-26 restart: agent builders, MCP clients, energy agents ──
+    # Owner-approved first batch. Every target_email was read off the
+    # company's own page (contact_url), never inferred from a pattern.
+    # value_pitch is prose only: figures come from canon in _draft_pitch().
+    {
+        "slug":        "composio",
+        "name":        "Composio",
+        "category":    "agent_builder",
+        "contact_url": "https://composio.dev/partnerships",
+        "target_email": "partnerships@composio.dev",
+        "value_pitch": ("We'd like to be a Composio toolkit. Your partnership "
+                         "page has a Toolkit Partnership track, and we didn't "
+                         "find a toolkit in your catalog that covers power "
+                         "availability, data-center siting or grid questions."),
+        "integration": "openapi_and_mcp",
+    },
+    {
+        "slug":        "pipeworx",
+        "name":        "Pipeworx",
+        "category":    "agent_builder",
+        "contact_url": "https://pipeworx.io/contact",
+        "target_email": "support@pipeworx.io",
+        "value_pitch": ("This is a data-coverage request, the kind your FAQ "
+                         "invites: Pipeworx already carries a grid pack, and a "
+                         "DC Hub pack would add the data-center facilities, fiber, "
+                         "gas and siting layers that sit on top of it."),
+        "integration": "openapi_and_mcp",
+    },
+    {
+        "slug":        "typingmind",
+        "name":        "TypingMind",
+        "category":    "mcp_client",
+        "contact_url": "https://custom.typingmind.com/contact",
+        "target_email": "partner@typingmind.com",
+        "value_pitch": ("We'd like to be in TypingMind's MCP Store. It is a "
+                         "remote streamable-HTTP server, it works keyless on a "
+                         "free tier, and it answers questions your users "
+                         "otherwise get stale training-data answers to."),
+        "integration": "mcp_server",
+    },
+    {
+        "slug":        "paces",
+        "name":        "Paces",
+        "category":    "energy_agent",
+        "contact_url": "https://www.paces.com/products/ai",
+        "target_email": "sales@paces.com",
+        "value_pitch": ("Paces Agent works for the same developers we serve. "
+                         "DC Hub could sit alongside it as a data layer for the "
+                         "parts of a siting question it may not cover: live grid "
+                         "telemetry, fiber lead-in, gas economics and the existing "
+                         "data-center footprint around a site."),
+        "integration": "openapi_and_mcp",
+    },
+    {
+        "slug":        "transect",
+        "name":        "Transect",
+        "category":    "energy_agent",
+        "contact_url": "https://www.transect.com/company/contact-us/",
+        "target_email": "info@transect.com",
+        "value_pitch": ("Transect already covers environmental, permitting and "
+                         "community risk for a site. DC Hub adds the power, fiber "
+                         "and grid layers a data-center siting call also turns on."),
+        "integration": "openapi_and_mcp",
+    },
 ]
+
+# ★ The 9 original AI-lab / GPU-cloud targets are retired (2026-09-26 owner
+# decision): several had 5 emails each, some carrying false figures. They
+# span THREE categories (ai_lab, gpu_cloud, hyperscaler_oem), so retirement
+# is a per-target flag, not a category filter. A retired target cannot be
+# drafted, and a draft already stored for one cannot be sent.
+_ACTIVE_TARGETS = [t for t in _TARGETS if not t.get("retired")]
+_ACTIVE_SLUGS = frozenset(t["slug"] for t in _ACTIVE_TARGETS)
+_ACTIVE_CATEGORIES = frozenset(t["category"] for t in _ACTIVE_TARGETS)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -309,145 +401,61 @@ def _ensure_table():
 
 
 def _draft_pitch(target: dict) -> tuple[str, str]:
-    """Build a personalized email subject + body for one target.
+    """Build the subject + body for one target. Returns (subject, body).
 
-    Returns (subject, body).
-
-    2026-06-04: PRE-MINTS a developer key per target and embeds it
-    inline in the pitch body so the recipient can paste curl /
-    MCP-config and be integrated in 30 seconds — no "POST /keys/claim"
-    friction step. Falls back to the original 'claim' CTA if the mint
-    fails (DB down, etc.) so the email always sends."""
+    ★2026-09-26 rewrite (owner-approved copy). What was removed, and why:
+      - A developer key minted per target and printed in the body. A cold
+        email is not where a live credential belongs; the recipient claims
+        their own key from /connect instead (not /api/v1/keys/claim,
+        which is POST-only and answers a clicked link with 405).
+      - The https://dchub.cloud/partners/<slug> link. Partner pages exist only
+        for the retired lab slugs; every new slug 404s there.
+      - Literal counts ("23+ tools", "17 high-value tools", "500 calls/day")
+        and unverifiable claims ("already cited by Claude and Cursor", "the
+        only daily-refreshing public scorecard"). The claim gate catches only
+        figures ABOVE canon, so an understated or qualitative claim sails
+        through it. The only figures left are canon floors from
+        _canon_public(), which the gate checks.
+    """
     name = target["name"]
-    slug = target["slug"]
+    category = target.get("category") or ""
     pitch = target["value_pitch"]
-    integration = target["integration"]
-    audience = target["audience_size_hint"]
-
-    # ── Pre-mint a developer key for this partner ──────────────────
-    # Lazy-import to avoid circular import between blueprints at boot.
-    _key = None
-    try:
-        from routes.partner_key_issuer import _issue_internal
-        _mint = _issue_internal(
-            partner_slug=slug,
-            target_email=(target.get("target_email") or ""),
-            plan="developer",
-            label="Cold-pitch pre-claim 2026-06-04",
-            company=name,
-            issued_by="ai-lab-outreach-pitch",
-        )
-        if _mint.get("ok"):
-            _key = _mint.get("key")
-    except Exception:
-        _key = None
-
-    if integration == "mcp_server":
-        integration_block = (
-            f"The fastest integration is our MCP server at "
-            f"https://dchub.cloud/mcp — drop one line into Claude / "
-            f"Cursor / your agent config and {name} can call 23+ DC Hub "
-            f"tools (search_facilities, get_pipeline, get_grid_intelligence, "
-            f"get_market_intel, get_energy_prices, find_alternatives, "
-            f"compare_isos, and 15 more). Server card: "
-            f"https://dchub.cloud/.well-known/mcp/server-card.json."
-        )
-    else:
-        integration_block = (
-            f"The REST API lives at https://dchub.cloud/api/v1/ "
-            f"(OpenAPI at https://dchub.cloud/openapi.json). Free tier "
-            f"keys claim instantly at "
-            f"POST https://dchub.cloud/api/v1/keys/claim — no email "
-            f"required, no credit card. Identified tier (email signup, "
-            f"also free) unlocks 17 high-value tools."
-        )
-
-    # ── First-CTA block: pre-issued key (when mint succeeded) ──────
-    if _key:
-        key_block = (
-            f"Your DC Hub developer key is pre-issued and active right now:\n"
-            f"\n"
-            f"  Key:  {_key}\n"
-            f"\n"
-            f"  Test it:\n"
-            f"    curl -H 'X-API-Key: {_key}' "
-            f"https://dchub.cloud/api/v1/mcp/funnel | jq\n"
-            f"\n"
-            f"  MCP config (Claude / Cursor / Cline):\n"
-            f"    {{\n"
-            f"      \"mcpServers\": {{\n"
-            f"        \"dchub\": {{\n"
-            f"          \"url\": \"https://dchub.cloud/mcp\",\n"
-            f"          \"headers\": {{\"X-API-Key\": \"{_key}\"}}\n"
-            f"        }}\n"
-            f"      }}\n"
-            f"    }}\n"
-            f"\n"
-            f"  500 calls/day on the dev tier — no credit card. Just paste\n"
-            f"  curl and you're integrated."
-        )
-    else:
-        # Fallback: original claim-by-curl CTA so the email still sends.
-        key_block = (
-            f"Free dev key in 30 seconds (instant, no credit card):\n"
-            f"     curl -X POST https://dchub.cloud/api/v1/keys/claim \\\n"
-            f"       -H 'Content-Type: application/json' \\\n"
-            f"       -d '{{\"client_name\":\"{slug}\"}}'\n"
-            f"   Returns a `dch_live_...` key good for 500 calls/day."
-        )
-
-    subject = f"DC Hub × {name}: data-center intelligence you can cite tomorrow"
-
-    # ★ These were f-string LITERALS — 21,400+ facilities, 4,000+ deals, and
-    # "484K+ AI-agent requests served last 30d led by Claude and Cursor" — and
-    # all four were false. Canon was 18,500+/1,900+; 365,457 requests have EVER
-    # been recorded, so the 30-day figure claimed more than exists; and Cursor
-    # had 601 all-time, 0 in 7d. Hardcoded numbers in outbound copy cannot be
-    # healed by anything, which is why they sat wrong for months while the
-    # registry-listing healer kept every other surface honest.
-    # Derived from canon now, and the claim gate refuses the send if a figure
-    # ever climbs above it again.
+    integration = target.get("integration") or "mcp_server"
     _pub = _canon_public()
+
+    if category == "mcp_client":
+        subject = f"A data-center and power-grid MCP server for {name}"
+    elif category == "agent_builder":
+        subject = f"DC Hub for {name}: data-center, grid and energy data for agents"
+    else:
+        subject = f"Power, fiber and grid layers for {name}"
+
+    mcp_line = ("Remote MCP server (streamable HTTP): https://dchub.cloud/mcp\n"
+                "  Server card: https://dchub.cloud/.well-known/mcp/server-card.json\n"
+                "  Official MCP Registry: cloud.dchub/mcp-server")
+    rest_line = "OpenAPI spec: https://dchub.cloud/openapi.json"
+    access = (mcp_line if integration == "mcp_server"
+              else f"{mcp_line}\n  {rest_line}")
+
     body = f"""Hi {name} team,
 
-I'm Jonathan Martone, founder of DC Hub (dchub.cloud) — the open
-data center intelligence platform tracking {_pub['facilities']} global facilities,
-{_pub['deals']} tracked M&A deals, a live construction-pipeline tracker, and the only
-daily-refreshing public scorecard of data center power availability
-(DCPI — Data Center Power Index, dchub.cloud/dcpi), scored across
-{_pub['markets']} markets.
+I'm Jonathan Martone, founder of DC Hub (dchub.cloud). We answer questions
+about the physical infrastructure behind AI: {_pub['facilities']} data-center
+facilities, {_pub['markets']} scored markets, live ISO grid telemetry,
+interconnection queues, fiber, gas and water risk. Every answer carries its
+source and says what it does not cover.
 
 {pitch}
 
-{audience}
+How to try it:
+  {access}
+  Setup guide, free tier included: https://dchub.cloud/connect
 
-{integration_block}
+If your users build agents on top of DC Hub, they can register them at
+https://dchub.cloud/ai-agents and we'll help them get set up.
 
-I built a page for {name} specifically — every value bullet,
-integration sample, and CTA tailored to your team's use case:
-
-  → https://dchub.cloud/partners/{slug}
-
-Three things {name} can do from that page today:
-
-1. {key_block}
-
-2. AI-agent broadcast feed — structured "what's new at DC Hub":
-     https://dchub.cloud/api/v1/agent-broadcast
-   CORS-open, no auth, designed for {name}'s agent/citation engine
-   to poll. Returns recent press releases, DCPI verdict shifts,
-   ecosystem changes, and AI-citation events with agent-quotable
-   summaries.
-
-3. Direct citation format (free for citation):
-     DC Hub Data Center Power Index, dchub.cloud/dcpi,
-       accessed YYYY-MM-DD
-   We're already cited by Claude and Cursor
-   — happy to share citation analytics if useful.
-
-Happy to do a 20-min call to walk through what {name} would unlock.
-What's the best way to get this in front of {name}'s integrations /
-partnerships team?
+What would {name} need from us to take this further: a config snippet, a
+logo, a test account for your team?
 
 Best,
 Jonathan
@@ -524,8 +532,17 @@ def draft_one(slug):
         return jsonify({
             "ok":            False,
             "error":         "unknown_target",
-            "valid_slugs":   [t["slug"] for t in _TARGETS],
+            "valid_slugs":   sorted(_ACTIVE_SLUGS),
         }), 404
+    # A stored draft is mailed by the 17:17Z autopilot with no further human
+    # step, so drafting a retired target would be re-mailing it.
+    if target.get("retired"):
+        return jsonify({
+            "ok":            False,
+            "error":         "target_retired",
+            "slug":          slug,
+            "valid_slugs":   sorted(_ACTIVE_SLUGS),
+        }), 410
 
     subject, body = _draft_pitch(target)
 
@@ -565,13 +582,25 @@ def draft_one(slug):
     "/api/v1/admin/ai-lab-outreach/draft-all", methods=["POST"]
 )
 def draft_all():
-    """Generate drafts for all 9 targets."""
+    """Generate drafts for every active target in ONE category.
+
+    ★ ?category= is required. Every stored draft is mailed by the 17:17Z
+    autopilot with no further human step, so "draft all" used to mean "mail
+    everyone we have ever listed". One category per call bounds a batch to
+    what was reviewed, and retired targets are never drafted."""
     if not _admin_authorized():
         return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    category = (request.args.get("category") or "").strip()
+    if category not in _ACTIVE_CATEGORIES:
+        return jsonify({
+            "ok":               False,
+            "error":            "category_required",
+            "valid_categories": sorted(_ACTIVE_CATEGORIES),
+        }), 400
     _ensure_table()
 
     drafted = []
-    for target in _TARGETS:
+    for target in (t for t in _ACTIVE_TARGETS if t["category"] == category):
         subject, body = _draft_pitch(target)
         c = _db_conn()
         new_id = None
@@ -605,6 +634,7 @@ def draft_all():
 
     return jsonify({
         "ok":            True,
+        "category":      category,
         "drafted_count": len(drafted),
         "drafts":        drafted,
         "next_step":     ("Drafts with target_email: send via "
@@ -860,6 +890,20 @@ def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
                          "to the Resend lane."),
         }, 409
 
+    # 01. Retired or unlisted target — refuse before anything else, and leave
+    #     the row untouched. Drafts written for the 9 retired lab targets can
+    #     still sit in the table; neither /send-via-resend nor /auto-send may
+    #     mail one, and force=1 does not change that.
+    if target_slug not in _ACTIVE_SLUGS:
+        try: c.close()
+        except Exception: pass
+        return {
+            "ok":          False,
+            "error":       "target_retired",
+            "draft_id":    draft_id,
+            "target_slug": target_slug,
+        }, 410
+
     # 0. THE CLAIM GATE — before anything can leave. This is the one choke
     #    point /send-via-resend/<id> and /auto-send both flow through, which is
     #    why it lives here and not at either call site.
@@ -1088,9 +1132,10 @@ def auto_send():
                    AND target_email IS NOT NULL
                    AND target_email <> ''
                    AND NOT (target_slug = ANY(%s))
+                   AND target_slug = ANY(%s)
                  ORDER BY target_slug, created_at DESC
                  LIMIT %s
-            """, (sorted(_MANUAL_LANE_SLUGS), limit))
+            """, (sorted(_MANUAL_LANE_SLUGS), sorted(_ACTIVE_SLUGS), limit))
             candidates = cur.fetchall() or []
     except Exception as e:
         try: c.close()
