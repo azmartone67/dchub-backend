@@ -12,6 +12,8 @@ import datetime
 
 from flask import Blueprint, jsonify
 
+from ai_surface_canon import canon_text
+
 openapi_dynamic_bp = Blueprint("openapi_dynamic", __name__)
 
 
@@ -150,7 +152,7 @@ def openapi_live():
                 "responses": {"200": {"description": "OK"}}}},
             "/api/v1/mcp/tools/score_facility": {"post": {"summary": "Independent 7-dim facility scoring",
                 "responses": {"200": {"description": "OK"}}}},
-            "/mcp": {"post": {"summary": "MCP streamable-http endpoint (24 tools)",
+            "/mcp": {"post": {"summary": canon_text("MCP streamable-http endpoint ({canon_tools} tools)"),
                 "responses": {"200": {"description": "OK"}}}},
             "/api/v1/market-brief/{slug}": {"get": {
                 "summary": "Single Market Brief — full 9-section JSON",
