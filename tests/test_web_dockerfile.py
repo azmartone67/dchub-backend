@@ -1,23 +1,75 @@
 """Guards for Dockerfile.web — the builder for dchub-backend (web) and dchub-worker.
 
-railway.toml switched both services from Railpack to Dockerfile.web after the
+The web and worker services build from Dockerfile.web, not Railpack, since the
 worker crashlooped twice (#3222, #5544) on a venv whose python symlink pointed
-at a patch version the runtime image did not ship. These pin the properties
+at a patch version the runtime image did not ship. That choice lived in
+railway.toml until 2026-09-26 and now lives in .railway/railway.ts (Railway IaC;
+the root railway.toml / railway.json are gone). These pin the properties
 that make that failure impossible, and the things start_web.sh / start_mcp.sh
 need from the image. All static: CI builds the image separately
 (.github/workflows/web-image-build.yml).
 """
 import os
 import re
-import tomllib
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-TOML = os.path.join(ROOT, "railway.toml")
+IAC = os.path.join(ROOT, ".railway", "railway.ts")
+SERVICES = ("dchub-backend", "dchub-worker")
+
+
+def _strip_ts_comments(text):
+    """Drop // and /* */ comments, leaving string literals intact, so a comment
+    that quotes a setting can never satisfy an assertion about the setting."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            j = i + 1
+            while j < n and text[j] != c:
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            i = text.find("\n", i)
+            i = n if i < 0 else i
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _service_block(name):
+    """The object literal passed to service("<name>", {...}), comments removed."""
+    with open(IAC, encoding="utf-8") as f:
+        code = _strip_ts_comments(f.read())
+    m = re.search(r'\bservice\(\s*"%s"\s*,\s*\{' % re.escape(name), code)
+    assert m, f".railway/railway.ts no longer declares service({name!r}, {{...}})"
+    depth, i = 1, m.end()
+    while depth:
+        assert i < len(code), f"unbalanced braces in service({name!r})"
+        c = code[i]
+        if c in "\"'`":
+            j = code.index(c, i + 1)
+            i = j + 1
+            continue
+        depth += {"{": 1, "}": -1}.get(c, 0)
+        i += 1
+    return code[m.end():i - 1]
+
+
+def _field(name, key):
+    m = re.search(r'\b%s\s*:\s*"([^"]*)"' % re.escape(key), _service_block(name))
+    return m.group(1) if m else ""
 
 
 def _cfg():
-    with open(TOML, "rb") as f:
-        return tomllib.load(f)
+    """The web service's build/deploy settings, shaped like the old toml."""
+    return {"build": {"builder": _field("dchub-backend", "builder"),
+                      "dockerfilePath": _field("dchub-backend", "dockerfilePath")},
+            "deploy": {"startCommand": _field("dchub-backend", "start")}}
 
 
 def _read(name):
@@ -52,10 +104,14 @@ def _froms():
 
 
 def test_web_and_worker_build_from_a_suffixed_dockerfile():
-    build = _cfg().get("build", {})
-    assert build.get("builder") == "DOCKERFILE", (
-        "railway.toml no longer selects DOCKERFILE — web and worker fall back "
-        "to Railpack and the venv/runtime python drift (#3222, #5544) returns")
+    for svc in SERVICES:
+        assert _field(svc, "builder") == "DOCKERFILE", (
+            f"{svc} no longer selects DOCKERFILE in .railway/railway.ts — it falls "
+            "back to Railpack and the venv/runtime python drift (#3222, #5544) "
+            "returns")
+        assert _field(svc, "dockerfilePath") == _dockerfile_path(), (
+            f"{svc} builds a different Dockerfile than dchub-backend; both run "
+            "the same image and start script")
     assert os.path.basename(_dockerfile_path()) not in ("", "Dockerfile"), (
         "dockerfilePath must name a suffixed file; a bare root `Dockerfile` is "
         "auto-detected by every service that builds from this root")
@@ -121,5 +177,23 @@ def test_the_runtime_stage_carries_what_the_start_scripts_call():
 
 
 def test_the_start_command_is_start_web():
-    assert _cfg()["deploy"]["startCommand"] == "bash start_web.sh"
+    for svc in SERVICES:
+        assert _field(svc, "start") == "bash start_web.sh", svc
     assert 'CMD ["bash", "start_web.sh"]' in _code_lines(_dockerfile_text())
+
+
+def test_web_runs_at_least_two_replicas():
+    # r-2026-07-15: a single web replica was an outage.
+    m = re.search(r'\breplicas\s*:\s*\{\s*"us-west2"\s*:\s*(\d+)',
+                  _service_block("dchub-backend"))
+    assert m and int(m.group(1)) >= 2, "web must run >= 2 replicas"
+
+
+def test_no_root_config_as_code_file_overrides_iac():
+    # A root railway.toml/railway.json overrides these IaC settings on every
+    # web/worker deploy until 2026-12-01, and is what a service with no Config
+    # File setting falls back to (dchub-daily redeployed as a web-app clone on
+    # 2026-09-25). Its re-appearance is a silent override, so it fails here.
+    for name in ("railway.toml", "railway.json"):
+        assert not os.path.exists(os.path.join(ROOT, name)), (
+            f"root {name} is back; it overrides .railway/railway.ts")

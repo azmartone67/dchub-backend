@@ -1,17 +1,17 @@
 // Railway Infrastructure as Code for dchub-backend's services.
 //
-// Replaces Config as Code (railway.toml, railway-extractor.toml,
-// services/daily/railway.json), which Railway stops reading on 2026-12-01.
+// Replaces Config as Code, which Railway stops reading on 2026-12-01. The root
+// railway.toml / railway.json were deleted 2026-09-26; railway-extractor.toml
+// and services/daily/railway.json remain until those services move here.
 // Evaluated by the Railway CLI (`railway config plan` / `apply`), NOT at deploy
 // time: merging a change here does nothing until it is applied.
 //
 // Declared here: dchub-backend (web), dchub-worker. dchub-daily's settings were
 // applied from here on 2026-09-25, then its ownership was released: it stays on
-// services/daily/railway.json until the root railway.toml is gone, because a
-// service with no Config File setting falls back to the ROOT railway.toml
-// (measured: daily redeployed as a web-app clone). Same for the extractor.
-// Order: web+worker apply -> delete root railway.toml AND railway.json ->
-// daily + extractor move here.
+// services/daily/railway.json for now. While a root railway.toml existed, a
+// service with no Config File setting fell back to it (measured 2026-09-25:
+// daily redeployed as a web-app clone); with the root files gone, daily and the
+// extractor can move here next.
 //
 // ★ partial: this repo owns ONLY the services it declares. Project
 // resourceful-essence also holds dchub-mcp-server (owned by partial
@@ -27,8 +27,8 @@ import { defineRailway, github, preserve, project, service } from "railway/iac";
 export const partial = "dchub-backend";
 
 export default defineRailway(() => {
-  // dchub-backend (web) and dchub-worker — values from the root railway.toml,
-  // which both services read today (no Railway Config File set). Same image and
+  // dchub-backend (web) and dchub-worker — values carried over from the root
+  // railway.toml (deleted 2026-09-26), applied and verified 2026-09-26. Same image and
   // start command; DCHUB_ROLE=worker is what makes the worker a worker.
   // r-2026-07-15: web MUST run >= 2 replicas (single-replica outage). The worker
   // has run 2 as well, because the toml's numReplicas applies to it too.
@@ -559,7 +559,6 @@ export default defineRailway(() => {
       R2_SECRET_ACCESS_KEY: preserve(),
       RAG_LEVER_COVERAGE_OFF: preserve(),
       RAG_MASTER_ARM: preserve(),
-      RAILPACK_CACHE_EPOCH: preserve(),
       RAILWAY_BACKEND_URL: preserve(),
       RAILWAY_MCP_RATE_LIMIT_ENABLED: preserve(),
       RAILWAY_MCP_RATE_LIMIT_RPM: preserve(),

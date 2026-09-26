@@ -1,5 +1,6 @@
 # Dockerfile for dchub-backend (web) and dchub-worker — both build from the
-# root of this repo with railway.toml, which points here by dockerfilePath.
+# root of this repo; .railway/railway.ts (Railway IaC) points here by
+# dockerfilePath.
 #
 # ★ WHY THIS EXISTS. Under Railpack the venv is built against the python that
 # mise resolves in the BUILD image, and the RUNTIME image carries its own
@@ -75,6 +76,6 @@ COPY --from=build /app/.venv /app/.venv
 WORKDIR /app
 COPY . /app
 
-# railway.toml's startCommand overrides this; it is here so the image runs on
+# The IaC start command (.railway/railway.ts) overrides this; it is here so the image runs on
 # its own and the two cannot disagree about the entrypoint.
 CMD ["bash", "start_web.sh"]
