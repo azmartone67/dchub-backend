@@ -72,6 +72,8 @@ def test_the_pitch_drops_the_key_the_partner_link_and_the_unverifiable_claims(sl
                    "cited by", "the only", "23+", "17 high-value", "calls/day"):
         assert banned not in body, (slug, banned)
     assert "https://dchub.cloud/connect" in body
+    # Owner decision 2026-09-26: trials go through the attributed claim link.
+    assert f"https://dchub.cloud/signup?ref=partner-{slug}" in body
 
 
 # ── the doors ───────────────────────────────────────────────────────────────

@@ -406,8 +406,10 @@ def _draft_pitch(target: dict) -> tuple[str, str]:
     ★2026-09-26 rewrite (owner-approved copy). What was removed, and why:
       - A developer key minted per target and printed in the body. A cold
         email is not where a live credential belongs; the recipient claims
-        their own key from /connect instead (not /api/v1/keys/claim,
-        which is POST-only and answers a clicked link with 405).
+        their own key from /signup?ref=partner-<slug> instead (not /claim,
+        which 301s to /upgrade, and not /api/v1/keys/claim, which is
+        POST-only and answers a clicked link with 405). The ref attributes
+        the signup to the partner; /connect stays as the setup guide.
       - The https://dchub.cloud/partners/<slug> link. Partner pages exist only
         for the retired lab slugs; every new slug 404s there.
       - Literal counts ("23+ tools", "17 high-value tools", "500 calls/day")
@@ -450,6 +452,7 @@ source and says what it does not cover.
 How to try it:
   {access}
   Setup guide, free tier included: https://dchub.cloud/connect
+  A key for your team to test with: https://dchub.cloud/signup?ref=partner-{target['slug']}
 
 If your users build agents on top of DC Hub, they can register them at
 https://dchub.cloud/ai-agents and we'll help them get set up.
