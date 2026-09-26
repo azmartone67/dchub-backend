@@ -1,12 +1,11 @@
 // Railway Infrastructure as Code for dchub-backend's services.
 //
-// Replaces Config as Code, which Railway stops reading on 2026-12-01. Deleted:
-// root railway.toml / railway.json (#5606, 2026-09-26) and
-// services/daily/railway.json (#5620). railway-extractor.toml is the last one:
-// it stays until this file's desirable-playfulness block has been APPLIED and
-// the service's Config File setting cleared, because the extractor redeploys
-// on every main push and, with no file, would fall back to its stale dashboard
-// settings (Railpack + the `|| P=python3` fallback) — the crash class below.
+// Replaces Config as Code, which Railway stops reading on 2026-12-01. Every
+// Config-as-Code file in this repo is gone (2026-09-26): root railway.toml /
+// railway.json (#5606), services/daily/railway.json (#5620) and
+// railway-extractor.toml (after the desirable-playfulness block was applied
+// and its Config File cleared). Every service here runs on these settings;
+// tests/test_web_dockerfile.py fails if any of those files comes back.
 // Evaluated by the Railway CLI (`railway config plan` / `apply`), NOT at deploy
 // time: merging a change here does nothing until it is applied.
 //
@@ -647,8 +646,7 @@ export default defineRailway(() => {
   });
 
   // desirable-playfulness — the extractor cron (extractor_cron.py every 5 min).
-  // Values from railway-extractor.toml (still present until this is applied),
-  // whose header
+  // Values from the retired railway-extractor.toml, whose header
   // documented the crash history this start command answers: under Railpack a
   // container sometimes started mid-mise-reinstall and ran a bare interpreter
   // (09-06 8c643bec, 09-08 7dfd3fe1). Dockerfile.extractor bakes the venv in;

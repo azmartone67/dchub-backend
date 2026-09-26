@@ -147,6 +147,7 @@ def test_no_root_config_as_code_file_overrides_iac():
     # File setting falls back to (dchub-daily redeployed as a web-app clone on
     # 2026-09-25). Its re-appearance is a silent override, so it fails here.
     for name in ("railway.toml", "railway.json",
-                 "services/daily/railway.json", "services/daily/railway.toml"):
+                 "services/daily/railway.json", "services/daily/railway.toml",
+                 "railway-extractor.toml"):
         assert not os.path.exists(os.path.join(ROOT, name)), (
             f"{name} is back; it overrides .railway/railway.ts")
