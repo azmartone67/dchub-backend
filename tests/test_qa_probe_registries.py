@@ -39,6 +39,30 @@ def schema_page(n):
     return (200, {}, f"<html><body>{links}</body></html>")
 
 
+def listing_page(desc, attr_order="content-first"):
+    """A stand-in glama listing page whose <meta name="description"> is
+    `desc`. Glama renders `content` BEFORE `name`; both orders are parsed."""
+    import html as _h
+    c = f'content="{_h.escape(desc)}"'
+    meta = (f'<meta {c} name="description"/>' if attr_order == "content-first"
+            else f'<meta name="description" {c}/>')
+    return (200, {}, f"<html><head>{meta}</head><body></body></html>")
+
+
+def serve(monkeypatch, desc=None, *, tools=None, listing=None):
+    """Serve both glama pages from memory: the listing page (desc, or a
+    `listing` tuple as-is) and the schema page with `tools` links."""
+    tools = RENDERED_TOOLS if tools is None else tools
+
+    def fake(url, **kw):
+        if url.endswith("/schema"):
+            return schema_page(tools)
+        if listing is not None:
+            return listing
+        return listing_page(desc if desc is not None else "")
+    monkeypatch.setattr(pr, "fetch", fake)
+
+
 @pytest.fixture(autouse=True)
 def _no_registry_network(monkeypatch):
     """No test in this file may reach a third-party registry.
@@ -62,7 +86,7 @@ def _no_registry_network(monkeypatch):
     `pr.fetch` and wins, because its monkeypatch is applied later; a test that
     wants the unreadable-page path returns a non-200 or raises Unreachable.
     """
-    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(RENDERED_TOOLS))
+    serve(monkeypatch, "")
 
 # The real Glama description, verbatim as the API returns it (escaped M\&A).
 GLAMA = ("Description: Data-center, power & gas intelligence MCP server. 33 "
@@ -133,8 +157,7 @@ def test_unknown_canon_never_convicts():
 def test_every_finding_states_red_when_and_basis(monkeypatch):
     monkeypatch.setattr(pr, "read_canon",
                         lambda: {"tools": 82, "facilities": 17096, "deals": 1745})
-    monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
-        "description": GLAMA, "tools": []}))
+    serve(monkeypatch, GLAMA)
     out = pr.probe()
     assert out, "probe produced nothing against a known-bad listing"
     for f in out:
@@ -157,8 +180,8 @@ def test_a_registry_being_down_is_BLIND_not_RED(monkeypatch):
     #   .../azmartone67/dchub-mcp-server, so a substring check on "dchub"
     #   matches the registry too and the mock silently returns a healthy
     #   record for the very call this test is about.
-    monkeypatch.setattr(pr, "get_json", lambda url, **kw:
-                        (503, None) if "glama.ai" in url else (200, {}))
+    serve(monkeypatch, listing=(503, {}, ""), tools=0)
+    monkeypatch.setattr(pr, "tools_rendered", lambda spec: None)
     out = pr.probe()
     assert out and all(f.verdict == pr.BLIND for f in out)
     assert not any(f.counts_as_failure for f in out)
@@ -167,8 +190,7 @@ def test_a_registry_being_down_is_BLIND_not_RED(monkeypatch):
 def test_over_claim_outranks_under_claim_in_severity(monkeypatch):
     monkeypatch.setattr(pr, "read_canon",
                         lambda: {"tools": 82, "facilities": 17096})
-    monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
-        "description": "33 tools covering 21,000+ facilities", "tools": []}))
+    serve(monkeypatch, "33 tools covering 21,000+ facilities")
     by = {f.title.split()[1]: f for f in pr.probe() if "advertises" in f.title}
     over = next(f for f in pr.probe() if "facilities" in f.title)
     under = next(f for f in pr.probe() if "tools (canon" in f.title)
@@ -193,9 +215,7 @@ def test_over_claim_outranks_under_claim_in_severity(monkeypatch):
 def test_a_healthy_listing_passes(monkeypatch):
     monkeypatch.setattr(pr, "read_canon",
                         lambda: {"tools": 82, "facilities": 17096})
-    monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
-        "description": "82 tools covering 17,000+ facilities",
-        "tools": [{"name": f"t{i}"} for i in range(82)]}))
+    serve(monkeypatch, "82 tools covering 17,000+ facilities")
     out = pr.probe()
     assert out and all(f.verdict == pr.PASS for f in out)
     assert not any(f.counts_as_failure for f in out)
@@ -214,9 +234,7 @@ def test_the_schema_page_count_is_an_input_not_the_live_internet(monkeypatch):
     # the probe's arithmetic without exercising the measurement it is named
     # after. With the fixture on the fetch seam, the 83 below is produced by
     # the real regex off a real page body.
-    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(83))
-    monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
-        "description": "82 tools", "tools": []}))
+    serve(monkeypatch, "82 tools", tools=83)
     listed = [f for f in pr.probe() if "renders" in f.title]
     assert listed and all(f.verdict == pr.RED for f in listed), (
         "a registry rendering a different tool count than canon must go RED")
@@ -225,7 +243,81 @@ def test_the_schema_page_count_is_an_input_not_the_live_internet(monkeypatch):
 
 def test_remedy_names_the_human_action_since_code_cannot_fix_it(monkeypatch):
     monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
-    monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
-        "description": "33 tools", "tools": []}))
+    serve(monkeypatch, "33 tools")
     out = pr.probe()
     assert any("maintainer" in (f.remedy or "").lower() for f in out)
+
+
+
+# ── 2026-09-26: the listing is read from the PUBLIC PAGE ─────────────────────
+# Glama's JSON API answers 401 without a key (since ~2026-09). The probe kept
+# calling it, so registry::glama::fetch was BLIND 12 runs in 12 and every
+# check below it was skipped. The squasher's chronic-blind lane filed it
+# (row 496) and diagnosed it; this is the fix it asked a human for.
+
+def test_the_json_api_is_never_called_for_the_listing(monkeypatch):
+    called = []
+    monkeypatch.setattr(pr, "get_json", lambda url, **kw: called.append(url) or (401, None))
+    monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
+    serve(monkeypatch, "82 tools")
+    pr.probe()
+    assert not [u for u in called if "glama.ai" in u], called
+
+
+@pytest.mark.parametrize("order", ["content-first", "name-first"])
+def test_listing_text_reads_the_meta_description_in_either_order(monkeypatch, order):
+    serve(monkeypatch, listing=listing_page("91 tools & 22,900+ facilities", order))
+    code, text = pr.listing_text(pr.LISTINGS[0])
+    assert code == 200 and text == "91 tools & 22,900+ facilities"
+
+
+def test_og_description_is_the_fallback(monkeypatch):
+    page = (200, {}, '<meta property="og:description" content="7 tools"/>')
+    serve(monkeypatch, listing=page)
+    assert pr.listing_text(pr.LISTINGS[0]) == (200, "7 tools")
+
+
+def test_a_readable_listing_is_a_PASS_not_silence(monkeypatch):
+    monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
+    serve(monkeypatch, "82 tools")
+    fetch = [f for f in pr.probe() if f.key.startswith("registry::glama::fetch")]
+    assert len(fetch) == 1 and fetch[0].verdict == pr.PASS
+
+
+def test_a_page_without_the_meta_is_OUR_fault_and_still_measures_tools(monkeypatch):
+    monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
+    serve(monkeypatch, listing=(200, {}, "<html><body>redesigned</body></html>"))
+    out = pr.probe()
+    fetch = next(f for f in out if f.key.startswith("registry::glama::fetch"))
+    assert fetch.verdict == pr.BLIND and fetch.instrument_fault
+    assert "layout changed" in fetch.evidence
+    # the schema page is a different page: the inventory check still runs
+    assert any(f.key.startswith("registry::glama::tools-listed") and f.verdict == pr.PASS
+               for f in out)
+    assert not any("advertises" in f.title for f in out)
+
+
+def test_a_registry_outage_is_BLIND_and_not_ours(monkeypatch):
+    monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
+    serve(monkeypatch, listing=(503, {}, ""))
+    fetch = next(f for f in pr.probe() if f.key.startswith("registry::glama::fetch"))
+    assert fetch.verdict == pr.BLIND and not fetch.instrument_fault
+    assert "HTTP 503" in fetch.evidence
+
+
+def test_unreachable_is_BLIND(monkeypatch):
+    def boom(url, **kw):
+        raise pr.Unreachable("dns")
+    monkeypatch.setattr(pr, "fetch", boom)
+    assert pr.listing_text(pr.LISTINGS[0]) == (None, None)
+
+
+def test_og_description_fallback_in_glamas_content_first_order(monkeypatch):
+    serve(monkeypatch, listing=(200, {}, '<meta content="8 tools" property="og:description"/>'))
+    assert pr.listing_text(pr.LISTINGS[0]) == (200, "8 tools")
+
+
+def test_an_error_page_with_a_description_is_not_the_listing(monkeypatch):
+    # A 503 page with generic site copy must not be read as OUR listing's claims.
+    serve(monkeypatch, listing=(503, {}, '<meta content="3 tools" name="description"/>'))
+    assert pr.listing_text(pr.LISTINGS[0]) == (503, None)
