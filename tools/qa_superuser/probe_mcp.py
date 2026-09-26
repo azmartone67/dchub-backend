@@ -140,9 +140,9 @@ def _open(seat: str):
 
 def probe(findings: list[Finding]) -> None:
     """Run the agent-seat probes, appending findings."""
-    _probe_seat_anon(findings)
+    anon_flagship_env = _probe_seat_anon(findings)
     if C.seat_available(SEAT_PAID):
-        _probe_seat_paid(findings)
+        _probe_seat_paid(findings, anon_env=anon_flagship_env)
     else:
         findings.append(blind(
             key=stable_key("mcp", "paid", "seat-unavailable"),
@@ -153,7 +153,19 @@ def probe(findings: list[Finding]) -> None:
 
 
 # ── anonymous seat: how most agents actually arrive ─────────────────────────
-def _probe_seat_anon(findings: list[Finding]) -> None:
+def _probe_seat_anon(findings: list[Finding]) -> dict | None:
+    """Returns the anon seat's own {C.FLAGSHIP_TOOL} envelope, if it got one.
+
+    ★ Handed to `_probe_seat_paid` so `_check_paid_beats_anon` can use THIS
+    call as its control instead of opening a second anon session and making
+    a second call. The anon daily full-answer cap is keyed on (ip, tool, day)
+    and this suite already spends one unit of it right here — a second,
+    independent call from the same IP for the same tool only spends a second
+    unit before the comparison even runs, which is why the control was
+    chronically found already spent (qa_key mcp::paid::beats-anon::
+    get_market_intel#5c8a00: BLIND in 7 of 12 runs). One call, reused, halves
+    this suite's own consumption of the budget it is trying to observe.
+    """
     try:
         s = _open(SEAT_ANON)
     except Unreachable as e:
@@ -162,7 +174,7 @@ def _probe_seat_anon(findings: list[Finding]) -> None:
             surface="mcp", seat=SEAT_ANON,
             title="MCP handshake unreachable from the anonymous seat",
             why=str(e), basis=f"POST {C.MCP_URL} initialize"))
-        return
+        return None
 
     findings.append(Finding(
         key=stable_key("mcp", SEAT_ANON, "handshake"),
@@ -225,7 +237,7 @@ def _probe_seat_anon(findings: list[Finding]) -> None:
             surface="mcp", seat=SEAT_ANON,
             title=f"{C.FLAGSHIP_TOOL} unreachable anonymously",
             why=str(e), basis=f"MCP tools/call {C.FLAGSHIP_TOOL}"))
-        return
+        return None
 
     data = _data_keys(env)
     sell = _envelope_keys(env)
@@ -277,6 +289,8 @@ def _probe_seat_anon(findings: list[Finding]) -> None:
     #   envelope every check above observes. A probe must not consume the state
     #   it reports on.
     _check_tools_answer(tools, findings)
+
+    return env
 
 
 # Tools called per run. The server advertises 82; calling every zero-required
@@ -966,7 +980,7 @@ def _check_envelope_drift(a: dict, b: dict, findings: list[Finding]) -> None:
 
 
 # ── paying seat: the claims that are unambiguous once money is involved ─────
-def _probe_seat_paid(findings: list[Finding]) -> None:
+def _probe_seat_paid(findings: list[Finding], anon_env: dict | None = None) -> None:
     try:
         s = _open(SEAT_PAID)
     except Unreachable as e:
@@ -1010,7 +1024,7 @@ def _probe_seat_paid(findings: list[Finding]) -> None:
                "map_tier_gating.py path is dead) and the key's tier resolution."))
 
     # -- paid must actually beat anon ---------------------------------------
-    _check_paid_beats_anon(env, findings)
+    _check_paid_beats_anon(env, findings, anon_env=anon_env)
 
     # -- the return mechanism, from the seat that can see it ----------------
     _check_return_nudge(env, findings)
@@ -1087,22 +1101,35 @@ def seat_comparison_verdict(paid_n: int, anon_n: int,
             f"field(s) from {C.FLAGSHIP_TOOL}")
 
 
-def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
+def _check_paid_beats_anon(paid_env: dict, findings: list[Finding],
+                           anon_env: dict | None = None) -> None:
     """The same question, asked from both seats, must not get the same answer.
 
     This is the 'paid caps unenforced' class seen from the outside: if a paying
     key buys nothing a stranger cannot get, either gating is inverted or the tier
     never resolved.
+
+    ★ THE CONTROL IS REUSED, NOT RE-FETCHED. `_probe_seat_anon` already makes
+    this exact call (same tool, same args) earlier in the same run and hands
+    its envelope in as `anon_env`. The anon daily full-answer cap is keyed on
+    (ip, tool, day) — opening a SECOND anon session here to make a SECOND call
+    only spends a second unit of the same budget this check is trying to read,
+    which is why it found its own control already spent in most runs (chronic
+    BLIND, qa_key mcp::paid::beats-anon::get_market_intel#5c8a00). Falling back
+    to a fresh call only when no control was handed in (e.g. called directly,
+    as the tests below do) keeps that path working without spending twice per
+    run in the real one.
     """
     key = stable_key("mcp", SEAT_PAID, "beats-anon", C.FLAGSHIP_TOOL)
-    try:
-        anon = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
-        anon_env = anon.call(C.FLAGSHIP_TOOL, C.FLAGSHIP_ARGS)
-    except Unreachable as e:
-        findings.append(blind(key=key, surface="mcp", seat=SEAT_PAID,
-                              title="Paid-vs-anon comparison unobserved",
-                              why=str(e), basis="anon control call"))
-        return
+    if anon_env is None:
+        try:
+            anon = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
+            anon_env = anon.call(C.FLAGSHIP_TOOL, C.FLAGSHIP_ARGS)
+        except Unreachable as e:
+            findings.append(blind(key=key, surface="mcp", seat=SEAT_PAID,
+                                  title="Paid-vs-anon comparison unobserved",
+                                  why=str(e), basis="anon control call"))
+            return
 
     paid_keys, anon_keys = set(_data_keys(paid_env)), set(_data_keys(anon_env))
     paid_n, anon_n = len(paid_keys), len(anon_keys)
