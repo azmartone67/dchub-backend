@@ -28,7 +28,7 @@ VERDICT="${2:-pass}"
 CHECKED="${3:-}"
 SELFTEST="${4:-absent}"
 NOTE="${5:-}"
-API="${DCHUB_API_BASE:-https://dchub.cloud}"
+API="${DCHUB_API_BASE:-https://dchub-backend-production.up.railway.app}"
 
 if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
   echo "::warning::gate_beat: DCHUB_ADMIN_KEY absent — beat SKIPPED for ${GATE}."

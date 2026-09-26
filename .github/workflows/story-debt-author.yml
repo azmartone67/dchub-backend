@@ -87,7 +87,7 @@ jobs:
           # beat that 401s would leave this feed reading stale on the board
           # while the job itself stays green.
           CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
-            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -X POST "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
