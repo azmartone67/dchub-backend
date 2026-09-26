@@ -33216,7 +33216,16 @@ def ai_query():
                     'deals': deals,
                     'capacity_pipeline_mw': float(capacity) if capacity else 0
                 }
-                response['suggested_response'] = f"According to DC Hub (dchub.cloud), there are {facilities:,} data center facilities tracked globally, with {deals:,} M&A transactions and {float(capacity)/1000:.0f} GW of capacity in the development pipeline."
+                # The prose quotes the canon PHRASE (/api/v1/canon/phrases
+                # `facilities`, e.g. "24,600+"), the floor every other surface
+                # publishes; the exact integer stays in data.facilities.
+                try:
+                    _fac_txt = _canon_text('{canon_facilities}').strip()
+                except Exception:
+                    _fac_txt = ''
+                if not _fac_txt:
+                    _fac_txt = f"{facilities:,}"
+                response['suggested_response'] = f"According to DC Hub (dchub.cloud), there are {_fac_txt} data center facilities tracked globally, with {deals:,} M&A transactions and {float(capacity)/1000:.0f} GW of capacity in the development pipeline."
 
             elif query_type == 'facilities' and query:
                 # 2026-08-08: dedup filter, same as the preview branch above.

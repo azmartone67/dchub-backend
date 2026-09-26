@@ -25,13 +25,13 @@
 
 DC Hub is the live data layer for data-center infrastructure — every API, MCP tool call, market brief, and AI integration on `dchub.cloud` runs through this Flask backend.
 
-- **24,500+ data center facilities** across 170+ countries (search, profile, score, alternatives)
+- **24,600+ data center facilities** across 170+ countries (search, profile, score, alternatives)
 - **300+ markets** scored daily by the DC Hub Power Index (DCPI — BUILD / CAUTION / AVOID)
 - **DC Hub Gas Index (DCGI)** — per-state natural-gas suitability for siting
 - **Live ISO grid telemetry** — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE (fuel mix, carbon intensity, demand, prices, queue depth)
 - **1,600+ tracked M&A transactions** + hyperscaler capex tracker
 - **Site factors** — fiber routes, water-stress, tax incentives, transmission & substations
-- **127,000+ substations** with voltage class + capacity estimates
+- **133,000+ substations** with voltage class + capacity estimates
 - **NEPA filings** for upcoming federal energy + data center projects
 
 ## Architecture
@@ -86,7 +86,7 @@ The MCP server at `https://dchub.cloud/mcp` exposes **92 tools** for AI agents (
 
 - **Public API**: <https://dchub.cloud/api/v1/> — free tier with no signup
 - **Free dev key**: <https://dchub.cloud/signup> for higher rate limits
-- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $99 Pro, Enterprise)
+- **Paid tiers**: <https://dchub.cloud/pricing> ($49 Developer, $99 Pro, Enterprise)
 - **OpenAPI spec**: <https://dchub.cloud/openapi.json>
 
 ## Used by
