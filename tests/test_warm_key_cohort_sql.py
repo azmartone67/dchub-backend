@@ -9,6 +9,13 @@ this runs its statements. Its own schema, so it cannot clobber another lane.
   W4  identified key, no consent anywhere                 no consent
   last_tool_wall is the MOST RECENT signal's tool; top_tool_wall the most-hit.
 
+r-harness-personas (2026-09-25), shaped on the live read of that day:
+  H1  unverified, claim_api under 3 client names      harness persona
+  H2  unverified, claim_api under 1 client name       a person (mooyoung/simon shape)
+  H3  2 claim_api names, but one key is workos_oauth   verified -> a person
+  H4  2 claim_api names, one key email_verified_at     verified -> a person
+  H5  named persona (env list), a single key          harness persona
+
 Set WARM_KEYS_SQL_DSN to run it. CI passes the db-parity service DSN and then
 asserts this file did not skip.
 """
@@ -52,6 +59,24 @@ def rows():
         cur.execute("INSERT INTO mcp_dev_keys (api_key, email, tier, status, metadata)"
                     " VALUES (%s, %s, %s, 'active', %s)",
                     (key, email, tier, '{"marketing_opt_in": "true"}' if flag else "{}"))
+    persona_keys = [
+        ("h1a", "multi.agent@acme.io", {"source": "claim_api", "client_name": "Blue Bend Logistics"}),
+        ("h1b", "multi.agent@acme.io", {"source": "claim_api", "client_name": "trajectory-actor"}),
+        ("h1c", "multi.agent@acme.io", {"source": "claim_api", "client_name": "mcp-agent"}),
+        ("h2a", "one.agent@acme.io", {"source": "claim_api", "client_name": "Claude.ai"}),
+        ("h2b", "one.agent@acme.io", {"source": "claim_api", "client_name": "Claude.ai"}),
+        ("h3a", "oauth.multi@acme.io", {"source": "claim_api", "client_name": "a"}),
+        ("h3b", "oauth.multi@acme.io", {"source": "claim_api", "client_name": "b"}),
+        ("h3c", "oauth.multi@acme.io", {"source": "workos_oauth"}),
+        ("h4a", "verified.multi@acme.io", {"source": "claim_api", "client_name": "a",
+                                           "email_verified_at": "2026-09-01"}),
+        ("h4b", "verified.multi@acme.io", {"source": "claim_api", "client_name": "b"}),
+        ("h5a", "named.persona@acme.io", {"source": "claim_api", "client_name": "tool-use-agent"}),
+    ]
+    import json as _json
+    for key, email, md in persona_keys:
+        cur.execute("INSERT INTO mcp_dev_keys (api_key, email, tier, status, metadata)"
+                    " VALUES (%s, %s, %s, 'active', %s)", (key, email, tier, _json.dumps(md)))
     cur.execute("INSERT INTO opt_in_consents VALUES (' w2@acme.io', now()), ('w3@acme.io', NULL)")
     cur.executemany("INSERT INTO mcp_upgrade_signals VALUES (%s, %s, now() - %s::interval)", [
         ("w4@acme.io", "get_fiber_intel", "3 days"),
@@ -60,6 +85,9 @@ def rows():
     ])
     wconn = psycopg2.connect(DSN, options="-csearch_path=" + SCHEMA)
     mp = pytest.MonkeyPatch()
+    # H5: the named list, via its env widening (the built-in list is digests
+    # only, so a public test must not spell one of those addresses out).
+    mp.setenv("DCHUB_HARNESS_PERSONA_EMAILS", "named.persona@acme.io")
     mp.setattr(wk, "_conn", lambda: wconn)
     mp.setattr(wk, "_release", lambda c, error=False: None)
     try:
@@ -94,3 +122,29 @@ def test_last_wall_is_the_latest_and_top_wall_the_most_hit(rows):
 
 def test_the_csv_carries_the_last_wall():
     assert "last_tool_wall" in wk._CSV_FIELDS
+
+
+def test_harness_personas_are_flagged_from_the_real_sql(rows):
+    by, _ = rows
+    assert by["multi.agent@acme.io"]["claim_client_names"] == 3
+    assert by["multi.agent@acme.io"]["harness_persona"] is True
+    assert by["one.agent@acme.io"]["claim_client_names"] == 1
+    assert by["one.agent@acme.io"]["harness_persona"] is False
+    assert by["oauth.multi@acme.io"]["email_verified"] is True
+    assert by["oauth.multi@acme.io"]["harness_persona"] is False
+    assert by["verified.multi@acme.io"]["email_verified"] is True
+    assert by["verified.multi@acme.io"]["harness_persona"] is False
+    assert by["named.persona@acme.io"]["harness_persona"] is True
+    assert by["w1@acme.io"]["harness_persona"] is False
+
+
+def test_harness_personas_leave_mailable_and_are_listed(rows):
+    by, _ = rows
+    s = wk.summarize(list(by.values()))
+    assert s["harness_personas"] == ["multi.agent@acme.io", "named.persona@acme.io"]
+    assert s["removed_harness_personas"] == 2
+    assert not wk._mailable(by["multi.agent@acme.io"])
+    assert wk._mailable(by["one.agent@acme.io"])
+    # the removed_* lines and mailable still partition the cohort
+    assert (s["removed_ours"] + s["removed_harness_personas"] + s["removed_already_paid"]
+            + s["removed_suppressed"] + s["mailable"]) == s["cohort_total"]
