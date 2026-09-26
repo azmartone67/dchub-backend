@@ -1588,6 +1588,62 @@ class TestAnonSeatBudgetIsMeasuredNotAssumed:
         assert out[0].verdict != BLIND
         assert "budget left" in out[0].evidence
 
+    def test_paid_beats_anon_reuses_a_handed_in_control_without_a_new_call(self):
+        """The control must not cost a second unit of the same daily cap.
+
+        `_probe_seat_anon` already makes this exact call earlier in the same
+        run. Opening a second anon session here to build the control spends a
+        second unit of the (ip, tool, day) cap before this check even runs —
+        the reason it kept finding its own control already spent (qa_key
+        mcp::paid::beats-anon::get_market_intel#5c8a00, BLIND in 7 of 12 runs).
+        """
+        from tools.qa_superuser import probe_mcp
+        out = []
+        paid_env = {"structuredContent": {"market": "a", "stats": {},
+                                          "citation": {}, "by_status": {}}}
+        anon_env = self._env(1)  # a control WITH budget, handed in directly
+
+        def _no_new_session(*a, **k):
+            raise AssertionError(
+                "a fresh anon session must not be opened when an anon_env "
+                "control was already supplied")
+        probe_mcp.MCPSession = _no_new_session
+        try:
+            probe_mcp._check_paid_beats_anon(paid_env, out, anon_env=anon_env)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        assert len(out) == 1
+        assert out[0].verdict != BLIND
+        assert "budget left" in out[0].evidence
+
+    def test_probe_seat_anon_returns_its_own_flagship_envelope(self):
+        """So `probe()` can hand it to `_check_paid_beats_anon` as the control
+        instead of that check spending a second unit of the same cap itself.
+        """
+        from tools.qa_superuser import probe_mcp
+        env = self._env(1)
+        session = type("S", (), {
+            "server_info": {"name": "dchub", "version": "1"},
+            "list_tools": lambda self: [],
+            "call": lambda self, name, args: env,
+        })()
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "M", (), {"open": lambda s: session})()
+        orig = (probe_mcp._check_quota_moves, probe_mcp._check_tier_self_report,
+                probe_mcp._check_tools_answer)
+        probe_mcp._check_quota_moves = lambda *a, **k: None
+        probe_mcp._check_tier_self_report = lambda *a, **k: None
+        probe_mcp._check_tools_answer = lambda *a, **k: None
+        try:
+            result = probe_mcp._probe_seat_anon([])
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+            (probe_mcp._check_quota_moves, probe_mcp._check_tier_self_report,
+             probe_mcp._check_tools_answer) = orig
+        assert result is env
+
     # ── the gauge that described nobody ────────────────────────────────────
     def test_envelope_ratio_labels_the_population_it_measured(self):
         """One label covering two populations is how '100% envelope' shipped.
