@@ -14,7 +14,7 @@ onboarding — new MCP registries, new agents, fresh domain content, live
 partner motion, welcomed users — on a consistent cadence?* That question
 was answered ad hoc, re-derived from scratch each time, and drifted.
 
-This module is that owner. ONE agent, SIX lanes, one report to the brain.
+This module is that owner. ONE agent, SEVEN lanes, one report to the brain.
 
 WHAT IT IS NOT
 --------------
@@ -95,6 +95,10 @@ SLA = {
     "content_cadence_hours": 48,
     # Partner + directory outreach motion.
     "partner_outreach_days": 14,
+    # Inbound agent self-registrations (form, submit_platform tool,
+    # POST /api/v1/platforms/register). The onboarder cron runs twice a day
+    # and logged processed=0 on 2026-09-26 with a green deadman beat.
+    "self_registration_days": 14,
     # A payer stranded (paid, zero calls) longer than this is an
     # unwelcomed user, which is the most expensive kind.
     "user_welcome_stranded_days": 14,
@@ -416,11 +420,18 @@ def _lane_partner_outreach(cur, now):
                            f"one has ever been contacted")}
     age = _age_days(newest, now)
     if age > SLA["partner_outreach_days"]:
+        # ★ r-honest-outreach (2026-09-26): the daily auto-send cron logs
+        # success with candidates=0 when no draft is queued, so its deadman
+        # beat stays green while nothing goes out. Say which it is.
+        why = ("NO drafts queued - the daily sender fires and has nothing to "
+               "send; drafts are only created by POST "
+               "/api/v1/admin/ai-lab-outreach/draft-all"
+               if not pending else f"{pending} draft(s) queued and unsent")
         return {"verdict": VERDICT_OFF, "observed": observed,
                 "detail": (f"last partner email {age:.0f}d ago "
                            f"(SLA {SLA['partner_outreach_days']}d); "
                            f"{sent_90d or 0} sent in 90d across "
-                           f"{targets or 0} targets")}
+                           f"{targets or 0} targets; {why}")}
     return {"verdict": VERDICT_OK, "observed": observed,
             "detail": (f"last partner email {age:.0f}d ago; {sent_90d or 0} "
                        f"sent in 90d across {targets or 0} targets")}
@@ -460,6 +471,48 @@ def _lane_user_welcome(cur, now):
             "detail": f"no stranded payers across {staged} staged users"}
 
 
+# ── Lane 7: inbound agent self-registration ───────────────────────────
+@_guarded
+def _lane_agent_self_registration(cur, now):
+    """★ r-honest-outreach (2026-09-26). The onboarder cron
+    (crawler_scheduler._run_ai_platform_onboarder) fires twice daily and its
+    deadman beat is `success` whether or not a single platform submitted.
+    That beat measures the cron, not the funnel. This lane reads the queue
+    the funnel writes."""
+    if not _table_exists(cur, "ai_platform_submissions"):
+        return {"verdict": VERDICT_UNKNOWN, "observed": {},
+                "detail": "ai_platform_submissions absent"}
+    win = SLA["self_registration_days"]
+    cur.execute(
+        "SELECT COUNT(*), COUNT(*) FILTER (WHERE submitted_at > %s), "
+        "       COUNT(*) FILTER (WHERE status IN ('auto_approved','approved')), "
+        "       COUNT(*) FILTER (WHERE status = 'pending_review'), "
+        "       MAX(submitted_at) "
+        "  FROM ai_platform_submissions", (now - _days(win),))
+    total, recent, approved, review, newest = cur.fetchone()
+    observed = {"submissions_all_time": total or 0,
+                "submissions_window": recent or 0, "window_days": win,
+                "approved_all_time": approved or 0,
+                "awaiting_review": review or 0,
+                "newest_submitted_at": _iso(newest),
+                "age_days": _age_days(newest, now)}
+    if review:
+        return {"verdict": VERDICT_OFF, "observed": observed,
+                "detail": (f"{review} agent platform(s) waiting on human "
+                           f"review at /admin/ai-platforms")}
+    if newest is None:
+        return {"verdict": VERDICT_STALLED, "observed": observed,
+                "detail": ("no agent platform has ever self-registered; the "
+                           "onboarder cron runs on an empty queue")}
+    if not recent:
+        return {"verdict": VERDICT_STALLED, "observed": observed,
+                "detail": (f"zero self-registrations in {win}d (last "
+                           f"{_age_days(newest, now):.0f}d ago); the onboarder "
+                           f"cron is green on an empty queue")}
+    return {"verdict": VERDICT_OK, "observed": observed,
+            "detail": f"{recent} self-registration(s) in {win}d"}
+
+
 LANES = (
     ("registry_presence", _lane_registry_presence),
     ("registry_acquisition", _lane_registry_acquisition),
@@ -467,6 +520,7 @@ LANES = (
     ("content_cadence", _lane_content_cadence),
     ("partner_outreach", _lane_partner_outreach),
     ("user_welcome", _lane_user_welcome),
+    ("agent_self_registration", _lane_agent_self_registration),
 )
 
 

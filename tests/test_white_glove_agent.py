@@ -127,10 +127,11 @@ def test_agent_never_makes_an_http_request():
 
 def test_every_lane_is_registered_and_named_once():
     names = [n for n, _ in wga.LANES]
-    assert len(names) == len(set(names)) == 6
+    assert len(names) == len(set(names)) == 7
     assert set(names) == {
         "registry_presence", "registry_acquisition", "agent_onboarding",
-        "content_cadence", "partner_outreach", "user_welcome"}
+        "content_cadence", "partner_outreach", "user_welcome",
+        "agent_self_registration"}
 
 
 def test_every_lane_returns_a_declared_verdict():
@@ -294,3 +295,43 @@ def test_partner_lane_treats_silence_as_the_suppression_signal():
     assert "delivery_state = 'submitted'" in body
     assert "if unconfirmed:" in body, (
         "the lane computes the unconfirmed count but never branches on it")
+
+
+# ── r-honest-outreach (2026-09-26): green crons on empty queues ───────
+class _RowCursor(FakeCursor):
+    """Table exists; the one aggregate returns the given row."""
+    def __init__(self, row):
+        super().__init__()
+        self._row, self._n = row, 0
+
+    def execute(self, sql, params=None):
+        self._last = sql
+
+    def fetchone(self):
+        if "to_regclass" in self._last:
+            return (True,)
+        return self._row
+
+
+def test_self_registration_empty_queue_is_stalled_not_ok():
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    out = wga._lane_agent_self_registration(
+        _RowCursor((0, 0, 0, 0, None)), now, "agent_self_registration")
+    assert out["verdict"] == wga.VERDICT_STALLED
+    old = now - timedelta(days=40)
+    out = wga._lane_agent_self_registration(
+        _RowCursor((3, 0, 1, 0, old)), now, "agent_self_registration")
+    assert out["verdict"] == wga.VERDICT_STALLED
+    out = wga._lane_agent_self_registration(
+        _RowCursor((4, 1, 1, 0, now)), now, "agent_self_registration")
+    assert out["verdict"] == wga.VERDICT_OK
+
+
+def test_self_registration_awaiting_review_is_actionable():
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    out = wga._lane_agent_self_registration(
+        _RowCursor((4, 1, 1, 2, now)), now, "agent_self_registration")
+    assert out["verdict"] == wga.VERDICT_OFF
+    assert "review" in out["detail"]

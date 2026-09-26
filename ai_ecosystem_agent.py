@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 from internal_auth import is_valid_internal_key
 from db_utils import get_db
@@ -369,44 +369,26 @@ Return ONLY valid JSON."""
         }
     
     def outreach_to_ai_platforms(self):
-        """Proactively register with AI platforms"""
-        manifest = self.generate_ai_platform_manifest()
-        outreach_results = []
-        
-        for platform_id, platform in AI_PLATFORMS.items():
-            if platform_id in self.state.get('platforms_registered', []):
-                continue
-            
-            result = {
-                'platform': platform['name'],
-                'method': platform['discovery_method'],
-                'timestamp': datetime.utcnow().isoformat(),
-                'status': 'pending'
-            }
-            
-            if platform_id == 'claude':
-                result['status'] = 'integrated'
-                result['notes'] = 'MCP server active at /.well-known/mcp.json'
-                self.state['platforms_registered'].append(platform_id)
-            elif platform_id == 'openai':
-                result['status'] = 'manifest_ready'
-                result['notes'] = 'OpenAPI spec available for ChatGPT Actions'
-            elif platform_id == 'gemini':
-                result['status'] = 'discovery_enabled'
-                result['notes'] = 'Vertex AI Extension manifest generated'
-            else:
-                result['status'] = 'pending_integration'
-                result['notes'] = f'Ready for {platform["discovery_method"]}'
-            
-            outreach_results.append(result)
-            self.platform_registrations += 1
-        
-        self.state['outreach_log'].extend(outreach_results)
-        self.state['total_outreach'] += len(outreach_results)
-        self.last_outreach = datetime.utcnow().isoformat()
-        
-        return outreach_results
-    
+        """★ r-honest-outreach (2026-09-26): this used to be the "AI Outreach
+        Engine". It contacted nobody. Each cycle it appended a canned note
+        ("OpenAPI spec available for ChatGPT Actions", "Ready for Web
+        Discovery", ...) for the same five platforms to outreach_log and added
+        one to total_outreach per note. /ai published that counter as
+        "10,021+ outreach pings sent · ~42/day" and the notes as "Recent
+        Outreach Activity" -- 147 days stale by the time anyone asked why the
+        outreach had stopped. It had never started.
+
+        Real outbound lives elsewhere and is read by real_outreach_status():
+        partner email (routes/ai_lab_outreach.py -> ai_lab_outreach_drafts),
+        agent self-registration (routes/ai_platform_onboarder.py ->
+        ai_platform_submissions) and directory listings
+        (routes/mcp_registry_watch.py -> mcp_registry_probe_state).
+
+        Kept as a no-op so run_cycle() and POST /api/ai-ecosystem/run keep
+        their shape. It must never write outreach_log or total_outreach again.
+        """
+        return []
+
     def generate_promotional_content(self):
         """Generate AI-powered promotional content for the ecosystem"""
         if not anthropic or not os.environ.get('ANTHROPIC_API_KEY'):
@@ -506,38 +488,33 @@ Make it suitable for sharing with AI platforms as a data source description. Kee
         finally:
             conn.close()
         
-        total_outreach = self.state.get('total_outreach', 0)
-        start_date = self.state.get('created_at', '2026-01-28')[:10]
         platforms_registered = self.state.get('platforms_registered', [])
-        outreach_log = self.state.get('outreach_log', [])
-        
-        from datetime import datetime
-        try:
-            start = datetime.fromisoformat(start_date)
-            days_active = max(1, (datetime.now() - start).days)
-            daily_rate = round(total_outreach / days_active)
-        except:
-            daily_rate = 288
-        
+        # ★ r-honest-outreach: total_outreach / daily_rate / outreach_log were
+        # the canned counter outreach_to_ai_platforms() used to walk (see its
+        # docstring). They are no longer served. Everything below is read from
+        # the ledgers real outreach writes.
+        real = _cached_real_outreach()
+
         return {
             'running': self.running,
             'last_run': self.state.get('last_run'),
             'total_discoveries': self.state.get('total_discoveries', 0),
             'total_enrichments': self.state.get('total_enrichments', 0) + self.ai_enrichments,
-            'total_outreach': total_outreach,
             'platforms_registered': platforms_registered,
             'platforms_count': len(platforms_registered),
-            'start_date': start_date,
-            'daily_rate': daily_rate,
             'ecosystem_companies': total_companies,
             'ai_enriched_companies': ai_enriched,
-            'agents': [
-                {'id': 'sales', 'name': 'Sales Agent', 'status': 'active'},
-                {'id': 'enrichment', 'name': 'Enrichment Agent', 'status': 'active'},
-                {'id': 'social', 'name': 'Social Agent', 'status': 'active'},
-                {'id': 'ecosystem', 'name': 'AI Ecosystem Agent', 'status': 'active' if self.running else 'idle'}
-            ],
-            'recent_outreach': outreach_log[-10:] if outreach_log else [],
+            'outreach': real['summary'],
+            'outreach_basis': (
+                'Real outbound only: partner emails (ai_lab_outreach_drafts, '
+                'status=sent), agent self-registrations '
+                '(ai_platform_submissions) and directory listing checks '
+                '(mcp_registry_probe_state). A lane is active only if its '
+                'ledger moved within idle_after_days; a cron that fired and '
+                'did nothing is idle.'),
+            'idle_after_days': IDLE_AFTER_DAYS,
+            'agents': real['lanes'],
+            'recent_outreach': real['events'],
             'ai_platforms': {
                 pid: {
                     'name': p['name'],
@@ -547,6 +524,223 @@ Make it suitable for sharing with AI platforms as a data source description. Kee
                 for pid, p in AI_PLATFORMS.items()
             }
         }
+
+# ── r-honest-outreach (2026-09-26): what /ai calls "outreach", measured ──────
+# A lane is `active` only when its ledger moved inside IDLE_AFTER_DAYS. Firing
+# on schedule is not activity: on 2026-09-25/26 both outreach crons logged
+# success with sent=0 candidates=0 and processed=0. `unknown` means the ledger
+# could not be read and is never painted as running.
+IDLE_AFTER_DAYS = {'directories': 3, 'partner_email': 14, 'self_registration': 14}
+
+_DIRECTORY_COPY_NOTE = {
+    'current': 'Listed, copy current',
+    'stale': 'Listed, copy out of date',
+}
+
+
+def _iso(ts):
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        return ts
+    try:
+        return ts.isoformat()
+    except Exception:
+        return str(ts)
+
+
+def _utc(ts):
+    """Aware UTC; a naive value is taken to already be UTC."""
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _age_days(ts, now):
+    """Days since ts. None if unreadable."""
+    if ts is None:
+        return None
+    try:
+        return max(0.0, (_utc(now) - _utc(ts)).total_seconds() / 86400.0)
+    except Exception:
+        return None
+
+
+def _lane_state(last_at, now, idle_days):
+    age = _age_days(last_at, now)
+    if age is None:
+        return 'idle', None
+    return ('active' if age <= idle_days else 'idle'), round(age, 1)
+
+
+def _read_directories(cur):
+    cur.execute("SELECT probed_at, results FROM mcp_registry_probe_state "
+                "WHERE id = 1")
+    row = cur.fetchone()
+    if not row:
+        return None
+    probed_at, results = row[0], row[1]
+    if isinstance(results, str):
+        results = json.loads(results)
+    return probed_at, (results or {})
+
+
+def real_outreach_status(conn_factory=None, now=None):
+    """Read the three ledgers real outreach writes. Never raises; a ledger
+    that cannot be read comes back as a lane with status 'unknown'.
+
+    Public payload, so it carries no addresses and no self-submitted text:
+    partner mail is named by lab (the targets are our own list), and a
+    self-registration is named only once a human or the fit gate approved it.
+    """
+    now = _utc(now or datetime.now(timezone.utc))
+    conn_factory = conn_factory or get_db
+    events, lanes, summary = [], [], {}
+
+    def _run(name, fn):
+        conn = None
+        try:
+            conn = conn_factory()
+            if conn is None:
+                raise RuntimeError('no database connection')
+            cur = conn.cursor()
+            fn(cur)
+        except Exception as e:
+            logger.warning('real_outreach_status: %s unreadable: %s', name, e)
+            lanes.append({'id': name, 'status': 'unknown',
+                          'detail': 'ledger could not be read'})
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _directories(cur):
+        got = _read_directories(cur)
+        if got is None:
+            lanes.append({'id': 'directories', 'name': 'Directory listings check',
+                          'status': 'idle', 'last_activity': None,
+                          'detail': 'no directory scan has been recorded'})
+            return
+        probed_at, results = got
+        listed = sum(1 for r in results.values() if r.get('verdict') == 'present')
+        stale = sum(1 for r in results.values()
+                    if r.get('verdict') == 'present'
+                    and (r.get('copy') or {}).get('state') == 'stale')
+        missing = sum(1 for r in results.values()
+                      if r.get('verdict') != 'present' and r.get('actionable', True))
+        summary.update({'directories_tracked': len(results),
+                        'directories_listed': listed,
+                        'directories_stale_copy': stale,
+                        'directories_missing': missing,
+                        'directories_checked_at': _iso(probed_at)})
+        for r in results.values():
+            if r.get('verdict') == 'present':
+                note = _DIRECTORY_COPY_NOTE.get((r.get('copy') or {}).get('state'),
+                                                'Listed')
+            elif not r.get('actionable', True):
+                continue
+            else:
+                note = 'Not listed (' + str(r.get('verdict') or 'missing') + ')'
+            events.append({'channel': 'directory', 'notes': note,
+                           'platform': r.get('registry') or '',
+                           'status': r.get('verdict'),
+                           'timestamp': _iso(probed_at)})
+        st, age = _lane_state(probed_at, now, IDLE_AFTER_DAYS['directories'])
+        lanes.append({'id': 'directories', 'name': 'Directory listings check',
+                      'status': st, 'last_activity': _iso(probed_at),
+                      'age_days': age,
+                      'detail': (f'{listed} of {len(results)} directories list '
+                                 f'DC Hub; {stale} with out-of-date copy, '
+                                 f'{missing} missing')})
+
+    def _partner_email(cur):
+        cur.execute(
+            "SELECT COUNT(*) FILTER (WHERE status = 'sent'), "
+            "       COUNT(*) FILTER (WHERE status = 'sent' AND sent_at > %s), "
+            "       COUNT(*) FILTER (WHERE status = 'draft'), "
+            "       MAX(sent_at) "
+            "  FROM ai_lab_outreach_drafts", (now - timedelta(days=30),))
+        sent_all, sent_30d, queued, last = cur.fetchone()
+        summary.update({'partner_emails_sent': sent_all or 0,
+                        'partner_emails_sent_30d': sent_30d or 0,
+                        'partner_drafts_queued': queued or 0,
+                        'partner_email_last_sent_at': _iso(last)})
+        cur.execute(
+            "SELECT target_slug, sent_at, delivery_state "
+            "  FROM ai_lab_outreach_drafts WHERE status = 'sent' "
+            " ORDER BY sent_at DESC NULLS LAST LIMIT 10")
+        names = {}
+        try:
+            from routes.ai_lab_outreach import _TARGETS
+            names = {t['slug']: t['name'] for t in _TARGETS}
+        except Exception:
+            pass
+        for slug, sent_at, delivery in cur.fetchall():
+            events.append({'channel': 'email',
+                           'notes': 'Partner email ' + (delivery or 'submitted'),
+                           'platform': names.get(slug, 'AI lab'),
+                           'status': delivery or 'submitted',
+                           'timestamp': _iso(sent_at)})
+        st, age = _lane_state(last, now, IDLE_AFTER_DAYS['partner_email'])
+        detail = (f'{sent_30d or 0} sent in 30d; {queued or 0} drafts queued')
+        if not queued:
+            detail += ' - the daily sender has nothing to send'
+        lanes.append({'id': 'partner_email', 'name': 'Partner outreach (email)',
+                      'status': st, 'last_activity': _iso(last),
+                      'age_days': age, 'detail': detail})
+
+    def _self_registration(cur):
+        cur.execute(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE submitted_at > %s), "
+            "       COUNT(*) FILTER (WHERE status IN ('auto_approved','approved')), "
+            "       MAX(submitted_at) "
+            "  FROM ai_platform_submissions", (now - timedelta(days=30),))
+        total, last30, approved, last = cur.fetchone()
+        summary.update({'self_registrations': total or 0,
+                        'self_registrations_30d': last30 or 0,
+                        'self_registrations_approved': approved or 0,
+                        'self_registration_last_at': _iso(last)})
+        cur.execute(
+            "SELECT name, COALESCE(approved_at, processed_at, submitted_at) "
+            "  FROM ai_platform_submissions "
+            " WHERE status IN ('auto_approved','approved') "
+            " ORDER BY 2 DESC NULLS LAST LIMIT 5")
+        for name, at in cur.fetchall():
+            events.append({'channel': 'self_registration',
+                           'notes': 'Agent platform onboarded',
+                           'platform': (name or '')[:80],
+                           'status': 'approved', 'timestamp': _iso(at)})
+        st, age = _lane_state(last, now, IDLE_AFTER_DAYS['self_registration'])
+        lanes.append({'id': 'self_registration',
+                      'name': 'Agent self-registration',
+                      'status': st, 'last_activity': _iso(last), 'age_days': age,
+                      'detail': (f'{last30 or 0} submissions in 30d; '
+                                 f'{approved or 0} approved all-time')})
+
+    _run('directories', _directories)
+    _run('partner_email', _partner_email)
+    _run('self_registration', _self_registration)
+    events.sort(key=lambda e: e.get('timestamp') or '', reverse=True)
+    return {'events': events[:10], 'lanes': lanes, 'summary': summary}
+
+
+_REAL_CACHE = {'at': 0.0, 'val': None}
+_REAL_CACHE_TTL_S = 60
+
+
+def _cached_real_outreach():
+    """/api/ai-ecosystem/status is read by four public pages; the ledgers move
+    on a daily cadence, so a minute of reuse costs nothing and keeps a page
+    view from opening three pool connections."""
+    t = time.time()
+    if _REAL_CACHE['val'] is not None and t - _REAL_CACHE['at'] < _REAL_CACHE_TTL_S:
+        return _REAL_CACHE['val']
+    val = real_outreach_status()
+    _REAL_CACHE.update(at=t, val=val)
+    return val
+
 
 agent = AIEcosystemAgent()
 
