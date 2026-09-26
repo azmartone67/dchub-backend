@@ -50,3 +50,14 @@ def test_kill_switch_is_404(monkeypatch):
     monkeypatch.setenv("OPS_BRIEF_DISABLE", "1")
     r = _client().get("/api/v1/ops/brief")
     assert r.status_code == 404 and r.get_json()["error"] == "disabled"
+
+
+def test_every_freeze_names_its_surface_end_and_reason():
+    d = json.load(open(ob._BRIEF_PATH, encoding="utf-8"))
+    for e in d["frozen"]:
+        for k in ("id", "surface", "until", "reason"):
+            assert isinstance(e.get(k), str) and e[k].strip(), (e.get("id"), k)
+        assert e["id"].startswith("frz-"), e["id"]
+    ids = {e["id"] for e in d["frozen"]}
+    # The /mcp/chatgpt catalog is in OpenAI review; mcp#570 enforces it.
+    assert "frz-chatgpt-toolset" in ids
