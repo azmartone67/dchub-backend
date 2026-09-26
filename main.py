@@ -25304,13 +25304,27 @@ def facility_by_slug(slug):
             _c.execute("""
                 SELECT id, name, provider, city, state, country, market AS region,
                        latitude, longitude, power_mw, status, address,
-                       COALESCE(is_duplicate, 0) AS is_duplicate
+                       COALESCE(is_duplicate, 0) AS is_duplicate,
+                       canonical_slug
                 FROM discovered_facilities WHERE id = %s LIMIT 1
             """, (int(slug),))
             _r = _c.fetchone()
             if _r:
                 _cols = [d[0] for d in _c.description]
                 _data_id = dict(zip(_cols, _r))
+                # r-null-slug-id (2026-09-26): the numeric-id branch shipped
+                # cite_url_template ".../facilities/{slug}" beside a record with
+                # NO slug key -- the same unfillable template #5471 closed on the
+                # hash-slug branch. Measured live 2026-09-26T17:34Z:
+                #   /api/v1/facility/8484 -> data.slug absent, cite_url = directory
+                # while meta-externalagent kept requesting /facilities/null (74
+                # hits that UTC day, /api/ai/path-stats). Name the record's frozen
+                # slug when it is live; leave the key out when it is not, so no
+                # client can fill {slug} with null/None/undefined text from us.
+                from util.dead_slug import live_slug as _live_slug_id
+                _cs_id = _live_slug_id(_data_id.pop('canonical_slug', None))
+                if _cs_id:
+                    _data_id['slug'] = _cs_id
                 _resp_id = {'success': True, 'data': _data_id}
                 # provenance-v1 (2026-07-11): per-record v + collection block.
                 try:

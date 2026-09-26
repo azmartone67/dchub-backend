@@ -295,3 +295,54 @@ def test_indexnow_never_submits_a_dead_slug(monkeypatch):
     from routes.indexnow import _served_facility_urls
     urls = _served_facility_urls(["x-1a2b3c4d", "null", "None", "undefined"])
     assert urls == ["https://dchub.cloud/facilities/x-1a2b3c4d"]
+
+
+# ── r-null-slug-id (2026-09-26): the numeric-id branch and the meta echo ──
+# Measured live 2026-09-26T17:34Z, anonymous, cache-busted:
+#   /api/v1/facility/8484  -> data.slug absent,
+#                             provenance.cite_url_template ".../facilities/{slug}"
+#   /api/seo/meta-tags/facility?slug=null -> canonical + og:url
+#                             "https://dchub.cloud/facilities/null" (6x)
+# while /api/ai/path-stats counted 74 meta /facilities/{null} hits that UTC day.
+def test_numeric_id_branch_names_its_frozen_slug_before_provenance():
+    body = _func_src((ROOT / "main.py").read_text(), "facility_by_slug")
+    i_digit = body.find("if slug.isdigit():")
+    i_hash = body.find("parts = slug.rsplit('-', 1)")
+    assert -1 < i_digit < i_hash
+    branch = body[i_digit:i_hash]
+    sel = branch[branch.find("SELECT"):branch.find("FROM discovered_facilities")]
+    assert "canonical_slug" in sel, "numeric-id SELECT no longer reads canonical_slug"
+    i_live = branch.find("_live_slug_id(_data_id.pop('canonical_slug', None))")
+    i_set = branch.find("_data_id['slug'] = _cs_id")
+    i_prov = branch.find("_pv_a(_resp_id")
+    assert i_live != -1, "canonical_slug is not passed through live_slug"
+    assert i_set != -1, "the numeric-id record never gets a slug"
+    assert i_prov != -1
+    assert i_live < i_set < i_prov, "slug must be set before provenance is stamped"
+    # the raw column never rides out on the record
+    assert "_data_id.pop('canonical_slug'" in branch
+
+
+@pytest.fixture
+def meta_client():
+    from flask import Flask
+    smt = pytest.importorskip("seo_meta_tags")
+    app = Flask(__name__)
+    smt.setup_meta_routes(app)
+    return app.test_client()
+
+
+@pytest.mark.parametrize("v", ["null", "None", "undefined", "nan", "NULL", " ", "null.html"])
+def test_meta_tags_never_echo_a_dead_slug(meta_client, v):
+    r = meta_client.get("/api/seo/meta-tags/facility", query_string={"slug": v})
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert not re.search(r"/facilities/(null|none|undefined|nan)\b", body, re.I), body[:300]
+    j = r.get_json()
+    assert j["meta"]["canonical"] == "https://dchub.cloud/assets"
+
+
+def test_meta_tags_keep_a_live_slug(meta_client):
+    r = meta_client.get("/api/seo/meta-tags/facility",
+                        query_string={"slug": "x-1a2b3c4d"})
+    assert r.get_json()["meta"]["canonical"] == "https://dchub.cloud/facilities/x-1a2b3c4d"

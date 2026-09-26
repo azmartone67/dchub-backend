@@ -441,7 +441,12 @@ def setup_meta_routes(app):
         state_country = request.args.get('region', '')
         power_mw = request.args.get('power', 'N/A')
         tier = request.args.get('tier', 'Enterprise')
-        slug = request.args.get('slug', '')
+        # r-null-slug-id (2026-09-26): ?slug=null echoed straight into the
+        # canonical + og:url as https://dchub.cloud/facilities/null (measured
+        # live 2026-09-26T17:34Z, 6 occurrences in one response). A dead slug
+        # is no slug: fall back to the no-slug branch below.
+        from util.dead_slug import live_slug as _live_slug
+        slug = _live_slug(request.args.get('slug', '')) or ''
         
         meta = {}
         for key, template in FACILITY_META_TEMPLATE.items():
