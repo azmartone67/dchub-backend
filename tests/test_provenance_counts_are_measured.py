@@ -72,7 +72,7 @@ def test_the_seeds_differ_from_the_measured_fixtures():
     stop being able to tell a measurement from a floor — and would pass
     vacuously. Re-pick the fixture; do not delete the test."""
     assert cs._FALLBACK["facilities"] != _MEASURED_TRACKED
-    assert cs._FALLBACK["facilities_verified"] != _MEASURED_VERIFIED
+    assert cs._FALLBACK["facilities_with_keeper_distinct"] != _MEASURED_VERIFIED
 
 
 # ── 1. the defect: seeds must never be published ────────────────────────────
@@ -100,7 +100,7 @@ def test_a_cache_full_of_seeds_publishes_nothing(stats_state):
 def test_the_seed_pair_is_never_published_while_unmeasured(stats_state):
     """Belt and braces over both unmeasured shapes: never taken, and taken
     but never marked. Catches a 'helpful' floor re-added downstream."""
-    seeds = {"verified": int(cs._FALLBACK["facilities_verified"]),
+    seeds = {"verified": int(cs._FALLBACK["facilities_with_keeper_distinct"]),
              "tracked": int(cs._FALLBACK["facilities"])}
     for setup in (_cold, lambda: _warm()):
         setup()
@@ -116,9 +116,9 @@ def test_a_measurement_that_equals_the_seed_still_publishes(stats_state):
     seed. A measured 21,000 is a fact and must publish; an unmeasured 21,000
     is a guess and must not. Only _live_keys can tell them apart."""
     _warm(facilities=cs._FALLBACK["facilities"],
-          facilities_verified=cs._FALLBACK["facilities_verified"])
+          facilities_with_keeper_distinct=cs._FALLBACK["facilities_with_keeper_distinct"])
     assert facility_verification_counts() == {
-        "verified": int(cs._FALLBACK["facilities_verified"]),
+        "verified": int(cs._FALLBACK["facilities_with_keeper_distinct"]),
         "tracked": int(cs._FALLBACK["facilities"])}
 
 
@@ -127,7 +127,7 @@ def test_a_measurement_that_equals_the_seed_still_publishes(stats_state):
 def test_a_measured_pair_publishes(stats_state):
     """The fix must not become 'omit always' — that trades a wrong number for
     a missing one on three live surfaces."""
-    _warm(facilities=_MEASURED_TRACKED, facilities_verified=_MEASURED_VERIFIED)
+    _warm(facilities=_MEASURED_TRACKED, facilities_with_keeper_distinct=_MEASURED_VERIFIED)
     assert facility_verification_counts() == {
         "verified": _MEASURED_VERIFIED, "tracked": _MEASURED_TRACKED}
 
@@ -135,8 +135,8 @@ def test_a_measured_pair_publishes(stats_state):
 # ── 3. partial measurement fails CLOSED ─────────────────────────────────────
 
 @pytest.mark.parametrize("live_key,other_key", [
-    ("facilities_verified", "facilities"),
-    ("facilities", "facilities_verified"),
+    ("facilities_with_keeper_distinct", "facilities"),
+    ("facilities", "facilities_with_keeper_distinct"),
 ])
 def test_one_measured_one_seeded_publishes_nothing(stats_state, live_key,
                                                    other_key):
@@ -163,7 +163,7 @@ def test_query_live_marks_the_tracked_count_as_live(stats_state, monkeypatch):
         "the tracked COUNT succeeded but never marked itself live — "
         "facility_verification_counts() will now omit the field on every "
         "response, forever. Restore _live_keys.add('facilities').")
-    assert cs.stat_is_live("facilities_verified")
+    assert cs.stat_is_live("facilities_with_keeper_distinct")
 
 
 def test_the_marker_reaches_the_publisher(stats_state, monkeypatch):

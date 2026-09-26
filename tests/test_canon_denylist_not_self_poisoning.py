@@ -149,11 +149,13 @@ def _resolved_like_production(monkeypatch):
     monkeypatch.setattr(canon, "_mcp_server_version", lambda *a, **kw: "2.12.16")
     import canonical_stats
     # ★2026-09-20: resolve_canon() now imports facilities_distinct_phrase.
-    # Both are stubbed — the old name still has callers, and stubbing only the
-    # one resolve_canon dropped would leave this fixture silently resolving to
-    # the 400 seed while the test claimed it had resolved live.
+    # The keeper helper is stubbed too (it still has callers); stubbing only
+    # the one resolve_canon dropped would leave this fixture silently resolving
+    # to the 400 seed while the test claimed it had resolved live.
+    # ★2026-09-25 facilities_verified_phrase was deleted — its callers moved
+    # to facilities_with_keeper_distinct_phrase.
     for _name, _val in (("facilities_distinct_phrase", "21,900+"),
-                        ("facilities_verified_phrase", "21,900+"),
+                        ("facilities_with_keeper_distinct_phrase", "21,900+"),
                         ("deals_phrase", "2,200+"),
                         ("markets_phrase", "300+"),
                         ("countries_verified_phrase", "170+"),

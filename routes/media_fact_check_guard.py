@@ -208,7 +208,7 @@ def _live_canon() -> dict:
         import canonical_stats as cs
         s = cs.get_canonical_stats() or {}
         out = {}
-        for k in ("facilities", "facilities_verified", "countries", "markets"):
+        for k in ("facilities", "facilities_with_keeper_distinct", "countries", "markets"):
             v = s.get(k)
             if isinstance(v, (int, float)) and v > 0:
                 out[k] = int(v)
@@ -536,7 +536,7 @@ def verify_media_text(text: str) -> dict:
                 # the verified subset — corroborate against the LARGER (tracked).
                 live = canon.get(metric)
                 if metric == "facilities":
-                    live = canon.get("facilities") or canon.get("facilities_verified")
+                    live = canon.get("facilities") or canon.get("facilities_with_keeper_distinct")
                 if not live:
                     unverified.append({
                         "claim": raw,

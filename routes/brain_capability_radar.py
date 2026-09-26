@@ -133,7 +133,8 @@ def _canonical_stats() -> dict | None:
                     # facilities" and the claim-breaker refused it two days
                     # running (rows_ne_buildings, 2026-08-22/23).
                     # Byte-for-byte the query canonical_stats.get_canonical_stats()
-                    # serves as facilities_verified — which IS the ceiling that
+                    # serves as facilities_with_keeper_distinct (formerly the
+                    # facilities_verified alias) — which IS the ceiling that
                     # media_fact_check_guard.check_facility_count_claims measures
                     # this copy against. Keep the two SQL strings identical: that
                     # is what makes composer and gate agree by construction

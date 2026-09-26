@@ -58,8 +58,10 @@ NOTE ON PUBLISHED NUMBERS
 -------------------------
 This does NOT move the number on /by-the-numbers: that binds total_facilities,
 which derives from duplicate_of_id and is untouched here. It DOES move
-`facilities_verified` / `facilities_with_keeper` (~5,737 -> ~14,964) and
-therefore canonical_stats.facilities_verified_phrase() ("5,700+" -> "14,900+").
+canonical_stats' keeper count (then named `facilities_verified`, now
+`facilities_with_keeper_distinct`) / `facilities_with_keeper` (~5,737 -> ~14,964)
+and therefore canonical_stats.facilities_with_keeper_distinct_phrase()
+("5,700+" -> "14,900+").
 Confirm that phrase change is wanted before applying.
 """
 from __future__ import annotations

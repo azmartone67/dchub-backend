@@ -517,7 +517,7 @@ def _lane_surface_canon(c) -> list[dict]:
     # on it would have published the raw discovery pile as the public
     # facility count, the exact over-claim canonical_stats exists to
     # prevent. Never compare public copy against a raw-record key.
-    _CITABLE = ("facilities_distinct", "facilities_verified")
+    _CITABLE = ("facilities_distinct", "facilities_with_keeper_distinct")
     _RAW_NEVER = ("facilities_tracked", "facilities_records", "facilities",
                   "total_facilities", "tracked")
     canon = None

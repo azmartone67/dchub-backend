@@ -20,7 +20,7 @@ DOWN. TWO OWNERS, split by what each is actually authoritative for:
       facilities  countries  markets  deals
     This is canonical_stats' own PUBLISHED output, so a regenerated facts file
     can never disagree with what that endpoint serves. ★ Fetched, NOT called
-    in-process: facilities_verified_phrase() and friends read the DATABASE and
+    in-process: facilities_distinct_phrase() and friends read the DATABASE and
     fall back to the module's cold-start constants without one — measured
     2026-07-30, a local run emitted facilities "400+" against a live 15,300+
     (38x under) and wrote the file with exit 0. See _require_phrase().
@@ -135,7 +135,7 @@ def _require_phrase(d: dict, key: str, source: str) -> str:
     """A published canon phrase: a non-empty string that contains a digit.
 
     ★ Why phrases are FETCHED and not computed in-process. The obvious form is
-    `c.facilities_verified_phrase()` — but those functions read the DATABASE, and
+    `c.facilities_distinct_phrase()` — but those functions read the DATABASE, and
     with no DB they return the module's cold-start _FALLBACK. Measured 2026-07-30
     running this exporter locally: facilities came out "400+" against a live
     15,300+ (a 38x UNDER-claim) and deals "1,400+", and the export wrote the file

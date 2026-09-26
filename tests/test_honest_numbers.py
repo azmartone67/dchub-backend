@@ -353,7 +353,7 @@ def test_canonical_stats_is_dedup_aware():
     marketed count from drifting 7x above reality again (21,461 raw vs 3,141
     active). The dynamic 'floor <= live count' check runs in the brain."""
     src = open(os.path.join(ROOT, "canonical_stats.py"), encoding="utf-8").read()
-    assert "facilities_verified" in src, "canonical_stats lost the verified/active count"
+    assert "facilities_with_keeper_distinct" in src, "canonical_stats lost the verified/active count"
     assert "COALESCE(is_duplicate,0)=0" in src, (
         "the verified count must filter the deduped fleet "
         "(COALESCE(is_duplicate,0)=0)")
@@ -383,8 +383,8 @@ def test_canonical_stats_is_dedup_aware():
     sys.path.insert(0, ROOT)
     cs = importlib.import_module("canonical_stats")
     fb = cs._FALLBACK
-    assert fb["facilities_verified"] <= fb["facilities"], (
-        f"verified floor {fb['facilities_verified']} must be <= tracked floor {fb['facilities']}")
+    assert fb["facilities_with_keeper_distinct"] <= fb["facilities"], (
+        f"verified floor {fb['facilities_with_keeper_distinct']} must be <= tracked floor {fb['facilities']}")
     assert fb["countries_verified"] <= fb["countries"], (
         f"verified-country floor {fb['countries_verified']} must be <= tracked {fb['countries']}")
 

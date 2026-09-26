@@ -36,7 +36,7 @@ def _ai_query():
 
 
 # Snapshot shaped like canonical_stats: both populations present, as live.
-SNAP = {"facilities_distinct": 24687, "facilities_verified": 23172,
+SNAP = {"facilities_distinct": 24687,
         "facilities_with_keeper_distinct": 23172, "deals": 1659}
 
 
@@ -50,9 +50,9 @@ def test_an_unmeasured_value_is_never_quoted():
     # Quoting the seed would publish a ~60x under-claim; 0 sends the caller to
     # the SQL fallback instead.
     f = _ns()["_stats_citation_facilities"]
-    seeded = {"facilities_distinct": 400, "facilities_verified": 400}
+    seeded = {"facilities_distinct": 400, "facilities_with_keeper_distinct": 400}
     assert f(seeded, lambda k: False) == 0
-    live_other = lambda k: k == "facilities_verified"
+    live_other = lambda k: k == "facilities_with_keeper_distinct"
     assert f(SNAP, live_other) == 0, "must ask about facilities_distinct itself"
     assert f(None, lambda k: True) == 0
 

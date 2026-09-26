@@ -236,7 +236,7 @@ def _canon_facts() -> dict:
             # ★2026-08-17: was facilities_phrase() = COUNT(*) rows, handed to a
             # composer that renders it as "N facilities". Distinct buildings is
             # the citeable basis (see ai_surface_canon).
-            "facilities_phrase": cs.facilities_verified_phrase(),
+            "facilities_phrase": cs.facilities_with_keeper_distinct_phrase(),
             "countries_phrase": cs.countries_phrase(),
             "markets": int(s.get("markets") or 0) or None,
             "grid_coverage": cs.grid_coverage_phrase("short"),

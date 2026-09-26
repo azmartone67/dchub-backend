@@ -137,7 +137,7 @@ def _phrases() -> dict:
             # the raw discovery pile as a building count — 26,000+ against a
             # public canon of 18,300+. {facilities_full} still carries the
             # explicitly-labelled "tracked · verified" pair.
-            "facilities":      _cs.facilities_verified_phrase(),
+            "facilities":      _cs.facilities_with_keeper_distinct_phrase(),
             "facilities_full": _cs.facilities_phrase_full(),
             "countries":       _cs.countries_phrase(),
             "markets":         _cs.markets_phrase(),

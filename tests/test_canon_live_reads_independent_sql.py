@@ -80,7 +80,7 @@ def _disc_ddl(with_is_duplicate):
 # Every key below is read in the early block. countries is the one that has
 # never marked itself live, so it is checked by value instead.
 _FACILITY_KEYS = ("facilities", "facilities_with_keeper_distinct",
-                  "facilities_verified", "facilities_distinct",
+                  "facilities_distinct",
                   "countries_verified")
 _OWNED = ("discovered_facilities", "market_power_scores")
 
@@ -172,7 +172,6 @@ def test_c1_a_dropped_column_does_not_unmeasure_the_reads_after_it(canon):
 
     # The failures happened: both reads that name is_duplicate are unmeasured.
     assert not canon.stat_is_live("facilities_with_keeper_distinct")
-    assert not canon.stat_is_live("facilities_verified")
     assert not canon.stat_is_live("countries_verified")
     # The read right after the keeper read is measured...
     assert canon.stat_is_live("facilities_distinct")

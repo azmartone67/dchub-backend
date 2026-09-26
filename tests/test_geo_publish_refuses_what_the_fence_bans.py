@@ -210,7 +210,7 @@ def test_growth_json_is_parsed_from_the_contents_api_shape(monkeypatch):
 def test_live_canon_is_the_distinct_population_not_the_raw_pile(monkeypatch):
     import canonical_stats as cs
     monkeypatch.setattr(cs, "get_canonical_stats", lambda force=False: {
-        "facilities": 29945, "facilities_verified": 21570, "deals": 2177})
+        "facilities": 29945, "facilities_with_keeper_distinct": 21570, "deals": 2177})
     assert pub._live_canon() == {"facilities": 21570, "deals": 2177}
 
 
@@ -279,7 +279,7 @@ def test_the_drafter_is_handed_one_facility_population(monkeypatch):
     """Sentinel phrases, one per helper, so the row shows exactly which reached it."""
     import canonical_stats as cs
     monkeypatch.setattr(cs, "facilities_phrase", lambda: "29,000+")
-    monkeypatch.setattr(cs, "facilities_verified_phrase", lambda: "21,500+")
+    monkeypatch.setattr(cs, "facilities_with_keeper_distinct_phrase", lambda: "21,500+")
     monkeypatch.setattr(cs, "countries_phrase", lambda: "170+")
     monkeypatch.setattr(cs, "markets_phrase", lambda: "300+")
     monkeypatch.setattr(cs, "deals_phrase", lambda: "2,100+")

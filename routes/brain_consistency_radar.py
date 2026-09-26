@@ -12729,7 +12729,7 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
     except Exception:
         return []
     findings: list[dict] = []
-    for key in ("facilities_verified", "countries_verified", "facilities", "countries", "markets"):
+    for key in ("facilities_with_keeper_distinct", "countries_verified", "facilities", "countries", "markets"):
         floor, real = fb.get(key), live.get(key)
         if floor is None or real is None:
             continue

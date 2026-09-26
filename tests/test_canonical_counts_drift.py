@@ -1261,7 +1261,7 @@ def test_bare_int_scanner_fires_on_the_literal_that_actually_shipped():
     # ...and the fix must be clean, or the guard is unusable rather than strict.
     derived = (
         "counts = {\n"
-        '    "facilities":       int(_cs.get("facilities_verified") or 0),\n'
+        '    "facilities":       int(_cs.get("facilities_with_keeper_distinct") or 0),\n'
         '    "markets_scored":   int(_cs.get("markets") or 0),\n'
         '    "deals_tracked":    int(_cs.get("deals") or 0),\n'
         "}\n"
@@ -2995,14 +2995,14 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # the 09-11 and 09-09 notes record.
     # ★2026-09-02: the injected pair moved with the canon walk (18,603/1,892 ->
     # 20,203/2,069). These are SYNTHETIC — the test's point is that the feed
-    # reads facilities_verified rather than the raw COUNT(*) pile — but they must
+    # reads facilities_with_keeper_distinct rather than the raw COUNT(*) pile — but they must
     # stay ABOVE the canon floor, because the feed correctly OMITS a count below
     # it (test_capabilities_omits_rather_than_publishing_below_canon_floor), and
     # an omitted field makes the assertion below fail for the wrong reason.
     # ★2026-09-21: 24,449 -> 24,508 with the eleventh walk (pin 24,500+), the
     # facilities_distinct reading that day. Same cause as every note above.
     live_like = {
-        "facilities_verified": 24508, "markets": 300,
+        "facilities_with_keeper_distinct": 24508, "markets": 300,
         "deals": 2237, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
@@ -3022,7 +3022,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
 
     assert counts.get("facilities") == 24508, (
         f"counts.facilities is {counts.get('facilities')!r}, not the injected "
-        "verified count — the feed is not reading facilities_verified. This is "
+        "verified count — the feed is not reading facilities_with_keeper_distinct. This is "
         "the assertion that would have failed on the raw COUNT(*) basis."
     )
     assert quotable, (
@@ -3046,7 +3046,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
 def test_capabilities_omits_rather_than_publishing_below_canon_floor():
     """A degraded render must drop the claim, not shrink it.
 
-    canonical_stats._FALLBACK["facilities_verified"] is 400 — a conservative
+    canonical_stats._FALLBACK["facilities_with_keeper_distinct"] is 400 — a conservative
     cold-start seed from 2026-06-30. Rendered with no DATABASE_URL, this feed
     used to put that straight into the CC-BY sentence: "DC Hub tracks 400
     data-center facilities". A 46x under-claim is not the safe direction of a
@@ -3064,7 +3064,7 @@ def test_capabilities_omits_rather_than_publishing_below_canon_floor():
     app = flask.Flask(__name__)
     app.register_blueprint(feed.agent_capabilities_bp)
     orig = feed._canon_stats
-    feed._canon_stats = lambda: {"facilities_verified": 400, "markets": 300,
+    feed._canon_stats = lambda: {"facilities_with_keeper_distinct": 400, "markets": 300,
                                  "deals": 1400, "countries_verified": 170}
     try:
         feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})

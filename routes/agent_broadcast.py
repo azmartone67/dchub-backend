@@ -827,12 +827,12 @@ def _fetch_data_growth(days: int) -> list[dict]:
         s = {}
     # ★2026-08-23 — this read `facilities` (COUNT(*) FROM discovered_facilities =
     # raw source ROWS, ~1.4x buildings) and published it to the ~93K agents on
-    # this feed as "N data-center facilities". `facilities_verified` is
+    # this feed as "N data-center facilities". `facilities_with_keeper_distinct` is
     # COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0 — the
     # citeable building count, and the ceiling
     # media_fact_check_guard.check_facility_count_claims measures published copy
     # against. The row pile may appear only framed as source records.
-    fac = s.get("facilities_verified")
+    fac = s.get("facilities_with_keeper_distinct")
     if not fac:
         return []
     bits = [f"{int(fac):,} data-center facilities"]

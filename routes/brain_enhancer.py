@@ -390,7 +390,7 @@ def _scan_canonical(out: list[dict]) -> None:
         return
     try:
         facilities = int(s.get("facilities") or 0)
-        verified = int(s.get("facilities_verified") or 0)
+        verified = int(s.get("facilities_with_keeper_distinct") or 0)
         if facilities and verified and verified < facilities:
             gap = facilities - verified
             out.append(_opportunity(

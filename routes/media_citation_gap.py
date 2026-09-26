@@ -263,7 +263,7 @@ def _canonical_facts() -> dict:
         # Use the phrase helpers when available (they floor conservatively).
         try:
             facts["facilities_tracked"] = cs.facilities_phrase()
-            facts["facilities_verified"] = cs.facilities_verified_phrase()
+            facts["facilities_with_keeper_distinct"] = cs.facilities_with_keeper_distinct_phrase()
             facts["countries"] = cs.countries_phrase()
             facts["markets"] = cs.markets_phrase()
             facts["grid_coverage"] = cs.grid_coverage_phrase("short")

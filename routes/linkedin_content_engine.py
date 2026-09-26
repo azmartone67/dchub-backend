@@ -864,7 +864,7 @@ def _canon_media_phrases() -> tuple[str, str]:
     """(facilities, deals) as citation-safe canonical phrases — e.g.
     ("18,600+", "1,900+"). ★THE ONE PLACE this module may source either count.
 
-    facilities = ``canonical_stats.facilities_verified_phrase()`` — distinct
+    facilities = ``canonical_stats.facilities_with_keeper_distinct_phrase()`` — distinct
     BUILDINGS (COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0),
     floored DOWN. That is byte-for-byte the ceiling
     ``media_fact_check_guard.check_facility_count_claims`` measures published
@@ -883,8 +883,10 @@ def _canon_media_phrases() -> tuple[str, str]:
     publishes.
     """
     try:
-        from canonical_stats import deals_phrase, facilities_verified_phrase
-        return (facilities_verified_phrase() or "", deals_phrase() or "")
+        from canonical_stats import (deals_phrase,
+                                     facilities_with_keeper_distinct_phrase)
+        return (facilities_with_keeper_distinct_phrase() or "",
+                deals_phrase() or "")
     except Exception:
         return "", ""
 
@@ -921,11 +923,11 @@ def _build_user_prompt(story_type: str, data: dict, landing: str) -> str:
     # AFTER those posts: it WILL refuse this copy from now on, exactly as it
     # refused the 16:00 capability slot two days running (#3111).
     #
-    # The citeable figure is `facilities_verified` = COUNT(DISTINCT
+    # The citeable figure is `facilities_with_keeper_distinct` = COUNT(DISTINCT
     # canonical_slug) WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT
     # NULL — and that is precisely the ceiling
     # media_fact_check_guard.check_facility_count_claims measures this copy
-    # against. Reading it through facilities_verified_phrase() keeps composer and
+    # against. Reading it through facilities_with_keeper_distinct_phrase() keeps composer and
     # gate on ONE number by construction, and the phrase floors DOWN, so the
     # anchor can never sit above the ceiling even mid-ingest.
     #

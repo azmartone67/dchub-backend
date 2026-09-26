@@ -201,11 +201,21 @@ def stats_canonical():
                 cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 stats["facilities_tracked"] = int(cur.fetchone()[0] or 0)
             except Exception:
+                # ★2026-09-25: a failed duplicate_of_id query publishes
+                # facilities_verified as None (present, unknown) — NEVER a
+                # canonical_stats value. This used to setdefault it from
+                # canonical_stats' `facilities_verified`, which was the
+                # deprecated alias of facilities_with_keeper_distinct:
+                # COUNT(DISTINCT canonical_slug) WHERE is_duplicate=0, a
+                # different population (~23,172 vs ~22,414) — or its 400
+                # cold-start seed — served under this endpoint's own name.
+                # canonical_stats measures no duplicate_of_id count, so there
+                # is nothing honest to fall back to. Key stays present so the
+                # response shape is stable.
+                stats.setdefault("facilities_verified", None)
                 try:
                     from canonical_stats import get_canonical_stats
                     _cs = get_canonical_stats()
-                    stats.setdefault("facilities_verified",
-                                     _cs.get("facilities_verified"))
                     stats.setdefault("facilities_tracked", _cs.get("facilities"))
                 except Exception:
                     pass

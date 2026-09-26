@@ -252,13 +252,13 @@ def _gather():
     # ★The four headline counts derive from canonical_stats — see _canon_stats()
     #  above for what each one used to be and why. The keys are chosen to match
     #  what resolve_canon() reads, NOT what reads best:
-    #    facilities     <- facilities_verified   (NOT `facilities`, the raw pile)
+    #    facilities     <- facilities_with_keeper_distinct (NOT `facilities`, the raw pile)
     #    markets_scored <- markets               (DISTINCT market_name - aggregates)
     #    deals_tracked  <- deals                 (deduped, quarantine excluded)
     #    countries      <- countries_verified    (deduped fleet, clean ISO codes)
     _cs = _canon_stats()
     counts = {
-        "facilities":       int(_cs.get("facilities_verified") or 0),
+        "facilities":       int(_cs.get("facilities_with_keeper_distinct") or 0),
         "markets_scored":   int(_cs.get("markets") or 0),
         "deals_tracked":    int(_cs.get("deals") or 0),
         "countries":        int(_cs.get("countries_verified") or 0),
@@ -281,7 +281,7 @@ def _gather():
     #
     #  markets and deals degrade to canonical_stats._FALLBACK values that ARE the
     #  published floors (300, 1400), so a DB outage costs them nothing. facilities
-    #  does not: its _FALLBACK["facilities_verified"] is 400 — a deliberately
+    #  does not: its _FALLBACK["facilities_with_keeper_distinct"] is 400 — a deliberately
     #  conservative cold-start seed from 2026-06-30, when the verified fleet was
     #  ~427. Measured with no DATABASE_URL, this feed rendered
     #
