@@ -1,0 +1,54 @@
+# Immutable monthly State of Power snapshot (2026-09-26).
+# At 00:10 UTC on the 1st, freeze the month that just closed into
+# state_of_power_snapshots, served forever at /state-of-power/<YYYY-MM> and
+# /api/v1/reports/state-of-power/<YYYY-MM>. A stored month is never
+# overwritten: the endpoint answers 409 already_captured, which counts as done.
+#
+# workflow_dispatch with `month` freezes a specific month now (e.g. the current
+# one, as a mid_month snapshot). The values are as of the capture time.
+
+name: State of Power — monthly snapshot
+
+on:
+  schedule:
+    - cron: '10 0 1 * *'
+  workflow_dispatch:
+    inputs:
+      month:
+        description: 'YYYY-MM to capture (defaults to the month that just closed)'
+        required: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Capture
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          MONTH: ${{ github.event.inputs.month }}
+        run: |
+          set -eo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          QS=""
+          if [ -n "$MONTH" ]; then QS="?month=$MONTH"; fi
+          for i in 1 2 3; do
+            CODE=$(curl -sS -o resp.json -w "%{http_code}" -X POST \
+              -H "X-Admin-Key: $ADMIN_KEY" \
+              -H "User-Agent: DCHub-StateOfPowerMonthly/1.0" \
+              --max-time 90 \
+              "https://dchub.cloud/api/v1/reports/state-of-power/snapshot$QS" || echo 000)
+            cat resp.json || true
+            echo
+            if [ "$CODE" = "201" ] || [ "$CODE" = "409" ]; then
+              echo "captured (HTTP $CODE)"
+              exit 0
+            fi
+            echo "attempt $i: HTTP $CODE, retrying in 60s"
+            sleep 60
+          done
+          echo "::error::state-of-power monthly snapshot failed"
+          exit 1
