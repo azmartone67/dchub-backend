@@ -1,13 +1,17 @@
 // Railway Infrastructure as Code for dchub-backend's services.
 //
-// Replaces Config as Code, which Railway stops reading on 2026-12-01. Root
-// railway.toml / railway.json deleted 2026-09-26 (#5606); daily's
-// services/daily/railway.json deleted with this block. railway-extractor.toml
-// (desirable-playfulness) is the last one left.
+// Replaces Config as Code, which Railway stops reading on 2026-12-01. Deleted:
+// root railway.toml / railway.json (#5606, 2026-09-26) and
+// services/daily/railway.json (#5620). railway-extractor.toml is the last one:
+// it stays until this file's desirable-playfulness block has been APPLIED and
+// the service's Config File setting cleared, because the extractor redeploys
+// on every main push and, with no file, would fall back to its stale dashboard
+// settings (Railpack + the `|| P=python3` fallback) — the crash class below.
 // Evaluated by the Railway CLI (`railway config plan` / `apply`), NOT at deploy
 // time: merging a change here does nothing until it is applied.
 //
-// Declared here: dchub-backend (web), dchub-worker, dchub-daily.
+// Declared here: dchub-backend (web), dchub-worker, dchub-daily,
+// desirable-playfulness (extractor cron).
 //
 // ★ partial: this repo owns ONLY the services it declares. Project
 // resourceful-essence also holds dchub-mcp-server (owned by partial
@@ -642,7 +646,34 @@ export default defineRailway(() => {
     },
   });
 
+  // desirable-playfulness — the extractor cron (extractor_cron.py every 5 min).
+  // Values from railway-extractor.toml (still present until this is applied),
+  // whose header
+  // documented the crash history this start command answers: under Railpack a
+  // container sometimes started mid-mise-reinstall and ran a bare interpreter
+  // (09-06 8c643bec, 09-08 7dfd3fe1). Dockerfile.extractor bakes the venv in;
+  // the start command probes that the deps import (5 tries x 3s) and FAILS LOUDLY
+  // instead of falling back to python3 — the `|| P=python3` fallback (#4046/#4050)
+  // selected exactly the bare interpreter that crashes, and #4257 removed it.
+  // Verify by a firing's log line: `[extractor] interpreter=/app/.venv/bin/python`.
+  // restartPolicyType NEVER is NOT Railway's default, so it must stay declared:
+  // a cron failure waits for the next firing instead of restarting.
+  const extractor = service("desirable-playfulness", {
+    source: dchubBackendRepo,
+    build: { builder: "DOCKERFILE", dockerfilePath: "Dockerfile.extractor" },
+    start: "sh -c 'P=\"${VIRTUAL_ENV:-/app/.venv}/bin/python\"; i=0; until \"$P\" -c \"import psycopg2, anthropic\" 2>/dev/null; do i=$((i+1)); if [ \"$i\" -ge 5 ]; then echo \"[extractor] FATAL: psycopg2/anthropic still unimportable via $P after ${i} tries; refusing to fall back to a bare interpreter\"; exit 1; fi; echo \"[extractor] deps unimportable via $P (try $i) - waiting for the runtime to settle\"; sleep 3; done; echo \"[extractor] interpreter=$P\"; exec \"$P\" extractor_cron.py --limit 50'",
+    replicas: { "us-west2": 1 },
+    deploy: { cronSchedule: "*/5 * * * *", restartPolicyType: "NEVER" },
+    env: {
+      ANTHROPIC_API_KEY: preserve(),
+      CLAUDE_MODEL: preserve(),
+      DRY_RUN: preserve(),
+      EIA_API_KEY: preserve(),
+      NEON_DATABASE_URL: preserve(),
+    },
+  });
+
   return project("resourceful-essence", {
-    resources: [web, worker, daily],
+    resources: [web, worker, daily, extractor],
   });
 });

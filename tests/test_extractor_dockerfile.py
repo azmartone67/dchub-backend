@@ -12,8 +12,10 @@ until after a bad one shipped:
      dchub-worker build from the ROOT of this repo on RAILPACK, so a root-level
      `Dockerfile` would switch THEIR builder with no edit to their config. This
      is the guard with blast radius beyond the extractor.
-  2. WIRED — railway-extractor.toml names the builder and a dockerfilePath that
-     resolves to a file that exists. A typo here is a build that never runs.
+  2. WIRED — the desirable-playfulness block in .railway/railway.ts (Railway
+     IaC; railway-extractor.toml until 2026-09-26) names the builder and a
+     dockerfilePath that resolves to a file that exists. A typo here is a build
+     that never runs.
   3. THE COPIED VENV IS VALID — both stages must use the SAME base image. The
      runtime stage copies /app/.venv, whose bin/python symlink and pyvenv.cfg
      point into the build stage's interpreter; that only resolves if the same
@@ -32,15 +34,19 @@ every "not in".
 
 import os
 import re
-import tomllib
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-TOML = os.path.join(ROOT, "railway-extractor.toml")
+from tests._railway_iac import ROOT, service_block, string_field
+
+SERVICE = "desirable-playfulness"
 
 
 def _cfg():
-    with open(TOML, "rb") as f:
-        return tomllib.load(f)
+    """The extractor's settings from .railway/railway.ts, shaped like the old toml."""
+    return {"build": {"builder": string_field(SERVICE, "builder"),
+                      "dockerfilePath": string_field(SERVICE, "dockerfilePath")},
+            "deploy": {"startCommand": string_field(SERVICE, "start"),
+                       "restartPolicyType": string_field(SERVICE, "restartPolicyType"),
+                       "cronSchedule": string_field(SERVICE, "cronSchedule")}}
 
 
 def _dockerfile_text():
@@ -61,7 +67,8 @@ def _code_lines(text):
 def test_the_extractor_builds_from_a_dockerfile():
     build = _cfg().get("build", {})
     assert build.get("builder") == "DOCKERFILE", (
-        "railway-extractor.toml no longer selects the DOCKERFILE builder — the "
+        ".railway/railway.ts no longer selects the DOCKERFILE builder for the "
+        "extractor — the "
         "service falls back to Railpack, which installs python at container "
         "start and reopens the 09-06/09-08 crash class")
     assert build.get("dockerfilePath"), (
@@ -134,3 +141,24 @@ def test_the_base_image_matches_runtime_txt():
     assert pinned in image, (
         f"runtime.txt pins python {pinned} but the image is {image!r}. The "
         "switch is meant to change WHERE the interpreter comes from, not which.")
+
+
+def test_the_start_command_fails_loudly_instead_of_falling_back():
+    # #4046/#4050 shipped `[ -x "$P" ] || P=python3`, which selected the bare
+    # interpreter that crashes; #4257 replaced it with an import probe that
+    # exits 1. The dashboard still held the old string on 2026-09-26, so a lost
+    # start command here would silently bring the fallback back.
+    start = _cfg()["deploy"]["startCommand"]
+    assert start, "the extractor has no start command in .railway/railway.ts"
+    assert "P=python3" not in start, "the python3 fallback is back"
+    assert 'import psycopg2, anthropic' in start, "the import probe is gone"
+    assert "[extractor] interpreter=$P" in start, (
+        "the interpreter log line is gone; it is how a firing is verified")
+    assert "extractor_cron.py --limit 50" in start
+
+
+def test_the_cron_never_restarts_and_runs_every_five_minutes():
+    # NEVER is not Railway's default (ON_FAILURE is), so omitting it would
+    # silently turn a failed firing into a restart loop.
+    assert _cfg()["deploy"]["restartPolicyType"] == "NEVER"
+    assert _cfg()["deploy"]["cronSchedule"] == "*/5 * * * *"
