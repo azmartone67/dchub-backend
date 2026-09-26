@@ -25325,11 +25325,15 @@ def facility_by_slug(slug):
                     # not a location. Say so instead of shipping Null Island.
                     from routes.provenance import normalize_coordinates as _pv_nc
                     _pv_nc(_data_id)
+                    # r-record-as-of (2026-09-26): the record's own vintage
+                    # (util/facility_as_of.py); the block had none.
+                    from util.facility_as_of import record_as_of as _pv_asof
                     _pv_a(_resp_id,
                           source="DC Hub facilities registry (discovered_facilities)",
                           method=("multi-source discovery + dedup verification; "
                                   "v: verified = passes the canonical fleet "
                                   "filter. " + _PV_B),
+                          as_of=_pv_asof(_c, _data_id.get('id')),
                           counts=_pv_c(), cite_template=_PV_FC,
                           default_v="tracked")
                 except Exception:
@@ -25599,11 +25603,16 @@ def facility_by_slug(slug):
             # r-nullisland (2026-08-31): see routes/provenance.normalize_coordinates
             from routes.provenance import normalize_coordinates as _pv_nc2
             _pv_nc2(data)
+            # r-record-as-of (2026-09-26): util/facility_as_of.py. Only a
+            # discovered_facilities anchor has that id space.
+            from util.facility_as_of import record_as_of as _pv_asof2
             _pv_a2(_resp_slug,
                    source="DC Hub facilities registry (discovered_facilities)",
                    method=("multi-source discovery + dedup verification; "
                            "v: verified = passes the canonical fleet filter, "
                            "tracked = not yet fleet-verified. " + _PV_B2),
+                   as_of=(_pv_asof2(c, data.get('id'))
+                          if _src_tbl == 'discovered_facilities' else None),
                    counts=_pv_c2(), cite_template=_PV_FC2,
                    default_v="tracked")
         except Exception:
