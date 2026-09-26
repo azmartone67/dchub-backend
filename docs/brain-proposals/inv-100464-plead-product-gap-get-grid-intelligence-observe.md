@@ -19,6 +19,20 @@ _Filed 2026-09-03T08:56:05.031069Z · inv #100464_
 
 Pull the source of the get_grid_intelligence handler in dchub-mcp-server (server.mjs / the grid tool module) so the paywall response body can be inspected for missing claim_free_key + email_capture coaching before any code change is proposed.
 
+## Rolled-up targets — class `plead_product_gap` (class collapse, 2026-09-26)
+
+This doc is now the single obligation for **5 occurrences** of
+`plead_product_gap`. The other 4 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `get_grid_intelligence @ dchub://product-lead/gap/tool/get_grid_intelligence` — was `inv-100464-plead-product-gap-get-grid-intelligence-observe.md` (filed 2026-09-03)
+- `get_interconnection_queue @ dchub://product-lead/gap/tool/get_interconnection_queue` — was `inv-100465-plead-product-gap-get-interconnection-queue-obs.md` (filed 2026-09-03)
+- `campus center hyperscale northern virginia @ dchub://product-lead/gap/intent/campus center hyperscale northern virginia` — was `inv-100509-plead-product-gap-campus-center-hyperscale-north.md` (filed 2026-09-04)
+- `list_transactions @ dchub://product-lead/gap/tool/list_transactions` — was `inv-100529-plead-product-gap-list-transactions-observed-at.md` (filed 2026-09-05)
+- `get_water_risk @ dchub://product-lead/gap/tool/get_water_risk` — was `inv-100627-plead-product-gap-get-water-risk-observed-at-d.md` (filed 2026-09-12)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

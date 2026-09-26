@@ -19,9 +19,16 @@ _Filed 2026-09-08T02:39:12.732419Z · inv #100584_
 
 Open routes/iso_orchestrator.py and trace the aggregate fan-out code that AEC registers under to identify the specific stalled ingest feed, then check grid_data for AEC's last write timestamp to confirm the loop is stopped before restarting that feed.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md`, which stays
+OPEN as the single obligation for `coverage_gap_iso`. This doc's target —
+`AEC @ dchub://coverage/iso` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100528-coverage-gap-iso-wacm-observed-at-dchub-cove.md (class collapse)

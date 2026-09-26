@@ -13,9 +13,16 @@ _Filed 2026-08-28T20:18:19.286815Z · inv #100387_
 
 Approve the two-step remedy: (1) after a quick reproduce (curl one dead URL + check last press-rss.yml run), trigger `gh workflow run press-rss.yml` in dchub-frontend and confirm all 8 story URLs return 200; (2) decide whether to also fund the small freshness fence (alert when press_releases rows are newer than the newest baked static page) versus accepting recurrence risk. If the reproduce shows the bake is current but 404s persist, redirect the investigation to slug mismatch / edge routing instead.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100383-5-of-8-published-story-link-s-are-dead-observ.md`, which stays
+OPEN as the single obligation for `media_story_links_dead`. This doc's target —
+`https://dchub.cloud/press-release/afternoon-pulse-2026-08-27-upper-peninsula-third -> HTTP 404; https://dchub.cloud/press-release/2026-08-26-cheyenne-wyoming-we…` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100383-5-of-8-published-story-link-s-are-dead-observ.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100383-5-of-8-published-story-link-s-are-dead-observ.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100383-5-of-8-published-story-link-s-are-dead-observ.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100383-5-of-8-published-story-link-s-are-dead-observ.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100383-5-of-8-published-story-link-s-are-dead-observ.md (class collapse)

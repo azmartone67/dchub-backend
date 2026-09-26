@@ -19,9 +19,16 @@ _Filed 2026-09-07T23:24:30.793794Z · inv #100579_
 
 Open routes/iso_orchestrator.py, locate the fan-out entry that registers TEC under its aggregate code, and add error logging around each per-metric upstream API call in that loop to capture which metrics are erroring for TEC over a 24h window.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100493-iso-metric-count-dropped-observed-at-grid-data.md`, which stays
+OPEN as the single obligation for `iso_metric_count_dropped`. This doc's target —
+`grid_data: iso=TEC` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100493-iso-metric-count-dropped-observed-at-grid-data.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100493-iso-metric-count-dropped-observed-at-grid-data.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100493-iso-metric-count-dropped-observed-at-grid-data.md (class collapse)

@@ -15,8 +15,8 @@ Choose between (A) approving a one-time generalized gateway route-alias/tombston
 
 ## Rolled-up targets — class `repeated_404_pattern` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **7 occurrences** of
-`repeated_404_pattern`. The other 6 were closed against it. They are listed here
+This doc is now the single obligation for **9 occurrences** of
+`repeated_404_pattern`. The other 8 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
@@ -28,6 +28,8 @@ discharged the obligation.
 - `/api/v1/energy/retail/rates` — was `agenda-100143-reliability-brain-finding-repeated-404-patter.md` (filed 2026-07-26)
 - `/api/v1/infrastructure/transmission` — was `inv-100020-brain-finding-repeated-404-pattern-api-v1-in.md` (filed 2026-07-28)
 - `/js/dchub-nav.js` — was `agenda-100170-reliability-brain-finding-repeated-404-patter.md` (filed 2026-08-05)
+- `/api/v1/infrastructure/transmission` — was `inv-100221-repeated-404-pattern-observed-at-api-v1-infra.md` (filed 2026-08-18; added 2026-09-26)
+- `/js/dchub-webmcp.js` — was `inv-100226-repeated-404-pattern-observed-at-js-dchub-web.md` (filed 2026-08-18; added 2026-09-26)
 
 ## Human checklist
 

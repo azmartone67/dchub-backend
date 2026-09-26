@@ -19,9 +19,16 @@ _Filed 2026-08-18T19:13:08.795887Z · inv #100221_
 
 Choose the investigation-then-fix path: (a) pull the Flask url_map / routes source to find whether a transmission endpoint exists under another path, then decide backend alias vs frontend caller fix vs treating the traffic as bot noise (block/410). No mechanical remedy is proposed because no verified file or unique find string exists in the evidence.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100138-reliability-brain-finding-repeated-404-patter.md`, which stays
+OPEN as the single obligation for `repeated_404_pattern`. This doc's target —
+`/api/v1/infrastructure/transmission` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100138-reliability-brain-finding-repeated-404-patter.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100138-reliability-brain-finding-repeated-404-patter.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-100138-reliability-brain-finding-repeated-404-patter.md (class collapse)

@@ -15,8 +15,8 @@ Approve one of: (A) schedule facility-dedup apply (all countries, confirm=1) as 
 
 ## Rolled-up targets — class `facility_duplicates_unmarked` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **6 occurrences** of
-`facility_duplicates_unmarked`. The other 5 were closed against it. They are listed here
+This doc is now the single obligation for **12 occurrences** of
+`facility_duplicates_unmarked`. The other 11 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
@@ -27,6 +27,12 @@ discharged the obligation.
 - `/api/v1/admin/facility-dedup/analyze?country=AU` — was `inv-100142-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-15)
 - `/api/v1/admin/facility-dedup/analyze?country=FR` — was `inv-100153-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-15)
 - `/api/v1/admin/facility-dedup/analyze?country=SG` — was `inv-100164-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-16)
+- `/api/v1/admin/facility-dedup/analyze?country=CA` — was `inv-100215-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-18; added 2026-09-26)
+- `/api/v1/admin/facility-dedup/analyze?country=NL` — was `inv-100247-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-19; added 2026-09-26)
+- `/api/v1/admin/facility-dedup/analyze?country=GB` — was `inv-100307-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-21; added 2026-09-26)
+- `/api/v1/admin/facility-dedup/analyze?country=BR` — was `inv-100322-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-08-21; added 2026-09-26)
+- `/api/v1/admin/facility-dedup/analyze?country=IN` — was `inv-100625-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-09-12; added 2026-09-26)
+- `/api/v1/admin/facility-dedup/analyze?country=ID` — was `inv-100626-facility-duplicates-unmarked-observed-at-api.md` (filed 2026-09-12; added 2026-09-26)
 
 ## Human checklist
 

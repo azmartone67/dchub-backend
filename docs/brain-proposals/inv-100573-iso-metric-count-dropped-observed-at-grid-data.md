@@ -19,9 +19,16 @@ _Filed 2026-09-07T21:10:47.445550Z · inv #100573_
 
 Open routes/iso_orchestrator.py, locate the fan-out entry that registers TAL under its aggregate ISO code, and add/inspect per-metric error logging on that ingest call to capture which of the 5-15 expected metrics are erroring for iso=TAL over the last 24h.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100493-iso-metric-count-dropped-observed-at-grid-data.md`, which stays
+OPEN as the single obligation for `iso_metric_count_dropped`. This doc's target —
+`grid_data: iso=TAL` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100493-iso-metric-count-dropped-observed-at-grid-data.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100493-iso-metric-count-dropped-observed-at-grid-data.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100493-iso-metric-count-dropped-observed-at-grid-data.md (class collapse)

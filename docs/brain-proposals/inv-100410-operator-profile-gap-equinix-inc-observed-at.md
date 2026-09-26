@@ -19,6 +19,21 @@ _Filed 2026-09-01T00:13:27.199779Z · inv #100410_
 
 Decide whether to (a) canonicalize 'Equinix, Inc.' into the 'Equinix' operator identity via a data migration/alias entry (with a 301 redirect from /operators/equinix,-inc.), and (b) whether to then prioritize a power_mw/market backfill for the merged ~674-facility Equinix fleet — versus leaving the two records split and enriching each separately. No mechanical code fix is proposed because the root cause is unnormalized provider data, not a uniquely-identifiable string in a single source file.
 
+## Rolled-up targets — class `operator_profile_gap` (class collapse, 2026-09-26)
+
+This doc is now the single obligation for **6 occurrences** of
+`operator_profile_gap`. The other 5 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `Equinix, Inc. @ /operators/equinix,-inc.` — was `inv-100410-operator-profile-gap-equinix-inc-observed-at.md` (filed 2026-09-01)
+- `Equinix @ /operators/equinix` — was `inv-100458-operator-profile-gap-equinix-observed-at-oper.md` (filed 2026-09-03)
+- `Digital Realty @ /operators/digital-realty` — was `inv-100460-operator-profile-gap-digital-realty-observed-at.md` (filed 2026-09-03)
+- `Equinix, Inc. @ /operators/equinix-inc` — was `inv-100504-operator-profile-gap-equinix-inc-observed-at.md` (filed 2026-09-03)
+- `Digital Realty @ /operators/digital-realty` — was `agenda-100260-reliability-brain-finding-operator-profile-ga.md` (filed 2026-09-12)
+- `Equinix, Inc. @ /operators/equinix-inc` — was `agenda-100271-reliability-brain-finding-operator-profile-ga.md` (filed 2026-09-19)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

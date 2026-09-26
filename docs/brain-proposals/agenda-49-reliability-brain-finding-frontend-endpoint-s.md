@@ -13,8 +13,8 @@ Choose the remediation path: (a) approve pulling the metric definition + APM/tim
 
 ## Rolled-up targets — class `frontend_endpoint_slow` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **5 occurrences** of
-`frontend_endpoint_slow`. The other 4 were closed against it. They are listed here
+This doc is now the single obligation for **7 occurrences** of
+`frontend_endpoint_slow`. The other 6 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
@@ -24,6 +24,8 @@ discharged the obligation.
 - `/ai-pipeline` — was `agenda-100095-reliability-brain-finding-frontend-endpoint-s.md` (filed 2026-07-14)
 - `/` — was `agenda-100097-reliability-brain-finding-frontend-endpoint-s.md` (filed 2026-07-14)
 - `/dashboard` — was `agenda-100100-reliability-brain-finding-frontend-endpoint-s.md` (filed 2026-07-15)
+- `/pricing` — was `inv-100325-frontend-endpoint-slow-observed-at-pricing.md` (filed 2026-08-21; added 2026-09-26)
+- `/snapshot` — was `inv-100385-frontend-endpoint-slow-observed-at-snapshot.md` (filed 2026-08-28; added 2026-09-26)
 
 ## Human checklist
 

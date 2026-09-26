@@ -19,6 +19,19 @@ _Filed 2026-08-15T07:40:52.274776Z · inv #100139_
 
 Choose one: (a) keep plan_query live and open a 14-day watch with per-tool error-log review before revisiting the sunset question, (b) actively deprecate plan_query with a migration notice pointing consumers to execute_plan, or (c) commission the missing codebase/call-site search to determine whether any consumers remain before deciding. No mechanical remedy block is proposed because no file or unique find-string is evidenced and a sunset is a coordinated, judgement-based change.
 
+## Rolled-up targets — class `mcp_tool_sunset_candidate` (class collapse, 2026-09-26)
+
+This doc is now the single obligation for **4 occurrences** of
+`mcp_tool_sunset_candidate`. The other 3 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `tool:plan_query` — was `inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md` (filed 2026-08-15)
+- `tool:search` — was `inv-100580-mcp-tool-sunset-candidate-observed-at-tool-sea.md` (filed 2026-09-07)
+- `tool:find_alternatives` — was `inv-100654-mcp-tool-sunset-candidate-observed-at-tool-fin.md` (filed 2026-09-15)
+- `tool:bind_email` — was `inv-100657-mcp-tool-sunset-candidate-observed-at-tool-bin.md` (filed 2026-09-18)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

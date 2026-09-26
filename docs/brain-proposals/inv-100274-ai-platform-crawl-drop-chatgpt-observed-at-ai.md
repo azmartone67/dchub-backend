@@ -19,9 +19,16 @@ _Filed 2026-08-20T01:56:39.461610Z · inv #100274_
 
 Choose whether to (a) close this alert as covered by the 2026-07-15 prior fix after verifying chatgpt request volume has recovered in ai_requests, or (b) open an ops investigation into CDN/WAF bot-management rules and robots/llms.txt render paths as a shared root cause for the chatgpt+copilot+gemini drops. No code remedy is proposed because no chatgpt-specific code path appeared in evidence and no unique find-string can be verified — this is a config/ops diagnosis, not a mechanical fix.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-74-reliability-brain-finding-ai-platform-crawl-d.md`, which stays
+OPEN as the single obligation for `ai_platform_crawl_drop`. This doc's target —
+`chatgpt @ ai_requests` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-74-reliability-brain-finding-ai-platform-crawl-d.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-74-reliability-brain-finding-ai-platform-crawl-d.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-74-reliability-brain-finding-ai-platform-crawl-d.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-74-reliability-brain-finding-ai-platform-crawl-d.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-74-reliability-brain-finding-ai-platform-crawl-d.md (class collapse)

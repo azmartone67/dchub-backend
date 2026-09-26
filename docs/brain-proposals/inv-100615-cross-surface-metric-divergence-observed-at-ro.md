@@ -19,9 +19,16 @@ _Filed 2026-09-11T04:59:19.250347Z · inv #100615_
 
 Fetch the verbatim source of routes/mcp_presence_crawler.py lines 2420-2460 plus the definition/reference sites of cross_surface_metric_divergence in that repo, and paste them back so the exact find-string and its uniqueness can be verified before any edit is proposed.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100042-cross-surface-metric-divergence-observed-at-ro.md`, which stays
+OPEN as the single obligation for `cross_surface_metric_divergence`. This doc's target —
+`routes/mcp_presence_crawler.py:2440` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100042-cross-surface-metric-divergence-observed-at-ro.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100042-cross-surface-metric-divergence-observed-at-ro.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100042-cross-surface-metric-divergence-observed-at-ro.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100042-cross-surface-metric-divergence-observed-at-ro.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100042-cross-surface-metric-divergence-observed-at-ro.md (class collapse)

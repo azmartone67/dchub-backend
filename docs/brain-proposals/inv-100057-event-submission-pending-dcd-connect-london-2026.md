@@ -19,9 +19,16 @@ _Filed 2026-08-09T19:46:30.515688Z · inv #100057_
 
 Decide whether DC Hub submits to DCD>Connect London 2026 before the 2026-09-01 deadline or explicitly withdraws/declines — then record that decision to clear the pending finding, following the same closure pattern used for DCD>Connect Virginia 2026 (brain_findings/7830). No mechanical code fix applies: the 'find' string would live in data/ops state, not in a source file, so the remedy block is intentionally omitted.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100044-event-submission-pending-dcd-connect-london-2026.md`, which stays
+OPEN as the single obligation for `event_submission_pending`. This doc's target —
+`DCD>Connect London 2026 @ /events` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100044-event-submission-pending-dcd-connect-london-2026.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100044-event-submission-pending-dcd-connect-london-2026.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100044-event-submission-pending-dcd-connect-london-2026.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100044-event-submission-pending-dcd-connect-london-2026.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100044-event-submission-pending-dcd-connect-london-2026.md (class collapse)

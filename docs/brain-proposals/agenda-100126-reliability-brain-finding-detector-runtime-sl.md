@@ -15,14 +15,17 @@ Approve one of: (a) fund the structural refactor (parallel probes + per-probe ti
 
 ## Rolled-up targets — class `detector_runtime_slow` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **2 occurrences** of
-`detector_runtime_slow`. The other 1 were closed against it. They are listed here
+This doc is now the single obligation for **5 occurrences** of
+`detector_runtime_slow`. The other 4 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
 
 - `detector:check_surface_health_critical` — was `agenda-100126-reliability-brain-finding-detector-runtime-sl.md` (filed 2026-07-21)
 - `detector:check_mcp_funnel_leak` — was `inv-100141-detector-runtime-slow-observed-at-detector-che.md` (filed 2026-08-15)
+- `detector:check_llms_txt_contract` — was `inv-100194-detector-runtime-slow-observed-at-detector-che.md` (filed 2026-08-18; added 2026-09-26)
+- `detector:check_cron_endpoint_unscheduled` — was `inv-100222-detector-runtime-slow-observed-at-detector-che.md` (filed 2026-08-18; added 2026-09-26)
+- `detector:check_shadowed_routes` — was `inv-100223-detector-runtime-slow-observed-at-detector-che.md` (filed 2026-08-18; added 2026-09-26)
 
 ## Human checklist
 

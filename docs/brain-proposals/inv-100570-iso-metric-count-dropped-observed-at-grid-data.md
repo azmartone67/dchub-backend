@@ -19,9 +19,16 @@ _Filed 2026-09-07T21:10:58.443544Z · inv #100570_
 
 Pull the SEC ISO ingestion fetcher's last-24h logs/traces from the grid_data ingestion job (the same pipeline that writes INSERT INTO grid_data) and confirm whether the upstream SEC API is returning errors on the missing metrics before any code change; no mechanical find-and-replace fix applies because the failure is a partial upstream-API/data condition and no unique verbatim find-string for SEC was surfaced in the evidence.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100493-iso-metric-count-dropped-observed-at-grid-data.md`, which stays
+OPEN as the single obligation for `iso_metric_count_dropped`. This doc's target —
+`grid_data: iso=SEC` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100493-iso-metric-count-dropped-observed-at-grid-data.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100493-iso-metric-count-dropped-observed-at-grid-data.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100493-iso-metric-count-dropped-observed-at-grid-data.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100493-iso-metric-count-dropped-observed-at-grid-data.md (class collapse)

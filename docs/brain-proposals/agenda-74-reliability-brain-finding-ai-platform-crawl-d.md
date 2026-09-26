@@ -13,8 +13,8 @@ Approve (a) building a stateful finding lifecycle with fingerprint dedup and lan
 
 ## Rolled-up targets — class `ai_platform_crawl_drop` (class collapse, 2026-08-17)
 
-This doc is now the single obligation for **3 occurrences** of
-`ai_platform_crawl_drop`. The other 2 were closed against it. They are listed here
+This doc is now the single obligation for **6 occurrences** of
+`ai_platform_crawl_drop`. The other 5 were closed against it. They are listed here
 in full so the collapse loses no target — fixing the class means fixing
 every line below, and a fix that only covers this doc's own target has not
 discharged the obligation.
@@ -22,6 +22,9 @@ discharged the obligation.
 - `ai_requests` — was `agenda-74-reliability-brain-finding-ai-platform-crawl-d.md` (filed 2026-07-09)
 - `ai_requests` — was `inv-100065-ai-platform-crawl-drop-copilot-observed-at-ai.md` (filed 2026-08-10)
 - `ai_requests` — was `agenda-100193-reliability-brain-finding-ai-platform-crawl-d.md` (filed 2026-08-13)
+- `chatgpt @ ai_requests` — was `inv-100274-ai-platform-crawl-drop-chatgpt-observed-at-ai.md` (filed 2026-08-20; added 2026-09-26)
+- `perplexity @ ai_requests` — was `inv-100660-ai-platform-crawl-drop-perplexity-observed-at.md` (filed 2026-09-15; added 2026-09-26)
+- `perplexity @ ai_requests` — was `agenda-100269-reliability-brain-finding-ai-platform-crawl-d.md` (filed 2026-09-18; added 2026-09-26)
 
 ## Human checklist
 

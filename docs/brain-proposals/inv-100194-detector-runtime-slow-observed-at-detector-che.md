@@ -19,9 +19,16 @@ _Filed 2026-08-18T08:15:35.396543Z · inv #100194_
 
 Choose whether to (a) close this finding as likely-covered by the 2026-07-03/2026-07-06 detector_runtime_slow fixes after a single re-run of check_llms_txt_contract confirms runtime is under threshold, or (b) commission a profiling pass (per-probe wall-clock timing + source review of the detector) to identify the actual bottleneck before any code change. No mechanical remedy is proposed because no source code or unique find string is available in the evidence.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100126-reliability-brain-finding-detector-runtime-sl.md`, which stays
+OPEN as the single obligation for `detector_runtime_slow`. This doc's target —
+`detector:check_llms_txt_contract` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100126-reliability-brain-finding-detector-runtime-sl.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100126-reliability-brain-finding-detector-runtime-sl.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100126-reliability-brain-finding-detector-runtime-sl.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100126-reliability-brain-finding-detector-runtime-sl.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of agenda-100126-reliability-brain-finding-detector-runtime-sl.md (class collapse)

@@ -19,9 +19,16 @@ _Filed 2026-09-07T23:24:17.068366Z · inv #100580_
 
 Query the last-7d error and call-volume logs for tool:search on the MCP gateway (dchub-mcp-server) and compare its per-tool drop against the fleet-wide -71.5% to determine whether search fell faster than average (silent breakage) or tracks the systemic traffic collapse; do not open any PR editing the search tool until that comparison is in hand.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md`, which stays
+OPEN as the single obligation for `mcp_tool_sunset_candidate`. This doc's target —
+`tool:search` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100139-mcp-tool-sunset-candidate-observed-at-tool-pla.md (class collapse)

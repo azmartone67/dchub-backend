@@ -19,9 +19,16 @@ _Filed 2026-09-12T10:56:28.325711Z · inv #100627_
 
 Run `grep -rn "get_water_risk" dchub-mcp-server/ dchub-backend/routes/` to locate the actual handler file and confirm whether the product-lead flag is a conversion/CTA leak (no code fix) or a live runtime error before any remedy is scoped.
 
+## Triage — 2026-09-26 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100464-plead-product-gap-get-grid-intelligence-observe.md`, which stays
+OPEN as the single obligation for `plead_product_gap`. This doc's target —
+`get_water_risk @ dchub://product-lead/gap/tool/get_water_risk` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100464-plead-product-gap-get-grid-intelligence-observe.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100464-plead-product-gap-get-grid-intelligence-observe.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100464-plead-product-gap-get-grid-intelligence-observe.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100464-plead-product-gap-get-grid-intelligence-observe.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-09-26 as a class member of inv-100464-plead-product-gap-get-grid-intelligence-observe.md (class collapse)
