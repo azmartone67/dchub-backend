@@ -27,6 +27,7 @@ import time
 import logging
 import datetime as _dt
 import json
+import re
 from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
 
@@ -160,7 +161,12 @@ def _build_monthly_prompt(d: dict, audience: str = "default") -> str:
     facts = {
         "month": label,
         "facilities_total": h.get("facilities_total"),
-        "total_mw_global": h.get("total_mw"),
+        # ★2026-09-26 (audit): the raw MW figure (1,944,857) went in as
+        # `total_mw_global` and a summary came back as "1.944 exawatts" —
+        # off by a factor of a million — beside a tile reading 1,944.9 GW.
+        # Hand the model the unit the page renders, pre-converted.
+        "total_power_tracked_gw": (round(float(h["total_mw"]) / 1000, 1)
+                                   if h.get("total_mw") is not None else None),
         "facilities_added_month": h.get("facilities_added_month"),
         "deals_this_month": curr.get("count"),
         "deal_value_b_this_month": curr.get("value"),
@@ -203,6 +209,7 @@ DO NOT:
 - Use bullets or headers
 - Mention "DC Hub" or our platform in the prose (the report is ours)
 - Hallucinate any number not in the facts block
+- Convert units: quote power in MW or GW exactly as the facts give it
 
 Facts (all live as of {d.get('as_of_date')}):
 {json.dumps(facts, indent=2, default=str)}
@@ -545,6 +552,20 @@ def _call_claude(prompt: str, allow_foreground: bool = False) -> str | None:
         return None
 
 
+# A power figure in exawatts or petawatts is always a unit error on these
+# reports: all data-center capacity on Earth is a few hundred GW. Measured
+# 2026-09-26 on /reports/monthly ("1.944 exawatts" for 1,944.9 GW). A summary
+# carrying one is dropped (the page renders without it) rather than published.
+_IMPOSSIBLE_UNITS = re.compile(r"\b(?:exa|peta)watt", re.I)
+
+
+def _usable(text):
+    if text and _IMPOSSIBLE_UNITS.search(text):
+        logger.warning("narrative dropped: impossible power unit in text")
+        return None
+    return text
+
+
 def attach_narrative(d: dict, kind: str = "monthly",
                        audience: str = "default") -> dict:
     """Add `narrative_summary` to the report dict, in-place.
@@ -568,7 +589,7 @@ def attach_narrative(d: dict, kind: str = "monthly",
     key = _cache_key(kind, d, audience)
     now = time.monotonic()
     cached = _CACHE.get(key)
-    if cached and (now - cached["computed_at"]) < _CACHE_TTL:
+    if cached and (now - cached["computed_at"]) < _CACHE_TTL and _usable(cached["text"]):
         d["narrative_summary"] = {
             "text": cached["text"],
             "model": _MODEL,
@@ -580,7 +601,7 @@ def attach_narrative(d: dict, kind: str = "monthly",
 
     # RENDER-PERF: cross-worker Redis layer (survives gunicorn recycle). On a
     # hit, warm the local dict and emit the field without an LLM round-trip.
-    r_text = _redis_get_text(key)
+    r_text = _usable(_redis_get_text(key))
     if r_text:
         generated_at = _dt.datetime.utcnow().isoformat() + "Z"
         _CACHE[key] = {
@@ -612,7 +633,7 @@ def attach_narrative(d: dict, kind: str = "monthly",
     # r86: report endpoints can afford a one-time foreground generation (result
     # cached _CACHE_TTL); DCPI page render (attach_market_narrative) does not opt
     # in, so it keeps rendering instantly.
-    text = _call_claude(prompt, allow_foreground=True)
+    text = _usable(_call_claude(prompt, allow_foreground=True))
     if not text:
         return d
 

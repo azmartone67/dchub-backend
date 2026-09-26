@@ -48,6 +48,16 @@ from util.capacity_pipeline import CP_OK
 logger = logging.getLogger(__name__)
 monthly_trend_bp = Blueprint("monthly_trend", __name__)
 
+# ★2026-09-26 (audit): the September report ranked a market named "One" (one
+# facility, 5,000 MW) second by operating MW, and led its construction
+# pipeline with "Unknown" (98 projects, 52,167 MW). Neither is a market: they
+# are placeholder or mis-parsed labels in facilities.market and
+# capacity_pipeline.market. Market rankings leave them out; the pipeline's
+# unattributed total is published beside the table instead of as a row.
+# Compared lower-cased and trimmed. The underlying rows still need a data fix.
+_NOT_A_MARKET = ("unknown", "n/a", "na", "tbd", "none", "null", "other",
+                 "various", "multiple", "one")
+
 
 # ── Auth (admin endpoints only) ──────────────────────────────────────
 _INTERNAL_KEYS = accepted_internal_keys()
@@ -503,10 +513,11 @@ def _compute_report(year: int | None = None,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM facilities
                      WHERE market IS NOT NULL AND market != ''
+                       AND LOWER(TRIM(market)) NOT IN %s
                      GROUP BY market
                      ORDER BY mw DESC, n DESC
                      LIMIT 10
-                """)
+                """, (_NOT_A_MARKET,))
                 out["top_markets"] = [
                     {"market": r[0], "facilities": int(r[1]),
                      "total_mw": float(r[2] or 0)}
@@ -523,9 +534,10 @@ def _compute_report(year: int | None = None,
                             OR (state IS NOT NULL AND state != '')
                          GROUP BY CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,''))
                         HAVING CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')) != ''
+                           AND LOWER(TRIM(CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')))) NOT IN %s
                          ORDER BY mw DESC, n DESC
                          LIMIT 10
-                    """)
+                    """, (_NOT_A_MARKET,))
                     out["top_markets"] = [
                         {"market": r[0], "facilities": int(r[1]),
                          "total_mw": float(r[2] or 0)}
@@ -543,9 +555,10 @@ def _compute_report(year: int | None = None,
                              OR (state IS NOT NULL AND state != ''))
                          GROUP BY CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,''))
                         HAVING CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')) != ''
+                           AND LOWER(TRIM(CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')))) NOT IN %s
                          ORDER BY mw DESC NULLS LAST, n DESC
                          LIMIT 10
-                    """)
+                    """, (_NOT_A_MARKET,))
                     out["top_markets"] = [
                         {"market": r[0], "facilities": int(r[1]),
                          "total_mw": float(r[2] or 0)}
@@ -643,10 +656,11 @@ def _compute_report(year: int | None = None,
                            COALESCE(SUM(capacity_mw), 0) AS mw
                       FROM capacity_pipeline
                      WHERE COALESCE(market, '') != ''
+                       AND LOWER(TRIM(market)) NOT IN %s
                        AND {CP_OK}
                      GROUP BY market
                      ORDER BY mw DESC, n DESC LIMIT 10
-                """)
+                """, (_NOT_A_MARKET,))
                 out["pipeline_by_market"] = [
                     {"market": r[0], "projects": int(r[1]),
                      "mw":     float(r[2] or 0)}
@@ -656,6 +670,22 @@ def _compute_report(year: int | None = None,
                 try: c.rollback()
                 except Exception: pass
                 out["pipeline_by_market"] = []
+            # The same guarded rows with no usable market label, stated as a
+            # total rather than ranked as if "Unknown" were a place.
+            try:
+                cur.execute(f"""
+                    SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0)
+                      FROM capacity_pipeline
+                     WHERE (COALESCE(TRIM(market), '') = ''
+                            OR LOWER(TRIM(market)) IN %s)
+                       AND {CP_OK}
+                """, (_NOT_A_MARKET,))
+                r = cur.fetchone() or (0, 0)
+                out["pipeline_unattributed"] = {"projects": int(r[0] or 0),
+                                                "mw": float(r[1] or 0)}
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
 
             # ── AI / MCP USAGE ─────────────────────────────────────────
             # FIX r7: probe-filter the counts. Comparing unfiltered windows
@@ -771,6 +801,11 @@ def _build_press_kit(d: dict) -> dict:
         except Exception:
             return None
 
+    # ★2026-09-26 (audit): the AI-traffic quotes added "with Claude and Cursor
+    # all citing the platform by name in research responses" (and a
+    # ChatGPT/Claude/Gemini/Perplexity variant). Nothing in this report
+    # measures citations — its own brand_pulse.citation_score_pct read 0.0 the
+    # same day — so the clause is gone. A quote states only what `d` carries.
     quotables: list[str] = []
 
     if h.get("facilities_total") and h.get("total_mw"):
@@ -842,17 +877,13 @@ def _build_press_kit(d: dict) -> dict:
         direction = "increased" if ai_mom >= 0 else "decreased"
         quotables.append(
             f"AI-agent queries against DC Hub's research API "
-            f"{direction} {abs(ai_mom):.1f}% in {label}, with "
-            f"Claude and Cursor all citing the "
-            f"platform by name in research responses."
+            f"{direction} {abs(ai_mom):.1f}% in {label}."
         )
     elif ai.get("tool_calls_month"):
         # Have the count, can't honestly state a delta — say so plainly.
         quotables.append(
             f"DC Hub's research API served {ai['tool_calls_month']:,} "
-            f"AI-agent tool calls in {label}, with ChatGPT, Claude, "
-            f"Gemini, and Perplexity all citing the platform by name "
-            f"in research responses."
+            f"AI-agent tool calls in {label}."
         )
 
     return {
@@ -969,6 +1000,11 @@ def _render_html(d: dict, *, partner: str = "") -> str:
             f'<td style="text-align:right">{m["score"]}/100</td>'
             f'<td style="text-align:right">{_delta_html(m["delta"])}</td></tr>'
         )
+    _pu = d.get("pipeline_unattributed") or {}
+    _unattributed_note = (
+        f'\n    <p style="color:#71717a;font-size:13px">Not shown: '
+        f'{_pu["projects"]:,} pipeline projects ({_pu["mw"]:,.0f} MW) with no '
+        f'market recorded.</p>' if _pu.get("projects") else "")
     pipeline_rows = [
         f'<tr><td><strong>{m["market"]}</strong></td>'
         f'<td style="text-align:right">{m["projects"]:,}</td>'
@@ -1223,7 +1259,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     <table>
       <thead><tr><th>Market</th><th class="r">Projects</th><th class="r">Pipeline MW</th></tr></thead>
       <tbody>{_td(pipeline_rows, 3)}</tbody>
-    </table>
+    </table>{_unattributed_note}
   </section>
 
   <!-- Press kit -->
