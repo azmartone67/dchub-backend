@@ -3489,7 +3489,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/competitive_intel.py': {'isos_non_canonical'},
     'routes/content_enqueue.py': {'deals_stale_floor', 'facilities_bare_int', 'tool_count_literal'},
     'routes/demo.py': {'isos_non_canonical', 'tool_count_literal'},
-    'routes/email_capture.py': {'tool_count_literal'},
     'routes/energy_report.py': {'tool_count_literal'},
     'routes/funnel_health.py': {'tool_count_literal'},
     'routes/funnel_leads.py': {'deals_stale_floor'},
@@ -3506,15 +3505,13 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/marketing_engine.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'routes/mcp_funnel_upgrade.py': {'isos_non_canonical'},
     'routes/mcp_presence_crawler.py': {'tool_count_literal'},
-    'routes/mcp_quality_badge.py': {'tool_count_literal'},
     'routes/media_claim_verify.py': {'deals_stale_floor', 'markets_232'},
     'routes/media_outreach.py': {'deals_stale_floor', 'isos_non_canonical'},
     'routes/multiplatform_amplifier.py': {'tool_count_literal'},
     'routes/og_cards.py': {'facilities_stale_floor'},
     'routes/og_landings.py': {'deals_stale_floor', 'tool_count_literal'},
-    'routes/onboard_universal.py': {'tool_count_literal'},
     'routes/open_data_csv.py': {'isos_non_canonical'},
-    'routes/openapi_dynamic.py': {'markets_232', 'tool_count_literal'},
+    'routes/openapi_dynamic.py': {'markets_232'},
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/partner_landing.py': {'tool_count_literal'},
     # ★2026-09-21 — routes/paywall_hint_middleware.py ('4,000+' deals in a
@@ -3530,7 +3527,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/registry_surface_shell.py': {'markets_232', 'tool_count_literal'},
     'routes/sample_landing.py': {'tool_count_literal'},
     'routes/site_valuation_engine.py': {'deals_stale_floor'},
-    'routes/state_of_power.py': {'tool_count_literal'},
     'routes/testimonial_probe.py': {'facilities_stale_floor'},
     'routes/upgrade_outreach.py': {'markets_232'},
     'routes/vertex_integration.py': {'facilities_stale_floor', 'markets_232'},
@@ -3796,9 +3792,15 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # tool_count_literal: r-sku-wall rewrote the near-converter pitch whose
     # Starter line typed "all 48 tools" (Starter retired from every offer,
     # owner 2026-09-24).
-    assert len(outside) >= 69, (
+    # ★2026-09-26: 69 -> 65. email_capture (coaching learn hint "73 tools"),
+    # mcp_quality_badge ("53 tools") and onboard_universal ("48 tools") drained
+    # their tool_count_literal; openapi_dynamic dropped that token ("24 tools")
+    # and stays for markets_232. state_of_power ("48 MCP tools" in the_wedge)
+    # drained too. All five now render {canon_tools}. Four files, four
+    # decrements, lowered in the SAME commit that drains them.
+    assert len(outside) >= 65, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 69 did when last measured. If debt was genuinely drained, lower this "
+        "— 65 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

@@ -26,6 +26,8 @@ import urllib.request
 
 from flask import Blueprint, jsonify, Response
 
+from ai_surface_canon import canon_text
+
 mcp_quality_badge_bp = Blueprint("mcp_quality_badge", __name__)
 
 _BACKEND_BASE = os.environ.get(
@@ -85,7 +87,10 @@ def compute_quality() -> dict:
     # These are stable platform facts (the /mcp server advertises all three).
     comps["capabilities"] = {
         "score": 100.0, "weight": 0.10,
-        "detail": "53 tools + 6 prompts + 4 resources (tools/prompts/resources)",
+        # Tool count from the canon. This read "53 tools + 6 prompts + 4
+        # resources" while live served 92 / 14 / 77 (2026-09-26); the prompt
+        # and resource counts have no canon, so they are not stated.
+        "detail": canon_text("{canon_tools} tools, plus prompts and resources"),
     }
 
     # Weighted blend over whatever components resolved (renormalized).

@@ -294,10 +294,12 @@ def _gather():
                          "substations + gas pipelines + water risk + interconnection "
                          "queues + tax incentives — in one query."),
         },
-        "the_wedge": ("DC Hub is the only data-center-intelligence source an LLM can "
-                      "both QUERY (48 MCP tools) and CITE (CC-BY-4.0, stable URLs, "
-                      "JSON-LD). Competing sources are paywalled, login-gated, or "
-                      "block AI crawlers — none are agent-readable."),
+        # Tool count from the canon; this said "48 MCP tools" (2026-09-26 audit).
+        "the_wedge": canon_text(
+            "DC Hub is the only data-center-intelligence source an LLM can "
+            "both QUERY ({canon_tools} MCP tools) and CITE (CC-BY-4.0, stable URLs, "
+            "JSON-LD). Competing sources are paywalled, login-gated, or "
+            "block AI crawlers — none are agent-readable."),
         "license": {
             "id": "CC-BY-4.0",
             "name": "Creative Commons Attribution 4.0 International",

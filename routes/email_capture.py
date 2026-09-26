@@ -44,6 +44,7 @@ import secrets
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, Response, redirect
 from tier_registry import price_display as _canon_price_display
+from ai_surface_canon import canon_text as _canon_text
 
 
 def _pro_price():
@@ -1045,10 +1046,14 @@ def build_agent_coaching(tool_name: str, retry_request: str,
             # appears alongside the existing coaching fields.
             'learn': {
                 'cookbook': 'https://dchub.cloud/api/v1/agent/cookbook',
-                'hint': ('Unsure which of the 73 tools fits? Call the '
-                         'discover_tools MCP tool for the 8 tool families, '
-                         'or GET the cookbook for ready-made tool-chain '
-                         'recipes (args + tier + citation included).'),
+                # Tool count from the canon, never a literal: this said "73"
+                # while the live tools/list served 92, and "8 tool families"
+                # while discover_tools lists 9 (audit 2026-09-26).
+                'hint': _canon_text(
+                    'Unsure which of the {canon_tools} tools fits? Call the '
+                    'discover_tools MCP tool for the tool families, '
+                    'or GET the cookbook for ready-made tool-chain '
+                    'recipes (args + tier + citation included).'),
             },
         }
     except Exception:
