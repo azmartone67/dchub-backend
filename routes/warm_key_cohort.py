@@ -67,7 +67,8 @@ from flask import Blueprint, Response, jsonify, request
 # Re-exported under the old names, NOT renamed: audience_keys_export borrows
 # `_is_internal` from this module by object identity and pins that it does.
 from routes._audience_identity import (  # noqa: F401
-    INTERNAL_MARKERS as _INTERNAL_MARKERS, is_internal_email as _is_internal)
+    INTERNAL_MARKERS as _INTERNAL_MARKERS, is_internal_email as _is_internal,
+    is_harness_persona_email as _is_harness_persona)
 
 logger = logging.getLogger(__name__)
 warm_key_cohort_bp = Blueprint("warm_key_cohort", __name__)
@@ -288,7 +289,19 @@ def _gather() -> tuple:
                               -- keys, because consent attaches to the person.
                               bool_or(metadata->>'marketing_opt_in' = 'true')
                                 AS marketing_opt_in,
-                              MAX(metadata->>'name')  AS name
+                              MAX(metadata->>'name')  AS name,
+                              -- r-harness-personas (2026-09-25): an agent
+                              -- test harness bound invented addresses under
+                              -- many made-up client names. Distinct names on
+                              -- claim_api keys, and whether ANY key for the
+                              -- address was verified (OAuth or a confirm
+                              -- click), are what separate it from a person.
+                              COUNT(DISTINCT metadata->>'client_name')
+                                FILTER (WHERE metadata->>'source' = 'claim_api')
+                                AS claim_client_names,
+                              bool_or(metadata->>'email_verified_at' IS NOT NULL
+                                      OR metadata->>'source' = 'workos_oauth')
+                                AS email_verified
                          FROM mcp_dev_keys
                         WHERE status = 'active'
                           AND email IS NOT NULL AND email <> ''
@@ -366,7 +379,8 @@ def _gather() -> tuple:
     import datetime as _dt
     now = _dt.datetime.now(_dt.timezone.utc)
     seen = set()
-    for email, tier, bound_at, keys_held, opt_in, name in raw:
+    for (email, tier, bound_at, keys_held, opt_in, name,
+         claim_names, verified) in raw:
         if not email or email in seen:
             continue
         seen.add(email)
@@ -398,11 +412,31 @@ def _gather() -> tuple:
             "suppressed": email in suppressed,
             "marketing_opt_in": bool(opt_in) or email in consented,
             "name": (name or "").strip(),
+            "claim_client_names": int(claim_names or 0),
+            "email_verified": bool(verified),
+            "harness_persona": _harness_persona(email, claim_names, verified),
         })
     meta = {"excluded_by_tier": excluded_tiers}
     if errors:
         meta["errors"] = errors
     return rows, meta
+
+
+# An unverified address bound under this many DISTINCT claim_api client names
+# is treated as a harness persona. Measured 2026-09-25: the known personas had
+# 2-5; every real prospect in the cohort had 1 (client names like "Claude.ai",
+# "claude-code-brain", a Cowork workspace). A real
+# person running two agents on one unverified typed address is excluded too —
+# accepted, because the other error mails a stranger's inbox. Every excluded
+# address is listed in `harness_personas` for review, never dropped silently.
+HARNESS_MIN_CLIENT_NAMES = 2
+
+
+def _harness_persona(email, claim_client_names, email_verified) -> bool:
+    if _is_harness_persona(email):
+        return True
+    return (not email_verified
+            and int(claim_client_names or 0) >= HARNESS_MIN_CLIENT_NAMES)
 
 
 def _mailable(r: dict) -> bool:
@@ -413,6 +447,7 @@ def _mailable(r: dict) -> bool:
     it" is how a warm-list plan becomes a compliance incident.
     """
     return (bool(r["email"]) and r["domain_kind"] != "ours"
+            and not r.get("harness_persona")
             and not r["already_paid"] and not r["suppressed"])
 
 
@@ -454,11 +489,20 @@ def summarize(rows: list) -> dict:
         "cohort_total": len(rows),
         "by_tier": dict(sorted(by.items(), key=lambda kv: -kv[1])),
         "removed_ours": n(lambda r: r["domain_kind"] == "ours"),
+        "removed_harness_personas": n(lambda r: r.get("harness_persona")
+                                      and r["domain_kind"] != "ours"),
         "removed_already_paid": n(lambda r: r["already_paid"]
-                                  and r["domain_kind"] != "ours"),
+                                  and r["domain_kind"] != "ours"
+                                  and not r.get("harness_persona")),
         "removed_suppressed": n(lambda r: r["suppressed"]
                                 and r["domain_kind"] != "ours"
+                                and not r.get("harness_persona")
                                 and not r["already_paid"]),
+        # The addresses removed as personas, for a human to check. A real
+        # person here is a false positive to fix, not a lead to mail blind.
+        "harness_personas": sorted(r["email"] for r in rows
+                                   if r.get("harness_persona")
+                                   and r["domain_kind"] != "ours"),
         "mailable": n(_mailable),
         # ★ THE NUMBER AN OUTREACH SEND MAY SIZE ITSELF ON. `mailable` is
         # reachability; this is permission. They are different, and the gap
@@ -507,6 +551,13 @@ def summarize(rows: list) -> dict:
             "removed_ours covers _INTERNAL_MARKERS AND the named operator "
             "addresses in routes/_audience_identity, because a consumer "
             "mailbox carries no marker to match. "
+            "removed_harness_personas = addresses an agent test harness "
+            "invented: the named set in routes/_audience_identity, plus any "
+            "address with no verified key (no workos_oauth source, no "
+            "email_verified_at) bound under >= HARNESS_MIN_CLIENT_NAMES "
+            "distinct claim_api client names. The claim IP is NOT used: MCP "
+            "claims arrive via our own Railway-hosted MCP server, so real "
+            "users carry Railway IPs too. harness_personas lists them. "
             "top_tool_wall is the most frequent mcp_upgrade_signals."
             "tool_requested for the address, joined on user_email, which only "
             "exists where a bind wrote it back — a blank means unknown, never "

@@ -39,6 +39,15 @@ import os
 _DEFAULT_OPERATOR_EMAILS = frozenset({"azmartone@gmail.com",
                                       "azmartonetest1@gmail.com"})
 
+# More operator mailboxes, stored as SHA-256 of normalize_email(address) so this
+# PUBLIC repo does not publish them. Two turned up in the live warm-key cohort
+# as "prospects" on 2026-09-25. Check an address with
+# `email_digest(addr) in _OPERATOR_EMAIL_DIGESTS`.
+_OPERATOR_EMAIL_DIGESTS = frozenset({
+    "0fee8b6f1fc37d825f61cb8f5e6cdd43b99b8aa63fc9d2a77bb06bdfa8354030",
+    "8989522266a94e6bd50a17f7566e579914a14c1e8640f2c32f41706a27d342ef",
+})
+
 # Providers that ignore dots in the local part. Plus-tags are stripped for
 # every provider (near-universal); dots only for these, where it is the
 # documented behaviour rather than a guess.
@@ -114,7 +123,10 @@ def operator_emails_sql_list() -> str:
 
 def is_operator_email(email) -> bool:
     """True when this address reaches an operator mailbox. Never a prospect."""
-    return normalize_email(email) in operator_emails()
+    if normalize_email(email) in operator_emails():
+        return True
+    return bool(email) and "@" in str(email) and \
+        email_digest(email) in _OPERATOR_EMAIL_DIGESTS
 
 
 # Ours by SHAPE: our own domains, probe/QA plus-tags, hand-typed fixtures.
@@ -127,6 +139,51 @@ def is_operator_email(email) -> bool:
 INTERNAL_MARKERS = ("dchub.cloud", "dchub.io", "dchubmail.com", "@example.",
                     "example.com", "test@", "probe@", "+probe@", "+qa",
                     "+test", "+dev", "noreply", "no-reply")
+
+
+# Invented addresses an agent test harness bound to keys, 2026-07-29..08-10.
+# Measured 2026-09-25 (read-only query on mcp_dev_keys): every one came through
+# claim_api under made-up client names ("Blue Bend Event Logistics",
+# "opus-trajectory-agent", "trajectory-actor"...), one address reused across up
+# to five of them. They are NOT ours and NOT prospects, and a plausible gmail
+# address is most likely some real stranger's mailbox, so mailing it is spam.
+# ★ Stored as SHA-256 of normalize_email(address): this repo is PUBLIC and the
+#   addresses may belong to real people. Never paste them here in the clear.
+# ★ The claim IP cannot identify them: MCP claims reach the backend through our
+#   own Railway-hosted MCP server, so a real Claude.ai user's key carries a
+#   Railway IP too.
+# `DCHUB_HARNESS_PERSONA_EMAILS` (comma-separated, plain addresses) ADDS to the
+# set, never replaces it. The warm-key cohort also flags the pattern
+# (unverified, 2+ client names) so a new persona is caught without being named.
+_HARNESS_PERSONA_DIGESTS = frozenset({
+    "0c9264ddabd37f8b4fb13d0097fa3fe45b7fde2c18127b958652a13bf05130f6",
+    "b3cd723841769449ae6decfc3540d442e52f4df9d67e94507e895f66a4b55415",
+    "e8566a4c4ca01155d6883baf050b3dfb64655f7b980cac1de00ac2da76f1e4f6",
+    "87421c87143e01b3554d70d7c0082c5097fc54fa3c7f45246c00ec3a95a5cbb3",
+    "86280369278b17d1637329434c96bccd17fc350ac2f4fbfb4d92d55ec2371e16",
+    "3e6545f45e4ff3dc9044b81095a191258f51f76add42e69b919d9030c54dc87a",
+    "2f055d17061cc5648827c319ca57037c62612f0d2505876cac037178371ed6c8",
+    "922762501ba38cbf31a220c876c9b093dc82aafebd613bfbb2f287f71c493218",
+    "511cdeaf2198533ec8677c0d9538e998bc532d0251f7de2a0f6d88f72903dd4f",
+    "5b2108699ec2926bad5274d308a2a4f5cc6187295d1384f066efe8bf822afc6d",
+    "72ffbb56c20a72a67b1b4028153cf668a702e932adb275add7de864828f56fc2",
+})
+
+
+def email_digest(email) -> str:
+    """SHA-256 hex of normalize_email(email) — how named lists are stored."""
+    import hashlib
+    return hashlib.sha256(normalize_email(email).encode("utf-8")).hexdigest()
+
+
+def is_harness_persona_email(email) -> bool:
+    """True for an address a test harness invented. Never a prospect."""
+    if not email or "@" not in str(email):
+        return False
+    extra = os.environ.get("DCHUB_HARNESS_PERSONA_EMAILS") or ""
+    named = {normalize_email(e) for e in extra.split(",") if e.strip() and "@" in e}
+    return (email_digest(email) in _HARNESS_PERSONA_DIGESTS
+            or normalize_email(email) in named)
 
 
 def is_internal_email(email) -> bool:
