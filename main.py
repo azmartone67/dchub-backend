@@ -44964,6 +44964,16 @@ try:
 except Exception as _sop_e:
     print(f"[main] state_of_power_bp register failed: {_sop_e}", flush=True)
 
+# Immutable monthly State of Power snapshots (2026-09-26): /state-of-power/<YYYY-MM>
+# + /api/v1/reports/state-of-power/<YYYY-MM> + /months index, stored once per
+# month by .github/workflows/state-of-power-monthly.yml and never recomputed.
+try:
+    from routes.state_of_power_monthly import state_of_power_monthly_bp
+    app.register_blueprint(state_of_power_monthly_bp)
+    print("[main] state_of_power_monthly_bp registered: /state-of-power/<YYYY-MM> + /api/v1/reports/state-of-power/<YYYY-MM> + /months", flush=True)
+except Exception as _sopm_e:
+    print(f"[main] state_of_power_monthly_bp register failed: {_sopm_e}", flush=True)
+
 # r43-A (2026-05-27): DCPI verdict-shift email alerts (subscription).
 try:
     from routes.dcpi_alerts import dcpi_alerts_bp
