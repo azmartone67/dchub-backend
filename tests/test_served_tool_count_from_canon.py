@@ -65,3 +65,12 @@ def test_state_of_power_wedge(monkeypatch):
     monkeypatch.setattr(sop, "_fuel_block", lambda: {"fuel_mix": []})
     monkeypatch.setattr(sop, "_canon_mkts", lambda default=300: 331)
     _assert_canon(sop._gather()["the_wedge"], "/api/v1/reports/state-of-power the_wedge")
+
+
+def test_integrations_mcp_paste_block():
+    # "(the full 74-tool MCP server)" on /integrations/mcp (frontend audit 2026-09-26).
+    from routes import integrations_landing as L
+    html = L.render_mcp_landing()
+    m = re.search(r"the full (\d+)-tool MCP server", html)
+    assert m and m.group(1) == _want(), m and m.group(0)
+    assert "{canon_" not in html
