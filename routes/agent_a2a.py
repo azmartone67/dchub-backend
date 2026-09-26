@@ -241,6 +241,12 @@ def _card():
     out["version"]            = _agent["version"]
     out["url"]                = AGENT_CARD["endpoints"]["mcp"]
     out["preferredTransport"] = "JSONRPC"
+    # 2026-09-26: A2A v1.0 moved endpoint discovery into supportedInterfaces
+    # (ordered by preference) and validators — Cloudflare Agent Readiness among
+    # them — reject a card without it. Same endpoint as url/preferredTransport
+    # above; additive, so v0.3 readers are unaffected.
+    out["supportedInterfaces"] = [{"url": out["url"], "protocolBinding": "JSONRPC",
+                                   "protocolVersion": out["protocolVersion"]}]
     out["provider"]           = {"organization": _agent["vendor"], "url": _agent["homepage"]}
     out["capabilities"]       = {"streaming": False, "pushNotifications": False,
                                  "stateTransitionHistory": False}
