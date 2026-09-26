@@ -4443,17 +4443,43 @@ def _dcpi_tease_row(row):
     return out, locked
 
 
+def dcpi_unlock_cta(pack_opens=False):
+    """The one sentence every DCPI preview carries (owner, 2026-09-26).
+
+    The leaderboard and the scores list said the numbers are "Pro" while the
+    per-market preview said Developer or pack credits — and both surfaces
+    actually open for Developer and above (_DCPI_PAID_PLANS). One wording now:
+    Developer or Pro, priced from routes._stripe_links.TIER_PRICE_LABEL (the
+    price canon), never typed here. `pack_opens=True` is the per-market
+    wording: it adds the pack-credit route, which require_plan(pack_opens=True)
+    really does open there, and leaves the link to that tease's own ladder. Revisit with dec-mcp-paid-means-pro on 10-01.
+    """
+    try:
+        from routes._stripe_links import TIER_PRICE_LABEL as _lbl
+        dev = " (" + _lbl["developer"] + ")" if _lbl.get("developer") else ""
+        pro = " (" + _lbl["pro"] + ")" if _lbl.get("pro") else ""
+    except Exception:  # noqa: BLE001 — the sentence ships without prices
+        dev = pro = ""
+    cta = ("BUILD/CAUTION/AVOID verdicts and the market list are free. The "
+           "numeric DCPI scores (composite, excess-power, grid-constraint, "
+           "time-to-power) and risk/opportunity detail unlock with Developer"
+           + dev + " or Pro" + pro)
+    if pack_opens:
+        # A per-market tease carries its own measured ladder (upgrade_url /
+        # upgrade_options, /go/c links); a bare /pricing link there is refused
+        # by tests/test_paid_numerics_tease.py, so the sentence names no URL.
+        return cta + (". A key holding pack credits also opens a single market, "
+                      "at one credit per full answer.")
+    return cta + ": https://dchub.cloud/pricing."
+
+
 def _dcpi_gated_meta(total_available=None):
     """Standard _gated payload metadata (matches api_scores())."""
     m = {"_gated": True, "_preview_only": True, "_required_tier": "pro",
          "_locked_fields": list(_DCPI_MASK_FIELDS),
          "_signup_url": "https://dchub.cloud/pricing",
          "_playground_url": "https://dchub.cloud/playground",
-         "_upgrade_cta": ("BUILD/CAUTION/AVOID verdicts + the market list are free. "
-                          "The numeric DCPI scores (composite, excess-power, "
-                          "grid-constraint, time-to-power) and risk/opportunity "
-                          "detail are Pro — unlock all markets at "
-                          "https://dchub.cloud/pricing.")}
+         "_upgrade_cta": dcpi_unlock_cta()}
     if total_available is not None:
         m["_total_available"] = total_available
     try:
@@ -4782,12 +4808,7 @@ def api_scores():
         payload["_total_available"] = _total_rows
         payload["_locked_fields"] = list(_MASK_FIELDS)
         payload["_required_tier"] = "pro"
-        payload["_upgrade_cta"] = (
-            f"Market list + BUILD/CAUTION/AVOID verdicts are free. The numeric "
-            f"DCPI scores (composite, excess-power, grid-constraint, "
-            f"time-to-power) and risk/opportunity detail are Pro — unlock all "
-            f"{_total_rows} markets with scores at https://dchub.cloud/pricing."
-        )
+        payload["_upgrade_cta"] = dcpi_unlock_cta()
         payload["_signup_url"] = "https://dchub.cloud/pricing"
         payload["_playground_url"] = "https://dchub.cloud/playground"  # r80 #3: human can see what is gated, no signup
         # Conversion coaching: api_scores builds its gated payload INLINE (it does
@@ -5032,6 +5053,7 @@ def api_score_market(slug, _paid=None):
         row["locked"] = True
         row["forecast"] = {"available": False, "reason": "locked_in_preview"}
         row.update(tease_envelope(1, _locked))
+        row["_upgrade_cta"] = dcpi_unlock_cta(pack_opens=True)
     # provenance-v1 (2026-07-11): collection block, stamped AFTER masking so
     # gating never strips it. as_of = the score's computed_at (already
     # isoformat by here); data_basis/data_basis_source above stay as the
@@ -5337,7 +5359,8 @@ def api_score_market_v2(slug, _paid=None):
             "read_errors": read_errors,
         },
         computed_at=row.get("computed_at"),
-        **({} if _paid_v2 else tease_envelope(1, _DCPI_V2_LOCKED)),
+        **({} if _paid_v2 else {**tease_envelope(1, _DCPI_V2_LOCKED),
+                                 "_upgrade_cta": dcpi_unlock_cta(pack_opens=True)}),
     ), 200
 
 
@@ -6013,7 +6036,8 @@ def api_leaderboard():
                     r[_k] = [] if str(_k).endswith("_json") else None
             r["locked"] = True
             r["reasoning"] = (f"{(r.get('verdict') or '').upper()} verdict. "
-                              "Numeric DCPI scores are Pro — https://dchub.cloud/pricing.")
+                              "Numeric DCPI scores unlock with Developer or Pro — "
+                              "https://dchub.cloud/pricing.")
 
     if fmt == "csv" and not _lb_paid:
         # r-csv-gate (2026-07-10): CSV export is advertised Developer+ only. The
